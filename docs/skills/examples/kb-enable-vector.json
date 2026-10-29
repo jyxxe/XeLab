@@ -1,0 +1,10 @@
+{
+  "input": {
+    "table_id": "00000000-0000-4000-8000-000000000001",
+    "expected_schema_revision": 1,
+    "field_id": "00000000-0000-4000-8000-000000000001",
+    "enabled": true,
+    "dimensions": 128,
+    "embedding_skill_id": "00000000-0000-4000-8000-000000000001"
+  }
+}

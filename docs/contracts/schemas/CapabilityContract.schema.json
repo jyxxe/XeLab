@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CapabilityContract",
+  "type": "object",
+  "description": "能力契约；JSON Schema 2020-12 文档与注册制品摘要匹配",
+  "additionalProperties": false,
+  "properties": {
+    "contract": {
+      "$ref": "../openapi.json#/components/schemas/ContractRef"
+    },
+    "input_schema": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue"
+    },
+    "output_schema": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue"
+    },
+    "stream_item_schema": {
+      "anyOf": [
+        {
+          "$ref": "../openapi.json#/components/schemas/JsonValue"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "可为空"
+    },
+    "side_effect": {
+      "type": "string",
+      "enum": [
+        "none",
+        "idempotent",
+        "queryable",
+        "non_repeatable"
+      ],
+      "description": "决定重试与恢复策略"
+    },
+    "maximum_input_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4194304,
+      "description": "序列化 JSON 最大字节"
+    },
+    "maximum_output_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16777216,
+      "description": "单次输出上限"
+    }
+  },
+  "required": [
+    "contract",
+    "input_schema",
+    "output_schema",
+    "stream_item_schema",
+    "side_effect",
+    "maximum_input_bytes",
+    "maximum_output_bytes"
+  ]
+}

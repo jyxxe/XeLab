@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UiWidgetPlacement",
+  "type": "object",
+  "description": "同用户实例；column/row为0起始网格坐标；重叠需宿主整理",
+  "additionalProperties": false,
+  "properties": {
+    "instance_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "contribution": {
+      "$ref": "../openapi.json#/components/schemas/UiContributionKey"
+    },
+    "column": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255,
+      "description": "列"
+    },
+    "row": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255,
+      "description": "行"
+    },
+    "columns": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8,
+      "description": "宽格数，受贡献min/max限制"
+    },
+    "rows": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8,
+      "description": "高格数，受贡献min/max限制"
+    }
+  },
+  "required": [
+    "instance_id",
+    "contribution",
+    "column",
+    "row",
+    "columns",
+    "rows"
+  ]
+}

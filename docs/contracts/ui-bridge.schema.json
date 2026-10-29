@@ -1,0 +1,1294 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Xelab UI iframe message protocol v1",
+  "description": "结构Schema；origin/source、长度、seq、白名单与核心授权仍需运行时校验",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/Ready"
+    },
+    {
+      "$ref": "#/$defs/Init"
+    },
+    {
+      "$ref": "#/$defs/Request"
+    },
+    {
+      "$ref": "#/$defs/Response"
+    },
+    {
+      "$ref": "#/$defs/Event"
+    }
+  ],
+  "$defs": {
+    "Viewport": {
+      "type": "object",
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8192
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8192
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ],
+      "additionalProperties": false
+    },
+    "Ready": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "xelab.ui/1"
+        },
+        "view_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "channel_nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "ready"
+        }
+      },
+      "required": [
+        "protocol",
+        "view_id",
+        "channel_nonce",
+        "seq",
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "Init": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "xelab.ui/1"
+        },
+        "view_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "channel_nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "host.init"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "theme_tokens": {
+              "$ref": "openapi.json#/components/schemas/UiThemeTokens"
+            },
+            "reduce_motion": {
+              "type": "boolean"
+            },
+            "reduce_transparency": {
+              "type": "boolean"
+            },
+            "visible": {
+              "type": "boolean"
+            },
+            "viewport": {
+              "$ref": "#/$defs/Viewport"
+            },
+            "locale": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 35
+            },
+            "contribution_digest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "bindings": {
+              "type": "array",
+              "items": {
+                "$ref": "openapi.json#/components/schemas/UiResolvedSkillBinding"
+              },
+              "maxItems": 32
+            }
+          },
+          "required": [
+            "theme_tokens",
+            "reduce_motion",
+            "reduce_transparency",
+            "visible",
+            "viewport",
+            "locale",
+            "contribution_digest",
+            "bindings"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "protocol",
+        "view_id",
+        "channel_nonce",
+        "seq",
+        "type",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "OpenedWindow": {
+      "type": "object",
+      "properties": {
+        "view_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        }
+      },
+      "required": [
+        "view_id"
+      ],
+      "additionalProperties": false
+    },
+    "Request_skill_call": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "xelab.ui/1"
+        },
+        "view_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "channel_nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "每view新请求严格递增，重发使用原编号和新seq"
+        },
+        "method": {
+          "const": "skill.call"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "binding_alias": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "input": {
+              "$ref": "openapi.json#/components/schemas/JsonValue"
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 300000,
+              "default": 120000
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "required": [
+            "binding_alias",
+            "input",
+            "idempotency_key"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "protocol",
+        "view_id",
+        "channel_nonce",
+        "seq",
+        "type",
+        "request_id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "Request_batch_create": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "xelab.ui/1"
+        },
+        "view_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "channel_nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "每view新请求严格递增，重发使用原编号和新seq"
+        },
+        "method": {
+          "const": "batch.create"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "binding_alias": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "request": {
+              "allOf": [
+                {
+                  "$ref": "openapi.json#/components/schemas/SkillBatchRequest"
+                },
+                {
+                  "properties": {
+                    "run_as": {
+                      "const": "user"
+                    }
+                  },
+                  "not": {
+                    "required": [
+                      "service_account_id"
+                    ]
+                  }
+                }
+              ]
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "required": [
+            "binding_alias",
+            "request",
+            "idempotency_key"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "protocol",
+        "view_id",
+        "channel_nonce",
+        "seq",
+        "type",
+        "request_id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "Request_batch_get": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "xelab.ui/1"
+        },
+        "view_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "channel_nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "每view新请求严格递增，重发使用原编号和新seq"
+        },
+        "method": {
+          "const": "batch.get"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "binding_alias": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "batch_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 36,
+              "format": "uuid",
+              "example": "00000000-0000-4000-8000-000000000001"
+            }
+          },
+          "required": [
+            "binding_alias",
+            "batch_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "protocol",
+        "view_id",
+        "channel_nonce",
+        "seq",
+        "type",
+        "request_id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "Request_batch_items": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "xelab.ui/1"
+        },
+        "view_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "channel_nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "每view新请求严格递增，重发使用原编号和新seq"
+        },
+        "method": {
+          "const": "batch.items"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "binding_alias": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "batch_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 36,
+              "format": "uuid",
+              "example": "00000000-0000-4000-8000-000000000001"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            },
+            "cursor": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            }
+          },
+          "required": [
+            "binding_alias",
+            "batch_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "protocol",
+        "view_id",
+        "channel_nonce",
+        "seq",
+        "type",
+        "request_id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "Request_batch_result": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "xelab.ui/1"
+        },
+        "view_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "channel_nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "每view新请求严格递增，重发使用原编号和新seq"
+        },
+        "method": {
+          "const": "batch.result"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "binding_alias": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "batch_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 36,
+              "format": "uuid",
+              "example": "00000000-0000-4000-8000-000000000001"
+            },
+            "item_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
+            }
+          },
+          "required": [
+            "binding_alias",
+            "batch_id",
+            "item_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "protocol",
+        "view_id",
+        "channel_nonce",
+        "seq",
+        "type",
+        "request_id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "Request_batch_cancel": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "xelab.ui/1"
+        },
+        "view_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "channel_nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "每view新请求严格递增，重发使用原编号和新seq"
+        },
+        "method": {
+          "const": "batch.cancel"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "binding_alias": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "batch_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 36,
+              "format": "uuid",
+              "example": "00000000-0000-4000-8000-000000000001"
+            },
+            "if_match": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^\"rev-[1-9][0-9]*\"$"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          },
+          "required": [
+            "binding_alias",
+            "batch_id",
+            "if_match",
+            "idempotency_key"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "protocol",
+        "view_id",
+        "channel_nonce",
+        "seq",
+        "type",
+        "request_id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "Request_window_open": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "xelab.ui/1"
+        },
+        "view_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "channel_nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "request"
+        },
+        "request_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "每view新请求严格递增，重发使用原编号和新seq"
+        },
+        "method": {
+          "const": "window.open"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "contribution_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            }
+          },
+          "required": [
+            "contribution_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "protocol",
+        "view_id",
+        "channel_nonce",
+        "seq",
+        "type",
+        "request_id",
+        "method",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "Request": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Request_skill_call"
+        },
+        {
+          "$ref": "#/$defs/Request_batch_create"
+        },
+        {
+          "$ref": "#/$defs/Request_batch_get"
+        },
+        {
+          "$ref": "#/$defs/Request_batch_items"
+        },
+        {
+          "$ref": "#/$defs/Request_batch_result"
+        },
+        {
+          "$ref": "#/$defs/Request_batch_cancel"
+        },
+        {
+          "$ref": "#/$defs/Request_window_open"
+        }
+      ]
+    },
+    "Error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "PROTOCOL_ERROR",
+            "CHANNEL_CLOSED",
+            "METHOD_NOT_ALLOWED",
+            "BINDING_UNAVAILABLE",
+            "PERMISSION_DENIED",
+            "PAYLOAD_TOO_LARGE",
+            "RATE_LIMITED",
+            "DEADLINE_EXCEEDED",
+            "IDEMPOTENCY_CONFLICT",
+            "BACKEND_ERROR"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "http_status": {
+          "type": "integer",
+          "minimum": 400,
+          "maximum": 599
+        },
+        "backend_error": {
+          "$ref": "openapi.json#/components/schemas/ErrorDetail"
+        },
+        "core_request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "const": "BACKEND_ERROR"
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "required": [
+              "http_status",
+              "backend_error",
+              "core_request_id"
+            ]
+          }
+        }
+      ]
+    },
+    "Response": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "xelab.ui/1"
+        },
+        "view_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "channel_nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "response"
+        },
+        "request_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "每view新请求严格递增，重发使用原编号和新seq"
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "skill.call",
+            "batch.create",
+            "batch.get",
+            "batch.items",
+            "batch.result",
+            "batch.cancel",
+            "window.open"
+          ]
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "result": {
+          "$ref": "openapi.json#/components/schemas/JsonValue"
+        },
+        "error": {
+          "$ref": "#/$defs/Error"
+        }
+      },
+      "required": [
+        "protocol",
+        "view_id",
+        "channel_nonce",
+        "seq",
+        "type",
+        "request_id",
+        "method",
+        "ok"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "ok": {
+              "const": true
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "not": {
+            "required": [
+              "error"
+            ]
+          },
+          "oneOf": [
+            {
+              "properties": {
+                "method": {
+                  "const": "skill.call"
+                },
+                "result": {
+                  "$ref": "openapi.json#/components/schemas/SkillCallResult"
+                }
+              }
+            },
+            {
+              "properties": {
+                "method": {
+                  "const": "batch.create"
+                },
+                "result": {
+                  "$ref": "openapi.json#/components/schemas/SkillBatch"
+                }
+              }
+            },
+            {
+              "properties": {
+                "method": {
+                  "const": "batch.get"
+                },
+                "result": {
+                  "$ref": "openapi.json#/components/schemas/SkillBatch"
+                }
+              }
+            },
+            {
+              "properties": {
+                "method": {
+                  "const": "batch.items"
+                },
+                "result": {
+                  "$ref": "openapi.json#/components/schemas/SkillBatchItemPage"
+                }
+              }
+            },
+            {
+              "properties": {
+                "method": {
+                  "const": "batch.result"
+                },
+                "result": {
+                  "$ref": "openapi.json#/components/schemas/SkillCallResult"
+                }
+              }
+            },
+            {
+              "properties": {
+                "method": {
+                  "const": "batch.cancel"
+                },
+                "result": {
+                  "$ref": "openapi.json#/components/schemas/SkillBatch"
+                }
+              }
+            },
+            {
+              "properties": {
+                "method": {
+                  "const": "window.open"
+                },
+                "result": {
+                  "$ref": "#/$defs/OpenedWindow"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "properties": {
+            "ok": {
+              "const": false
+            }
+          },
+          "required": [
+            "error"
+          ],
+          "not": {
+            "required": [
+              "result"
+            ]
+          }
+        }
+      ]
+    },
+    "Event_theme_changed": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "xelab.ui/1"
+        },
+        "view_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "channel_nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "event"
+        },
+        "event": {
+          "const": "theme.changed"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "theme_tokens": {
+              "$ref": "openapi.json#/components/schemas/UiThemeTokens"
+            },
+            "reduce_motion": {
+              "type": "boolean"
+            },
+            "reduce_transparency": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "theme_tokens",
+            "reduce_motion",
+            "reduce_transparency"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "protocol",
+        "view_id",
+        "channel_nonce",
+        "seq",
+        "type",
+        "event",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "Event_visibility_changed": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "xelab.ui/1"
+        },
+        "view_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "channel_nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "event"
+        },
+        "event": {
+          "const": "visibility.changed"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "visible": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "visible"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "protocol",
+        "view_id",
+        "channel_nonce",
+        "seq",
+        "type",
+        "event",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "Event_viewport_changed": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "xelab.ui/1"
+        },
+        "view_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "channel_nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "event"
+        },
+        "event": {
+          "const": "viewport.changed"
+        },
+        "params": {
+          "$ref": "#/$defs/Viewport"
+        }
+      },
+      "required": [
+        "protocol",
+        "view_id",
+        "channel_nonce",
+        "seq",
+        "type",
+        "event",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "Event_widget_refresh": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "xelab.ui/1"
+        },
+        "view_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "channel_nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "event"
+        },
+        "event": {
+          "const": "widget.refresh"
+        },
+        "params": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "protocol",
+        "view_id",
+        "channel_nonce",
+        "seq",
+        "type",
+        "event",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "Event_host_dispose": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "const": "xelab.ui/1"
+        },
+        "view_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "channel_nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "type": {
+          "const": "event"
+        },
+        "event": {
+          "const": "host.dispose"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "enum": [
+                "close",
+                "logout",
+                "upgrade",
+                "unavailable"
+              ]
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "protocol",
+        "view_id",
+        "channel_nonce",
+        "seq",
+        "type",
+        "event",
+        "params"
+      ],
+      "additionalProperties": false
+    },
+    "Event": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Event_theme_changed"
+        },
+        {
+          "$ref": "#/$defs/Event_visibility_changed"
+        },
+        {
+          "$ref": "#/$defs/Event_viewport_changed"
+        },
+        {
+          "$ref": "#/$defs/Event_widget_refresh"
+        },
+        {
+          "$ref": "#/$defs/Event_host_dispose"
+        }
+      ]
+    }
+  }
+}

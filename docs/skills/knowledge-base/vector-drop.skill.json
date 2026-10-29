@@ -1,0 +1,98 @@
+{
+  "name": "org.xelab.knowledge-base.vector-drop",
+  "version": "2.0.0",
+  "description": "明确删除字段向量数据",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "字段先关闭，才可物理清理",
+    "properties": {
+      "table_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "UUID",
+        "format": "uuid"
+      },
+      "expected_schema_revision": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991,
+        "description": "CAS，创建/删除等另见语义"
+      },
+      "field_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "字段 ID，不随列重命名改变",
+        "format": "uuid"
+      },
+      "confirm_drop_vectors": {
+        "const": true
+      }
+    },
+    "required": [
+      "table_id",
+      "expected_schema_revision",
+      "field_id",
+      "confirm_drop_vectors"
+    ],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "有版本的变更结果",
+    "properties": {
+      "table_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "UUID",
+        "format": "uuid"
+      },
+      "schema_revision": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991,
+        "description": "当前版本"
+      },
+      "data_revision": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991,
+        "description": "当前数据版本"
+      },
+      "affected_rows": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991,
+        "description": "影响行数"
+      }
+    },
+    "required": [
+      "table_id",
+      "schema_revision",
+      "data_revision",
+      "affected_rows"
+    ],
+    "additionalProperties": false
+  },
+  "stream_item_schema": null,
+  "target": {
+    "kind": "capability",
+    "plugin_id": "org.xelab.knowledge-base",
+    "contract": {
+      "name": "data.kb.vector.drop",
+      "version": "1.0.0",
+      "schema_digest": "sha256:e84352da7fae63fb26ddefbbd0874f854d3bfd9957598e476bb63a6b7f9c7053"
+    }
+  },
+  "mapping": "identity",
+  "maximum_timeout_ms": 300000,
+  "input_blobs": false,
+  "tags": [
+    "preset",
+    "knowledge-base"
+  ]
+}

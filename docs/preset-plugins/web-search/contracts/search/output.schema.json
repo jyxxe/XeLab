@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+    },
+    "provider": {
+      "type": "string",
+      "enum": [
+        "brave",
+        "tavily"
+      ]
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 1024
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "description": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 8192
+          }
+        },
+        "required": [
+          "title",
+          "url",
+          "description"
+        ],
+        "additionalProperties": false
+      },
+      "maxItems": 20
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 20
+    },
+    "fallback_used": {
+      "type": "boolean"
+    },
+    "attempts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": [
+              "brave",
+              "tavily"
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "success",
+              "not_sent",
+              "rate_limited",
+              "upstream_error",
+              "auth_rejected",
+              "invalid_response"
+            ]
+          },
+          "http_status": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 100,
+                "maximum": 599
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "provider",
+          "outcome",
+          "http_status"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 3
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "external_requests": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "potentially_billed_requests": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        }
+      },
+      "required": [
+        "external_requests",
+        "potentially_billed_requests"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "query",
+    "provider",
+    "items",
+    "count",
+    "fallback_used",
+    "attempts",
+    "usage"
+  ],
+  "additionalProperties": false
+}

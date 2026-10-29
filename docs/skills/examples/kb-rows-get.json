@@ -1,0 +1,15 @@
+{
+  "input": {
+    "table_id": "00000000-0000-4000-8000-000000000001",
+    "ids": [
+      "00000000-0000-4000-8000-000000000002"
+    ],
+    "projection": [
+      "title",
+      "content"
+    ],
+    "expected_schema_revision": 1,
+    "expected_data_revision": 1
+  },
+  "timeout_ms": 120000
+}

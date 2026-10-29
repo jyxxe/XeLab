@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "accepted": {
+      "type": "boolean",
+      "default": true
+    },
+    "duplicate": {
+      "type": "boolean",
+      "default": false
+    },
+    "receipt_id": {
+      "type": "string",
+      "description": "UUID",
+      "minLength": 1,
+      "maxLength": 36,
+      "format": "uuid"
+    },
+    "task_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "description": "UUID",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "platform_event_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "description": "UUID",
+          "minLength": 1,
+          "maxLength": 36,
+          "format": "uuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "accepted",
+    "duplicate",
+    "receipt_id",
+    "task_id",
+    "platform_event_id"
+  ],
+  "additionalProperties": false
+}

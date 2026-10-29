@@ -1,0 +1,21 @@
+{
+  "items": [
+    {
+      "id": "text-001",
+      "input": {
+        "items": [
+          {
+            "text": "知识库检索"
+          }
+        ],
+        "purpose": "retrieval_query",
+        "dimensions": 128
+      }
+    }
+  ],
+  "item_timeout_ms": 120000,
+  "timeout_ms": 86400000,
+  "max_parallel": 1,
+  "failure_policy": "continue",
+  "run_as": "user"
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PublishMicroVersion",
+  "type": "object",
+  "description": "从当前获准Blob复制源码到核心不可变存储，不依赖源BlobTTL",
+  "properties": {
+    "manifest": {
+      "$ref": "../openapi.json#/components/schemas/MicroManifest"
+    },
+    "source_blob_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "需当前blob.read；源码<=256KiB UTF8且无NUL/BOM",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001",
+      "x-xelab-resource-kind": "blob"
+    },
+    "source_digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 71,
+      "description": "原始源码字节SHA-256，不规范化代码",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "runtime_installation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "精确已安装且声明Manifest.micro_runtime的OCI制品",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    }
+  },
+  "required": [
+    "manifest",
+    "source_blob_id",
+    "source_digest",
+    "runtime_installation_id"
+  ],
+  "additionalProperties": false
+}

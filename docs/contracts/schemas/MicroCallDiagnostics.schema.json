@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MicroCallDiagnostics",
+  "type": "object",
+  "description": "单次微调用诊断，不作为公共日志或业务输出",
+  "properties": {
+    "call_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "micro_plugin_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "micro_version_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "micro_deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "package_digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 71,
+      "description": "制品或内容 SHA-256 摘要",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "elapsed_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 30000,
+      "description": "运行耗时"
+    },
+    "peak_heap_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 67108864,
+      "description": "VM观测堆峰值"
+    },
+    "stderr": {
+      "type": "string",
+      "minLength": 0,
+      "maxLength": 65536,
+      "description": "有界原始诊断，单独授权，日志不得包含凭证"
+    },
+    "stderr_truncated": {
+      "type": "boolean"
+    },
+    "expires_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "创建时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    }
+  },
+  "required": [
+    "call_id",
+    "micro_plugin_id",
+    "micro_version_id",
+    "micro_deployment_id",
+    "package_digest",
+    "elapsed_ms",
+    "peak_heap_bytes",
+    "stderr",
+    "stderr_truncated",
+    "expires_at"
+  ],
+  "additionalProperties": false
+}

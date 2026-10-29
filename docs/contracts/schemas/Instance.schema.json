@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Instance",
+  "type": "object",
+  "description": "实际运行实例；控制器维护，插件不能自报 Ready 绕过准入",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "乐观锁版本，每次持久化变更加一"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "创建时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "updated_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "最近变更时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "所属期望配置代次"
+    },
+    "runtime_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "description": "宿主运行时容器标识"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "宿主运行时容器标识"
+    },
+    "phase": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "starting",
+        "ready",
+        "degraded",
+        "draining",
+        "stopped",
+        "failed"
+      ],
+      "description": "实例状态"
+    },
+    "health": {
+      "type": "string",
+      "enum": [
+        "unknown",
+        "alive",
+        "unhealthy"
+      ],
+      "description": "探针状态"
+    },
+    "limits": {
+      "$ref": "../openapi.json#/components/schemas/ResourceLimits"
+    },
+    "last_heartbeat_at": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "最近健康观测",
+          "format": "date-time",
+          "example": "2026-10-28T12:00:00Z"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "最近健康观测"
+    },
+    "restart_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10,
+      "description": "本代次重启次数"
+    }
+  },
+  "required": [
+    "id",
+    "revision",
+    "created_at",
+    "updated_at",
+    "deployment_id",
+    "generation",
+    "runtime_id",
+    "phase",
+    "health",
+    "limits",
+    "last_heartbeat_at",
+    "restart_count"
+  ]
+}

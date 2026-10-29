@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "完整返回请求的所有行；任何missing/水位不符拒绝整次",
+  "properties": {
+    "table_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "UUID",
+      "format": "uuid"
+    },
+    "schema_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "快照水位"
+    },
+    "data_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "快照水位"
+    },
+    "items": {
+      "type": "array",
+      "description": "按输入ID顺序，长度必须与请求ids相同",
+      "items": {
+        "type": "object",
+        "description": "行正文；顺序与请求ids严格一致",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "description": "UUID",
+            "format": "uuid"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "description": "行版本"
+          },
+          "values": {
+            "type": "object",
+            "description": "只含投影列",
+            "additionalProperties": {
+              "type": [
+                "object",
+                "array",
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ],
+              "description": "业务 JSON，按数据列类型继续校验"
+            },
+            "maxProperties": 128
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "values"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 200
+    }
+  },
+  "required": [
+    "table_id",
+    "schema_revision",
+    "data_revision",
+    "items"
+  ],
+  "additionalProperties": false
+}

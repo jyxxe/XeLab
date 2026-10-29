@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SkillBatchCounts",
+  "type": "object",
+  "description": "同一读快照的计数；各状态之和必须等于total",
+  "additionalProperties": false,
+  "properties": {
+    "total": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000,
+      "description": "提交项总数，创建后固定"
+    },
+    "queued": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000,
+      "description": "该状态项数"
+    },
+    "running": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000,
+      "description": "该状态项数"
+    },
+    "succeeded": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000,
+      "description": "该状态项数"
+    },
+    "failed": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000,
+      "description": "该状态项数"
+    },
+    "canceled": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000,
+      "description": "该状态项数"
+    },
+    "unknown": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000,
+      "description": "该状态项数"
+    }
+  },
+  "required": [
+    "total",
+    "queued",
+    "running",
+    "succeeded",
+    "failed",
+    "canceled",
+    "unknown"
+  ]
+}

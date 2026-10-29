@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "InvokeRequest",
+  "type": "object",
+  "description": "通用业务调用；input 必须匹配注册契约；大文件传 Blob 引用",
+  "additionalProperties": false,
+  "properties": {
+    "contract": {
+      "$ref": "../openapi.json#/components/schemas/ContractRef"
+    },
+    "input": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue"
+    },
+    "provider_deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "指定实现时仍校验权限及契约",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 300000,
+      "description": "整体期限；默认 30000",
+      "default": 30000
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "有副作用能力的稳定去重键，作用域见通信规范"
+    }
+  },
+  "required": [
+    "contract",
+    "input"
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "按明确ID读取1..200行，不执行表达式或隐式分页",
+  "properties": {
+    "table_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "UUID",
+      "format": "uuid"
+    },
+    "ids": {
+      "type": "array",
+      "description": "全部必须存在，重复拒绝",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "UUID",
+        "format": "uuid"
+      },
+      "minItems": 1,
+      "maxItems": 200,
+      "uniqueItems": true
+    },
+    "projection": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 63,
+        "description": "ASCII 列名；下划线开头留给系统",
+        "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}$"
+      },
+      "description": "省略表示全部列",
+      "minItems": 1,
+      "maxItems": 128,
+      "uniqueItems": true
+    },
+    "expected_schema_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "可选快照前置；两个expected水位必须成对"
+    },
+    "expected_data_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "快照水位"
+    }
+  },
+  "required": [
+    "table_id",
+    "ids"
+  ],
+  "additionalProperties": false,
+  "dependentRequired": {
+    "expected_schema_revision": [
+      "expected_data_revision"
+    ],
+    "expected_data_revision": [
+      "expected_schema_revision"
+    ]
+  }
+}

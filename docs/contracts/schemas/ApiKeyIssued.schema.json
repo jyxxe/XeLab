@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ApiKeyIssued",
+  "type": "object",
+  "description": "只有首次签发成功响应携带密钥",
+  "additionalProperties": false,
+  "properties": {
+    "credential": {
+      "$ref": "../openapi.json#/components/schemas/ApiKey"
+    },
+    "secret": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "高熵随机密钥；重放时返回错误 ONE_TIME_RESPONSE_UNAVAILABLE",
+      "readOnly": true
+    }
+  },
+  "required": [
+    "credential",
+    "secret"
+  ]
+}

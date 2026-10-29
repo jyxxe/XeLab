@@ -1,0 +1,50 @@
+{
+  "table_id": "00000000-0000-4000-8000-000000000001",
+  "schema_revision": 1,
+  "data_revision": 4,
+  "ids": [
+    "00000000-0000-4000-8000-000000000002"
+  ],
+  "count": 1,
+  "vector_stages": [
+    {
+      "stage_index": 1,
+      "field_id": "00000000-0000-4000-8000-000000000003",
+      "generation": 1,
+      "index_revision": 9,
+      "dimensions": 128,
+      "embedding_space_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "embedding_skill_id": "00000000-0000-4000-8000-000000000001",
+      "embedding_skill_definition_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "input_count": 3,
+      "indexed_rows": 3,
+      "pending_rows": 0,
+      "failed_rows": 0,
+      "skipped_rows": 0,
+      "output_count": 3,
+      "k": 10,
+      "min_score": -1,
+      "metric": "cosine",
+      "route_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "cache": {
+    "state": "miss",
+    "hit_stages": 0,
+    "stored_stages": 3,
+    "classes": {
+      "data": {
+        "hits": 0,
+        "stores": 3
+      },
+      "text": {
+        "hits": 0,
+        "stores": 1
+      },
+      "vector": {
+        "hits": 0,
+        "stores": 1
+      }
+    }
+  }
+}

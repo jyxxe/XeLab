@@ -1,0 +1,1384 @@
+[
+  {
+    "name": "http_manifest",
+    "schema": "MicroManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "网页搜索API转发，按已批准优先级串行fallback",
+      "engine": "javascript",
+      "protocol": "json-stdio-v1",
+      "entrypoint": "main.js",
+      "execution_profile": "controlled-http-v1",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 10
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false,
+        "description": "最多600码点/75空白分词，仅query和limit，无URL或认证字段"
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "brave",
+              "tavily"
+            ]
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 1024
+                },
+                "url": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 8192
+                }
+              },
+              "required": [
+                "title",
+                "url",
+                "description"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 20
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
+          },
+          "fallback_used": {
+            "type": "boolean"
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "enum": [
+                    "brave",
+                    "tavily"
+                  ]
+                },
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "success",
+                    "not_sent",
+                    "rate_limited",
+                    "upstream_error",
+                    "auth_rejected",
+                    "invalid_response"
+                  ]
+                },
+                "http_status": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 100,
+                      "maximum": 599
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "provider",
+                "outcome",
+                "http_status"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 3
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "external_requests": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              },
+              "potentially_billed_requests": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3
+              }
+            },
+            "required": [
+              "external_requests",
+              "potentially_billed_requests"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "query",
+          "provider",
+          "items",
+          "count",
+          "fallback_used",
+          "attempts",
+          "usage"
+        ],
+        "additionalProperties": false
+      },
+      "limits": {
+        "timeout_ms": 15000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 4
+      },
+      "side_effect": "non_repeatable",
+      "http_endpoints": [
+        {
+          "alias": "brave",
+          "origin": "https://api.search.brave.com",
+          "path": "/res/v1/web/search",
+          "method": "GET",
+          "auth_header": "X-Subscription-Token",
+          "auth_scheme": "raw",
+          "payload_schema": {
+            "type": "object",
+            "properties": {
+              "q": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20
+              }
+            },
+            "required": [
+              "q",
+              "count"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "alias": "tavily",
+          "origin": "https://api.tavily.com",
+          "path": "/search",
+          "method": "POST",
+          "auth_header": "Authorization",
+          "auth_scheme": "bearer",
+          "payload_schema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "max_results": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20
+              },
+              "search_depth": {
+                "const": "basic"
+              },
+              "topic": {
+                "const": "general"
+              },
+              "auto_parameters": {
+                "const": false
+              },
+              "include_answer": {
+                "const": false
+              },
+              "include_raw_content": {
+                "const": false
+              },
+              "include_images": {
+                "const": false
+              },
+              "include_usage": {
+                "const": true
+              }
+            },
+            "required": [
+              "query",
+              "max_results",
+              "search_depth",
+              "topic",
+              "auto_parameters",
+              "include_answer",
+              "include_raw_content",
+              "include_images",
+              "include_usage"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ],
+      "business_errors": [
+        {
+          "code": "SEARCH_INPUT_INVALID",
+          "http_status": 400,
+          "retryable": false
+        },
+        {
+          "code": "SEARCH_NO_PROVIDER",
+          "http_status": 503,
+          "retryable": false
+        },
+        {
+          "code": "SEARCH_PROVIDERS_EXHAUSTED",
+          "http_status": 503,
+          "retryable": false
+        },
+        {
+          "code": "SEARCH_RESPONSE_INVALID",
+          "http_status": 502,
+          "retryable": false
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "billed_http_not_pure",
+    "schema": "MicroManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "网页搜索API转发，按已批准优先级串行fallback",
+      "engine": "javascript",
+      "protocol": "json-stdio-v1",
+      "entrypoint": "main.js",
+      "execution_profile": "controlled-http-v1",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 10
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false,
+        "description": "最多600码点/75空白分词，仅query和limit，无URL或认证字段"
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "brave",
+              "tavily"
+            ]
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 1024
+                },
+                "url": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 8192
+                }
+              },
+              "required": [
+                "title",
+                "url",
+                "description"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 20
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
+          },
+          "fallback_used": {
+            "type": "boolean"
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "enum": [
+                    "brave",
+                    "tavily"
+                  ]
+                },
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "success",
+                    "not_sent",
+                    "rate_limited",
+                    "upstream_error",
+                    "auth_rejected",
+                    "invalid_response"
+                  ]
+                },
+                "http_status": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 100,
+                      "maximum": 599
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "provider",
+                "outcome",
+                "http_status"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 3
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "external_requests": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              },
+              "potentially_billed_requests": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3
+              }
+            },
+            "required": [
+              "external_requests",
+              "potentially_billed_requests"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "query",
+          "provider",
+          "items",
+          "count",
+          "fallback_used",
+          "attempts",
+          "usage"
+        ],
+        "additionalProperties": false
+      },
+      "limits": {
+        "timeout_ms": 15000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 4
+      },
+      "side_effect": "none",
+      "http_endpoints": [
+        {
+          "alias": "brave",
+          "origin": "https://api.search.brave.com",
+          "path": "/res/v1/web/search",
+          "method": "GET",
+          "auth_header": "X-Subscription-Token",
+          "auth_scheme": "raw",
+          "payload_schema": {
+            "type": "object",
+            "properties": {
+              "q": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20
+              }
+            },
+            "required": [
+              "q",
+              "count"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "alias": "tavily",
+          "origin": "https://api.tavily.com",
+          "path": "/search",
+          "method": "POST",
+          "auth_header": "Authorization",
+          "auth_scheme": "bearer",
+          "payload_schema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "max_results": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20
+              },
+              "search_depth": {
+                "const": "basic"
+              },
+              "topic": {
+                "const": "general"
+              },
+              "auto_parameters": {
+                "const": false
+              },
+              "include_answer": {
+                "const": false
+              },
+              "include_raw_content": {
+                "const": false
+              },
+              "include_images": {
+                "const": false
+              },
+              "include_usage": {
+                "const": true
+              }
+            },
+            "required": [
+              "query",
+              "max_results",
+              "search_depth",
+              "topic",
+              "auto_parameters",
+              "include_answer",
+              "include_raw_content",
+              "include_images",
+              "include_usage"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ],
+      "business_errors": [
+        {
+          "code": "SEARCH_INPUT_INVALID",
+          "http_status": 400,
+          "retryable": false
+        },
+        {
+          "code": "SEARCH_NO_PROVIDER",
+          "http_status": 503,
+          "retryable": false
+        },
+        {
+          "code": "SEARCH_PROVIDERS_EXHAUSTED",
+          "http_status": 503,
+          "retryable": false
+        },
+        {
+          "code": "SEARCH_RESPONSE_INVALID",
+          "http_status": 502,
+          "retryable": false
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "http_requires_fixed_templates",
+    "schema": "MicroManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "网页搜索API转发，按已批准优先级串行fallback",
+      "engine": "javascript",
+      "protocol": "json-stdio-v1",
+      "entrypoint": "main.js",
+      "execution_profile": "controlled-http-v1",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 10
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false,
+        "description": "最多600码点/75空白分词，仅query和limit，无URL或认证字段"
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "brave",
+              "tavily"
+            ]
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 1024
+                },
+                "url": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 8192
+                }
+              },
+              "required": [
+                "title",
+                "url",
+                "description"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 20
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
+          },
+          "fallback_used": {
+            "type": "boolean"
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "enum": [
+                    "brave",
+                    "tavily"
+                  ]
+                },
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "success",
+                    "not_sent",
+                    "rate_limited",
+                    "upstream_error",
+                    "auth_rejected",
+                    "invalid_response"
+                  ]
+                },
+                "http_status": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 100,
+                      "maximum": 599
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "provider",
+                "outcome",
+                "http_status"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 3
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "external_requests": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              },
+              "potentially_billed_requests": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3
+              }
+            },
+            "required": [
+              "external_requests",
+              "potentially_billed_requests"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "query",
+          "provider",
+          "items",
+          "count",
+          "fallback_used",
+          "attempts",
+          "usage"
+        ],
+        "additionalProperties": false
+      },
+      "limits": {
+        "timeout_ms": 15000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 4
+      },
+      "side_effect": "non_repeatable",
+      "business_errors": [
+        {
+          "code": "SEARCH_INPUT_INVALID",
+          "http_status": 400,
+          "retryable": false
+        },
+        {
+          "code": "SEARCH_NO_PROVIDER",
+          "http_status": 503,
+          "retryable": false
+        },
+        {
+          "code": "SEARCH_PROVIDERS_EXHAUSTED",
+          "http_status": 503,
+          "retryable": false
+        },
+        {
+          "code": "SEARCH_RESPONSE_INVALID",
+          "http_status": 502,
+          "retryable": false
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "pure_no_outbound",
+    "schema": "MicroManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "网页搜索API转发，按已批准优先级串行fallback",
+      "engine": "javascript",
+      "protocol": "json-stdio-v1",
+      "entrypoint": "main.js",
+      "execution_profile": "pure-json-v1",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 10
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false,
+        "description": "最多600码点/75空白分词，仅query和limit，无URL或认证字段"
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "brave",
+              "tavily"
+            ]
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 1024
+                },
+                "url": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 8192
+                }
+              },
+              "required": [
+                "title",
+                "url",
+                "description"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 20
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
+          },
+          "fallback_used": {
+            "type": "boolean"
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "enum": [
+                    "brave",
+                    "tavily"
+                  ]
+                },
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "success",
+                    "not_sent",
+                    "rate_limited",
+                    "upstream_error",
+                    "auth_rejected",
+                    "invalid_response"
+                  ]
+                },
+                "http_status": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 100,
+                      "maximum": 599
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "provider",
+                "outcome",
+                "http_status"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 3
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "external_requests": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              },
+              "potentially_billed_requests": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3
+              }
+            },
+            "required": [
+              "external_requests",
+              "potentially_billed_requests"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "query",
+          "provider",
+          "items",
+          "count",
+          "fallback_used",
+          "attempts",
+          "usage"
+        ],
+        "additionalProperties": false
+      },
+      "limits": {
+        "timeout_ms": 15000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 4
+      },
+      "side_effect": "none",
+      "http_endpoints": [
+        {
+          "alias": "brave",
+          "origin": "https://api.search.brave.com",
+          "path": "/res/v1/web/search",
+          "method": "GET",
+          "auth_header": "X-Subscription-Token",
+          "auth_scheme": "raw",
+          "payload_schema": {
+            "type": "object",
+            "properties": {
+              "q": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20
+              }
+            },
+            "required": [
+              "q",
+              "count"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "alias": "tavily",
+          "origin": "https://api.tavily.com",
+          "path": "/search",
+          "method": "POST",
+          "auth_header": "Authorization",
+          "auth_scheme": "bearer",
+          "payload_schema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "max_results": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20
+              },
+              "search_depth": {
+                "const": "basic"
+              },
+              "topic": {
+                "const": "general"
+              },
+              "auto_parameters": {
+                "const": false
+              },
+              "include_answer": {
+                "const": false
+              },
+              "include_raw_content": {
+                "const": false
+              },
+              "include_images": {
+                "const": false
+              },
+              "include_usage": {
+                "const": true
+              }
+            },
+            "required": [
+              "query",
+              "max_results",
+              "search_depth",
+              "topic",
+              "auto_parameters",
+              "include_answer",
+              "include_raw_content",
+              "include_images",
+              "include_usage"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ],
+      "business_errors": [
+        {
+          "code": "SEARCH_INPUT_INVALID",
+          "http_status": 400,
+          "retryable": false
+        },
+        {
+          "code": "SEARCH_NO_PROVIDER",
+          "http_status": 503,
+          "retryable": false
+        },
+        {
+          "code": "SEARCH_PROVIDERS_EXHAUSTED",
+          "http_status": 503,
+          "retryable": false
+        },
+        {
+          "code": "SEARCH_RESPONSE_INVALID",
+          "http_status": 502,
+          "retryable": false
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "secret_binding",
+    "schema": "MicroHttpBindingSpec",
+    "value": {
+      "endpoint_alias": "brave",
+      "priority": 10,
+      "enabled": false,
+      "secret_id": "00000000-0000-4000-8000-000000000201",
+      "timeout_ms": 4000
+    },
+    "valid": true
+  },
+  {
+    "name": "no_raw_secret",
+    "schema": "MicroHttpBindingSpec",
+    "value": {
+      "endpoint_alias": "brave",
+      "priority": 10,
+      "enabled": false,
+      "secret_id": "00000000-0000-4000-8000-000000000201",
+      "timeout_ms": 4000,
+      "api_key": "raw-secret"
+    },
+    "valid": false
+  },
+  {
+    "name": "no_user_url",
+    "schema": "MicroHttpBindingSpec",
+    "value": {
+      "endpoint_alias": "brave",
+      "priority": 10,
+      "enabled": false,
+      "secret_id": "00000000-0000-4000-8000-000000000201",
+      "timeout_ms": 4000,
+      "url": "https://elsewhere.example"
+    },
+    "valid": false
+  },
+  {
+    "name": "business_cannot_fake_auth",
+    "schema": "MicroManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "网页搜索API转发，按已批准优先级串行fallback",
+      "engine": "javascript",
+      "protocol": "json-stdio-v1",
+      "entrypoint": "main.js",
+      "execution_profile": "controlled-http-v1",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 10
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false,
+        "description": "最多600码点/75空白分词，仅query和limit，无URL或认证字段"
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 600
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "brave",
+              "tavily"
+            ]
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 1024
+                },
+                "url": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048
+                },
+                "description": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 8192
+                }
+              },
+              "required": [
+                "title",
+                "url",
+                "description"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 20
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
+          },
+          "fallback_used": {
+            "type": "boolean"
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "enum": [
+                    "brave",
+                    "tavily"
+                  ]
+                },
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "success",
+                    "not_sent",
+                    "rate_limited",
+                    "upstream_error",
+                    "auth_rejected",
+                    "invalid_response"
+                  ]
+                },
+                "http_status": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 100,
+                      "maximum": 599
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "provider",
+                "outcome",
+                "http_status"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 3
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "external_requests": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3
+              },
+              "potentially_billed_requests": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3
+              }
+            },
+            "required": [
+              "external_requests",
+              "potentially_billed_requests"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "query",
+          "provider",
+          "items",
+          "count",
+          "fallback_used",
+          "attempts",
+          "usage"
+        ],
+        "additionalProperties": false
+      },
+      "limits": {
+        "timeout_ms": 15000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 4
+      },
+      "side_effect": "non_repeatable",
+      "http_endpoints": [
+        {
+          "alias": "brave",
+          "origin": "https://api.search.brave.com",
+          "path": "/res/v1/web/search",
+          "method": "GET",
+          "auth_header": "X-Subscription-Token",
+          "auth_scheme": "raw",
+          "payload_schema": {
+            "type": "object",
+            "properties": {
+              "q": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20
+              }
+            },
+            "required": [
+              "q",
+              "count"
+            ],
+            "additionalProperties": false
+          }
+        },
+        {
+          "alias": "tavily",
+          "origin": "https://api.tavily.com",
+          "path": "/search",
+          "method": "POST",
+          "auth_header": "Authorization",
+          "auth_scheme": "bearer",
+          "payload_schema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "max_results": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20
+              },
+              "search_depth": {
+                "const": "basic"
+              },
+              "topic": {
+                "const": "general"
+              },
+              "auto_parameters": {
+                "const": false
+              },
+              "include_answer": {
+                "const": false
+              },
+              "include_raw_content": {
+                "const": false
+              },
+              "include_images": {
+                "const": false
+              },
+              "include_usage": {
+                "const": true
+              }
+            },
+            "required": [
+              "query",
+              "max_results",
+              "search_depth",
+              "topic",
+              "auto_parameters",
+              "include_answer",
+              "include_raw_content",
+              "include_images",
+              "include_usage"
+            ],
+            "additionalProperties": false
+          }
+        }
+      ],
+      "business_errors": [
+        {
+          "code": "SEARCH_INPUT_INVALID",
+          "http_status": 401,
+          "retryable": false
+        },
+        {
+          "code": "SEARCH_NO_PROVIDER",
+          "http_status": 503,
+          "retryable": false
+        },
+        {
+          "code": "SEARCH_PROVIDERS_EXHAUSTED",
+          "http_status": 503,
+          "retryable": false
+        },
+        {
+          "code": "SEARCH_RESPONSE_INVALID",
+          "http_status": 502,
+          "retryable": false
+        }
+      ]
+    },
+    "valid": false
+  }
+]

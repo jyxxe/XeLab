@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "affected_rows": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,18})$",
+      "maxLength": 19,
+      "description": "0..9223372036854775807的规范十进制字符串，运行时另检验上界"
+    },
+    "elapsed_ms": {
+      "type": "integer",
+      "description": "",
+      "minimum": 0,
+      "maximum": 30000
+    }
+  },
+  "required": [
+    "affected_rows",
+    "elapsed_ms"
+  ],
+  "additionalProperties": false
+}

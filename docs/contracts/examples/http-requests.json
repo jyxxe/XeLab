@@ -1,0 +1,799 @@
+{
+  "updateNodeConfig": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/NodeConfig"
+    },
+    "value": {
+      "kernel_cpu_millis": 4000,
+      "kernel_memory_bytes": 17179869184,
+      "system_cpu_millis": 1,
+      "system_memory_bytes": 1048576,
+      "shutdown_grace_ms": 30000
+    }
+  },
+  "cancelOperation": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CancelOperation"
+    },
+    "value": {}
+  },
+  "activateAccount": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/ActivateAccount"
+    },
+    "value": {
+      "activation_token": "example",
+      "password": "aaaaaaaaaaaa"
+    }
+  },
+  "login": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/LoginRequest"
+    },
+    "value": {
+      "account_id": "00000000-0000-4000-8000-000000000001",
+      "password": "example"
+    }
+  },
+  "exchangeOAuthToken": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/OAuthTokenRequest"
+    },
+    "value": {
+      "grant_type": "authorization_code",
+      "client_id": "example",
+      "code": "example",
+      "redirect_uri": "https://ui.example.org/callback",
+      "code_verifier": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "submitConsent": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/ConsentDecision"
+    },
+    "value": {
+      "authorization_request_id": "00000000-0000-4000-8000-000000000001",
+      "approved": false
+    }
+  },
+  "updateAccount": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/AccountPatch"
+    },
+    "value": {
+      "display_name": "example"
+    }
+  },
+  "createChildAccount": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CreateChild"
+    },
+    "value": {
+      "display_name": "example",
+      "inheritance": {
+        "mode": "all_snapshot"
+      }
+    }
+  },
+  "changePassword": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/ChangePassword"
+    },
+    "value": {
+      "current_password": "example",
+      "new_password": "aaaaaaaaaaaa"
+    }
+  },
+  "updateInheritance": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/InheritanceSpec"
+    },
+    "value": {
+      "mode": "all_snapshot"
+    }
+  },
+  "checkAuthorization": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/AuthorizationCheck"
+    },
+    "value": {
+      "action": "example",
+      "resource": {
+        "kind": "platform",
+        "match": "all"
+      }
+    }
+  },
+  "createGroup": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CreateGroup"
+    },
+    "value": {
+      "name": "example",
+      "rules": [
+        {
+          "action": "example",
+          "resource": {
+            "kind": "platform",
+            "match": "all"
+          }
+        }
+      ]
+    }
+  },
+  "publishGroupVersion": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CreateGroupVersion"
+    },
+    "value": {
+      "rules": [
+        {
+          "action": "example",
+          "resource": {
+            "kind": "platform",
+            "match": "all"
+          }
+        }
+      ]
+    }
+  },
+  "createGrant": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/GrantRequest"
+    },
+    "value": {
+      "source": "role",
+      "scope": {
+        "kind": "platform",
+        "match": "all"
+      },
+      "role_id": "Owner"
+    }
+  },
+  "createApiKey": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CreateApiKey"
+    },
+    "value": {
+      "name": "example",
+      "inheritance": {
+        "mode": "all_snapshot"
+      },
+      "conditions": {
+        "expires_at": "2026-10-28T12:00:00Z"
+      }
+    }
+  },
+  "rotateApiKey": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CreateApiKey"
+    },
+    "value": {
+      "name": "example",
+      "inheritance": {
+        "mode": "all_snapshot"
+      },
+      "conditions": {
+        "expires_at": "2026-10-28T12:00:00Z"
+      }
+    }
+  },
+  "updateQuota": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/QuotaSpec"
+    },
+    "value": {
+      "maximum_depth": 4,
+      "maximum_descendants": 20,
+      "maximum_api_keys": 50,
+      "maximum_concurrent_calls": 16,
+      "daily_calls": 10000
+    }
+  },
+  "createClient": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/ClientSpec"
+    },
+    "value": {
+      "name": "example",
+      "plugin_id": "org.xelab.echo",
+      "redirect_uris": [
+        "https://ui.example.org/callback"
+      ],
+      "allowed_origins": [
+        "example"
+      ],
+      "maximum_rules": [
+        {
+          "action": "example",
+          "resource": {
+            "kind": "platform",
+            "match": "all"
+          }
+        }
+      ]
+    }
+  },
+  "updateClient": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/ClientSpec"
+    },
+    "value": {
+      "name": "example",
+      "plugin_id": "org.xelab.echo",
+      "redirect_uris": [
+        "https://ui.example.org/callback"
+      ],
+      "allowed_origins": [
+        "example"
+      ],
+      "maximum_rules": [
+        {
+          "action": "example",
+          "resource": {
+            "kind": "platform",
+            "match": "all"
+          }
+        }
+      ]
+    }
+  },
+  "setDefaultUi": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/DefaultUiSpec"
+    },
+    "value": {
+      "deployment_id": null
+    }
+  },
+  "trustPublisher": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/PublisherSpec"
+    },
+    "value": {
+      "name": "example",
+      "key_id": "example",
+      "public_key_pem": "example"
+    }
+  },
+  "installPlugin": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/InstallRequest"
+    },
+    "value": {
+      "image": "registry.example.org/org/echo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "publisher_id": "00000000-0000-4000-8000-000000000001",
+      "signature": "example"
+    }
+  },
+  "createDeployment": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/DeploymentSpec"
+    },
+    "value": {
+      "installation_id": "00000000-0000-4000-8000-000000000001",
+      "display_name": "example",
+      "limits": {
+        "cpu_millis": 10,
+        "memory_bytes": 16777216,
+        "ephemeral_bytes": 1048576,
+        "pids": 16
+      },
+      "config": {},
+      "volume_ids": []
+    }
+  },
+  "updateDeployment": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/DeploymentPatch"
+    },
+    "value": {
+      "spec": {
+        "installation_id": "00000000-0000-4000-8000-000000000001",
+        "display_name": "example",
+        "limits": {
+          "cpu_millis": 10,
+          "memory_bytes": 16777216,
+          "ephemeral_bytes": 1048576,
+          "pids": 16
+        },
+        "config": {},
+        "volume_ids": []
+      }
+    }
+  },
+  "setDeploymentEnabled": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/EnabledSpec"
+    },
+    "value": {
+      "enabled": false
+    }
+  },
+  "approvePlugin": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/PluginApproval"
+    },
+    "value": {
+      "rules": [],
+      "egress": []
+    }
+  },
+  "upgradeDeployment": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/UpgradeRequest"
+    },
+    "value": {
+      "installation_id": "00000000-0000-4000-8000-000000000001",
+      "strategy": "recreate",
+      "allow_downtime": false
+    }
+  },
+  "rollbackDeployment": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/UpgradeRequest"
+    },
+    "value": {
+      "installation_id": "00000000-0000-4000-8000-000000000001",
+      "strategy": "recreate",
+      "allow_downtime": false
+    }
+  },
+  "resolveDependencies": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/DependencyPlanRequest"
+    },
+    "value": {
+      "deployment_id": "00000000-0000-4000-8000-000000000001",
+      "installation_id": "00000000-0000-4000-8000-000000000001"
+    }
+  },
+  "invokeCapability": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/InvokeRequest"
+    },
+    "value": {
+      "contract": {
+        "name": "example",
+        "version": "1.0.0",
+        "schema_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "input": {}
+    }
+  },
+  "streamCapability": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/InvokeRequest"
+    },
+    "value": {
+      "contract": {
+        "name": "example",
+        "version": "1.0.0",
+        "schema_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "input": {}
+    }
+  },
+  "createVolume": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/VolumeSpec"
+    },
+    "value": {
+      "name": "example",
+      "capacity_bytes": 1048576,
+      "access": "single_writer",
+      "scope": "instance"
+    }
+  },
+  "resizeVolume": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/ResizeVolume"
+    },
+    "value": {
+      "capacity_bytes": 1048576
+    }
+  },
+  "createBackup": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/BackupRequest"
+    },
+    "value": {
+      "volume_ids": [
+        "00000000-0000-4000-8000-000000000001"
+      ],
+      "deployment_id": "00000000-0000-4000-8000-000000000001",
+      "destination": "off_host"
+    }
+  },
+  "restoreBackup": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/RestoreRequest"
+    },
+    "value": {
+      "backup_id": "00000000-0000-4000-8000-000000000001",
+      "target_deployment_id": "00000000-0000-4000-8000-000000000001",
+      "allow_downtime": false
+    }
+  },
+  "createSecret": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/SecretSpec"
+    },
+    "value": {
+      "name": "example",
+      "value_base64": "example"
+    }
+  },
+  "rotateSecret": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/SecretSpec"
+    },
+    "value": {
+      "name": "example",
+      "value_base64": "example"
+    }
+  },
+  "bindSecret": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/SecretBindingSpec"
+    },
+    "value": {
+      "deployment_id": "00000000-0000-4000-8000-000000000001",
+      "secret_id": "00000000-0000-4000-8000-000000000001",
+      "maximum_lease_seconds": 300
+    }
+  },
+  "createWorkflow": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/WorkflowSpec"
+    },
+    "value": {
+      "name": "example",
+      "input_schema": {},
+      "steps": [
+        {
+          "id": "example",
+          "depends_on": [],
+          "input_mapping": {},
+          "timeout_ms": 100,
+          "contract": {
+            "name": "example",
+            "version": "1.0.0",
+            "schema_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        }
+      ]
+    }
+  },
+  "createTask": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/TaskRequest"
+    },
+    "value": {
+      "workflow_id": "00000000-0000-4000-8000-000000000001",
+      "input": {}
+    }
+  },
+  "cancelTask": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CancelOperation"
+    },
+    "value": {}
+  },
+  "resolveUnknownStep": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/ResolveUnknown"
+    },
+    "value": {
+      "resolution": "confirmed_succeeded",
+      "evidence": "example"
+    }
+  },
+  "createSchedule": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/ScheduleSpec"
+    },
+    "value": {
+      "name": "example",
+      "workflow_id": "00000000-0000-4000-8000-000000000001",
+      "cron": "example",
+      "input": {}
+    }
+  },
+  "updateSchedule": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/ScheduleSpec"
+    },
+    "value": {
+      "name": "example",
+      "workflow_id": "00000000-0000-4000-8000-000000000001",
+      "cron": "example",
+      "input": {}
+    }
+  },
+  "publishEvent": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/EventPublish"
+    },
+    "value": {
+      "topic": "example",
+      "version": "1.0.0",
+      "payload": {},
+      "dedupe_key": "example"
+    }
+  },
+  "createSubscription": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/SubscriptionSpec"
+    },
+    "value": {
+      "topic": "example",
+      "name": "example"
+    }
+  },
+  "ackDelivery": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/AckDelivery"
+    },
+    "value": {
+      "delivery_id": "00000000-0000-4000-8000-000000000001",
+      "lease_token": "example",
+      "outcome": "ack"
+    }
+  },
+  "createAliasMapping": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/ModelAliasSpec"
+    },
+    "value": {
+      "name": "example",
+      "contract": {
+        "name": "example",
+        "version": "1.0.0",
+        "schema_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "provider_deployment_id": "00000000-0000-4000-8000-000000000001",
+      "context_tokens": 1,
+      "maximum_output_tokens": 0
+    }
+  },
+  "updateAliasMapping": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/ModelAliasSpec"
+    },
+    "value": {
+      "name": "example",
+      "contract": {
+        "name": "example",
+        "version": "1.0.0",
+        "schema_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "provider_deployment_id": "00000000-0000-4000-8000-000000000001",
+      "context_tokens": 1,
+      "maximum_output_tokens": 0
+    }
+  },
+  "createChatCompletion": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/ChatRequest"
+    },
+    "value": {
+      "model": "example",
+      "messages": [
+        {
+          "role": "system",
+          "content": "example"
+        }
+      ]
+    }
+  },
+  "createEmbedding": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/EmbeddingRequest"
+    },
+    "value": {
+      "model": "example",
+      "input": [
+        "example"
+      ]
+    }
+  },
+  "registerSkill": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CreateSkill"
+    },
+    "value": {
+      "definition": {
+        "name": "example",
+        "version": "1.0.0",
+        "description": "example",
+        "input_schema": {},
+        "output_schema": {},
+        "stream_item_schema": null,
+        "target": {
+          "kind": "capability",
+          "plugin_id": "org.xelab.echo",
+          "contract": {
+            "name": "example",
+            "version": "1.0.0",
+            "schema_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        },
+        "mapping": "identity",
+        "maximum_timeout_ms": 120000,
+        "input_blobs": false,
+        "tags": []
+      },
+      "installation_id": "00000000-0000-4000-8000-000000000001"
+    }
+  },
+  "setSkillEnabled": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/EnabledSpec"
+    },
+    "value": {
+      "enabled": false
+    }
+  },
+  "invokeSkill": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/SkillInvokeRequest"
+    },
+    "value": {
+      "input": {}
+    }
+  },
+  "streamSkill": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/SkillInvokeRequest"
+    },
+    "value": {
+      "input": {}
+    }
+  },
+  "createSkillBatch": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/SkillBatchRequest"
+    },
+    "value": {
+      "items": [
+        {
+          "id": "example",
+          "input": {}
+        }
+      ]
+    }
+  },
+  "cancelSkillBatch": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CancelOperation"
+    },
+    "value": {}
+  },
+  "resumeSkillBatch": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/SkillBatchResume"
+    },
+    "value": {}
+  },
+  "setMyUiPreferences": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/UiPreferencesSpec"
+    },
+    "value": {
+      "theme": {
+        "mode": "system",
+        "reduce_motion": false,
+        "reduce_transparency": false
+      },
+      "dock": {
+        "position": "bottom",
+        "auto_hide": false,
+        "pinned": []
+      },
+      "widgets": [],
+      "restore_windows": true
+    }
+  },
+  "resolveSkillBatchItem": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/SkillBatchResolution"
+    },
+    "value": {
+      "resolution": "confirmed_succeeded",
+      "evidence": "example",
+      "output": {}
+    }
+  },
+  "createMicroPlugin": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CreateMicroPlugin"
+    },
+    "value": {
+      "name": "json-echo",
+      "display_name": "example"
+    }
+  },
+  "updateMicroPlugin": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/MicroPluginProfile"
+    },
+    "value": {
+      "display_name": "example"
+    }
+  },
+  "publishMicroVersion": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/PublishMicroVersion"
+    },
+    "value": {
+      "manifest": {
+        "format_version": "1",
+        "version": "1.0.0",
+        "description": "example",
+        "engine": "javascript",
+        "protocol": "json-stdio-v1",
+        "entrypoint": "main.js",
+        "input_schema": {},
+        "output_schema": {},
+        "limits": {
+          "timeout_ms": 2000,
+          "heap_bytes": 16777216,
+          "stack_bytes": 1048576,
+          "maximum_input_bytes": 1048576,
+          "maximum_output_bytes": 1048576,
+          "maximum_stderr_bytes": 65536,
+          "max_active_requests": 1
+        },
+        "side_effect": "none"
+      },
+      "source_blob_id": "00000000-0000-4000-8000-000000000001",
+      "source_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "runtime_installation_id": "00000000-0000-4000-8000-000000000001"
+    }
+  },
+  "createMicroDeployment": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CreateMicroDeployment"
+    },
+    "value": {
+      "micro_version_id": "00000000-0000-4000-8000-000000000001",
+      "runtime_deployment_id": "00000000-0000-4000-8000-000000000001",
+      "limits": {
+        "timeout_ms": 2000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 1
+      }
+    }
+  },
+  "setMicroDeploymentEnabled": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/EnabledSpec"
+    },
+    "value": {
+      "enabled": false
+    }
+  },
+  "createMicroHttpBinding": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/MicroHttpBindingSpec"
+    },
+    "value": {
+      "endpoint_alias": "brave",
+      "secret_id": "00000000-0000-4000-8000-000000000001"
+    }
+  },
+  "updateMicroHttpBinding": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/MicroHttpBindingSpec"
+    },
+    "value": {
+      "endpoint_alias": "brave",
+      "secret_id": "00000000-0000-4000-8000-000000000001"
+    }
+  }
+}

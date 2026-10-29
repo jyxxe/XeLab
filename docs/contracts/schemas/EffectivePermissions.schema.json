@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EffectivePermissions",
+  "type": "object",
+  "description": "某个账户当前有效权限；不返回其他账户私有信息",
+  "additionalProperties": false,
+  "properties": {
+    "account_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "authz_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "当前版本"
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/PermissionRule"
+      },
+      "minItems": 0,
+      "maxItems": 4096,
+      "description": "展开、求交后的规则"
+    },
+    "blocked_by": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "失效祖先/源凭证标识",
+        "format": "uuid",
+        "example": "00000000-0000-4000-8000-000000000001"
+      },
+      "minItems": 0,
+      "maxItems": 256,
+      "description": "造成失效的授权链节点"
+    }
+  },
+  "required": [
+    "account_id",
+    "authz_revision",
+    "rules",
+    "blocked_by"
+  ]
+}

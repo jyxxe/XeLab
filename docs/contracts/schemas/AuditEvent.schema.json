@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AuditEvent",
+  "type": "object",
+  "description": "追加式审计，禁止更新和普通删除",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "乐观锁版本，每次持久化变更加一"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "创建时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "updated_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "最近变更时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "subject_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "资源唯一标识",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "资源唯一标识"
+    },
+    "actor_instance_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "资源唯一标识",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "资源唯一标识"
+    },
+    "credential_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "资源唯一标识",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "资源唯一标识"
+    },
+    "delegation_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "资源唯一标识",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "资源唯一标识"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "action": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "description": "动作"
+    },
+    "resource": {
+      "$ref": "../openapi.json#/components/schemas/ResourceSelector"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "allowed",
+        "denied",
+        "succeeded",
+        "failed"
+      ],
+      "description": "授权/执行结果"
+    },
+    "policy_revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "策略版本"
+    },
+    "reason_code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "稳定原因码"
+    }
+  },
+  "required": [
+    "id",
+    "revision",
+    "created_at",
+    "updated_at",
+    "subject_id",
+    "actor_instance_id",
+    "credential_id",
+    "delegation_id",
+    "request_id",
+    "action",
+    "resource",
+    "outcome",
+    "policy_revision",
+    "reason_code"
+  ]
+}

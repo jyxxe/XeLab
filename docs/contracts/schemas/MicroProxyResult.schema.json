@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MicroProxyResult",
+  "type": "object",
+  "description": "受控桥返回，不暴露响应头/鉴权值；非2xx不返回原始错误body",
+  "properties": {
+    "operation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "not_sent",
+        "unknown"
+      ]
+    },
+    "status_code": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599,
+          "description": "已收到明确HTTP响应时非空"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "body_json": {
+      "anyOf": [
+        {
+          "$ref": "../openapi.json#/components/schemas/JsonValue"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "error_code": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "稳定代理/上游错误码"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "retry_after_ms": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60000,
+          "description": "受控Retry-After提示，非重试授权"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4000,
+      "description": "本次代理耗时"
+    }
+  },
+  "required": [
+    "operation_id",
+    "outcome",
+    "status_code",
+    "body_json",
+    "error_code",
+    "retry_after_ms",
+    "duration_ms"
+  ],
+  "additionalProperties": false
+}

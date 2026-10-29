@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionIssued",
+  "type": "object",
+  "description": "登录创建会话；浏览器同时设置内核来源的安全 Cookie",
+  "additionalProperties": false,
+  "properties": {
+    "session": {
+      "$ref": "../openapi.json#/components/schemas/Session"
+    },
+    "access_token": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "不透明 Bearer 会话凭证；只返回一次"
+    },
+    "token_type": {
+      "type": "string",
+      "enum": [
+        "Bearer"
+      ],
+      "description": "认证类型"
+    },
+    "expires_in": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 86400,
+      "description": "秒；默认 3600"
+    }
+  },
+  "required": [
+    "session",
+    "access_token",
+    "token_type",
+    "expires_in"
+  ]
+}

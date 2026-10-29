@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PluginUiSpec",
+  "type": "object",
+  "description": "可选UI贡献；独立于webui字段，允许仅窗口、仅组件、两者或均不提供",
+  "additionalProperties": false,
+  "properties": {
+    "protocol_version": {
+      "type": "string",
+      "enum": [
+        "1"
+      ],
+      "description": "宿主桥主版本"
+    },
+    "base_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "必须精确为/ui/{plugin_id}/并由已批准static/webui GET/HEAD路由承载",
+      "pattern": "^/ui/[a-z][a-z0-9.-]+/$",
+      "example": "/ui/org.xelab.knowledge-base/"
+    },
+    "contributions": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/UiContributionSpec"
+      },
+      "minItems": 1,
+      "maxItems": 16,
+      "description": "同插件内id唯一；最多16个窗口/组件合计"
+    }
+  },
+  "required": [
+    "protocol_version",
+    "base_path",
+    "contributions"
+  ]
+}

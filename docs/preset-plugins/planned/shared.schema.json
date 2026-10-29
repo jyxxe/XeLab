@@ -1,0 +1,350 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Planning shared data types; not a MicroManifest input schema",
+  "$defs": {
+    "JsonValue": {
+      "type": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ],
+      "description": "I-JSON有限值；整体字节/深度预算另行校验"
+    },
+    "JsonPointer": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^(?:/(?:[^~]|~[01])*)*$",
+      "description": "RFC6901，空串定位根；不解释URI fragment/代码"
+    },
+    "Condition": {
+      "type": "object",
+      "description": "声明AST，运行时深度<=16/节点<=256，缺失比较false",
+      "properties": {
+        "op": {
+          "type": "string",
+          "enum": [
+            "and",
+            "or",
+            "not",
+            "eq",
+            "ne",
+            "lt",
+            "lte",
+            "gt",
+            "gte",
+            "exists",
+            "is_null",
+            "in"
+          ],
+          "description": ""
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "minItems": 1,
+          "maxItems": 32
+        },
+        "path": {
+          "$ref": "#/$defs/JsonPointer"
+        },
+        "value": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "op"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "op": {
+              "enum": [
+                "and",
+                "or"
+              ]
+            }
+          },
+          "required": [
+            "args"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "path"
+                ]
+              },
+              {
+                "required": [
+                  "value"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "properties": {
+            "op": {
+              "const": "not"
+            },
+            "args": {
+              "maxItems": 1
+            }
+          },
+          "required": [
+            "args"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "path"
+                ]
+              },
+              {
+                "required": [
+                  "value"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "properties": {
+            "op": {
+              "enum": [
+                "exists",
+                "is_null"
+              ]
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "args"
+                ]
+              },
+              {
+                "required": [
+                  "value"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "properties": {
+            "op": {
+              "enum": [
+                "eq",
+                "ne",
+                "lt",
+                "lte",
+                "gt",
+                "gte"
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "value"
+          ],
+          "not": {
+            "required": [
+              "args"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "op": {
+              "const": "in"
+            },
+            "value": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "maxItems": 256
+            }
+          },
+          "required": [
+            "path",
+            "value"
+          ],
+          "not": {
+            "required": [
+              "args"
+            ]
+          }
+        }
+      ]
+    },
+    "XmlElement": {
+      "type": "object",
+      "description": "保留有序属性/子节点；禁DTD/外部实体，整体元素<=10000",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "XML local name，无冒号",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "namespace_uri": {
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prefix": {
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "namespaces": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "description": "",
+            "properties": {
+              "prefix": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "description": "",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "uri": {
+                "type": "string",
+                "description": "",
+                "minLength": 0,
+                "maxLength": 2048
+              }
+            },
+            "required": [
+              "prefix",
+              "uri"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 0,
+          "maxItems": 128
+        },
+        "attributes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "description": "",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "namespace_uri": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "description": "",
+                    "minLength": 1,
+                    "maxLength": 2048
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "prefix": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "description": "",
+                    "minLength": 1,
+                    "maxLength": 128
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "value": {
+                "type": "string",
+                "description": "",
+                "minLength": 0,
+                "maxLength": 1048576
+              }
+            },
+            "required": [
+              "name",
+              "namespace_uri",
+              "prefix",
+              "value"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 0,
+          "maxItems": 128
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "",
+                "minLength": 0,
+                "maxLength": 1048576
+              },
+              {
+                "$ref": "#/$defs/XmlElement"
+              }
+            ]
+          },
+          "minItems": 0,
+          "maxItems": 10000
+        }
+      },
+      "required": [
+        "name",
+        "namespace_uri",
+        "prefix",
+        "namespaces",
+        "attributes",
+        "children"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

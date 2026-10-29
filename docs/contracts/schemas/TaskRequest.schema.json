@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskRequest",
+  "type": "object",
+  "description": "任务执行授权会冻结提交时上限",
+  "additionalProperties": false,
+  "properties": {
+    "workflow_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "input": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue"
+    },
+    "run_as": {
+      "type": "string",
+      "enum": [
+        "user",
+        "service"
+      ],
+      "description": "默认 user；service 需要独立批准",
+      "default": "user"
+    },
+    "service_account_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "run_as=service 时必填",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 1000,
+      "maximum": 604800000,
+      "description": "任务整体期限，最长 7 天",
+      "default": 86400000
+    }
+  },
+  "required": [
+    "workflow_id",
+    "input"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "run_as": {
+            "const": "service"
+          }
+        },
+        "required": [
+          "run_as"
+        ]
+      },
+      "then": {
+        "required": [
+          "service_account_id"
+        ]
+      }
+    }
+  ]
+}

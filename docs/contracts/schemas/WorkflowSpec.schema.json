@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkflowSpec",
+  "type": "object",
+  "description": "不可变 DAG 版本；最多 64 步",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "名称"
+    },
+    "input_schema": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue"
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/WorkflowStep"
+      },
+      "minItems": 1,
+      "maxItems": 64,
+      "description": "节点"
+    }
+  },
+  "required": [
+    "name",
+    "input_schema",
+    "steps"
+  ]
+}

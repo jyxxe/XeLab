@@ -1,0 +1,24 @@
+{
+  "status": "planned",
+  "version": "0.1.0",
+  "kind": "ordinary",
+  "capability_id": "feed.read",
+  "side_effect": "none",
+  "maximum_input_bytes": 4194304,
+  "maximum_output_bytes": 16777216,
+  "maximum_json_depth": 64,
+  "streaming": false,
+  "batch": "core_async_skill_batch",
+  "unknown_fields": "reject",
+  "authorization": "future_skill_invoke_and_capability_invoke_and_current_owner_policy",
+  "cancellation": "cooperative_hard_deadline_no_partial_success",
+  "retries": "bounded_same_definition_same_deadline",
+  "feature_gates": [
+    "feed-parser",
+    "http-mode-profile"
+  ],
+  "notes": [
+    "No DTD/XXE/external includes or linked article fetch.",
+    "HTTP dependency vs own egress is explicit deployment mode, not unauthorized fallback."
+  ]
+}

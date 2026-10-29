@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "InheritanceSpec",
+  "type": "object",
+  "description": "用户选择的继承方式；快照上限由内核展开并保存",
+  "additionalProperties": false,
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": [
+        "selected",
+        "all_snapshot",
+        "follow_parent"
+      ],
+      "description": "selected：固定选定上限；all_snapshot：创建时全部；follow_parent：持续全量"
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/PermissionRule"
+      },
+      "minItems": 0,
+      "maxItems": 256,
+      "description": "selected 直接选择的规则"
+    },
+    "group_versions": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/GroupVersionRef"
+      },
+      "minItems": 0,
+      "maxItems": 256,
+      "description": "selected 选择的组版本"
+    }
+  },
+  "required": [
+    "mode"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "selected"
+          }
+        }
+      },
+      "then": {
+        "anyOf": [
+          {
+            "required": [
+              "rules"
+            ],
+            "properties": {
+              "rules": {
+                "minItems": 1
+              }
+            }
+          },
+          {
+            "required": [
+              "group_versions"
+            ],
+            "properties": {
+              "group_versions": {
+                "minItems": 1
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "enum": [
+              "all_snapshot",
+              "follow_parent"
+            ]
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "rules"
+              ]
+            },
+            {
+              "required": [
+                "group_versions"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

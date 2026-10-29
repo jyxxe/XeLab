@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ConsentDecision",
+  "type": "object",
+  "description": "可信授权页提交；只接受绑定当前会话的 pending 请求",
+  "additionalProperties": false,
+  "properties": {
+    "authorization_request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "approved": {
+      "type": "boolean",
+      "description": "是否批准预览中的固定权限范围"
+    }
+  },
+  "required": [
+    "authorization_request_id",
+    "approved"
+  ]
+}

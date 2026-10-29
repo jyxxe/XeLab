@@ -1,0 +1,9 @@
+{
+  "management_api_major": 1,
+  "default_page": "desktop",
+  "default_theme": "system",
+  "max_open_windows": 16,
+  "max_active_widgets": 8,
+  "widget_min_refresh_seconds": 30,
+  "ui_protocol_major": 1
+}

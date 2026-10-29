@@ -1,0 +1,386 @@
+{
+  "version": "2.6.0",
+  "status": "planned",
+  "contracts": [
+    {
+      "capability_id": "ai.chat",
+      "operation": "chat",
+      "version": "0.1.0",
+      "directory": "ai-chat-openai-compatible",
+      "kind": "ordinary",
+      "status": "planned",
+      "folder": "preset-plugins/ai-chat-openai-compatible/contracts/chat",
+      "schema_digest": "sha256:e8d7b997ead0e149613ecc7f9fdccb6d954a1ed5af1ab2ccdc45861384367a3d"
+    },
+    {
+      "capability_id": "document.parse",
+      "operation": "parse",
+      "version": "0.1.0",
+      "directory": "document-parser",
+      "kind": "ordinary",
+      "status": "planned",
+      "folder": "preset-plugins/document-parser/contracts/parse",
+      "schema_digest": "sha256:a29893085e6810eb2595d5dd370732f26328a1222ad0285850d549406d4408fd"
+    },
+    {
+      "capability_id": "http.request",
+      "operation": "request",
+      "version": "0.1.0",
+      "directory": "http-client",
+      "kind": "ordinary",
+      "status": "planned",
+      "folder": "preset-plugins/http-client/contracts/request",
+      "schema_digest": "sha256:cb5e34d3e3c75e9d1765857260cbd2f579e869aa0fa4a0eff76277b175940e8d"
+    },
+    {
+      "capability_id": "notification.send",
+      "operation": "send",
+      "version": "0.1.0",
+      "directory": "notification",
+      "kind": "ordinary",
+      "status": "planned",
+      "folder": "preset-plugins/notification/contracts/send",
+      "schema_digest": "sha256:ba25d03c00c5e419a7385290de68245adbcd3727808cf1ed8fd3d38c83d0302d"
+    },
+    {
+      "capability_id": "database.query",
+      "operation": "query",
+      "version": "0.1.0",
+      "directory": "database-postgres",
+      "kind": "ordinary",
+      "status": "planned",
+      "folder": "preset-plugins/database-postgres/contracts/query",
+      "schema_digest": "sha256:c5053434f6d048c30c152c6a4dc4052de7bd8191c67add330e2fffac8b138a4a"
+    },
+    {
+      "capability_id": "database.execute",
+      "operation": "execute",
+      "version": "0.1.0",
+      "directory": "database-postgres",
+      "kind": "ordinary",
+      "status": "planned",
+      "folder": "preset-plugins/database-postgres/contracts/execute",
+      "schema_digest": "sha256:fe5de9d9098ab9e4dc37f6713952583fe49999c6cfe00f146e28c086ea29ff70"
+    },
+    {
+      "capability_id": "trigger.webhook",
+      "operation": "webhook",
+      "version": "0.1.0",
+      "directory": "automation-webhook-trigger",
+      "kind": "ordinary",
+      "status": "planned",
+      "folder": "preset-plugins/automation-webhook-trigger/contracts/webhook",
+      "schema_digest": "sha256:a336422fe80ed75858837f177e3e30289a8a77013e7ea11f02f91ce1ef7a6f7b"
+    },
+    {
+      "capability_id": "email.send",
+      "operation": "send",
+      "version": "0.1.0",
+      "directory": "email-connector",
+      "kind": "ordinary",
+      "status": "planned",
+      "folder": "preset-plugins/email-connector/contracts/send",
+      "schema_digest": "sha256:1a581100c54e627664bd26f2e4bb18a182d3fbd83dc9fcda9f7a2cec80d148b0"
+    },
+    {
+      "capability_id": "archive.extract",
+      "operation": "extract",
+      "version": "0.1.0",
+      "directory": "archive-processor",
+      "kind": "ordinary",
+      "status": "planned",
+      "folder": "preset-plugins/archive-processor/contracts/extract",
+      "schema_digest": "sha256:07aa7debcec55535b41bdec7efaa118eef90ee07446381fdb29d594ca018e955"
+    },
+    {
+      "capability_id": "archive.create",
+      "operation": "create",
+      "version": "0.1.0",
+      "directory": "archive-processor",
+      "kind": "ordinary",
+      "status": "planned",
+      "folder": "preset-plugins/archive-processor/contracts/create",
+      "schema_digest": "sha256:6930dcfb667a0985a08ab3b9e0ffad3b92e9994ab41f5f795bd541e003a92607"
+    },
+    {
+      "capability_id": "ai.rerank",
+      "operation": "rerank",
+      "version": "0.1.0",
+      "directory": "ai-reranker",
+      "kind": "ordinary",
+      "status": "planned",
+      "folder": "preset-plugins/ai-reranker/contracts/rerank",
+      "schema_digest": "sha256:6749c055dee4a7aab8cb56084e70790e9b7880ef57f45ba341831de6a6cf5eca"
+    },
+    {
+      "capability_id": "browser.navigate",
+      "operation": "navigate",
+      "version": "0.1.0",
+      "directory": "browser-automation",
+      "kind": "ordinary",
+      "status": "planned",
+      "folder": "preset-plugins/browser-automation/contracts/navigate",
+      "schema_digest": "sha256:b0c743bd09daf0a5ba04ebf3767f0ca5e6dfd6e7fa4f6bb3f14d6d3b5430eb2f"
+    },
+    {
+      "capability_id": "browser.extract",
+      "operation": "extract",
+      "version": "0.1.0",
+      "directory": "browser-automation",
+      "kind": "ordinary",
+      "status": "planned",
+      "folder": "preset-plugins/browser-automation/contracts/extract",
+      "schema_digest": "sha256:f097033dc23439a8e220a988b0cd7e14ab875b02b7c11318bb87a09517b74454"
+    },
+    {
+      "capability_id": "git.repository",
+      "operation": "repository",
+      "version": "0.1.0",
+      "directory": "git-connector",
+      "kind": "ordinary",
+      "status": "planned",
+      "folder": "preset-plugins/git-connector/contracts/repository",
+      "schema_digest": "sha256:289021e7cf513918420d1985212d5a53a47100261d9342a4ef847ea4c19dbf3a"
+    },
+    {
+      "capability_id": "feed.read",
+      "operation": "read",
+      "version": "0.1.0",
+      "directory": "rss-reader",
+      "kind": "ordinary",
+      "status": "planned",
+      "folder": "preset-plugins/rss-reader/contracts/read",
+      "schema_digest": "sha256:eed1ceb7308ee4eedaeaa95505517d3613c4f7d8b2eb1b69076a822fb06450d4"
+    },
+    {
+      "capability_id": "json.validate",
+      "operation": "validate",
+      "version": "0.1.0",
+      "directory": "micro-json-validator",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-json-validator/contracts/validate",
+      "schema_digest": "sha256:82cd6bcd7abca076e5d615a962250219d7f133cb03af2cb1470d812ae30866ba"
+    },
+    {
+      "capability_id": "json.project",
+      "operation": "project",
+      "version": "0.1.0",
+      "directory": "micro-json-project",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-json-project/contracts/project",
+      "schema_digest": "sha256:3b2e4264ac459a1a09f6add1a3af1bf73a92ca1a23c829f4005ddbac8f71dc2d"
+    },
+    {
+      "capability_id": "json.merge",
+      "operation": "merge",
+      "version": "0.1.0",
+      "directory": "micro-json-merge",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-json-merge/contracts/merge",
+      "schema_digest": "sha256:3f0b2cd39a66f40eff6df1257c20dbaf8f14e0845866aaa6ff24c708c98b0950"
+    },
+    {
+      "capability_id": "convert.csv-json",
+      "operation": "csv-json",
+      "version": "0.1.0",
+      "directory": "micro-csv-json",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-csv-json/contracts/csv-json",
+      "schema_digest": "sha256:ccc307556bd67f5499df874fd1137f09d7ed076ef66181ee9338d79d32b7c9b0"
+    },
+    {
+      "capability_id": "convert.json-csv",
+      "operation": "json-csv",
+      "version": "0.1.0",
+      "directory": "micro-csv-json",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-csv-json/contracts/json-csv",
+      "schema_digest": "sha256:14326ff1a2bb8bd96cb69a29988913d4a19b5dadd5212916a76ddc0aeaf746ca"
+    },
+    {
+      "capability_id": "convert.markdown-html",
+      "operation": "markdown-html",
+      "version": "0.1.0",
+      "directory": "micro-markdown-html",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-markdown-html/contracts/markdown-html",
+      "schema_digest": "sha256:a8e5ea48b5ec32d45c8e946a13c711df1adf5bcc31304e64416c499e7d37f572"
+    },
+    {
+      "capability_id": "text.normalize",
+      "operation": "normalize",
+      "version": "0.1.0",
+      "directory": "micro-text-normalizer",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-text-normalizer/contracts/normalize",
+      "schema_digest": "sha256:a056a53837938e2105e0cd5240cdc120360a4cf9eb1d4342d0044e3d41385bb1"
+    },
+    {
+      "capability_id": "text.regex-extract",
+      "operation": "regex-extract",
+      "version": "0.1.0",
+      "directory": "micro-regex-extract",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-regex-extract/contracts/regex-extract",
+      "schema_digest": "sha256:2584c11abd3e2e21814914c79535e9481acd5493c5c28ee4f083dffc32de5953"
+    },
+    {
+      "capability_id": "datetime.convert",
+      "operation": "convert",
+      "version": "0.1.0",
+      "directory": "micro-datetime-convert",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-datetime-convert/contracts/convert",
+      "schema_digest": "sha256:f3a09e4f4fee7de15fe6142cc14dab93b7d1061b1d9e34f6d92cc71ff24623ab"
+    },
+    {
+      "capability_id": "flow.condition",
+      "operation": "condition",
+      "version": "0.1.0",
+      "directory": "micro-flow-condition",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-flow-condition/contracts/condition",
+      "schema_digest": "sha256:5010ea60d8abbfee8558d65c178c8737a80327289600ca9dbdebc1a047426b00"
+    },
+    {
+      "capability_id": "flow.map",
+      "operation": "map",
+      "version": "0.1.0",
+      "directory": "micro-flow-map",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-flow-map/contracts/map",
+      "schema_digest": "sha256:12ad7eb4cf8e07c68c7a3504aa62863632cf9946ab469277e019e3c04dce4ce0"
+    },
+    {
+      "capability_id": "flow.filter",
+      "operation": "filter",
+      "version": "0.1.0",
+      "directory": "micro-flow-filter",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-flow-filter/contracts/filter",
+      "schema_digest": "sha256:8ef456383c9342c4d2b99f44697dadbba40bc4012eb5ddd58fa964145728db85"
+    },
+    {
+      "capability_id": "flow.template",
+      "operation": "template",
+      "version": "0.1.0",
+      "directory": "micro-flow-template",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-flow-template/contracts/template",
+      "schema_digest": "sha256:9cdaf1a4847edb17cdcbfe425cc9116b6ce294071f354f1559df874b630ea190"
+    },
+    {
+      "capability_id": "data.redact",
+      "operation": "redact",
+      "version": "0.1.0",
+      "directory": "micro-data-redactor",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-data-redactor/contracts/redact",
+      "schema_digest": "sha256:c794a9a19f8d75a24e3d986f955718fe2705b952f9beaa8c507192c912654580"
+    },
+    {
+      "capability_id": "url.parse",
+      "operation": "parse",
+      "version": "0.1.0",
+      "directory": "micro-url-parser",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-url-parser/contracts/parse",
+      "schema_digest": "sha256:0d88d41233e5866a13a384b07638bc598260b586292a53691c08948f411e42e0"
+    },
+    {
+      "capability_id": "file.metadata",
+      "operation": "metadata",
+      "version": "0.1.0",
+      "directory": "micro-file-metadata",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-file-metadata/contracts/metadata",
+      "schema_digest": "sha256:2699c813743f72b1487fab365108b6eea2623d49ca70058fd2bb73aa9183938e"
+    },
+    {
+      "capability_id": "crypto.hash",
+      "operation": "hash",
+      "version": "0.1.0",
+      "directory": "micro-hash",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-hash/contracts/hash",
+      "schema_digest": "sha256:2d3150e78e5a48a599985ae232d65b09e2ed0d95689c5e768980ce7c844e523e"
+    },
+    {
+      "capability_id": "text.chunk",
+      "operation": "chunk",
+      "version": "0.1.0",
+      "directory": "micro-text-chunk",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-text-chunk/contracts/chunk",
+      "schema_digest": "sha256:4c8f16d9a7717000af007cbac0708722b37245ee2df6ae630ff683b7f0c18a1a"
+    },
+    {
+      "capability_id": "text.encoding-convert",
+      "operation": "encoding-convert",
+      "version": "0.1.0",
+      "directory": "micro-text-encoding",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-text-encoding/contracts/encoding-convert",
+      "schema_digest": "sha256:3e9686463a7589267170cfcc3cb5a4ea558a3a55d3ec76b1d7e4b65c31941f7f"
+    },
+    {
+      "capability_id": "convert.xml-json",
+      "operation": "xml-json",
+      "version": "0.1.0",
+      "directory": "micro-xml-json",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-xml-json/contracts/xml-json",
+      "schema_digest": "sha256:4501beeb863092195b39f1c7e7e673a33359cdbd2cb1602632457d2dad6ef4b5"
+    },
+    {
+      "capability_id": "data.sort",
+      "operation": "sort",
+      "version": "0.1.0",
+      "directory": "micro-data-sort-group",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-data-sort-group/contracts/sort",
+      "schema_digest": "sha256:02aab5568d3609323cc1f8f72b889ced9bd3676cc6d22f63dd8bca71d75a5b4d"
+    },
+    {
+      "capability_id": "data.group",
+      "operation": "group",
+      "version": "0.1.0",
+      "directory": "micro-data-sort-group",
+      "kind": "micro",
+      "status": "planned",
+      "folder": "preset-plugins/micro-data-sort-group/contracts/group",
+      "schema_digest": "sha256:117c632bc5ca54187c8921b131d2eaae61ec6167128679f5c08cfddefe70b1d3"
+    }
+  ],
+  "reference_documents": [
+    {
+      "file": "preset-plugins/planned/shared.schema.json",
+      "sha256": "sha256:5843beee6da99d423cbc2db5e7fcbb6a8970e4e98163e20e619a92bb7e0b60fe"
+    },
+    {
+      "file": "contracts/openapi.json",
+      "sha256": "sha256:354ec13b88dd70be166cfa9a75cdc6c8c0203d5f42e5fabec0ec7a1ef019a649"
+    }
+  ]
+}

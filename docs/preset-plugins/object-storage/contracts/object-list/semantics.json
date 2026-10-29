@@ -1,0 +1,16 @@
+{
+  "side_effect": "none",
+  "errors": [
+    "INVALID_ARGUMENT",
+    "PERMISSION_DENIED",
+    "RESOURCE_NOT_FOUND",
+    "STATE_CONFLICT",
+    "RESOURCE_EXHAUSTED",
+    "DEADLINE_EXCEEDED",
+    "INTERNAL"
+  ],
+  "cancellation": "cooperative",
+  "idempotency": "not_required",
+  "query_result": "call_record",
+  "data_isolation": "trusted_subject_namespace"
+}

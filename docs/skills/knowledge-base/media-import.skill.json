@@ -1,0 +1,124 @@
+{
+  "name": "org.xelab.knowledge-base.media-import",
+  "version": "2.0.0",
+  "description": "持久导入受控媒体",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "导入",
+    "properties": {
+      "table_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "UUID",
+        "format": "uuid"
+      },
+      "kind": {
+        "type": "string",
+        "enum": [
+          "image",
+          "audio",
+          "video"
+        ],
+        "description": "期望模态，必须与实际媒体一致"
+      },
+      "blob_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "获准源 Blob",
+        "format": "uuid",
+        "x-xelab-resource-kind": "blob"
+      }
+    },
+    "required": [
+      "table_id",
+      "kind",
+      "blob_id"
+    ],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "已导入插件持久卷的媒体，独立于源 Blob TTL",
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "UUID",
+        "format": "uuid"
+      },
+      "table_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "UUID",
+        "format": "uuid"
+      },
+      "kind": {
+        "type": "string",
+        "enum": [
+          "image",
+          "audio",
+          "video"
+        ],
+        "description": "模态"
+      },
+      "content_type": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "description": "嗅探并验证的 MIME"
+      },
+      "size_bytes": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 33554432,
+        "description": "原始内容长度"
+      },
+      "digest": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 71,
+        "description": "SHA-256",
+        "pattern": "^sha256:[a-f0-9]{64}$"
+      },
+      "reference_count": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991,
+        "description": "引用行数"
+      }
+    },
+    "required": [
+      "id",
+      "table_id",
+      "kind",
+      "content_type",
+      "size_bytes",
+      "digest",
+      "reference_count"
+    ],
+    "additionalProperties": false
+  },
+  "stream_item_schema": null,
+  "target": {
+    "kind": "capability",
+    "plugin_id": "org.xelab.knowledge-base",
+    "contract": {
+      "name": "data.kb.media.import",
+      "version": "1.0.0",
+      "schema_digest": "sha256:ddb4c6e00264963b942044d9eb1b1cdb62ede45e26544fc9e3e6ad7d77119184"
+    }
+  },
+  "mapping": "identity",
+  "maximum_timeout_ms": 300000,
+  "input_blobs": true,
+  "tags": [
+    "preset",
+    "knowledge-base"
+  ]
+}

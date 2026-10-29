@@ -1,0 +1,73 @@
+{
+  "name": "org.xelab.object-storage.object-delete",
+  "version": "1.0.0",
+  "description": "CAS逻辑删除；永久head仍推进",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "CAS逻辑删除；永久head仍推进",
+    "properties": {
+      "key": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024,
+        "description": "NFC逻辑key，UTF8<=1024字节；拒绝首尾斜线/空段/dot段/控制符/反斜线，不作URL decode",
+        "pattern": "^[^\u0000-\u001f\\\\]+$",
+        "example": "reports/example.txt"
+      },
+      "expected_revision": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991,
+        "description": "按owner/key永久head单调修订，不因删除重建归零"
+      }
+    },
+    "required": [
+      "key",
+      "expected_revision"
+    ],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "删除结果，保留用于防ABA的head水位",
+    "properties": {
+      "object_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "UUID",
+        "format": "uuid"
+      },
+      "deleted_revision": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991,
+        "description": "按owner/key永久head单调修订，不因删除重建归零"
+      }
+    },
+    "required": [
+      "object_id",
+      "deleted_revision"
+    ],
+    "additionalProperties": false
+  },
+  "stream_item_schema": null,
+  "target": {
+    "kind": "capability",
+    "plugin_id": "org.xelab.object-storage",
+    "contract": {
+      "name": "data.object.delete",
+      "version": "1.0.0",
+      "schema_digest": "sha256:9d7c1ffe820bf90d5221b961a56c3691cb16e4bb946d189a346d5e3eaf3f5466"
+    }
+  },
+  "mapping": "identity",
+  "maximum_timeout_ms": 300000,
+  "input_blobs": false,
+  "tags": [
+    "object-storage",
+    "object-delete"
+  ]
+}

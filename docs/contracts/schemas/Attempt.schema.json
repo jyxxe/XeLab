@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Attempt",
+  "type": "object",
+  "description": "带租约和 fencing 的单次执行",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "乐观锁版本，每次持久化变更加一"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "创建时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "updated_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "最近变更时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "step_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5,
+      "description": "尝试序号"
+    },
+    "execution_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "传给插件的稳定执行标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "同一步骤所有尝试保持稳定"
+    },
+    "fence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "每次接管递增；旧执行不能提交"
+    },
+    "lease_expires_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "租约到期时间",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "leased",
+        "running",
+        "succeeded",
+        "failed",
+        "expired",
+        "unknown"
+      ],
+      "description": "状态"
+    },
+    "checkpoint_blob_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "资源唯一标识",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "资源唯一标识"
+    }
+  },
+  "required": [
+    "id",
+    "revision",
+    "created_at",
+    "updated_at",
+    "step_id",
+    "number",
+    "execution_id",
+    "idempotency_key",
+    "fence",
+    "lease_expires_at",
+    "state",
+    "checkpoint_blob_id"
+  ]
+}

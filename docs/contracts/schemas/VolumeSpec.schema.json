@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VolumeSpec",
+  "type": "object",
+  "description": "平台管理卷；禁止指定任意宿主路径",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "显示名称"
+    },
+    "capacity_bytes": {
+      "type": "integer",
+      "minimum": 1048576,
+      "maximum": 9007199254740991,
+      "description": "硬配额字节数"
+    },
+    "access": {
+      "type": "string",
+      "enum": [
+        "single_writer",
+        "shared_readonly"
+      ],
+      "description": "并发写入能力"
+    },
+    "scope": {
+      "type": "string",
+      "enum": [
+        "instance",
+        "deployment"
+      ],
+      "description": "绑定范围"
+    }
+  },
+  "required": [
+    "name",
+    "capacity_bytes",
+    "access",
+    "scope"
+  ]
+}

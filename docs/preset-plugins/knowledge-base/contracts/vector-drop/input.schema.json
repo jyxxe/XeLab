@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "字段先关闭，才可物理清理",
+  "properties": {
+    "table_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "UUID",
+      "format": "uuid"
+    },
+    "expected_schema_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "CAS，创建/删除等另见语义"
+    },
+    "field_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "字段 ID，不随列重命名改变",
+      "format": "uuid"
+    },
+    "confirm_drop_vectors": {
+      "const": true
+    }
+  },
+  "required": [
+    "table_id",
+    "expected_schema_revision",
+    "field_id",
+    "confirm_drop_vectors"
+  ],
+  "additionalProperties": false
+}

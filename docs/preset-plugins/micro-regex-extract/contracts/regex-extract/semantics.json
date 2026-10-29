@@ -1,0 +1,23 @@
+{
+  "status": "planned",
+  "version": "0.1.0",
+  "kind": "micro",
+  "capability_id": "text.regex-extract",
+  "side_effect": "none",
+  "maximum_input_bytes": 1048576,
+  "maximum_output_bytes": 1048576,
+  "maximum_json_depth": 64,
+  "streaming": false,
+  "batch": "core_async_skill_batch",
+  "unknown_fields": "reject",
+  "authorization": "future_micro_skill_and_micro_resource_and_runtime",
+  "cancellation": "cooperative_hard_deadline_no_partial_success",
+  "retries": "bounded_same_definition_same_deadline",
+  "feature_gates": [
+    "linear-regex-library"
+  ],
+  "notes": [
+    "Offsets Unicode scalars; zero-length must progress; no backrefs/lookbehind/recursive catastrophic engine.",
+    "Validate UTF8 field byte lengths independently of JSON Schema codepoint maxLength: text<=262144 bytes and pattern<=4096 bytes; flags only unique i/m/s, capture groups<=128."
+  ]
+}

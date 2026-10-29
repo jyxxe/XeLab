@@ -1,0 +1,724 @@
+[
+  {
+    "name": "micro_target_fixed",
+    "schema": "SkillDefinition",
+    "value": {
+      "name": "org.xelab.micro-plugin-runtime.micro.00000000-0000-4000-8000-000000000003.run",
+      "version": "1.0.0",
+      "description": "返回输入text字段的轻量纯计算脚本",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "stream_item_schema": null,
+      "target": {
+        "kind": "micro",
+        "plugin_id": "org.xelab.micro-plugin-runtime",
+        "micro_version_id": "00000000-0000-4000-8000-000000000002",
+        "micro_deployment_id": "00000000-0000-4000-8000-000000000003",
+        "package_digest": "sha256:4491816529f381b8e0fda0bb518180b1070fd36d106e7cf7286cc378a3fd3d2c"
+      },
+      "mapping": "identity",
+      "maximum_timeout_ms": 2000,
+      "input_blobs": false,
+      "tags": [
+        "micro",
+        "json",
+        "javascript"
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "no_mixed_target",
+    "schema": "SkillDefinition",
+    "value": {
+      "name": "org.xelab.micro-plugin-runtime.micro.00000000-0000-4000-8000-000000000003.run",
+      "version": "1.0.0",
+      "description": "返回输入text字段的轻量纯计算脚本",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "stream_item_schema": null,
+      "target": {
+        "kind": "micro",
+        "plugin_id": "org.xelab.micro-plugin-runtime",
+        "micro_version_id": "00000000-0000-4000-8000-000000000002",
+        "micro_deployment_id": "00000000-0000-4000-8000-000000000003",
+        "package_digest": "sha256:4491816529f381b8e0fda0bb518180b1070fd36d106e7cf7286cc378a3fd3d2c",
+        "contract": {
+          "name": "runtime.execute",
+          "version": "1.0.0",
+          "schema_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "mapping": "identity",
+      "maximum_timeout_ms": 2000,
+      "input_blobs": false,
+      "tags": [
+        "micro",
+        "json",
+        "javascript"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "micro_package_required",
+    "schema": "SkillDefinition",
+    "value": {
+      "name": "org.xelab.micro-plugin-runtime.micro.00000000-0000-4000-8000-000000000003.run",
+      "version": "1.0.0",
+      "description": "返回输入text字段的轻量纯计算脚本",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "stream_item_schema": null,
+      "target": {
+        "kind": "micro",
+        "plugin_id": "org.xelab.micro-plugin-runtime",
+        "micro_version_id": "00000000-0000-4000-8000-000000000002",
+        "micro_deployment_id": "00000000-0000-4000-8000-000000000003"
+      },
+      "mapping": "identity",
+      "maximum_timeout_ms": 2000,
+      "input_blobs": false,
+      "tags": [
+        "micro",
+        "json",
+        "javascript"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "micro_binding_required",
+    "schema": "SkillDefinition",
+    "value": {
+      "name": "org.xelab.micro-plugin-runtime.micro.00000000-0000-4000-8000-000000000003.run",
+      "version": "1.0.0",
+      "description": "返回输入text字段的轻量纯计算脚本",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "stream_item_schema": null,
+      "target": {
+        "kind": "micro",
+        "plugin_id": "org.xelab.micro-plugin-runtime",
+        "micro_version_id": "00000000-0000-4000-8000-000000000002",
+        "package_digest": "sha256:4491816529f381b8e0fda0bb518180b1070fd36d106e7cf7286cc378a3fd3d2c"
+      },
+      "mapping": "identity",
+      "maximum_timeout_ms": 2000,
+      "input_blobs": false,
+      "tags": [
+        "micro",
+        "json",
+        "javascript"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "manifest_valid",
+    "schema": "MicroManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "返回输入text字段的轻量纯计算脚本",
+      "engine": "javascript",
+      "protocol": "json-stdio-v1",
+      "entrypoint": "main.js",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "limits": {
+        "timeout_ms": 2000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 1
+      },
+      "side_effect": "none"
+    },
+    "valid": true
+  },
+  {
+    "name": "no_implicit_python_host",
+    "schema": "MicroManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "返回输入text字段的轻量纯计算脚本",
+      "engine": "python",
+      "protocol": "json-stdio-v1",
+      "entrypoint": "main.js",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "limits": {
+        "timeout_ms": 2000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 1
+      },
+      "side_effect": "none"
+    },
+    "valid": false
+  },
+  {
+    "name": "v1_pure_compute",
+    "schema": "MicroManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "返回输入text字段的轻量纯计算脚本",
+      "engine": "javascript",
+      "protocol": "json-stdio-v1",
+      "entrypoint": "main.js",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "limits": {
+        "timeout_ms": 2000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 1
+      },
+      "side_effect": "non_repeatable"
+    },
+    "valid": false
+  },
+  {
+    "name": "no_arbitrary_entry_path",
+    "schema": "MicroManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "返回输入text字段的轻量纯计算脚本",
+      "engine": "javascript",
+      "protocol": "json-stdio-v1",
+      "entrypoint": "/etc/passwd",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "limits": {
+        "timeout_ms": 2000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 1
+      },
+      "side_effect": "none"
+    },
+    "valid": false
+  },
+  {
+    "name": "bounded_heap",
+    "schema": "MicroManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "返回输入text字段的轻量纯计算脚本",
+      "engine": "javascript",
+      "protocol": "json-stdio-v1",
+      "entrypoint": "main.js",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "limits": {
+        "timeout_ms": 2000,
+        "heap_bytes": 67108865,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 1
+      },
+      "side_effect": "none"
+    },
+    "valid": false
+  },
+  {
+    "name": "deployment_starts_disabled",
+    "schema": "CreateMicroDeployment",
+    "value": {
+      "micro_version_id": "00000000-0000-4000-8000-000000000002",
+      "runtime_deployment_id": "00000000-0000-4000-8000-000000000006",
+      "limits": {
+        "timeout_ms": 2000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 1
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "cannot_skip_prepare_approval",
+    "schema": "CreateMicroDeployment",
+    "value": {
+      "micro_version_id": "00000000-0000-4000-8000-000000000002",
+      "runtime_deployment_id": "00000000-0000-4000-8000-000000000006",
+      "limits": {
+        "timeout_ms": 2000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 1
+      },
+      "enabled": true
+    },
+    "valid": false
+  },
+  {
+    "name": "no_inline_source_envelope",
+    "schema": "SkillInvokeRequest",
+    "value": {
+      "input": {
+        "text": "hello micro plugin"
+      },
+      "timeout_ms": 2000,
+      "source": "arbitrary code"
+    },
+    "valid": false
+  },
+  {
+    "name": "no_schema_ref_cycles",
+    "schema": "MicroManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "返回输入text字段的轻量纯计算脚本",
+      "engine": "javascript",
+      "protocol": "json-stdio-v1",
+      "entrypoint": "main.js",
+      "input_schema": {
+        "$ref": "#"
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "limits": {
+        "timeout_ms": 2000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 1
+      },
+      "side_effect": "none"
+    },
+    "valid": false
+  },
+  {
+    "name": "no_unbounded_regex",
+    "schema": "MicroManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "返回输入text字段的轻量纯计算脚本",
+      "engine": "javascript",
+      "protocol": "json-stdio-v1",
+      "entrypoint": "main.js",
+      "input_schema": {
+        "type": "string",
+        "pattern": "(a+)+$"
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "limits": {
+        "timeout_ms": 2000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 1
+      },
+      "side_effect": "none"
+    },
+    "valid": false
+  },
+  {
+    "name": "no_micro_host_resource_annotation",
+    "schema": "MicroManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "返回输入text字段的轻量纯计算脚本",
+      "engine": "javascript",
+      "protocol": "json-stdio-v1",
+      "entrypoint": "main.js",
+      "input_schema": {
+        "type": "string",
+        "x-xelab-resource-kind": "blob"
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "limits": {
+        "timeout_ms": 2000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 1
+      },
+      "side_effect": "none"
+    },
+    "valid": false
+  },
+  {
+    "name": "no_micro_blob_delegate",
+    "schema": "SkillDefinition",
+    "value": {
+      "name": "org.xelab.micro-plugin-runtime.micro.00000000-0000-4000-8000-000000000003.run",
+      "version": "1.0.0",
+      "description": "返回输入text字段的轻量纯计算脚本",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "stream_item_schema": null,
+      "target": {
+        "kind": "micro",
+        "plugin_id": "org.xelab.micro-plugin-runtime",
+        "micro_version_id": "00000000-0000-4000-8000-000000000002",
+        "micro_deployment_id": "00000000-0000-4000-8000-000000000003",
+        "package_digest": "sha256:4491816529f381b8e0fda0bb518180b1070fd36d106e7cf7286cc378a3fd3d2c"
+      },
+      "mapping": "identity",
+      "maximum_timeout_ms": 2000,
+      "input_blobs": true,
+      "tags": [
+        "micro",
+        "json",
+        "javascript"
+      ]
+    },
+    "valid": false
+  }
+]

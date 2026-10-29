@@ -1,0 +1,3334 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ColumnType": {
+      "type": "object",
+      "description": "列类型；int64/decimal 使用字符串 wire 值",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "boolean",
+            "int32",
+            "int64",
+            "float32",
+            "float64",
+            "decimal",
+            "string",
+            "text",
+            "bytes",
+            "date",
+            "timestamp",
+            "uuid",
+            "json",
+            "media",
+            "array"
+          ],
+          "description": "基本列类型"
+        },
+        "precision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 38,
+          "description": "decimal 总位数"
+        },
+        "scale": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 38,
+          "description": "decimal 小数位"
+        },
+        "element_kind": {
+          "type": "string",
+          "enum": [
+            "boolean",
+            "int32",
+            "int64",
+            "float32",
+            "float64",
+            "decimal",
+            "string",
+            "text",
+            "bytes",
+            "date",
+            "timestamp",
+            "uuid",
+            "json"
+          ],
+          "description": "array 元素只允许基本标量，不允许 array/media"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "decimal"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "precision",
+              "scale"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "array"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "element_kind"
+            ]
+          }
+        }
+      ]
+    },
+    "FieldCreate": {
+      "type": "object",
+      "description": "创建列，向量另行配置且默认不建立",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "description": "ASCII 列名；下划线开头留给系统",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}$"
+        },
+        "type": {
+          "type": "object",
+          "description": "列类型；int64/decimal 使用字符串 wire 值",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "boolean",
+                "int32",
+                "int64",
+                "float32",
+                "float64",
+                "decimal",
+                "string",
+                "text",
+                "bytes",
+                "date",
+                "timestamp",
+                "uuid",
+                "json",
+                "media",
+                "array"
+              ],
+              "description": "基本列类型"
+            },
+            "precision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 38,
+              "description": "decimal 总位数"
+            },
+            "scale": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 38,
+              "description": "decimal 小数位"
+            },
+            "element_kind": {
+              "type": "string",
+              "enum": [
+                "boolean",
+                "int32",
+                "int64",
+                "float32",
+                "float64",
+                "decimal",
+                "string",
+                "text",
+                "bytes",
+                "date",
+                "timestamp",
+                "uuid",
+                "json"
+              ],
+              "description": "array 元素只允许基本标量，不允许 array/media"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "decimal"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "precision",
+                  "scale"
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "array"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "element_kind"
+                ]
+              }
+            }
+          ]
+        },
+        "nullable": {
+          "type": "boolean",
+          "description": "默认允许 null",
+          "default": true
+        },
+        "default": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ],
+          "description": "固定列默认值，按 type 校验"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "Field": {
+      "type": "object",
+      "description": "字段定义及观测",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "UUID",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "description": "ASCII 列名；下划线开头留给系统",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}$"
+        },
+        "type": {
+          "type": "object",
+          "description": "列类型；int64/decimal 使用字符串 wire 值",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "boolean",
+                "int32",
+                "int64",
+                "float32",
+                "float64",
+                "decimal",
+                "string",
+                "text",
+                "bytes",
+                "date",
+                "timestamp",
+                "uuid",
+                "json",
+                "media",
+                "array"
+              ],
+              "description": "基本列类型"
+            },
+            "precision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 38,
+              "description": "decimal 总位数"
+            },
+            "scale": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 38,
+              "description": "decimal 小数位"
+            },
+            "element_kind": {
+              "type": "string",
+              "enum": [
+                "boolean",
+                "int32",
+                "int64",
+                "float32",
+                "float64",
+                "decimal",
+                "string",
+                "text",
+                "bytes",
+                "date",
+                "timestamp",
+                "uuid",
+                "json"
+              ],
+              "description": "array 元素只允许基本标量，不允许 array/media"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "decimal"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "precision",
+                  "scale"
+                ]
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "kind": {
+                    "const": "array"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "element_kind"
+                ]
+              }
+            }
+          ]
+        },
+        "nullable": {
+          "type": "boolean",
+          "description": "是否允许 null"
+        },
+        "vector": {
+          "type": "object",
+          "description": "字段级向量索引状态",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "默认 false"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "配置变更单调递增"
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "disabled",
+                "pending",
+                "building",
+                "ready",
+                "provider_unavailable",
+                "failed"
+              ],
+              "description": "状态"
+            },
+            "dimensions": {
+              "type": "integer",
+              "enum": [
+                128,
+                256,
+                512,
+                768
+              ],
+              "default": 128
+            },
+            "embedding_skill_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 36,
+                  "description": "UUID",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "首个index候选的兼容诊断字段；查询可能使用另一候选"
+            },
+            "embedding_space_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 71,
+                  "description": "SHA-256",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "indexed_rows": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "当前有效行数"
+            },
+            "pending_rows": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "待建立/更新行数"
+            },
+            "failed_rows": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "失败行数"
+            },
+            "index_revision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991,
+              "description": "索引值/状态变化同事务递增，跨generation不重置"
+            },
+            "embedding_routes": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "description": "显式配置后固定的候选集合；无运行时自动加候选",
+                  "properties": {
+                    "query_candidates": {
+                      "type": "array",
+                      "description": "当前固定的查询优先序",
+                      "items": {
+                        "type": "object",
+                        "description": "通过配置探针验证的固定安装/Skill/契约候选",
+                        "properties": {
+                          "skill_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 36,
+                            "description": "UUID",
+                            "format": "uuid"
+                          },
+                          "definition_digest": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 71,
+                            "description": "JCS后SHA-256",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          },
+                          "installation_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 36,
+                            "description": "UUID",
+                            "format": "uuid"
+                          },
+                          "plugin_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "description": "插件稳定 ID；不含版本",
+                            "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+                            "example": "org.xelab.echo"
+                          },
+                          "contract": {
+                            "type": "object",
+                            "description": "不可变能力契约引用",
+                            "additionalProperties": false,
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                                "description": "能力名称",
+                                "pattern": "^[a-z][a-z0-9.-]+$"
+                              },
+                              "version": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                                "description": "SemVer 2.0.0；版本约束语法见插件版本文档",
+                                "example": "1.0.0",
+                                "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+                              },
+                              "schema_digest": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 71,
+                                "description": "制品或内容 SHA-256 摘要",
+                                "pattern": "^sha256:[a-f0-9]{64}$",
+                                "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "version",
+                              "schema_digest"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "skill_id",
+                          "definition_digest",
+                          "installation_id",
+                          "plugin_id",
+                          "contract"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "minItems": 1,
+                      "maxItems": 8
+                    },
+                    "index_candidates": {
+                      "type": "array",
+                      "description": "当前固定的建立优先序",
+                      "items": {
+                        "type": "object",
+                        "description": "通过配置探针验证的固定安装/Skill/契约候选",
+                        "properties": {
+                          "skill_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 36,
+                            "description": "UUID",
+                            "format": "uuid"
+                          },
+                          "definition_digest": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 71,
+                            "description": "JCS后SHA-256",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          },
+                          "installation_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 36,
+                            "description": "UUID",
+                            "format": "uuid"
+                          },
+                          "plugin_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "description": "插件稳定 ID；不含版本",
+                            "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+                            "example": "org.xelab.echo"
+                          },
+                          "contract": {
+                            "type": "object",
+                            "description": "不可变能力契约引用",
+                            "additionalProperties": false,
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                                "description": "能力名称",
+                                "pattern": "^[a-z][a-z0-9.-]+$"
+                              },
+                              "version": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                                "description": "SemVer 2.0.0；版本约束语法见插件版本文档",
+                                "example": "1.0.0",
+                                "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+                              },
+                              "schema_digest": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 71,
+                                "description": "制品或内容 SHA-256 摘要",
+                                "pattern": "^sha256:[a-f0-9]{64}$",
+                                "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "version",
+                              "schema_digest"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "skill_id",
+                          "definition_digest",
+                          "installation_id",
+                          "plugin_id",
+                          "contract"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "minItems": 1,
+                      "maxItems": 8
+                    },
+                    "allow_fallback": {
+                      "type": "boolean"
+                    },
+                    "route_digest": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 71,
+                      "description": "JCS后SHA-256",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "query_candidates",
+                    "index_candidates",
+                    "allow_fallback",
+                    "route_digest"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "从未配置时null；禁用后保留固定路由"
+            }
+          },
+          "required": [
+            "enabled",
+            "generation",
+            "state",
+            "dimensions",
+            "embedding_skill_id",
+            "embedding_space_id",
+            "indexed_rows",
+            "pending_rows",
+            "failed_rows",
+            "index_revision",
+            "embedding_routes"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "type",
+        "nullable",
+        "vector"
+      ],
+      "additionalProperties": false
+    },
+    "Table": {
+      "type": "object",
+      "description": "私有数据表",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "UUID",
+          "format": "uuid"
+        },
+        "owner_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "UUID",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "description": "账户内唯一表名",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}$"
+        },
+        "schema_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "列与索引配置版本"
+        },
+        "data_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "行数据变更版本"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "description": "字段定义及观测",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 36,
+                "description": "UUID",
+                "format": "uuid"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 63,
+                "description": "ASCII 列名；下划线开头留给系统",
+                "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}$"
+              },
+              "type": {
+                "type": "object",
+                "description": "列类型；int64/decimal 使用字符串 wire 值",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "boolean",
+                      "int32",
+                      "int64",
+                      "float32",
+                      "float64",
+                      "decimal",
+                      "string",
+                      "text",
+                      "bytes",
+                      "date",
+                      "timestamp",
+                      "uuid",
+                      "json",
+                      "media",
+                      "array"
+                    ],
+                    "description": "基本列类型"
+                  },
+                  "precision": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 38,
+                    "description": "decimal 总位数"
+                  },
+                  "scale": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 38,
+                    "description": "decimal 小数位"
+                  },
+                  "element_kind": {
+                    "type": "string",
+                    "enum": [
+                      "boolean",
+                      "int32",
+                      "int64",
+                      "float32",
+                      "float64",
+                      "decimal",
+                      "string",
+                      "text",
+                      "bytes",
+                      "date",
+                      "timestamp",
+                      "uuid",
+                      "json"
+                    ],
+                    "description": "array 元素只允许基本标量，不允许 array/media"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "kind": {
+                          "const": "decimal"
+                        }
+                      }
+                    },
+                    "then": {
+                      "required": [
+                        "precision",
+                        "scale"
+                      ]
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "kind": {
+                          "const": "array"
+                        }
+                      }
+                    },
+                    "then": {
+                      "required": [
+                        "element_kind"
+                      ]
+                    }
+                  }
+                ]
+              },
+              "nullable": {
+                "type": "boolean",
+                "description": "是否允许 null"
+              },
+              "vector": {
+                "type": "object",
+                "description": "字段级向量索引状态",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "description": "默认 false"
+                  },
+                  "generation": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "配置变更单调递增"
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "disabled",
+                      "pending",
+                      "building",
+                      "ready",
+                      "provider_unavailable",
+                      "failed"
+                    ],
+                    "description": "状态"
+                  },
+                  "dimensions": {
+                    "type": "integer",
+                    "enum": [
+                      128,
+                      256,
+                      512,
+                      768
+                    ],
+                    "default": 128
+                  },
+                  "embedding_skill_id": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 36,
+                        "description": "UUID",
+                        "format": "uuid"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "首个index候选的兼容诊断字段；查询可能使用另一候选"
+                  },
+                  "embedding_space_id": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 71,
+                        "description": "SHA-256",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "indexed_rows": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "当前有效行数"
+                  },
+                  "pending_rows": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "待建立/更新行数"
+                  },
+                  "failed_rows": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "description": "失败行数"
+                  },
+                  "index_revision": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991,
+                    "description": "索引值/状态变化同事务递增，跨generation不重置"
+                  },
+                  "embedding_routes": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "description": "显式配置后固定的候选集合；无运行时自动加候选",
+                        "properties": {
+                          "query_candidates": {
+                            "type": "array",
+                            "description": "当前固定的查询优先序",
+                            "items": {
+                              "type": "object",
+                              "description": "通过配置探针验证的固定安装/Skill/契约候选",
+                              "properties": {
+                                "skill_id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 36,
+                                  "description": "UUID",
+                                  "format": "uuid"
+                                },
+                                "definition_digest": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 71,
+                                  "description": "JCS后SHA-256",
+                                  "pattern": "^sha256:[a-f0-9]{64}$"
+                                },
+                                "installation_id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 36,
+                                  "description": "UUID",
+                                  "format": "uuid"
+                                },
+                                "plugin_id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128,
+                                  "description": "插件稳定 ID；不含版本",
+                                  "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+                                  "example": "org.xelab.echo"
+                                },
+                                "contract": {
+                                  "type": "object",
+                                  "description": "不可变能力契约引用",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "name": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 128,
+                                      "description": "能力名称",
+                                      "pattern": "^[a-z][a-z0-9.-]+$"
+                                    },
+                                    "version": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 128,
+                                      "description": "SemVer 2.0.0；版本约束语法见插件版本文档",
+                                      "example": "1.0.0",
+                                      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+                                    },
+                                    "schema_digest": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 71,
+                                      "description": "制品或内容 SHA-256 摘要",
+                                      "pattern": "^sha256:[a-f0-9]{64}$",
+                                      "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                    }
+                                  },
+                                  "required": [
+                                    "name",
+                                    "version",
+                                    "schema_digest"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "skill_id",
+                                "definition_digest",
+                                "installation_id",
+                                "plugin_id",
+                                "contract"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "minItems": 1,
+                            "maxItems": 8
+                          },
+                          "index_candidates": {
+                            "type": "array",
+                            "description": "当前固定的建立优先序",
+                            "items": {
+                              "type": "object",
+                              "description": "通过配置探针验证的固定安装/Skill/契约候选",
+                              "properties": {
+                                "skill_id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 36,
+                                  "description": "UUID",
+                                  "format": "uuid"
+                                },
+                                "definition_digest": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 71,
+                                  "description": "JCS后SHA-256",
+                                  "pattern": "^sha256:[a-f0-9]{64}$"
+                                },
+                                "installation_id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 36,
+                                  "description": "UUID",
+                                  "format": "uuid"
+                                },
+                                "plugin_id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128,
+                                  "description": "插件稳定 ID；不含版本",
+                                  "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+                                  "example": "org.xelab.echo"
+                                },
+                                "contract": {
+                                  "type": "object",
+                                  "description": "不可变能力契约引用",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "name": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 128,
+                                      "description": "能力名称",
+                                      "pattern": "^[a-z][a-z0-9.-]+$"
+                                    },
+                                    "version": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 128,
+                                      "description": "SemVer 2.0.0；版本约束语法见插件版本文档",
+                                      "example": "1.0.0",
+                                      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+                                    },
+                                    "schema_digest": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 71,
+                                      "description": "制品或内容 SHA-256 摘要",
+                                      "pattern": "^sha256:[a-f0-9]{64}$",
+                                      "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                    }
+                                  },
+                                  "required": [
+                                    "name",
+                                    "version",
+                                    "schema_digest"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "skill_id",
+                                "definition_digest",
+                                "installation_id",
+                                "plugin_id",
+                                "contract"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "minItems": 1,
+                            "maxItems": 8
+                          },
+                          "allow_fallback": {
+                            "type": "boolean"
+                          },
+                          "route_digest": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 71,
+                            "description": "JCS后SHA-256",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          }
+                        },
+                        "required": [
+                          "query_candidates",
+                          "index_candidates",
+                          "allow_fallback",
+                          "route_digest"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "从未配置时null；禁用后保留固定路由"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "generation",
+                  "state",
+                  "dimensions",
+                  "embedding_skill_id",
+                  "embedding_space_id",
+                  "indexed_rows",
+                  "pending_rows",
+                  "failed_rows",
+                  "index_revision",
+                  "embedding_routes"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "type",
+              "nullable",
+              "vector"
+            ],
+            "additionalProperties": false
+          },
+          "description": "按创建顺序",
+          "minItems": 1,
+          "maxItems": 128
+        },
+        "row_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "未删除行数"
+        },
+        "indexer_account_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 36,
+              "description": "显式批准只做索引维护的服务账户",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "owner_id",
+        "name",
+        "schema_revision",
+        "data_revision",
+        "fields",
+        "row_count",
+        "indexer_account_id"
+      ],
+      "additionalProperties": false
+    },
+    "Row": {
+      "type": "object",
+      "description": "一行数据；values 由表的列类型校验",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "UUID",
+          "format": "uuid"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "行版本"
+        },
+        "values": {
+          "type": "object",
+          "description": "列名到类型化值",
+          "additionalProperties": {
+            "type": [
+              "object",
+              "array",
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ],
+            "description": "业务 JSON，按数据列类型继续校验"
+          },
+          "maxProperties": 128
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "values"
+      ],
+      "additionalProperties": false
+    },
+    "RowWrite": {
+      "type": "object",
+      "description": "CAS 行写入",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "可省略以服务端生成；更新必须给出",
+          "format": "uuid"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "0=必须新建，>0=精确当前版本",
+          "default": 0
+        },
+        "values": {
+          "type": "object",
+          "description": "数据按列 type 校验",
+          "additionalProperties": {
+            "type": [
+              "object",
+              "array",
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ],
+            "description": "业务 JSON，按数据列类型继续校验"
+          },
+          "maxProperties": 128
+        }
+      },
+      "required": [
+        "values"
+      ],
+      "additionalProperties": false
+    },
+    "Media": {
+      "type": "object",
+      "description": "已导入插件持久卷的媒体，独立于源 Blob TTL",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "UUID",
+          "format": "uuid"
+        },
+        "table_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "UUID",
+          "format": "uuid"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "image",
+            "audio",
+            "video"
+          ],
+          "description": "模态"
+        },
+        "content_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "嗅探并验证的 MIME"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 33554432,
+          "description": "原始内容长度"
+        },
+        "digest": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 71,
+          "description": "SHA-256",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "reference_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "引用行数"
+        }
+      },
+      "required": [
+        "id",
+        "table_id",
+        "kind",
+        "content_type",
+        "size_bytes",
+        "digest",
+        "reference_count"
+      ],
+      "additionalProperties": false
+    },
+    "MediaValue": {
+      "type": "object",
+      "description": "media 列中的序列值",
+      "properties": {
+        "parts": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "description": "文本片段",
+                "properties": {
+                  "type": {
+                    "const": "text"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 65536,
+                    "description": "原始文本，不接受媒体控制占位符"
+                  }
+                },
+                "required": [
+                  "type",
+                  "text"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "description": "已导入同表媒体引用",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "image",
+                      "audio",
+                      "video"
+                    ],
+                    "description": "模态"
+                  },
+                  "media_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 36,
+                    "description": "UUID",
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "type",
+                  "media_id"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "description": "一条多模态数据",
+          "minItems": 1,
+          "maxItems": 8
+        }
+      },
+      "required": [
+        "parts"
+      ],
+      "additionalProperties": false
+    },
+    "QueryParameter": {
+      "type": "object",
+      "description": "显式类型参数；禁止字符串拼接到表达式",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "boolean",
+            "int32",
+            "int64",
+            "float32",
+            "float64",
+            "decimal",
+            "string",
+            "text",
+            "bytes",
+            "date",
+            "timestamp",
+            "uuid",
+            "json",
+            "media",
+            "array",
+            "vector_query"
+          ],
+          "description": "查询参数类别"
+        },
+        "value": {
+          "type": [
+            "object",
+            "array",
+            "string",
+            "number",
+            "boolean",
+            "null"
+          ],
+          "description": "按 type/目标字段严格校验"
+        }
+      },
+      "required": [
+        "type",
+        "value"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "const": "vector_query"
+            },
+            "value": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "description": "文本向量查询",
+                  "properties": {
+                    "kind": {
+                      "const": "text"
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 65536,
+                      "description": "检索查询文本"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "text"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "description": "同表持久媒体组合查询",
+                  "properties": {
+                    "kind": {
+                      "const": "media"
+                    },
+                    "parts": {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "description": "文本片段",
+                            "properties": {
+                              "type": {
+                                "const": "text"
+                              },
+                              "text": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 65536,
+                                "description": "原始文本，不接受媒体控制占位符"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "text"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "description": "已导入同表媒体引用",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "enum": [
+                                  "image",
+                                  "audio",
+                                  "video"
+                                ],
+                                "description": "模态"
+                              },
+                              "media_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 36,
+                                "description": "UUID",
+                                "format": "uuid"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "media_id"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      },
+                      "description": "一条多模态数据",
+                      "minItems": 1,
+                      "maxItems": 8
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "parts"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "description": "预先计算且空间匹配的向量",
+                  "properties": {
+                    "kind": {
+                      "const": "vector"
+                    },
+                    "values": {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "description": "有限 float32 值，拒绝 NaN/Infinity"
+                      },
+                      "description": "维度必须与 dimensions 相同",
+                      "minItems": 128,
+                      "maxItems": 768
+                    },
+                    "embedding_space_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 71,
+                      "description": "SHA-256",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "values",
+                    "embedding_space_id"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "type": {
+              "not": {
+                "const": "vector_query"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "VectorQuery": {
+      "oneOf": [
+        {
+          "type": "object",
+          "description": "文本向量查询",
+          "properties": {
+            "kind": {
+              "const": "text"
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536,
+              "description": "检索查询文本"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "description": "同表持久媒体组合查询",
+          "properties": {
+            "kind": {
+              "const": "media"
+            },
+            "parts": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "description": "文本片段",
+                    "properties": {
+                      "type": {
+                        "const": "text"
+                      },
+                      "text": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 65536,
+                        "description": "原始文本，不接受媒体控制占位符"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "text"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "description": "已导入同表媒体引用",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "image",
+                          "audio",
+                          "video"
+                        ],
+                        "description": "模态"
+                      },
+                      "media_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 36,
+                        "description": "UUID",
+                        "format": "uuid"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "media_id"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "description": "一条多模态数据",
+              "minItems": 1,
+              "maxItems": 8
+            }
+          },
+          "required": [
+            "kind",
+            "parts"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "description": "预先计算且空间匹配的向量",
+          "properties": {
+            "kind": {
+              "const": "vector"
+            },
+            "values": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "description": "有限 float32 值，拒绝 NaN/Infinity"
+              },
+              "description": "维度必须与 dimensions 相同",
+              "minItems": 128,
+              "maxItems": 768
+            },
+            "embedding_space_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 71,
+              "description": "SHA-256",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "kind",
+            "values",
+            "embedding_space_id"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "VectorState": {
+      "type": "object",
+      "description": "字段级向量索引状态",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "默认 false"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "配置变更单调递增"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "pending",
+            "building",
+            "ready",
+            "provider_unavailable",
+            "failed"
+          ],
+          "description": "状态"
+        },
+        "dimensions": {
+          "type": "integer",
+          "enum": [
+            128,
+            256,
+            512,
+            768
+          ],
+          "default": 128
+        },
+        "embedding_skill_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 36,
+              "description": "UUID",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "首个index候选的兼容诊断字段；查询可能使用另一候选"
+        },
+        "embedding_space_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 71,
+              "description": "SHA-256",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "indexed_rows": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "当前有效行数"
+        },
+        "pending_rows": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "待建立/更新行数"
+        },
+        "failed_rows": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "失败行数"
+        },
+        "index_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "索引值/状态变化同事务递增，跨generation不重置"
+        },
+        "embedding_routes": {
+          "anyOf": [
+            {
+              "type": "object",
+              "description": "显式配置后固定的候选集合；无运行时自动加候选",
+              "properties": {
+                "query_candidates": {
+                  "type": "array",
+                  "description": "当前固定的查询优先序",
+                  "items": {
+                    "type": "object",
+                    "description": "通过配置探针验证的固定安装/Skill/契约候选",
+                    "properties": {
+                      "skill_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 36,
+                        "description": "UUID",
+                        "format": "uuid"
+                      },
+                      "definition_digest": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 71,
+                        "description": "JCS后SHA-256",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      "installation_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 36,
+                        "description": "UUID",
+                        "format": "uuid"
+                      },
+                      "plugin_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "description": "插件稳定 ID；不含版本",
+                        "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+                        "example": "org.xelab.echo"
+                      },
+                      "contract": {
+                        "type": "object",
+                        "description": "不可变能力契约引用",
+                        "additionalProperties": false,
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "description": "能力名称",
+                            "pattern": "^[a-z][a-z0-9.-]+$"
+                          },
+                          "version": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "description": "SemVer 2.0.0；版本约束语法见插件版本文档",
+                            "example": "1.0.0",
+                            "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+                          },
+                          "schema_digest": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 71,
+                            "description": "制品或内容 SHA-256 摘要",
+                            "pattern": "^sha256:[a-f0-9]{64}$",
+                            "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "version",
+                          "schema_digest"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "skill_id",
+                      "definition_digest",
+                      "installation_id",
+                      "plugin_id",
+                      "contract"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "minItems": 1,
+                  "maxItems": 8
+                },
+                "index_candidates": {
+                  "type": "array",
+                  "description": "当前固定的建立优先序",
+                  "items": {
+                    "type": "object",
+                    "description": "通过配置探针验证的固定安装/Skill/契约候选",
+                    "properties": {
+                      "skill_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 36,
+                        "description": "UUID",
+                        "format": "uuid"
+                      },
+                      "definition_digest": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 71,
+                        "description": "JCS后SHA-256",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      },
+                      "installation_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 36,
+                        "description": "UUID",
+                        "format": "uuid"
+                      },
+                      "plugin_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "description": "插件稳定 ID；不含版本",
+                        "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+                        "example": "org.xelab.echo"
+                      },
+                      "contract": {
+                        "type": "object",
+                        "description": "不可变能力契约引用",
+                        "additionalProperties": false,
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "description": "能力名称",
+                            "pattern": "^[a-z][a-z0-9.-]+$"
+                          },
+                          "version": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                            "description": "SemVer 2.0.0；版本约束语法见插件版本文档",
+                            "example": "1.0.0",
+                            "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+                          },
+                          "schema_digest": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 71,
+                            "description": "制品或内容 SHA-256 摘要",
+                            "pattern": "^sha256:[a-f0-9]{64}$",
+                            "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "version",
+                          "schema_digest"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "skill_id",
+                      "definition_digest",
+                      "installation_id",
+                      "plugin_id",
+                      "contract"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "minItems": 1,
+                  "maxItems": 8
+                },
+                "allow_fallback": {
+                  "type": "boolean"
+                },
+                "route_digest": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 71,
+                  "description": "JCS后SHA-256",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "query_candidates",
+                "index_candidates",
+                "allow_fallback",
+                "route_digest"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "从未配置时null；禁用后保留固定路由"
+        }
+      },
+      "required": [
+        "enabled",
+        "generation",
+        "state",
+        "dimensions",
+        "embedding_skill_id",
+        "embedding_space_id",
+        "indexed_rows",
+        "pending_rows",
+        "failed_rows",
+        "index_revision",
+        "embedding_routes"
+      ],
+      "additionalProperties": false
+    },
+    "QueryInput": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "完整有序ID列表查询；链式算子从左到右执行，无隐式分页",
+      "properties": {
+        "table_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "UUID",
+          "format": "uuid"
+        },
+        "expression": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192,
+          "default": "a",
+          "description": "UTF-8最多8192字节；a.match(...).topk(...).match(...)"
+        },
+        "input_ids": {
+          "type": "array",
+          "description": "可选按值绑定a；省略为当前全表，[]为显式空列表；全部ID须在该表存在",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "description": "UUID",
+            "format": "uuid"
+          },
+          "minItems": 0,
+          "maxItems": 100000,
+          "uniqueItems": true
+        },
+        "params": {
+          "type": "object",
+          "description": "命名参数，不含冒号",
+          "additionalProperties": {
+            "type": "object",
+            "description": "显式类型参数；禁止字符串拼接到表达式",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "boolean",
+                  "int32",
+                  "int64",
+                  "float32",
+                  "float64",
+                  "decimal",
+                  "string",
+                  "text",
+                  "bytes",
+                  "date",
+                  "timestamp",
+                  "uuid",
+                  "json",
+                  "media",
+                  "array",
+                  "vector_query"
+                ],
+                "description": "查询参数类别"
+              },
+              "value": {
+                "type": [
+                  "object",
+                  "array",
+                  "string",
+                  "number",
+                  "boolean",
+                  "null"
+                ],
+                "description": "按 type/目标字段严格校验"
+              }
+            },
+            "required": [
+              "type",
+              "value"
+            ],
+            "additionalProperties": false,
+            "oneOf": [
+              {
+                "properties": {
+                  "type": {
+                    "const": "vector_query"
+                  },
+                  "value": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "description": "文本向量查询",
+                        "properties": {
+                          "kind": {
+                            "const": "text"
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65536,
+                            "description": "检索查询文本"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "text"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "description": "同表持久媒体组合查询",
+                        "properties": {
+                          "kind": {
+                            "const": "media"
+                          },
+                          "parts": {
+                            "type": "array",
+                            "items": {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "description": "文本片段",
+                                  "properties": {
+                                    "type": {
+                                      "const": "text"
+                                    },
+                                    "text": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 65536,
+                                      "description": "原始文本，不接受媒体控制占位符"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "text"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "description": "已导入同表媒体引用",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "enum": [
+                                        "image",
+                                        "audio",
+                                        "video"
+                                      ],
+                                      "description": "模态"
+                                    },
+                                    "media_id": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 36,
+                                      "description": "UUID",
+                                      "format": "uuid"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "media_id"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
+                            "description": "一条多模态数据",
+                            "minItems": 1,
+                            "maxItems": 8
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "parts"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "description": "预先计算且空间匹配的向量",
+                        "properties": {
+                          "kind": {
+                            "const": "vector"
+                          },
+                          "values": {
+                            "type": "array",
+                            "items": {
+                              "type": "number",
+                              "description": "有限 float32 值，拒绝 NaN/Infinity"
+                            },
+                            "description": "维度必须与 dimensions 相同",
+                            "minItems": 128,
+                            "maxItems": 768
+                          },
+                          "embedding_space_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 71,
+                            "description": "SHA-256",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "values",
+                          "embedding_space_id"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "type": {
+                    "not": {
+                      "const": "vector_query"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "maxProperties": 64,
+          "propertyNames": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$"
+          }
+        },
+        "expected_schema_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "可选快照前置；两个expected水位必须成对"
+        },
+        "expected_data_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "快照水位"
+        },
+        "require_complete_index": {
+          "type": "boolean",
+          "default": true,
+          "description": "每个topk阶段是否必须覆盖其全部非空源候选"
+        },
+        "cache_policy": {
+          "type": "string",
+          "description": "只控制本请求缓存读写，不修改容量",
+          "enum": [
+            "auto",
+            "bypass"
+          ],
+          "default": "auto"
+        }
+      },
+      "required": [
+        "table_id"
+      ],
+      "additionalProperties": false,
+      "dependentRequired": {
+        "expected_schema_revision": [
+          "expected_data_revision"
+        ],
+        "expected_data_revision": [
+          "expected_schema_revision"
+        ]
+      }
+    },
+    "QueryOutput": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "表达式的完整有序去重ID列表；超预算失败，禁止截断或返回next_cursor",
+      "properties": {
+        "table_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "UUID",
+          "format": "uuid"
+        },
+        "schema_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "快照水位"
+        },
+        "data_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "快照水位"
+        },
+        "ids": {
+          "type": "array",
+          "description": "完整最终结果，顺序具有语义；空结果为[]",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "description": "UUID",
+            "format": "uuid"
+          },
+          "minItems": 0,
+          "maxItems": 100000,
+          "uniqueItems": true
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000,
+          "description": "必须等于len(ids)"
+        },
+        "vector_stages": {
+          "type": "array",
+          "description": "按链顺序保留所有topk阶段的水位/计数",
+          "items": {
+            "type": "object",
+            "description": "一个topk阶段的实际候选和向量快照；仅作元数据，不给ID附着隐式score属性",
+            "properties": {
+              "stage_index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 31,
+                "description": "链中算子位置，从0起，包含match"
+              },
+              "field_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 36,
+                "description": "UUID",
+                "format": "uuid"
+              },
+              "generation": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991,
+                "description": "配置代次"
+              },
+              "index_revision": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991,
+                "description": "索引内容/状态提交的单调修订号"
+              },
+              "dimensions": {
+                "type": "integer",
+                "enum": [
+                  128,
+                  256,
+                  512,
+                  768
+                ]
+              },
+              "embedding_space_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 71,
+                "description": "SHA-256摘要",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "embedding_skill_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 36,
+                "description": "当前已核实可用的query候选；命中缓存或原始向量时可不运行模型",
+                "format": "uuid"
+              },
+              "embedding_skill_definition_digest": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 71,
+                "description": "当前选中query候选的固定定义摘要",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "input_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100000,
+                "description": "上一阶段完整列表长度"
+              },
+              "indexed_rows": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100000,
+                "description": "该阶段有效索引候选数"
+              },
+              "pending_rows": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100000,
+                "description": "该阶段待建立/更新候选数"
+              },
+              "failed_rows": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100000,
+                "description": "该阶段索引失败候选数"
+              },
+              "skipped_rows": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100000,
+                "description": "该阶段NULL/空源跳过候选数"
+              },
+              "output_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100000,
+                "description": "该topk完整输出长度；后续match不改变此历史计数"
+              },
+              "k": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100000,
+                "description": "调用者明确的排名截取数量"
+              },
+              "min_score": {
+                "type": "number",
+                "minimum": -1,
+                "maximum": 1,
+                "description": "cosine最低分，默认-1"
+              },
+              "metric": {
+                "const": "cosine"
+              },
+              "route_digest": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 71,
+                "description": "JCS后SHA-256",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            },
+            "required": [
+              "stage_index",
+              "field_id",
+              "generation",
+              "index_revision",
+              "dimensions",
+              "embedding_space_id",
+              "embedding_skill_id",
+              "embedding_skill_definition_digest",
+              "input_count",
+              "indexed_rows",
+              "pending_rows",
+              "failed_rows",
+              "skipped_rows",
+              "output_count",
+              "k",
+              "min_score",
+              "metric",
+              "route_digest"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 0,
+          "maxItems": 8
+        },
+        "cache": {
+          "type": "object",
+          "description": "本请求缓存诊断，不暴露其他账户缓存键/使用量",
+          "properties": {
+            "state": {
+              "type": "string",
+              "description": "仅数据/列表缓存状态；其它类别命中由classes计数表达",
+              "enum": [
+                "disabled",
+                "hit",
+                "partial_hit",
+                "miss",
+                "bypass"
+              ]
+            },
+            "hit_stages": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 32,
+              "description": "复用的链算子阶段数，根a不计"
+            },
+            "stored_stages": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 32,
+              "description": "本请求新缓存的完整链阶段数，根a不计"
+            },
+            "classes": {
+              "type": "object",
+              "description": "data/text/vector三类各自统计",
+              "properties": {
+                "data": {
+                  "type": "object",
+                  "description": "仅当前请求缓存计数，不暴露其他账户数据或全局使用量",
+                  "properties": {
+                    "hits": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "命中条目次数"
+                    },
+                    "stores": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "成功发布条目次数"
+                    }
+                  },
+                  "required": [
+                    "hits",
+                    "stores"
+                  ],
+                  "additionalProperties": false
+                },
+                "text": {
+                  "type": "object",
+                  "description": "仅当前请求缓存计数，不暴露其他账户数据或全局使用量",
+                  "properties": {
+                    "hits": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "命中条目次数"
+                    },
+                    "stores": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "成功发布条目次数"
+                    }
+                  },
+                  "required": [
+                    "hits",
+                    "stores"
+                  ],
+                  "additionalProperties": false
+                },
+                "vector": {
+                  "type": "object",
+                  "description": "仅当前请求缓存计数，不暴露其他账户数据或全局使用量",
+                  "properties": {
+                    "hits": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "命中条目次数"
+                    },
+                    "stores": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991,
+                      "description": "成功发布条目次数"
+                    }
+                  },
+                  "required": [
+                    "hits",
+                    "stores"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "data",
+                "text",
+                "vector"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "state",
+            "hit_stages",
+            "stored_stages",
+            "classes"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "table_id",
+        "schema_revision",
+        "data_revision",
+        "ids",
+        "count",
+        "vector_stages",
+        "cache"
+      ],
+      "additionalProperties": false
+    },
+    "QueryVectorStage": {
+      "type": "object",
+      "description": "一个topk阶段的实际候选和向量快照；仅作元数据，不给ID附着隐式score属性",
+      "properties": {
+        "stage_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 31,
+          "description": "链中算子位置，从0起，包含match"
+        },
+        "field_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "UUID",
+          "format": "uuid"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "配置代次"
+        },
+        "index_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "索引内容/状态提交的单调修订号"
+        },
+        "dimensions": {
+          "type": "integer",
+          "enum": [
+            128,
+            256,
+            512,
+            768
+          ]
+        },
+        "embedding_space_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 71,
+          "description": "SHA-256摘要",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "embedding_skill_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "当前已核实可用的query候选；命中缓存或原始向量时可不运行模型",
+          "format": "uuid"
+        },
+        "embedding_skill_definition_digest": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 71,
+          "description": "当前选中query候选的固定定义摘要",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "input_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000,
+          "description": "上一阶段完整列表长度"
+        },
+        "indexed_rows": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000,
+          "description": "该阶段有效索引候选数"
+        },
+        "pending_rows": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000,
+          "description": "该阶段待建立/更新候选数"
+        },
+        "failed_rows": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000,
+          "description": "该阶段索引失败候选数"
+        },
+        "skipped_rows": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000,
+          "description": "该阶段NULL/空源跳过候选数"
+        },
+        "output_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000,
+          "description": "该topk完整输出长度；后续match不改变此历史计数"
+        },
+        "k": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000,
+          "description": "调用者明确的排名截取数量"
+        },
+        "min_score": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1,
+          "description": "cosine最低分，默认-1"
+        },
+        "metric": {
+          "const": "cosine"
+        },
+        "route_digest": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 71,
+          "description": "JCS后SHA-256",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "stage_index",
+        "field_id",
+        "generation",
+        "index_revision",
+        "dimensions",
+        "embedding_space_id",
+        "embedding_skill_id",
+        "embedding_skill_definition_digest",
+        "input_count",
+        "indexed_rows",
+        "pending_rows",
+        "failed_rows",
+        "skipped_rows",
+        "output_count",
+        "k",
+        "min_score",
+        "metric",
+        "route_digest"
+      ],
+      "additionalProperties": false
+    },
+    "QueryCacheMetadata": {
+      "type": "object",
+      "description": "本请求缓存诊断，不暴露其他账户缓存键/使用量",
+      "properties": {
+        "state": {
+          "type": "string",
+          "description": "仅数据/列表缓存状态；其它类别命中由classes计数表达",
+          "enum": [
+            "disabled",
+            "hit",
+            "partial_hit",
+            "miss",
+            "bypass"
+          ]
+        },
+        "hit_stages": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32,
+          "description": "复用的链算子阶段数，根a不计"
+        },
+        "stored_stages": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32,
+          "description": "本请求新缓存的完整链阶段数，根a不计"
+        },
+        "classes": {
+          "type": "object",
+          "description": "data/text/vector三类各自统计",
+          "properties": {
+            "data": {
+              "type": "object",
+              "description": "仅当前请求缓存计数，不暴露其他账户数据或全局使用量",
+              "properties": {
+                "hits": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "命中条目次数"
+                },
+                "stores": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "成功发布条目次数"
+                }
+              },
+              "required": [
+                "hits",
+                "stores"
+              ],
+              "additionalProperties": false
+            },
+            "text": {
+              "type": "object",
+              "description": "仅当前请求缓存计数，不暴露其他账户数据或全局使用量",
+              "properties": {
+                "hits": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "命中条目次数"
+                },
+                "stores": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "成功发布条目次数"
+                }
+              },
+              "required": [
+                "hits",
+                "stores"
+              ],
+              "additionalProperties": false
+            },
+            "vector": {
+              "type": "object",
+              "description": "仅当前请求缓存计数，不暴露其他账户数据或全局使用量",
+              "properties": {
+                "hits": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "命中条目次数"
+                },
+                "stores": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "成功发布条目次数"
+                }
+              },
+              "required": [
+                "hits",
+                "stores"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "data",
+            "text",
+            "vector"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "state",
+        "hit_stages",
+        "stored_stages",
+        "classes"
+      ],
+      "additionalProperties": false
+    },
+    "RowsGetInput": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "按明确ID读取1..200行，不执行表达式或隐式分页",
+      "properties": {
+        "table_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "UUID",
+          "format": "uuid"
+        },
+        "ids": {
+          "type": "array",
+          "description": "全部必须存在，重复拒绝",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "description": "UUID",
+            "format": "uuid"
+          },
+          "minItems": 1,
+          "maxItems": 200,
+          "uniqueItems": true
+        },
+        "projection": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63,
+            "description": "ASCII 列名；下划线开头留给系统",
+            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}$"
+          },
+          "description": "省略表示全部列",
+          "minItems": 1,
+          "maxItems": 128,
+          "uniqueItems": true
+        },
+        "expected_schema_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "可选快照前置；两个expected水位必须成对"
+        },
+        "expected_data_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "快照水位"
+        }
+      },
+      "required": [
+        "table_id",
+        "ids"
+      ],
+      "additionalProperties": false,
+      "dependentRequired": {
+        "expected_schema_revision": [
+          "expected_data_revision"
+        ],
+        "expected_data_revision": [
+          "expected_schema_revision"
+        ]
+      }
+    },
+    "RowsGetOutput": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "description": "完整返回请求的所有行；任何missing/水位不符拒绝整次",
+      "properties": {
+        "table_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "UUID",
+          "format": "uuid"
+        },
+        "schema_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "快照水位"
+        },
+        "data_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "快照水位"
+        },
+        "items": {
+          "type": "array",
+          "description": "按输入ID顺序，长度必须与请求ids相同",
+          "items": {
+            "type": "object",
+            "description": "行正文；顺序与请求ids严格一致",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 36,
+                "description": "UUID",
+                "format": "uuid"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991,
+                "description": "行版本"
+              },
+              "values": {
+                "type": "object",
+                "description": "只含投影列",
+                "additionalProperties": {
+                  "type": [
+                    "object",
+                    "array",
+                    "string",
+                    "number",
+                    "boolean",
+                    "null"
+                  ],
+                  "description": "业务 JSON，按数据列类型继续校验"
+                },
+                "maxProperties": 128
+              }
+            },
+            "required": [
+              "id",
+              "revision",
+              "values"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 200
+        }
+      },
+      "required": [
+        "table_id",
+        "schema_revision",
+        "data_revision",
+        "items"
+      ],
+      "additionalProperties": false
+    },
+    "QueryCacheConfig": {
+      "type": "object",
+      "description": "三类独立内存缓存上限；SI128MB=128000000字节；总和<=2GiB且<=实例memory/2",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "data_max_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483648,
+          "description": "该类共享上限，0只禁用该类，不借用其他类别预算",
+          "default": 128000000
+        },
+        "text_max_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483648,
+          "description": "该类共享上限，0只禁用该类，不借用其他类别预算",
+          "default": 128000000
+        },
+        "vector_max_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483648,
+          "description": "该类共享上限，0只禁用该类，不借用其他类别预算",
+          "default": 128000000
+        },
+        "max_entry_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216,
+          "description": "单对象准入上限，仍受其类别剩余预算约束",
+          "default": 8388608
+        },
+        "ttl_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400,
+          "description": "固定创建TTL，命中不延期",
+          "default": 300
+        }
+      },
+      "required": [
+        "enabled",
+        "data_max_bytes",
+        "text_max_bytes",
+        "vector_max_bytes",
+        "max_entry_bytes",
+        "ttl_seconds"
+      ],
+      "additionalProperties": false
+    },
+    "EmbeddingRoutingConfig": {
+      "type": "object",
+      "description": "仅用于首次配置或显式refresh，按已批准固定Skill解析，不在每次调用寻找latest",
+      "properties": {
+        "text_query_preference": {
+          "type": "array",
+          "description": "plugin ID优先级；多候选版本歧义需显式UUID",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "插件稳定 ID；不含版本",
+            "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+            "example": "org.xelab.echo"
+          },
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true
+        },
+        "text_index_preference": {
+          "type": "array",
+          "description": "plugin ID优先级；多候选版本歧义需显式UUID",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "插件稳定 ID；不含版本",
+            "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+            "example": "org.xelab.echo"
+          },
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true
+        },
+        "multimodal_preference": {
+          "type": "array",
+          "description": "plugin ID优先级；多候选版本歧义需显式UUID",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "插件稳定 ID；不含版本",
+            "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+            "example": "org.xelab.echo"
+          },
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true
+        },
+        "allow_fallback": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "required": [
+        "text_query_preference",
+        "text_index_preference",
+        "multimodal_preference",
+        "allow_fallback"
+      ],
+      "additionalProperties": false
+    },
+    "EmbeddingRouteInput": {
+      "type": "object",
+      "description": "两用途分别固定有序候选；每个候选必须在配置时验证同一向量空间",
+      "properties": {
+        "query_skill_ids": {
+          "type": "array",
+          "description": "查询候选，第一项为首选",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "description": "UUID",
+            "format": "uuid"
+          },
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true
+        },
+        "index_skill_ids": {
+          "type": "array",
+          "description": "建向量候选，第一项为首选",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "description": "UUID",
+            "format": "uuid"
+          },
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true
+        },
+        "allow_fallback": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "required": [
+        "query_skill_ids",
+        "index_skill_ids"
+      ],
+      "additionalProperties": false
+    },
+    "EmbeddingRouteState": {
+      "type": "object",
+      "description": "显式配置后固定的候选集合；无运行时自动加候选",
+      "properties": {
+        "query_candidates": {
+          "type": "array",
+          "description": "当前固定的查询优先序",
+          "items": {
+            "type": "object",
+            "description": "通过配置探针验证的固定安装/Skill/契约候选",
+            "properties": {
+              "skill_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 36,
+                "description": "UUID",
+                "format": "uuid"
+              },
+              "definition_digest": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 71,
+                "description": "JCS后SHA-256",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "installation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 36,
+                "description": "UUID",
+                "format": "uuid"
+              },
+              "plugin_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "description": "插件稳定 ID；不含版本",
+                "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+                "example": "org.xelab.echo"
+              },
+              "contract": {
+                "type": "object",
+                "description": "不可变能力契约引用",
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "能力名称",
+                    "pattern": "^[a-z][a-z0-9.-]+$"
+                  },
+                  "version": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "SemVer 2.0.0；版本约束语法见插件版本文档",
+                    "example": "1.0.0",
+                    "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+                  },
+                  "schema_digest": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 71,
+                    "description": "制品或内容 SHA-256 摘要",
+                    "pattern": "^sha256:[a-f0-9]{64}$",
+                    "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                  }
+                },
+                "required": [
+                  "name",
+                  "version",
+                  "schema_digest"
+                ]
+              }
+            },
+            "required": [
+              "skill_id",
+              "definition_digest",
+              "installation_id",
+              "plugin_id",
+              "contract"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "index_candidates": {
+          "type": "array",
+          "description": "当前固定的建立优先序",
+          "items": {
+            "type": "object",
+            "description": "通过配置探针验证的固定安装/Skill/契约候选",
+            "properties": {
+              "skill_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 36,
+                "description": "UUID",
+                "format": "uuid"
+              },
+              "definition_digest": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 71,
+                "description": "JCS后SHA-256",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "installation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 36,
+                "description": "UUID",
+                "format": "uuid"
+              },
+              "plugin_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "description": "插件稳定 ID；不含版本",
+                "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+                "example": "org.xelab.echo"
+              },
+              "contract": {
+                "type": "object",
+                "description": "不可变能力契约引用",
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "能力名称",
+                    "pattern": "^[a-z][a-z0-9.-]+$"
+                  },
+                  "version": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "description": "SemVer 2.0.0；版本约束语法见插件版本文档",
+                    "example": "1.0.0",
+                    "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+                  },
+                  "schema_digest": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 71,
+                    "description": "制品或内容 SHA-256 摘要",
+                    "pattern": "^sha256:[a-f0-9]{64}$",
+                    "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                  }
+                },
+                "required": [
+                  "name",
+                  "version",
+                  "schema_digest"
+                ]
+              }
+            },
+            "required": [
+              "skill_id",
+              "definition_digest",
+              "installation_id",
+              "plugin_id",
+              "contract"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "allow_fallback": {
+          "type": "boolean"
+        },
+        "route_digest": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 71,
+          "description": "JCS后SHA-256",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "query_candidates",
+        "index_candidates",
+        "allow_fallback",
+        "route_digest"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

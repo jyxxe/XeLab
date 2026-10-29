@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "../../../planned/shared.schema.json#/$defs/JsonValue"
+      },
+      "minItems": 0,
+      "maxItems": 10000
+    },
+    "condition": {
+      "$ref": "../../../planned/shared.schema.json#/$defs/Condition"
+    }
+  },
+  "required": [
+    "items",
+    "condition"
+  ],
+  "additionalProperties": false
+}

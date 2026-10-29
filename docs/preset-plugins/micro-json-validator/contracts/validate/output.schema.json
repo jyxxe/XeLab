@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "valid": {
+      "type": "boolean",
+      "default": false
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "",
+        "properties": {
+          "instance_path": {
+            "$ref": "../../../planned/shared.schema.json#/$defs/JsonPointer"
+          },
+          "schema_path": {
+            "$ref": "../../../planned/shared.schema.json#/$defs/JsonPointer"
+          },
+          "keyword": {
+            "type": "string",
+            "description": "",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "message": {
+            "type": "string",
+            "description": "",
+            "minLength": 0,
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "instance_path",
+          "schema_path",
+          "keyword",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 256
+    },
+    "truncated": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [
+    "valid",
+    "errors",
+    "truncated"
+  ],
+  "additionalProperties": false
+}

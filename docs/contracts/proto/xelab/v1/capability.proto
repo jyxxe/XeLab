@@ -1,0 +1,45 @@
+syntax = "proto3";
+package xelab.v1;
+import "xelab/v1/common.proto";
+
+// 内核代理到插件；插件验证内核对端，接收已授权上下文，不离线解析不透明句柄。
+service CapabilityService {
+  rpc Invoke(InvokeRequest) returns (InvokeResponse);
+  rpc InvokeStream(InvokeRequest) returns (stream InvokeChunk);
+  rpc Cancel(CancelCallRequest) returns (Ack);
+  rpc QueryResult(QueryResultRequest) returns (QueryResultResponse);
+}
+message InvokeRequest {
+  RpcContext context = 1;
+  string call_id = 2;
+  ContractRef contract = 3;
+  // 与已注册输入 JSON Schema 匹配，最大 4 MiB，大对象使用 Blob 引用。
+  bytes input_json = 4;
+  string input_digest = 5;
+  string binding_id = 6;
+}
+message InvokeResponse {
+  string call_id = 1;
+  bytes output_json = 2; // 最大 16 MiB，并满足 output_schema。
+  string output_digest = 3;
+}
+message InvokeChunk {
+  string call_id = 1;
+  uint64 sequence = 2; // 从 1 递增，不允许重置或缺口。
+  oneof body {
+    bytes item_json = 3; // 最大 1 MiB，匹配 stream_item_schema。
+    InvokeResponse completed = 4;
+    ErrorDetail failed = 5;
+    Ack canceled = 6;
+  }
+}
+message CancelCallRequest { RpcContext context = 1; string call_id = 2; }
+message QueryResultRequest {
+  RpcContext context = 1;
+  string call_id = 2;
+  string idempotency_key = 3;
+}
+message QueryResultResponse {
+  ExecutionState state = 1;
+  oneof outcome { InvokeResponse completed = 2; ErrorDetail failed = 3; }
+}

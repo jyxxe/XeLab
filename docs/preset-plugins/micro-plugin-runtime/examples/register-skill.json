@@ -1,0 +1,55 @@
+{
+  "definition": {
+    "name": "org.xelab.micro-plugin-runtime.micro.00000000-0000-4000-8000-000000000003.run",
+    "version": "1.0.0",
+    "description": "返回输入text字段的轻量纯计算脚本",
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "stream_item_schema": null,
+    "target": {
+      "kind": "micro",
+      "plugin_id": "org.xelab.micro-plugin-runtime",
+      "micro_version_id": "00000000-0000-4000-8000-000000000002",
+      "micro_deployment_id": "00000000-0000-4000-8000-000000000003",
+      "package_digest": "sha256:4491816529f381b8e0fda0bb518180b1070fd36d106e7cf7286cc378a3fd3d2c"
+    },
+    "mapping": "identity",
+    "maximum_timeout_ms": 2000,
+    "input_blobs": false,
+    "tags": [
+      "micro",
+      "json",
+      "javascript"
+    ]
+  },
+  "installation_id": "00000000-0000-4000-8000-000000000006",
+  "enabled": false
+}

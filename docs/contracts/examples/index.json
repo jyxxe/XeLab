@@ -1,0 +1,206 @@
+[
+  {
+    "file": "permission-group.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CreateGroup"
+    }
+  },
+  {
+    "file": "child-account.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CreateChild"
+    }
+  },
+  {
+    "file": "api-key.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CreateApiKey"
+    }
+  },
+  {
+    "file": "deployment.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/DeploymentSpec"
+    }
+  },
+  {
+    "file": "workflow.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/WorkflowSpec"
+    }
+  },
+  {
+    "file": "plugin-manifest.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/Manifest"
+    }
+  },
+  {
+    "file": "../../preset-plugins/embedding-gemma-text-8/manifest.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/Manifest"
+    }
+  },
+  {
+    "file": "../../preset-plugins/embedding-gemma-text-8/deployment.template.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/DeploymentSpec"
+    }
+  },
+  {
+    "file": "../../preset-plugins/embedding-gemma-text-1/manifest.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/Manifest"
+    }
+  },
+  {
+    "file": "../../preset-plugins/embedding-gemma-text-1/deployment.template.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/DeploymentSpec"
+    }
+  },
+  {
+    "file": "../../preset-plugins/embedding-gemma-multimodal-1/manifest.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/Manifest"
+    }
+  },
+  {
+    "file": "../../preset-plugins/embedding-gemma-multimodal-1/deployment.template.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/DeploymentSpec"
+    }
+  },
+  {
+    "file": "../../preset-plugins/webui/manifest.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/Manifest"
+    }
+  },
+  {
+    "file": "../../preset-plugins/webui/deployment.template.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/DeploymentSpec"
+    }
+  },
+  {
+    "file": "../../preset-plugins/knowledge-base/manifest.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/Manifest"
+    }
+  },
+  {
+    "file": "../../preset-plugins/knowledge-base/deployment.template.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/DeploymentSpec"
+    }
+  },
+  {
+    "file": "skill-batch.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/SkillBatchRequest"
+    }
+  },
+  {
+    "file": "ui-preferences.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/UiPreferencesSpec"
+    }
+  },
+  {
+    "file": "plugin-ui.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/PluginUiSpec"
+    }
+  },
+  {
+    "file": "ui-bridge-ready.json",
+    "schema": {
+      "$ref": "../ui-bridge.schema.json#"
+    }
+  },
+  {
+    "file": "ui-bridge-batch.json",
+    "schema": {
+      "$ref": "../ui-bridge.schema.json#"
+    }
+  },
+  {
+    "file": "../../skills/examples/kb-query-result.json",
+    "schema": {
+      "$ref": "../../preset-plugins/knowledge-base/contracts/rows-query/output.schema.json#"
+    }
+  },
+  {
+    "file": "../../preset-plugins/micro-plugin-runtime/examples/micro-manifest.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/MicroManifest"
+    }
+  },
+  {
+    "file": "../../preset-plugins/micro-plugin-runtime/examples/publish-version.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/PublishMicroVersion"
+    }
+  },
+  {
+    "file": "../../preset-plugins/micro-plugin-runtime/examples/create-micro-deployment.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CreateMicroDeployment"
+    }
+  },
+  {
+    "file": "../../preset-plugins/micro-plugin-runtime/examples/register-skill.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CreateSkill"
+    }
+  },
+  {
+    "file": "../../preset-plugins/micro-plugin-runtime/examples/invoke.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/SkillInvokeRequest"
+    }
+  },
+  {
+    "file": "../../preset-plugins/micro-plugin-runtime/manifest.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/Manifest"
+    }
+  },
+  {
+    "file": "../../preset-plugins/micro-plugin-runtime/deployment.template.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/DeploymentSpec"
+    }
+  },
+  {
+    "file": "../../preset-plugins/web-search/micro-manifest.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/MicroManifest"
+    }
+  },
+  {
+    "file": "../../preset-plugins/web-search/publish-version.example.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/PublishMicroVersion"
+    }
+  },
+  {
+    "file": "../../preset-plugins/web-search/micro-deployment.template.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CreateMicroDeployment"
+    }
+  },
+  {
+    "file": "../../preset-plugins/web-search/search.skill.example.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/SkillDefinition"
+    }
+  },
+  {
+    "file": "../../preset-plugins/web-search/invoke.example.json",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/SkillInvokeRequest"
+    }
+  }
+]

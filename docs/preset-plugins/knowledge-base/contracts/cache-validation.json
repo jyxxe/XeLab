@@ -1,0 +1,124 @@
+[
+  {
+    "name": "default_three_caches",
+    "value": {
+      "enabled": true,
+      "data_max_bytes": 128000000,
+      "text_max_bytes": 128000000,
+      "vector_max_bytes": 128000000,
+      "max_entry_bytes": 8388608,
+      "ttl_seconds": 300
+    },
+    "valid": true
+  },
+  {
+    "name": "disable_data_only",
+    "value": {
+      "enabled": true,
+      "data_max_bytes": 0,
+      "text_max_bytes": 128000000,
+      "vector_max_bytes": 128000000,
+      "max_entry_bytes": 8388608,
+      "ttl_seconds": 300
+    },
+    "valid": true
+  },
+  {
+    "name": "disable_text_only",
+    "value": {
+      "enabled": true,
+      "data_max_bytes": 128000000,
+      "text_max_bytes": 0,
+      "vector_max_bytes": 128000000,
+      "max_entry_bytes": 8388608,
+      "ttl_seconds": 300
+    },
+    "valid": true
+  },
+  {
+    "name": "disable_vector_only",
+    "value": {
+      "enabled": true,
+      "data_max_bytes": 128000000,
+      "text_max_bytes": 128000000,
+      "vector_max_bytes": 0,
+      "max_entry_bytes": 8388608,
+      "ttl_seconds": 300
+    },
+    "valid": true
+  },
+  {
+    "name": "negative_limit",
+    "value": {
+      "enabled": true,
+      "data_max_bytes": -1,
+      "text_max_bytes": 128000000,
+      "vector_max_bytes": 128000000,
+      "max_entry_bytes": 8388608,
+      "ttl_seconds": 300
+    },
+    "valid": false
+  },
+  {
+    "name": "class_hard_limit",
+    "value": {
+      "enabled": true,
+      "data_max_bytes": 128000000,
+      "text_max_bytes": 128000000,
+      "vector_max_bytes": 2147483649,
+      "max_entry_bytes": 8388608,
+      "ttl_seconds": 300
+    },
+    "valid": false
+  },
+  {
+    "name": "ttl_nonzero",
+    "value": {
+      "enabled": true,
+      "data_max_bytes": 128000000,
+      "text_max_bytes": 128000000,
+      "vector_max_bytes": 128000000,
+      "max_entry_bytes": 8388608,
+      "ttl_seconds": 0
+    },
+    "valid": false
+  },
+  {
+    "name": "legacy_single_limit_rejected",
+    "value": {
+      "enabled": true,
+      "data_max_bytes": 128000000,
+      "text_max_bytes": 128000000,
+      "vector_max_bytes": 128000000,
+      "max_entry_bytes": 8388608,
+      "ttl_seconds": 300,
+      "max_bytes": 268435456
+    },
+    "valid": false
+  },
+  {
+    "name": "combined_budget_exceeds_two_gib",
+    "value": {
+      "enabled": true,
+      "data_max_bytes": 2147483648,
+      "text_max_bytes": 128000000,
+      "vector_max_bytes": 128000000,
+      "max_entry_bytes": 8388608,
+      "ttl_seconds": 300
+    },
+    "valid": false
+  },
+  {
+    "name": "budget_exceeds_half_memory",
+    "value": {
+      "enabled": true,
+      "data_max_bytes": 128000000,
+      "text_max_bytes": 128000000,
+      "vector_max_bytes": 128000000,
+      "max_entry_bytes": 8388608,
+      "ttl_seconds": 300
+    },
+    "memory_bytes": 512000000,
+    "valid": false
+  }
+]

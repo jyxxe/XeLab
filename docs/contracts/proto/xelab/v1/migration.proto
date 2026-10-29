@@ -1,0 +1,38 @@
+syntax = "proto3";
+package xelab.v1;
+import "xelab/v1/common.proto";
+
+// 仅声明有状态迁移能力的插件实现；迁移期间卷由内核独占锁保护。
+service DataMigration {
+  rpc Plan(PlanMigrationRequest) returns (MigrationPlan);
+  rpc Apply(ApplyMigrationRequest) returns (MigrationResult);
+  rpc Verify(VerifyMigrationRequest) returns (MigrationResult);
+}
+message PlanMigrationRequest {
+  RpcContext context = 1;
+  string deployment_id = 2;
+  string source_schema = 3;
+  string target_schema = 4;
+}
+message MigrationPlan {
+  string plan_id = 1;
+  string plan_digest = 2;
+  bool requires_exclusive_write = 3;
+  bool backward_read_compatible = 4;
+  bool reversible = 5;
+  uint64 temporary_bytes_required = 6;
+}
+message ApplyMigrationRequest {
+  RpcContext context = 1;
+  string plan_id = 2;
+  string plan_digest = 3;
+  string backup_id = 4;
+  uint64 volume_fence = 5;
+}
+message VerifyMigrationRequest { RpcContext context = 1; string plan_id = 2; uint64 volume_fence = 3; }
+message MigrationResult {
+  string plan_id = 1;
+  bool succeeded = 2;
+  string observed_schema = 3;
+  optional ErrorDetail error = 4;
+}

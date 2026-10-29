@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "显式销毁",
+  "properties": {
+    "table_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "UUID",
+      "format": "uuid"
+    },
+    "expected_schema_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "CAS，创建/删除等另见语义"
+    },
+    "confirm_table_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "必须等于 table_id",
+      "format": "uuid"
+    }
+  },
+  "required": [
+    "table_id",
+    "expected_schema_revision",
+    "confirm_table_id"
+  ],
+  "additionalProperties": false
+}

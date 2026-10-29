@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "source": {
+      "const": "declared",
+      "default": "declared"
+    },
+    "descriptor": {
+      "type": "object",
+      "description": "",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "size_bytes": {
+          "type": "integer",
+          "description": "",
+          "minimum": 0,
+          "maximum": 67108864
+        },
+        "media_type": {
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "size_bytes",
+        "media_type"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "descriptor"
+  ],
+  "additionalProperties": false
+}

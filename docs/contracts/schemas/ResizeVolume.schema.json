@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ResizeVolume",
+  "type": "object",
+  "description": "仅支持扩容；仍须宿主存储准入",
+  "additionalProperties": false,
+  "properties": {
+    "capacity_bytes": {
+      "type": "integer",
+      "minimum": 1048576,
+      "maximum": 9007199254740991,
+      "description": "新硬配额，必须大于当前容量"
+    }
+  },
+  "required": [
+    "capacity_bytes"
+  ]
+}

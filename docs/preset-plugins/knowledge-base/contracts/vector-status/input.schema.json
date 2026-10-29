@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "定位",
+  "properties": {
+    "table_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "UUID",
+      "format": "uuid"
+    },
+    "field_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "字段 ID，不随列重命名改变",
+      "format": "uuid"
+    },
+    "include_failures": {
+      "type": "boolean",
+      "description": "返回脱敏逐行失败原因",
+      "default": false
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200,
+      "description": "失败条数上限",
+      "default": 50
+    },
+    "cursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "失败列表游标"
+    }
+  },
+  "required": [
+    "table_id",
+    "field_id"
+  ],
+  "additionalProperties": false
+}

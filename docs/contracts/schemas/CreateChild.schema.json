@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CreateChild",
+  "type": "object",
+  "description": "创建属于路径账户的子账户；实际授权还受调用凭证限制",
+  "additionalProperties": false,
+  "properties": {
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "子账户显示名称"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "user",
+        "service"
+      ],
+      "description": "默认 user",
+      "default": "user"
+    },
+    "inheritance": {
+      "$ref": "../openapi.json#/components/schemas/InheritanceSpec"
+    },
+    "expires_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "可选账户到期时间",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    }
+  },
+  "required": [
+    "display_name",
+    "inheritance"
+  ]
+}

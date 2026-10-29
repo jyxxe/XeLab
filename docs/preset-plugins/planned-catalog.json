@@ -1,0 +1,898 @@
+{
+  "version": "2.6.0",
+  "status": "planned",
+  "ordinary_count": 12,
+  "micro_count": 20,
+  "entries": [
+    {
+      "directory": "ai-chat-openai-compatible",
+      "plugin_id": "org.xelab.ai-chat-openai-compatible",
+      "kind": "ordinary",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "ai.chat"
+      ],
+      "dependencies": [
+        "contracts/",
+        "platform-secrets",
+        "external-model-api"
+      ],
+      "purpose": "OpenAI兼容文本生成，普通与流式",
+      "feature_gates": [
+        "external-ai-adapter",
+        "profile-configuration"
+      ],
+      "operations": [
+        {
+          "capability_id": "ai.chat",
+          "operation": "chat",
+          "schema_digest": "sha256:e8d7b997ead0e149613ecc7f9fdccb6d954a1ed5af1ab2ccdc45861384367a3d"
+        }
+      ]
+    },
+    {
+      "directory": "document-parser",
+      "plugin_id": "org.xelab.document-parser",
+      "kind": "ordinary",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "document.parse"
+      ],
+      "dependencies": [
+        "contracts/",
+        "core-blob",
+        "format-parser-libraries"
+      ],
+      "purpose": "解析PDF/DOCX/TXT/HTML为文本、页段及元数据",
+      "feature_gates": [
+        "document-parser-libraries"
+      ],
+      "operations": [
+        {
+          "capability_id": "document.parse",
+          "operation": "parse",
+          "schema_digest": "sha256:a29893085e6810eb2595d5dd370732f26328a1222ad0285850d549406d4408fd"
+        }
+      ]
+    },
+    {
+      "directory": "http-client",
+      "plugin_id": "org.xelab.http-client",
+      "kind": "ordinary",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "http.request"
+      ],
+      "dependencies": [
+        "contracts/",
+        "network-policy"
+      ],
+      "purpose": "受控通用HTTP请求",
+      "feature_gates": [
+        "http-policy-binding",
+        "response-blob-streaming"
+      ],
+      "operations": [
+        {
+          "capability_id": "http.request",
+          "operation": "request",
+          "schema_digest": "sha256:cb5e34d3e3c75e9d1765857260cbd2f579e869aa0fa4a0eff76277b175940e8d"
+        }
+      ]
+    },
+    {
+      "directory": "notification",
+      "plugin_id": "org.xelab.notification",
+      "kind": "ordinary",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "notification.send"
+      ],
+      "dependencies": [
+        "contracts/",
+        "platform-secrets",
+        "email.send-or-webhook-route"
+      ],
+      "purpose": "统一通知渠道编排、速率与幂等",
+      "feature_gates": [
+        "notification-route-binding",
+        "delivery-evidence-recovery"
+      ],
+      "operations": [
+        {
+          "capability_id": "notification.send",
+          "operation": "send",
+          "schema_digest": "sha256:ba25d03c00c5e419a7385290de68245adbcd3727808cf1ed8fd3d38c83d0302d"
+        }
+      ]
+    },
+    {
+      "directory": "database-postgres",
+      "plugin_id": "org.xelab.database-postgres",
+      "kind": "ordinary",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "database.query",
+        "database.execute"
+      ],
+      "dependencies": [
+        "contracts/",
+        "postgres-driver",
+        "platform-secrets",
+        "target-database"
+      ],
+      "purpose": "授权范围内数据库读写",
+      "feature_gates": [
+        "database-profile-acl",
+        "sql-policy-parser"
+      ],
+      "operations": [
+        {
+          "capability_id": "database.query",
+          "operation": "query",
+          "schema_digest": "sha256:c5053434f6d048c30c152c6a4dc4052de7bd8191c67add330e2fffac8b138a4a"
+        },
+        {
+          "capability_id": "database.execute",
+          "operation": "execute",
+          "schema_digest": "sha256:fe5de9d9098ab9e4dc37f6713952583fe49999c6cfe00f146e28c086ea29ff70"
+        }
+      ]
+    },
+    {
+      "directory": "automation-webhook-trigger",
+      "plugin_id": "org.xelab.automation-webhook-trigger",
+      "kind": "ordinary",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "trigger.webhook"
+      ],
+      "dependencies": [
+        "contracts/",
+        "api-gateway",
+        "platform-events-or-tasks"
+      ],
+      "purpose": "认证Webhook转事件或任务",
+      "feature_gates": [
+        "trusted-webhook-ingress",
+        "host-task-submission"
+      ],
+      "operations": [
+        {
+          "capability_id": "trigger.webhook",
+          "operation": "webhook",
+          "schema_digest": "sha256:a336422fe80ed75858837f177e3e30289a8a77013e7ea11f02f91ce1ef7a6f7b"
+        }
+      ]
+    },
+    {
+      "directory": "email-connector",
+      "plugin_id": "org.xelab.email-connector",
+      "kind": "ordinary",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "email.send"
+      ],
+      "dependencies": [
+        "contracts/",
+        "platform-secrets",
+        "smtp-or-email-api"
+      ],
+      "purpose": "正文、模板与受限附件邮件发送",
+      "feature_gates": [
+        "email-transport-profile",
+        "delivery-evidence-recovery"
+      ],
+      "operations": [
+        {
+          "capability_id": "email.send",
+          "operation": "send",
+          "schema_digest": "sha256:1a581100c54e627664bd26f2e4bb18a182d3fbd83dc9fcda9f7a2cec80d148b0"
+        }
+      ]
+    },
+    {
+      "directory": "archive-processor",
+      "plugin_id": "org.xelab.archive-processor",
+      "kind": "ordinary",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "archive.extract",
+        "archive.create"
+      ],
+      "dependencies": [
+        "contracts/",
+        "temporary-storage",
+        "archive-libraries"
+      ],
+      "purpose": "受限归档创建/解压",
+      "feature_gates": [
+        "archive-libraries",
+        "bounded-multi-blob-output"
+      ],
+      "operations": [
+        {
+          "capability_id": "archive.extract",
+          "operation": "extract",
+          "schema_digest": "sha256:07aa7debcec55535b41bdec7efaa118eef90ee07446381fdb29d594ca018e955"
+        },
+        {
+          "capability_id": "archive.create",
+          "operation": "create",
+          "schema_digest": "sha256:6930dcfb667a0985a08ab3b9e0ffad3b92e9994ab41f5f795bd541e003a92607"
+        }
+      ]
+    },
+    {
+      "directory": "ai-reranker",
+      "plugin_id": "org.xelab.ai-reranker",
+      "kind": "ordinary",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "ai.rerank"
+      ],
+      "dependencies": [
+        "contracts/",
+        "candidate-documents",
+        "remote-api-or-cpu-model"
+      ],
+      "purpose": "对候选文档或搜索结果重排",
+      "feature_gates": [
+        "reranker-adapter",
+        "model-artifact-lock"
+      ],
+      "operations": [
+        {
+          "capability_id": "ai.rerank",
+          "operation": "rerank",
+          "schema_digest": "sha256:6749c055dee4a7aab8cb56084e70790e9b7880ef57f45ba341831de6a6cf5eca"
+        }
+      ]
+    },
+    {
+      "directory": "browser-automation",
+      "plugin_id": "org.xelab.browser-automation",
+      "kind": "ordinary",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "browser.navigate",
+        "browser.extract"
+      ],
+      "dependencies": [
+        "contracts/",
+        "browser-runtime",
+        "network-policy",
+        "optional-credential-profile"
+      ],
+      "purpose": "浏览器导航、页面读取和结构化提取",
+      "feature_gates": [
+        "browser-sandbox",
+        "session-authorization",
+        "all-resource-network-interception"
+      ],
+      "operations": [
+        {
+          "capability_id": "browser.navigate",
+          "operation": "navigate",
+          "schema_digest": "sha256:b0c743bd09daf0a5ba04ebf3767f0ca5e6dfd6e7fa4f6bb3f14d6d3b5430eb2f"
+        },
+        {
+          "capability_id": "browser.extract",
+          "operation": "extract",
+          "schema_digest": "sha256:f097033dc23439a8e220a988b0cd7e14ab875b02b7c11318bb87a09517b74454"
+        }
+      ]
+    },
+    {
+      "directory": "git-connector",
+      "plugin_id": "org.xelab.git-connector",
+      "kind": "ordinary",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "git.repository"
+      ],
+      "dependencies": [
+        "contracts/",
+        "git-library-or-client",
+        "repository-address",
+        "optional-secret-profile"
+      ],
+      "purpose": "只读仓库文件、分支和提交查询",
+      "feature_gates": [
+        "git-transport-policy",
+        "repository-profile-acl"
+      ],
+      "operations": [
+        {
+          "capability_id": "git.repository",
+          "operation": "repository",
+          "schema_digest": "sha256:289021e7cf513918420d1985212d5a53a47100261d9342a4ef847ea4c19dbf3a"
+        }
+      ]
+    },
+    {
+      "directory": "rss-reader",
+      "plugin_id": "org.xelab.rss-reader",
+      "kind": "ordinary",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "feed.read"
+      ],
+      "dependencies": [
+        "contracts/",
+        "http.request-or-controlled-egress",
+        "rss-atom-library"
+      ],
+      "purpose": "读取RSS/Atom文章列表",
+      "feature_gates": [
+        "feed-parser",
+        "http-mode-profile"
+      ],
+      "operations": [
+        {
+          "capability_id": "feed.read",
+          "operation": "read",
+          "schema_digest": "sha256:eed1ceb7308ee4eedaeaa95505517d3613c4f7d8b2eb1b69076a822fb06450d4"
+        }
+      ]
+    },
+    {
+      "directory": "micro-json-validator",
+      "plugin_id": "org.xelab.micro-json-validator",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "json.validate"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "restricted-json-schema-validator"
+      ],
+      "purpose": "受限Schema/规则校验",
+      "feature_gates": [
+        "restricted-schema-validator-library"
+      ],
+      "operations": [
+        {
+          "capability_id": "json.validate",
+          "operation": "validate",
+          "schema_digest": "sha256:82cd6bcd7abca076e5d615a962250219d7f133cb03af2cb1470d812ae30866ba"
+        }
+      ]
+    },
+    {
+      "directory": "micro-json-project",
+      "plugin_id": "org.xelab.micro-json-project",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "json.project"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "json-support"
+      ],
+      "purpose": "按JSON Pointer提取重命名投影",
+      "feature_gates": [
+        "json-pointer-library"
+      ],
+      "operations": [
+        {
+          "capability_id": "json.project",
+          "operation": "project",
+          "schema_digest": "sha256:3b2e4264ac459a1a09f6add1a3af1bf73a92ca1a23c829f4005ddbac8f71dc2d"
+        }
+      ]
+    },
+    {
+      "directory": "micro-json-merge",
+      "plugin_id": "org.xelab.micro-json-merge",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "json.merge"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "json-support"
+      ],
+      "purpose": "浅深对象合并与数组冲突规则",
+      "feature_gates": [
+        "json-merge-library"
+      ],
+      "operations": [
+        {
+          "capability_id": "json.merge",
+          "operation": "merge",
+          "schema_digest": "sha256:3f0b2cd39a66f40eff6df1257c20dbaf8f14e0845866aaa6ff24c708c98b0950"
+        }
+      ]
+    },
+    {
+      "directory": "micro-csv-json",
+      "plugin_id": "org.xelab.micro-csv-json",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "convert.csv-json",
+        "convert.json-csv"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "csv-parser-serializer"
+      ],
+      "purpose": "CSV与JSON转换",
+      "feature_gates": [
+        "csv-rfc4180-library"
+      ],
+      "operations": [
+        {
+          "capability_id": "convert.csv-json",
+          "operation": "csv-json",
+          "schema_digest": "sha256:ccc307556bd67f5499df874fd1137f09d7ed076ef66181ee9338d79d32b7c9b0"
+        },
+        {
+          "capability_id": "convert.json-csv",
+          "operation": "json-csv",
+          "schema_digest": "sha256:14326ff1a2bb8bd96cb69a29988913d4a19b5dadd5212916a76ddc0aeaf746ca"
+        }
+      ]
+    },
+    {
+      "directory": "micro-markdown-html",
+      "plugin_id": "org.xelab.micro-markdown-html",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "convert.markdown-html"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "markdown-parser",
+        "html-sanitizer"
+      ],
+      "purpose": "Markdown转清理后HTML",
+      "feature_gates": [
+        "markdown-parser-library",
+        "html-sanitizer-library"
+      ],
+      "operations": [
+        {
+          "capability_id": "convert.markdown-html",
+          "operation": "markdown-html",
+          "schema_digest": "sha256:a8e5ea48b5ec32d45c8e946a13c711df1adf5bcc31304e64416c499e7d37f572"
+        }
+      ]
+    },
+    {
+      "directory": "micro-text-normalizer",
+      "plugin_id": "org.xelab.micro-text-normalizer",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "text.normalize"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "unicode-normalization-library"
+      ],
+      "purpose": "空白换行Unicode规范化",
+      "feature_gates": [
+        "unicode-versioned-library"
+      ],
+      "operations": [
+        {
+          "capability_id": "text.normalize",
+          "operation": "normalize",
+          "schema_digest": "sha256:a056a53837938e2105e0cd5240cdc120360a4cf9eb1d4342d0044e3d41385bb1"
+        }
+      ]
+    },
+    {
+      "directory": "micro-regex-extract",
+      "plugin_id": "org.xelab.micro-regex-extract",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "text.regex-extract"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "restricted-regex-engine"
+      ],
+      "purpose": "受限正则提取",
+      "feature_gates": [
+        "linear-regex-library"
+      ],
+      "operations": [
+        {
+          "capability_id": "text.regex-extract",
+          "operation": "regex-extract",
+          "schema_digest": "sha256:2584c11abd3e2e21814914c79535e9481acd5493c5c28ee4f083dffc32de5953"
+        }
+      ]
+    },
+    {
+      "directory": "micro-datetime-convert",
+      "plugin_id": "org.xelab.micro-datetime-convert",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "datetime.convert"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "datetime-library",
+        "optional-versioned-tzdb"
+      ],
+      "purpose": "日期时间与时区转换",
+      "feature_gates": [
+        "strict-rfc3339-library",
+        "optional-tzdb"
+      ],
+      "operations": [
+        {
+          "capability_id": "datetime.convert",
+          "operation": "convert",
+          "schema_digest": "sha256:f3a09e4f4fee7de15fe6142cc14dab93b7d1061b1d9e34f6d92cc71ff24623ab"
+        }
+      ]
+    },
+    {
+      "directory": "micro-flow-condition",
+      "plugin_id": "org.xelab.micro-flow-condition",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "flow.condition"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "declarative-condition-parser"
+      ],
+      "purpose": "声明式条件判断",
+      "feature_gates": [
+        "condition-ast-library"
+      ],
+      "operations": [
+        {
+          "capability_id": "flow.condition",
+          "operation": "condition",
+          "schema_digest": "sha256:5010ea60d8abbfee8558d65c178c8737a80327289600ca9dbdebc1a047426b00"
+        }
+      ]
+    },
+    {
+      "directory": "micro-flow-map",
+      "plugin_id": "org.xelab.micro-flow-map",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "flow.map"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "json-support"
+      ],
+      "purpose": "字段映射常量默认与简单类型转换",
+      "feature_gates": [
+        "json-pointer-library",
+        "bounded-type-conversion"
+      ],
+      "operations": [
+        {
+          "capability_id": "flow.map",
+          "operation": "map",
+          "schema_digest": "sha256:12ad7eb4cf8e07c68c7a3504aa62863632cf9946ab469277e019e3c04dce4ce0"
+        }
+      ]
+    },
+    {
+      "directory": "micro-flow-filter",
+      "plugin_id": "org.xelab.micro-flow-filter",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "flow.filter"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "declarative-condition-parser"
+      ],
+      "purpose": "声明条件过滤记录集合",
+      "feature_gates": [
+        "condition-ast-library"
+      ],
+      "operations": [
+        {
+          "capability_id": "flow.filter",
+          "operation": "filter",
+          "schema_digest": "sha256:8ef456383c9342c4d2b99f44697dadbba40bc4012eb5ddd58fa964145728db85"
+        }
+      ]
+    },
+    {
+      "directory": "micro-flow-template",
+      "plugin_id": "org.xelab.micro-flow-template",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "flow.template"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "restricted-template-engine"
+      ],
+      "purpose": "受限模板生成文本或结构化值",
+      "feature_gates": [
+        "template-parser-library"
+      ],
+      "operations": [
+        {
+          "capability_id": "flow.template",
+          "operation": "template",
+          "schema_digest": "sha256:9cdaf1a4847edb17cdcbfe425cc9116b6ce294071f354f1559df874b630ea190"
+        }
+      ]
+    },
+    {
+      "directory": "micro-data-redactor",
+      "plugin_id": "org.xelab.micro-data-redactor",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "data.redact"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "redaction-rules",
+        "optional-restricted-regex"
+      ],
+      "purpose": "字段或文本模式脱敏",
+      "feature_gates": [
+        "redaction-library",
+        "optional-linear-regex"
+      ],
+      "operations": [
+        {
+          "capability_id": "data.redact",
+          "operation": "redact",
+          "schema_digest": "sha256:c794a9a19f8d75a24e3d986f955718fe2705b952f9beaa8c507192c912654580"
+        }
+      ]
+    },
+    {
+      "directory": "micro-url-parser",
+      "plugin_id": "org.xelab.micro-url-parser",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "url.parse"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "url-parser"
+      ],
+      "purpose": "URL结构解析，不访问网络",
+      "feature_gates": [
+        "url-parser-library"
+      ],
+      "operations": [
+        {
+          "capability_id": "url.parse",
+          "operation": "parse",
+          "schema_digest": "sha256:0d88d41233e5866a13a384b07638bc598260b586292a53691c08948f411e42e0"
+        }
+      ]
+    },
+    {
+      "directory": "micro-file-metadata",
+      "plugin_id": "org.xelab.micro-file-metadata",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "file.metadata"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "controlled-file-input",
+        "optional-mime-database"
+      ],
+      "purpose": "文件名扩展名大小MIME元数据",
+      "feature_gates": [
+        "declared-descriptor-library",
+        "verified-file-metadata-profile"
+      ],
+      "operations": [
+        {
+          "capability_id": "file.metadata",
+          "operation": "metadata",
+          "schema_digest": "sha256:2699c813743f72b1487fab365108b6eea2623d49ca70058fd2bb73aa9183938e"
+        }
+      ]
+    },
+    {
+      "directory": "micro-hash",
+      "plugin_id": "org.xelab.micro-hash",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "crypto.hash"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "sha256-library"
+      ],
+      "purpose": "SHA256内容摘要",
+      "feature_gates": [
+        "sha256-library"
+      ],
+      "operations": [
+        {
+          "capability_id": "crypto.hash",
+          "operation": "hash",
+          "schema_digest": "sha256:2d3150e78e5a48a599985ae232d65b09e2ed0d95689c5e768980ce7c844e523e"
+        }
+      ]
+    },
+    {
+      "directory": "micro-text-chunk",
+      "plugin_id": "org.xelab.micro-text-chunk",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "text.chunk"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "text-split-rules",
+        "optional-fixed-tokenizer"
+      ],
+      "purpose": "按字符段落精确token或显式估算切分",
+      "feature_gates": [
+        "unicode-split-library",
+        "optional-tokenizer",
+        "token-estimator-library"
+      ],
+      "operations": [
+        {
+          "capability_id": "text.chunk",
+          "operation": "chunk",
+          "schema_digest": "sha256:4c8f16d9a7717000af007cbac0708722b37245ee2df6ae630ff683b7f0c18a1a"
+        }
+      ]
+    },
+    {
+      "directory": "micro-text-encoding",
+      "plugin_id": "org.xelab.micro-text-encoding",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "text.encoding-convert"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "charset-codec-library"
+      ],
+      "purpose": "字符编码转换与解码错误策略",
+      "feature_gates": [
+        "charset-codec-library"
+      ],
+      "operations": [
+        {
+          "capability_id": "text.encoding-convert",
+          "operation": "encoding-convert",
+          "schema_digest": "sha256:3e9686463a7589267170cfcc3cb5a4ea558a3a55d3ec76b1d7e4b65c31941f7f"
+        }
+      ]
+    },
+    {
+      "directory": "micro-xml-json",
+      "plugin_id": "org.xelab.micro-xml-json",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "convert.xml-json"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "secure-xml-parser",
+        "json-support"
+      ],
+      "purpose": "XML与有序显式JSON树互转",
+      "feature_gates": [
+        "secure-xml-library"
+      ],
+      "operations": [
+        {
+          "capability_id": "convert.xml-json",
+          "operation": "xml-json",
+          "schema_digest": "sha256:4501beeb863092195b39f1c7e7e673a33359cdbd2cb1602632457d2dad6ef4b5"
+        }
+      ]
+    },
+    {
+      "directory": "micro-data-sort-group",
+      "plugin_id": "org.xelab.micro-data-sort-group",
+      "kind": "micro",
+      "status": "planned",
+      "contract_version": "0.1.0",
+      "capability_ids": [
+        "data.sort",
+        "data.group"
+      ],
+      "dependencies": [
+        "contracts/",
+        "micro-plugin-runtime/",
+        "structured-json-processing"
+      ],
+      "purpose": "结构化记录稳定排序分组",
+      "feature_gates": [
+        "typed-compare-library",
+        "json-pointer-library"
+      ],
+      "operations": [
+        {
+          "capability_id": "data.sort",
+          "operation": "sort",
+          "schema_digest": "sha256:02aab5568d3609323cc1f8f72b889ced9bd3676cc6d22f63dd8bca71d75a5b4d"
+        },
+        {
+          "capability_id": "data.group",
+          "operation": "group",
+          "schema_digest": "sha256:117c632bc5ca54187c8921b131d2eaae61ec6167128679f5c08cfddefe70b1d3"
+        }
+      ]
+    }
+  ]
+}

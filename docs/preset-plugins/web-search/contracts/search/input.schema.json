@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 20,
+      "default": 10
+    }
+  },
+  "required": [
+    "query"
+  ],
+  "additionalProperties": false,
+  "description": "最多600码点/75空白分词，仅query和limit，无URL或认证字段"
+}

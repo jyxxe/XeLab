@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OAuthError",
+  "type": "object",
+  "description": "OAuth token 端点使用此错误，不使用平台错误包装",
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "type": "string",
+      "enum": [
+        "invalid_request",
+        "invalid_client",
+        "invalid_grant",
+        "unauthorized_client",
+        "unsupported_grant_type",
+        "invalid_scope"
+      ],
+      "description": "OAuth 错误"
+    },
+    "error_description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "无敏感信息的说明"
+    }
+  },
+  "required": [
+    "error"
+  ]
+}

@@ -1,0 +1,47 @@
+syntax = "proto3";
+package xelab.v1;
+import "xelab/v1/common.proto";
+
+// 仅允许当前节点内核身份调用；插件不得自行注册成可用提供者。
+service PluginLifecycle {
+  rpc Describe(DescribeRequest) returns (DescribeResponse);
+  rpc Initialize(InitializeRequest) returns (InitializeResponse);
+  rpc GetHealth(HealthRequest) returns (HealthResponse);
+  rpc Drain(DrainRequest) returns (DrainResponse);
+  rpc Shutdown(ShutdownRequest) returns (Ack);
+}
+message DescribeRequest { RpcContext context = 1; }
+message DescribeResponse {
+  // 与已验证 Manifest 完全一致；UTF-8 JSON，最大 1 MiB。
+  bytes manifest_json = 1;
+  string manifest_digest = 2;
+}
+message InitializeRequest {
+  RpcContext context = 1;
+  string deployment_id = 2;
+  string instance_id = 3;
+  uint64 generation = 4;
+  // 仅普通配置，不包含密钥明文；按 Manifest.config_schema 校验。
+  bytes config_json = 5;
+  string config_digest = 6;
+  uint64 approval_revision = 7;
+}
+message InitializeResponse { uint64 observed_generation = 1; bool initialized = 2; }
+message HealthRequest { RpcContext context = 1; }
+message CapabilityHealth {
+  ContractRef contract = 1;
+  bool ready = 2;
+  string reason_code = 3;
+}
+message HealthResponse {
+  bool alive = 1;
+  uint64 observed_generation = 2;
+  repeated CapabilityHealth capabilities = 3;
+}
+message DrainRequest { RpcContext context = 1; uint32 grace_ms = 2; }
+message DrainResponse {
+  bool accepting_requests = 1; // 成功后必须 false。
+  uint32 active_calls = 2;
+  bool drained = 3;
+}
+message ShutdownRequest { RpcContext context = 1; uint32 grace_ms = 2; }

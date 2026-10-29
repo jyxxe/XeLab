@@ -1,0 +1,14 @@
+{
+  "installation_id": "00000000-0000-4000-8000-000000000001",
+  "display_name": "echo",
+  "enabled": false,
+  "replicas": 1,
+  "limits": {
+    "cpu_millis": 500,
+    "memory_bytes": 268435456,
+    "ephemeral_bytes": 67108864,
+    "pids": 64
+  },
+  "config": {},
+  "volume_ids": []
+}

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UiWidgetSize",
+  "type": "object",
+  "description": "组件占用桌面网格，1格=96逻辑像素，间距12；不控制全局桌面",
+  "additionalProperties": false,
+  "properties": {
+    "columns": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8,
+      "description": "默认列数"
+    },
+    "rows": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8,
+      "description": "默认行数"
+    },
+    "min_columns": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8,
+      "description": "最小列数"
+    },
+    "min_rows": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8,
+      "description": "最小行数"
+    },
+    "max_columns": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8,
+      "description": "最大列数"
+    },
+    "max_rows": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8,
+      "description": "最大行数"
+    }
+  },
+  "required": [
+    "columns",
+    "rows",
+    "min_columns",
+    "min_rows",
+    "max_columns",
+    "max_rows"
+  ]
+}

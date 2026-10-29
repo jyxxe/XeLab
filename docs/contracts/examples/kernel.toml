@@ -1,0 +1,40 @@
+# 结构示例；需要容量高于内核与系统预留总和的 Linux 宿主。
+[server]
+listen = "127.0.0.1:8443"
+public_origin = "https://kernel.example.org:8443"
+tls_cert_file = "/etc/xelab/tls/server.crt"
+tls_key_file = "/etc/xelab/tls/server.key"
+unix_socket = "/run/xelab/control.sock"
+host_rpc_listen = "172.30.0.1:7443"
+[database]
+dsn_file = "/etc/xelab/secret/database.dsn"
+[runtime]
+socket = "/run/containerd/containerd.sock"
+namespace = "xelab"
+network_cidr = "172.30.0.0/24"
+[resources]
+kernel_cpu_millis = 4000
+kernel_memory_bytes = 17179869184
+system_cpu_millis = 2000
+system_memory_bytes = 4294967296
+shutdown_grace_ms = 30000
+[storage]
+root_path = "/var/lib/xelab"
+quota_backend = "xfs_project"
+off_host_backup_uri = "s3://xelab-backups/node-01/"
+[security]
+token_hmac_key_file = "/etc/xelab/secret/token-hmac.key"
+master_key_file = "/etc/xelab/secret/master.key"
+workload_ca_cert_file = "/etc/xelab/identity/ca.crt"
+workload_ca_key_file = "/etc/xelab/identity/ca.key"
+[quota_defaults]
+maximum_depth = 4
+maximum_descendants = 20
+maximum_api_keys = 50
+maximum_concurrent_calls = 16
+daily_calls = 10000
+# 可选：DNS/外部TLS需部署者配置；缺失时仅UI贡献不可用。
+[ui_gateway]
+base_domain = "plugins.example.org"
+public_port = 443
+shell_origins = ["https://webui.example.org"]

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "endpoint_alias": {
+      "type": "string",
+      "description": "固定批准的连接/路由别名",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "authenticated_event_id": {
+      "type": "string",
+      "description": "UUID",
+      "minLength": 1,
+      "maxLength": 36,
+      "format": "uuid"
+    },
+    "source_alias": {
+      "type": "string",
+      "description": "固定批准的连接/路由别名",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "event_id": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "event_type": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "payload": {
+      "$ref": "../../../planned/shared.schema.json#/$defs/JsonValue"
+    }
+  },
+  "required": [
+    "endpoint_alias",
+    "authenticated_event_id",
+    "source_alias",
+    "event_id",
+    "event_type",
+    "payload"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "message_id": {
+      "type": "string",
+      "description": "UUID",
+      "minLength": 1,
+      "maxLength": 36,
+      "format": "uuid"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "sent",
+        "failed",
+        "unknown"
+      ],
+      "description": ""
+    },
+    "provider_message_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "description": "",
+          "minLength": 0,
+          "maxLength": 256
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "accepted_recipients": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "",
+        "minLength": 1,
+        "maxLength": 320
+      },
+      "minItems": 0,
+      "maxItems": 300
+    },
+    "rejected_recipients": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "",
+        "minLength": 1,
+        "maxLength": 320
+      },
+      "minItems": 0,
+      "maxItems": 300
+    }
+  },
+  "required": [
+    "message_id",
+    "status",
+    "provider_message_id",
+    "accepted_recipients",
+    "rejected_recipients"
+  ],
+  "additionalProperties": false
+}

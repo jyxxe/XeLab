@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "matched": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [
+    "matched"
+  ],
+  "additionalProperties": false
+}

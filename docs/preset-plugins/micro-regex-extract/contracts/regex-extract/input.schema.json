@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "text": {
+      "type": "string",
+      "description": "",
+      "minLength": 0,
+      "maxLength": 262144
+    },
+    "pattern": {
+      "type": "string",
+      "description": "UTF8<=4096bytes",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "flags": {
+      "type": "string",
+      "description": "仅ims且不重复",
+      "minLength": 0,
+      "maxLength": 3,
+      "default": ""
+    },
+    "max_matches": {
+      "type": "integer",
+      "description": "",
+      "minimum": 1,
+      "maximum": 1000,
+      "default": 100
+    }
+  },
+  "required": [
+    "text",
+    "pattern"
+  ],
+  "additionalProperties": false
+}

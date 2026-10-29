@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MicroExecutionLimits",
+  "type": "object",
+  "description": "获批执行预算，必须同时不超过版本声明和MPR上限",
+  "properties": {
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 30000,
+      "description": "含Prepare/排队/编译/执行的总期限",
+      "default": 2000
+    },
+    "heap_bytes": {
+      "type": "integer",
+      "minimum": 1048576,
+      "maximum": 67108864,
+      "description": "每VM可计量堆上限；不是独立cgroup RSS",
+      "default": 16777216
+    },
+    "stack_bytes": {
+      "type": "integer",
+      "minimum": 65536,
+      "maximum": 1048576,
+      "description": "每VM堆栈硬上限",
+      "default": 1048576
+    },
+    "maximum_input_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576,
+      "description": "UTF8 JSON输入字节上限",
+      "default": 1048576
+    },
+    "maximum_output_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576,
+      "description": "完整UTF8 JSON输出字节上限",
+      "default": 1048576
+    },
+    "maximum_stderr_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65536,
+      "description": "独立收集stderr上限；超出截断并标记",
+      "default": 65536
+    },
+    "max_active_requests": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4,
+      "description": "同微部署并发，再与父实例活动池求交",
+      "default": 1
+    }
+  },
+  "required": [
+    "timeout_ms",
+    "heap_bytes",
+    "stack_bytes",
+    "maximum_input_bytes",
+    "maximum_output_bytes",
+    "maximum_stderr_bytes",
+    "max_active_requests"
+  ],
+  "additionalProperties": false
+}

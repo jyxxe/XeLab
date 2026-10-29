@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MicroBusinessError",
+  "type": "object",
+  "description": "微制品声明的业务错误；不得使用平台保留码或认证状态",
+  "properties": {
+    "code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "平台保留错误码之外的稳定业务码",
+      "pattern": "^[A-Z][A-Z0-9_]{0,79}$",
+      "example": "SEARCH_NO_PROVIDER"
+    },
+    "http_status": {
+      "type": "integer",
+      "enum": [
+        400,
+        409,
+        413,
+        429,
+        502,
+        503,
+        504
+      ]
+    },
+    "retryable": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [
+    "code",
+    "http_status",
+    "retryable"
+  ],
+  "additionalProperties": false
+}

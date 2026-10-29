@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EmbeddingResponse",
+  "type": "object",
+  "description": "批量向量结果",
+  "additionalProperties": false,
+  "properties": {
+    "object": {
+      "type": "string",
+      "enum": [
+        "list"
+      ],
+      "description": "类型"
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "模型别名"
+    },
+    "data": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/EmbeddingItem"
+      },
+      "minItems": 1,
+      "maxItems": 128,
+      "description": "逐输入对应的向量"
+    },
+    "usage": {
+      "$ref": "../openapi.json#/components/schemas/TokenUsage"
+    }
+  },
+  "required": [
+    "object",
+    "model",
+    "data",
+    "usage"
+  ]
+}

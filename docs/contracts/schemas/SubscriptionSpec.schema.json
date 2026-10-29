@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SubscriptionSpec",
+  "type": "object",
+  "description": "拉取式事件订阅；禁止任意外部 webhook 目标",
+  "additionalProperties": false,
+  "properties": {
+    "topic": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "description": "精确主题，不支持通配符"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "订阅名称"
+    },
+    "start": {
+      "type": "string",
+      "enum": [
+        "latest",
+        "earliest"
+      ],
+      "description": "起点",
+      "default": "latest"
+    },
+    "maximum_attempts": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10,
+      "description": "投递次数上限",
+      "default": 5
+    }
+  },
+  "required": [
+    "topic",
+    "name"
+  ]
+}

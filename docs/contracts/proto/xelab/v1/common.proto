@@ -1,0 +1,42 @@
+syntax = "proto3";
+package xelab.v1;
+
+// 所有 string *_id 为非空 UUID，plugin_id/能力名除外；计数不得超过 2^53-1。
+// 认证工作负载来自 mTLS/受控 UDS peer，不接受消息正文自报身份。
+message RpcContext {
+  string request_id = 1;
+  // 内核签发并逐次验证的不透明受限委托句柄；纯生命周期调用为空。
+  string delegation_token = 2;
+  // 请求方期限上限，接收方取它和 gRPC deadline/策略上限的最小值。
+  int64 deadline_unix_ms = 3;
+  // 有副作用调用必需，作用域和持久化规则见 communication/idempotency.md。
+  string idempotency_key = 4;
+  // 仅内核代理填写；插件收到的内核通道上下文可用于业务对象归属检查。
+  // 插件发给 HostService 时由内核重新从 token 和实际 peer 推导并核对。
+  string subject_id = 5;
+  string actor_instance_id = 6;
+}
+message ContractRef {
+  string name = 1;
+  string version = 2;
+  string schema_digest = 3;
+}
+message ErrorDetail {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+  uint32 retry_after_ms = 4;
+  repeated FieldViolation violations = 5;
+}
+message FieldViolation { string path = 1; string reason = 2; }
+message Empty {}
+message Ack { string request_id = 1; bool accepted = 2; }
+enum ExecutionState {
+  EXECUTION_STATE_UNSPECIFIED = 0;
+  EXECUTION_STATE_ACCEPTED = 1;
+  EXECUTION_STATE_RUNNING = 2;
+  EXECUTION_STATE_SUCCEEDED = 3;
+  EXECUTION_STATE_FAILED = 4;
+  EXECUTION_STATE_CANCELED = 5;
+  EXECUTION_STATE_UNKNOWN = 6;
+}

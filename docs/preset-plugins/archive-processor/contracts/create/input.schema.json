@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "format": {
+      "type": "string",
+      "enum": [
+        "zip",
+        "tar"
+      ],
+      "description": ""
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "blob_id": {
+            "type": "string",
+            "description": "UUID",
+            "minLength": 1,
+            "maxLength": 36,
+            "format": "uuid",
+            "x-xelab-resource-kind": "blob"
+          }
+        },
+        "required": [
+          "path",
+          "blob_id"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 1000
+    }
+  },
+  "required": [
+    "format",
+    "entries"
+  ],
+  "additionalProperties": false
+}

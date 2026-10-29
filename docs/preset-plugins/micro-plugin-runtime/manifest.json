@@ -1,0 +1,122 @@
+{
+  "manifest_version": "1",
+  "plugin_id": "org.xelab.micro-plugin-runtime",
+  "version": "1.1.0",
+  "publisher_id": "00000000-0000-4000-8000-000000000001",
+  "host_api_major": 1,
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "entrypoint": [
+    "/usr/local/bin/plugin"
+  ],
+  "capabilities": [],
+  "dependencies": [],
+  "requested_rules": [
+    {
+      "rule": {
+        "action": "micro.http.request",
+        "resource": {
+          "kind": "micro_plugin",
+          "match": "all"
+        }
+      },
+      "required": false
+    }
+  ],
+  "minimum_resources": {
+    "cpu_millis": 1000,
+    "memory_bytes": 1073741824,
+    "ephemeral_bytes": 268435456,
+    "pids": 128
+  },
+  "health": {
+    "startup_timeout_ms": 180000,
+    "interval_ms": 5000,
+    "timeout_ms": 2000,
+    "failure_threshold": 3
+  },
+  "volumes": [],
+  "routes": [],
+  "config_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "仅受限JS；默认资源建议尚需实现实测",
+    "properties": {
+      "engine": {
+        "const": "javascript"
+      },
+      "protocol": {
+        "const": "json-stdio-v1"
+      },
+      "maximum_active_requests": {
+        "const": 4
+      },
+      "maximum_queue_requests": {
+        "const": 32
+      },
+      "queue_timeout_ms": {
+        "const": 5000
+      },
+      "artifact_cache_max_bytes": {
+        "type": "integer",
+        "minimum": 1048576,
+        "maximum": 536870912,
+        "default": 268435456,
+        "description": "v1准备执行依赖缓存驻留，配置范围1..512MiB；容量不足明确拒绝Prepare，不能无限重准备"
+      },
+      "artifact_cache_max_entries": {
+        "const": 128
+      },
+      "artifact_cache_ttl_seconds": {
+        "const": 300
+      },
+      "worker_address_space_bytes": {
+        "const": 134217728
+      },
+      "maximum_sandbox_bytes": {
+        "const": 536870912
+      },
+      "control_memory_reserve_bytes": {
+        "const": 134217728
+      }
+    },
+    "required": [
+      "engine",
+      "protocol",
+      "maximum_active_requests",
+      "maximum_queue_requests",
+      "queue_timeout_ms",
+      "artifact_cache_max_bytes",
+      "artifact_cache_max_entries",
+      "artifact_cache_ttl_seconds",
+      "worker_address_space_bytes",
+      "maximum_sandbox_bytes",
+      "control_memory_reserve_bytes"
+    ],
+    "additionalProperties": false
+  },
+  "data_schema_version": "none",
+  "upgrade_strategy": "recreate",
+  "skills": [],
+  "business_entry": "skill_required",
+  "concurrency": {
+    "max_active_requests": 4,
+    "max_queue_requests": 32,
+    "queue_timeout_ms": 5000
+  },
+  "micro_runtime": {
+    "api_major": 1,
+    "engines": [
+      "javascript"
+    ],
+    "protocols": [
+      "json-stdio-v1"
+    ],
+    "execution_profiles": [
+      "pure-json-v1",
+      "controlled-http-v1"
+    ]
+  }
+}

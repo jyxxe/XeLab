@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Backup",
+  "type": "object",
+  "description": "可恢复备份清单",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "乐观锁版本，每次持久化变更加一"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "创建时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "updated_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "最近变更时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "volume_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "资源唯一标识",
+        "format": "uuid",
+        "example": "00000000-0000-4000-8000-000000000001"
+      },
+      "minItems": 1,
+      "maxItems": 16,
+      "description": "来源卷"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "creating",
+        "ready",
+        "failed",
+        "expired"
+      ],
+      "description": "状态"
+    },
+    "manifest_digest": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 71,
+          "description": "制品或内容 SHA-256 摘要",
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "制品或内容 SHA-256 摘要"
+    },
+    "created_by": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "off_host": {
+      "type": "boolean",
+      "description": "必须为 true 才通过生产验收"
+    }
+  },
+  "required": [
+    "id",
+    "revision",
+    "created_at",
+    "updated_at",
+    "deployment_id",
+    "volume_ids",
+    "state",
+    "manifest_digest",
+    "created_by",
+    "off_host"
+  ]
+}

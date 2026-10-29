@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StreamEvent",
+  "type": "object",
+  "description": "SSE data 对象；terminal 只出现一次",
+  "additionalProperties": false,
+  "properties": {
+    "call_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "从 1 开始单调递增"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "item",
+        "completed",
+        "failed",
+        "canceled"
+      ],
+      "description": "事件类型"
+    },
+    "payload": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue"
+    },
+    "terminal": {
+      "type": "boolean",
+      "description": "结束事件标记"
+    }
+  },
+  "required": [
+    "call_id",
+    "sequence",
+    "kind",
+    "payload",
+    "terminal"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "accepted",
+              "item"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "terminal": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "completed",
+              "failed",
+              "canceled"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "terminal": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "accepted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "completed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "../openapi.json#/components/schemas/CallResult"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "failed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "../openapi.json#/components/schemas/ErrorDetail"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "canceled"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "reason"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "reason": {
+                "enum": [
+                  "requested",
+                  "deadline",
+                  "authorization",
+                  "disconnected"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

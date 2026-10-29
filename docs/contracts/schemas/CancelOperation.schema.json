@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CancelOperation",
+  "type": "object",
+  "description": "请求取消；已提交的不可逆步骤不能保证撤回",
+  "additionalProperties": false,
+  "properties": {
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "取消原因"
+    }
+  },
+  "required": []
+}

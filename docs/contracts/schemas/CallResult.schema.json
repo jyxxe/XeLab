@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CallResult",
+  "type": "object",
+  "description": "非流式结果；micro调用必须附全部微绑定/制品标识，contract使用候选Skill的name/version/definition_digest",
+  "additionalProperties": false,
+  "properties": {
+    "call_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "contract": {
+      "$ref": "../openapi.json#/components/schemas/ContractRef"
+    },
+    "provider_instance_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "output": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue"
+    },
+    "completed_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "完成时间",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "skill_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "经 Skill 调用时必有；直接能力调用省略",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "skill_definition_digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 71,
+      "description": "制品或内容 SHA-256 摘要",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "micro_version_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "micro_deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "package_digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 71,
+      "description": "制品或内容 SHA-256 摘要",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "micro_plugin_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    }
+  },
+  "required": [
+    "call_id",
+    "contract",
+    "provider_instance_id",
+    "output",
+    "completed_at"
+  ],
+  "dependentRequired": {
+    "micro_plugin_id": [
+      "micro_version_id",
+      "micro_deployment_id",
+      "package_digest",
+      "skill_id",
+      "skill_definition_digest"
+    ],
+    "micro_version_id": [
+      "micro_plugin_id",
+      "micro_deployment_id",
+      "package_digest",
+      "skill_id",
+      "skill_definition_digest"
+    ],
+    "micro_deployment_id": [
+      "micro_plugin_id",
+      "micro_version_id",
+      "package_digest",
+      "skill_id",
+      "skill_definition_digest"
+    ],
+    "package_digest": [
+      "micro_plugin_id",
+      "micro_version_id",
+      "micro_deployment_id",
+      "skill_id",
+      "skill_definition_digest"
+    ]
+  }
+}

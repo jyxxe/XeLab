@@ -1,0 +1,190 @@
+{
+  "name": "org.xelab.knowledge-base.rows-upsert",
+  "version": "2.0.0",
+  "description": "原子写入或更新行",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "批量 CAS",
+    "properties": {
+      "table_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "UUID",
+        "format": "uuid"
+      },
+      "expected_schema_revision": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991,
+        "description": "CAS，创建/删除等另见语义"
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "replace",
+          "patch"
+        ],
+        "description": "replace 全量替换、patch 只改给定列",
+        "default": "replace"
+      },
+      "rows": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "description": "CAS 行写入",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 36,
+              "description": "可省略以服务端生成；更新必须给出",
+              "format": "uuid"
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "0=必须新建，>0=精确当前版本",
+              "default": 0
+            },
+            "values": {
+              "type": "object",
+              "description": "数据按列 type 校验",
+              "additionalProperties": {
+                "type": [
+                  "object",
+                  "array",
+                  "string",
+                  "number",
+                  "boolean",
+                  "null"
+                ],
+                "description": "业务 JSON，按数据列类型继续校验"
+              },
+              "maxProperties": 128
+            }
+          },
+          "required": [
+            "values"
+          ],
+          "additionalProperties": false
+        },
+        "description": "同表最多64行",
+        "minItems": 1,
+        "maxItems": 64
+      }
+    },
+    "required": [
+      "table_id",
+      "expected_schema_revision",
+      "rows"
+    ],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "提交结果",
+    "properties": {
+      "table_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "UUID",
+        "format": "uuid"
+      },
+      "data_revision": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991,
+        "description": "新水位"
+      },
+      "rows": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "description": "一行数据；values 由表的列类型校验",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 36,
+              "description": "UUID",
+              "format": "uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991,
+              "description": "行版本"
+            },
+            "values": {
+              "type": "object",
+              "description": "列名到类型化值",
+              "additionalProperties": {
+                "type": [
+                  "object",
+                  "array",
+                  "string",
+                  "number",
+                  "boolean",
+                  "null"
+                ],
+                "description": "业务 JSON，按数据列类型继续校验"
+              },
+              "maxProperties": 128
+            }
+          },
+          "required": [
+            "id",
+            "revision",
+            "values"
+          ],
+          "additionalProperties": false
+        },
+        "description": "完整提交行",
+        "minItems": 1,
+        "maxItems": 64
+      },
+      "pending_vector_fields": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "字段 ID，不随列重命名改变",
+          "format": "uuid"
+        },
+        "description": "发生向量待更新的字段",
+        "minItems": 0,
+        "maxItems": 128
+      }
+    },
+    "required": [
+      "table_id",
+      "data_revision",
+      "rows",
+      "pending_vector_fields"
+    ],
+    "additionalProperties": false
+  },
+  "stream_item_schema": null,
+  "target": {
+    "kind": "capability",
+    "plugin_id": "org.xelab.knowledge-base",
+    "contract": {
+      "name": "data.kb.rows.upsert",
+      "version": "1.0.0",
+      "schema_digest": "sha256:46ae7acda55c872d575c51e261e9b76c57dc3e9d3e9cadc353bad9cdb2c6326d"
+    }
+  },
+  "mapping": "identity",
+  "maximum_timeout_ms": 300000,
+  "input_blobs": false,
+  "tags": [
+    "preset",
+    "knowledge-base"
+  ]
+}

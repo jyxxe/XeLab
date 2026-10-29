@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeploymentPatch",
+  "type": "object",
+  "description": "PUT 完整期望配置；独立通过 ETag 控制并发",
+  "additionalProperties": false,
+  "properties": {
+    "spec": {
+      "$ref": "../openapi.json#/components/schemas/DeploymentSpec"
+    }
+  },
+  "required": [
+    "spec"
+  ]
+}

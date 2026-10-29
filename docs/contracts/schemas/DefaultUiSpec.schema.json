@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DefaultUiSpec",
+  "type": "object",
+  "description": "平台默认界面选择",
+  "additionalProperties": false,
+  "properties": {
+    "deployment_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "设为空关闭默认 UI 跳转",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "设为空关闭默认 UI 跳转"
+    }
+  },
+  "required": [
+    "deployment_id"
+  ]
+}

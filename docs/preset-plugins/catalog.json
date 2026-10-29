@@ -1,0 +1,168 @@
+{
+  "version": "2.6.0",
+  "presets": [
+    {
+      "directory": "webui",
+      "plugin_id": "org.xelab.webui",
+      "manifest": "manifest.json",
+      "defaults": "defaults.json",
+      "deployment_template": "deployment.template.json",
+      "default_limits": {
+        "cpu_millis": 500,
+        "memory_bytes": 536870912,
+        "ephemeral_bytes": 268435456,
+        "pids": 128
+      },
+      "max_active_requests": 32,
+      "skills": [],
+      "status": "design_unbenchmarked"
+    },
+    {
+      "directory": "embedding-gemma-text-8",
+      "plugin_id": "org.xelab.embedding-gemma.text-8",
+      "manifest": "manifest.json",
+      "defaults": "defaults.json",
+      "deployment_template": "deployment.template.json",
+      "default_limits": {
+        "cpu_millis": 1000,
+        "memory_bytes": 4294967296,
+        "ephemeral_bytes": 1073741824,
+        "pids": 128
+      },
+      "max_active_requests": 8,
+      "skills": [
+        "org.xelab.embedding-gemma.text-8.embed"
+      ],
+      "status": "design_unbenchmarked"
+    },
+    {
+      "directory": "embedding-gemma-text-1",
+      "plugin_id": "org.xelab.embedding-gemma.text-1",
+      "manifest": "manifest.json",
+      "defaults": "defaults.json",
+      "deployment_template": "deployment.template.json",
+      "default_limits": {
+        "cpu_millis": 2000,
+        "memory_bytes": 4294967296,
+        "ephemeral_bytes": 1073741824,
+        "pids": 128
+      },
+      "max_active_requests": 1,
+      "skills": [
+        "org.xelab.embedding-gemma.text-1.embed"
+      ],
+      "status": "design_unbenchmarked"
+    },
+    {
+      "directory": "embedding-gemma-multimodal-1",
+      "plugin_id": "org.xelab.embedding-gemma.multimodal-1",
+      "manifest": "manifest.json",
+      "defaults": "defaults.json",
+      "deployment_template": "deployment.template.json",
+      "default_limits": {
+        "cpu_millis": 1000,
+        "memory_bytes": 6442450944,
+        "ephemeral_bytes": 1073741824,
+        "pids": 128
+      },
+      "max_active_requests": 1,
+      "skills": [
+        "org.xelab.embedding-gemma.multimodal-1.embed"
+      ],
+      "status": "design_unbenchmarked"
+    },
+    {
+      "directory": "knowledge-base",
+      "plugin_id": "org.xelab.knowledge-base",
+      "manifest": "manifest.json",
+      "defaults": "defaults.json",
+      "deployment_template": "deployment.template.json",
+      "default_limits": {
+        "cpu_millis": 2000,
+        "memory_bytes": 4294967296,
+        "ephemeral_bytes": 1073741824,
+        "pids": 128
+      },
+      "default_data_volume_bytes": 21474836480,
+      "max_active_requests": 8,
+      "skills": [
+        "org.xelab.knowledge-base.table-create",
+        "org.xelab.knowledge-base.table-list",
+        "org.xelab.knowledge-base.table-get",
+        "org.xelab.knowledge-base.table-alter",
+        "org.xelab.knowledge-base.table-drop",
+        "org.xelab.knowledge-base.rows-upsert",
+        "org.xelab.knowledge-base.rows-delete",
+        "org.xelab.knowledge-base.rows-query",
+        "org.xelab.knowledge-base.media-import",
+        "org.xelab.knowledge-base.media-export",
+        "org.xelab.knowledge-base.vector-configure",
+        "org.xelab.knowledge-base.vector-status",
+        "org.xelab.knowledge-base.vector-reindex",
+        "org.xelab.knowledge-base.vector-drop",
+        "org.xelab.knowledge-base.rows-get"
+      ],
+      "status": "design_unbenchmarked"
+    },
+    {
+      "directory": "micro-plugin-runtime",
+      "plugin_id": "org.xelab.micro-plugin-runtime",
+      "manifest": "manifest.json",
+      "defaults": "defaults.json",
+      "deployment_template": "deployment.template.json",
+      "default_limits": {
+        "cpu_millis": 1000,
+        "memory_bytes": 1073741824,
+        "ephemeral_bytes": 268435456,
+        "pids": 128
+      },
+      "max_active_requests": 4,
+      "skills": [],
+      "status": "design_unbenchmarked"
+    },
+    {
+      "directory": "object-storage",
+      "plugin_id": "org.xelab.object-storage",
+      "manifest": "manifest.json",
+      "defaults": "defaults.json",
+      "deployment_template": "deployment.template.json",
+      "default_limits": {
+        "cpu_millis": 1000,
+        "memory_bytes": 1073741824,
+        "ephemeral_bytes": 268435456,
+        "pids": 128
+      },
+      "default_data_volume_bytes": 21474836480,
+      "max_active_requests": 4,
+      "skills": [
+        "org.xelab.object-storage.object-put",
+        "org.xelab.object-storage.object-list",
+        "org.xelab.object-storage.object-stat",
+        "org.xelab.object-storage.object-export",
+        "org.xelab.object-storage.object-delete",
+        "org.xelab.object-storage.usage-get"
+      ],
+      "status": "design_unbenchmarked"
+    }
+  ],
+  "micro_presets": [
+    {
+      "directory": "web-search",
+      "preset_id": "org.xelab.web-search",
+      "kind": "micro",
+      "runtime_plugin_id": "org.xelab.micro-plugin-runtime",
+      "manifest": "micro-manifest.json",
+      "artifact": "artifact.json",
+      "defaults": "defaults.json",
+      "defaults_schema": "defaults.schema.json",
+      "deployment_template": "micro-deployment.template.json",
+      "business_contract": {
+        "name": "web.search",
+        "version": "1.0.0",
+        "schema_digest": "sha256:32ef55dff492a743d558275641670533add2e2291828973dd952e59425474384"
+      },
+      "status": "design_unbenchmarked"
+    }
+  ],
+  "planned_catalog": "planned-catalog.json"
+}

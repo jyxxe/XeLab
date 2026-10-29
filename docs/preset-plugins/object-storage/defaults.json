@@ -1,0 +1,11 @@
+{
+  "engine": "sqlite",
+  "data_path": "/data/objects",
+  "maximum_object_bytes": 67108864,
+  "maximum_active_requests": 4,
+  "default_user_quota_bytes": 1073741824,
+  "default_user_max_objects": 10000,
+  "deployment_storage_budget_bytes": 17179869184,
+  "idempotency_ttl_seconds": 86400,
+  "list_cursor_ttl_seconds": 900
+}

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ChatRequest",
+  "type": "object",
+  "description": "平台定义的 chat/completions 文本子集；不支持字段拒绝，不静默丢弃",
+  "additionalProperties": false,
+  "properties": {
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "管理员配置的模型别名"
+    },
+    "messages": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/TextMessage"
+      },
+      "minItems": 1,
+      "maxItems": 256,
+      "description": "会话消息"
+    },
+    "stream": {
+      "type": "boolean",
+      "description": "默认 false",
+      "default": false
+    },
+    "temperature": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 2,
+      "description": "采样温度，默认 1",
+      "default": 1
+    },
+    "max_tokens": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 32768,
+      "description": "生成 token 上限",
+      "default": 1024
+    }
+  },
+  "required": [
+    "model",
+    "messages"
+  ]
+}

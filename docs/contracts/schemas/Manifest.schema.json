@@ -1,0 +1,259 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Manifest",
+  "type": "object",
+  "description": "OCI 镜像内 /xelab/plugin.json；未知字段拒绝",
+  "additionalProperties": false,
+  "properties": {
+    "manifest_version": {
+      "type": "string",
+      "enum": [
+        "1"
+      ],
+      "description": "清单版本"
+    },
+    "plugin_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "插件稳定 ID；不含版本",
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+      "example": "org.xelab.echo"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "SemVer 2.0.0；版本约束语法见插件版本文档",
+      "example": "1.0.0",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+    },
+    "publisher_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "host_api_major": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1,
+      "description": "宿主 API 主版本"
+    },
+    "platforms": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "linux/amd64",
+          "linux/arm64"
+        ],
+        "description": "本版支持的平台"
+      },
+      "minItems": 1,
+      "maxItems": 2,
+      "description": "可运行平台"
+    },
+    "entrypoint": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024,
+        "description": "程序或参数，禁止 shell 拼接"
+      },
+      "minItems": 1,
+      "maxItems": 64,
+      "description": "OCI argv"
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/CapabilityContract"
+      },
+      "minItems": 0,
+      "maxItems": 64,
+      "description": "提供的契约"
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/DependencySpec"
+      },
+      "minItems": 0,
+      "maxItems": 64,
+      "description": "依赖"
+    },
+    "requested_rules": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/PermissionRequest"
+      },
+      "minItems": 0,
+      "maxItems": 256,
+      "description": "插件宿主权限申请"
+    },
+    "minimum_resources": {
+      "$ref": "../openapi.json#/components/schemas/ResourceLimits"
+    },
+    "health": {
+      "$ref": "../openapi.json#/components/schemas/HealthCheckSpec"
+    },
+    "volumes": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/VolumeMountSpec"
+      },
+      "minItems": 0,
+      "maxItems": 16,
+      "description": "声明卷"
+    },
+    "routes": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/RouteSpec"
+      },
+      "minItems": 0,
+      "maxItems": 32,
+      "description": "HTTP 路由"
+    },
+    "webui": {
+      "$ref": "../openapi.json#/components/schemas/WebUiSpec"
+    },
+    "config_schema": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue"
+    },
+    "data_schema_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "有状态数据格式；无状态填 none"
+    },
+    "upgrade_strategy": {
+      "type": "string",
+      "enum": [
+        "recreate",
+        "parallel_compatible"
+      ],
+      "description": "recreate 适用于独占可写数据"
+    },
+    "event_topics": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/EventTopicSpec"
+      },
+      "minItems": 0,
+      "maxItems": 32,
+      "description": "声明发布的事件主题契约"
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          {
+            "$ref": "../openapi.json#/components/schemas/SkillDefinition"
+          },
+          {
+            "properties": {
+              "target": {
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "capability",
+                      "http"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "description": "制品签名覆盖的候选 Skill 定义；安装后不自动启用",
+      "minItems": 0,
+      "maxItems": 64
+    },
+    "business_entry": {
+      "type": "string",
+      "description": "业务必须经 Skill 时，裸调用不得绕过",
+      "enum": [
+        "direct",
+        "skill_required"
+      ],
+      "default": "direct"
+    },
+    "concurrency": {
+      "type": "object",
+      "description": "实例业务共享并发池；探针和生命周期独立",
+      "properties": {
+        "max_active_requests": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256,
+          "description": "真正活动处理请求上限"
+        },
+        "max_queue_requests": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024,
+          "description": "等待队列上限"
+        },
+        "queue_timeout_ms": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 60000,
+          "description": "等待上限，不延长整体期限"
+        }
+      },
+      "required": [
+        "max_active_requests",
+        "max_queue_requests",
+        "queue_timeout_ms"
+      ],
+      "additionalProperties": false
+    },
+    "ui": {
+      "$ref": "../openapi.json#/components/schemas/PluginUiSpec"
+    },
+    "micro_runtime": {
+      "$ref": "../openapi.json#/components/schemas/MicroRuntimeDescriptor"
+    }
+  },
+  "required": [
+    "manifest_version",
+    "plugin_id",
+    "version",
+    "publisher_id",
+    "host_api_major",
+    "platforms",
+    "entrypoint",
+    "capabilities",
+    "dependencies",
+    "requested_rules",
+    "minimum_resources",
+    "health",
+    "volumes",
+    "routes",
+    "config_schema",
+    "data_schema_version",
+    "upgrade_strategy"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "micro_runtime"
+        ]
+      },
+      "then": {
+        "properties": {
+          "plugin_id": {
+            "maxLength": 113
+          }
+        }
+      }
+    }
+  ]
+}

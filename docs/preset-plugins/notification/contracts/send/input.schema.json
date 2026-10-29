@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "route_alias": {
+      "type": "string",
+      "description": "固定批准的连接/路由别名",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "recipients": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "",
+        "minLength": 1,
+        "maxLength": 320
+      },
+      "minItems": 1,
+      "maxItems": 100
+    },
+    "message": {
+      "type": "object",
+      "description": "",
+      "properties": {
+        "subject": {
+          "type": "string",
+          "description": "",
+          "minLength": 0,
+          "maxLength": 998
+        },
+        "text": {
+          "type": "string",
+          "description": "",
+          "minLength": 1,
+          "maxLength": 1048576
+        },
+        "html": {
+          "type": "string",
+          "description": "",
+          "minLength": 0,
+          "maxLength": 1048576
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "dedupe_key": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 128
+    }
+  },
+  "required": [
+    "route_alias",
+    "recipients",
+    "message",
+    "dedupe_key"
+  ],
+  "additionalProperties": false
+}

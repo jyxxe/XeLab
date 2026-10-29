@@ -1,0 +1,60 @@
+{
+  "protocol_version": "1",
+  "base_path": "/ui/org.xelab.knowledge-base/",
+  "contributions": [
+    {
+      "id": "tables",
+      "kind": "window",
+      "title": "知识库",
+      "description": "表格、表达式检索和异步批次状态",
+      "entry_path": "/desktop/tables.html",
+      "skill_bindings": [
+        {
+          "alias": "query",
+          "name": "org.xelab.knowledge-base.rows-query",
+          "version": "2.0.0",
+          "modes": [
+            "call",
+            "batch"
+          ]
+        }
+      ],
+      "window": {
+        "width": 1000,
+        "height": 680,
+        "min_width": 640,
+        "min_height": 400,
+        "max_width": 1920,
+        "max_height": 1200,
+        "resizable": true
+      },
+      "refresh_interval_seconds": 0
+    },
+    {
+      "id": "index_status",
+      "kind": "widget",
+      "title": "索引状态",
+      "description": "按需显示本人字段向量进度",
+      "entry_path": "/desktop/index-status.html",
+      "skill_bindings": [
+        {
+          "alias": "status",
+          "name": "org.xelab.knowledge-base.vector-status",
+          "version": "2.0.0",
+          "modes": [
+            "call"
+          ]
+        }
+      ],
+      "widget": {
+        "columns": 3,
+        "rows": 2,
+        "min_columns": 2,
+        "min_rows": 1,
+        "max_columns": 4,
+        "max_rows": 3
+      },
+      "refresh_interval_seconds": 60
+    }
+  ]
+}

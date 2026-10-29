@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UpgradeRequest",
+  "type": "object",
+  "description": "升级或回滚到已安装的明确目标版本",
+  "additionalProperties": false,
+  "properties": {
+    "installation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "strategy": {
+      "type": "string",
+      "enum": [
+        "recreate",
+        "parallel_compatible"
+      ],
+      "description": "必须与卷和数据兼容能力一致"
+    },
+    "backup_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "涉及迁移时需要可用备份",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "allow_downtime": {
+      "type": "boolean",
+      "description": "recreate 必须明确允许维护中断",
+      "default": false
+    }
+  },
+  "required": [
+    "installation_id",
+    "strategy",
+    "allow_downtime"
+  ]
+}

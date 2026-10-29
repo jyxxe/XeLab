@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AuthorizationCheck",
+  "type": "object",
+  "description": "只检查调用主体，不能伪装其他账户",
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "description": "待判断动作"
+    },
+    "resource": {
+      "$ref": "../openapi.json#/components/schemas/ResourceSelector"
+    }
+  },
+  "required": [
+    "action",
+    "resource"
+  ]
+}

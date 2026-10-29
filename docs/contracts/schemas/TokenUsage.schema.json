@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TokenUsage",
+  "type": "object",
+  "description": "插件提供并由网关校验的计量；不作为授权判断",
+  "additionalProperties": false,
+  "properties": {
+    "prompt_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "输入 token 数"
+    },
+    "completion_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "输出 token 数"
+    },
+    "total_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "前两项之和"
+    }
+  },
+  "required": [
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens"
+  ]
+}

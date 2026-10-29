@@ -1,0 +1,136 @@
+syntax = "proto3";
+package xelab.v1;
+import "xelab/v1/common.proto";
+import "xelab/v1/capability.proto";
+
+// 插件到内核的唯一宿主服务入口；所有方法校验实际工作负载和当前委托。
+service HostService {
+  rpc ProxyHttp(MicroProxyHttpRequest) returns (MicroProxyHttpResponse);
+  rpc ListSkillCandidates(ListSkillCandidatesRequest) returns (ListSkillCandidatesResponse);
+  rpc ResolveSkill(ResolveSkillRequest) returns (ResolveSkillResponse);
+  rpc CheckSkillAccess(CheckSkillAccessRequest) returns (CheckSkillAccessResponse);
+  rpc InvokeSkill(SkillInvokeRequest) returns (InvokeResponse);
+  rpc InvokeSkillStream(SkillInvokeRequest) returns (stream InvokeChunk);
+  rpc Resolve(ResolveRequest) returns (ResolveResponse);
+  rpc Invoke(InvokeRequest) returns (InvokeResponse);
+  rpc InvokeStream(InvokeRequest) returns (stream InvokeChunk);
+  rpc PublishEvent(PublishEventRequest) returns (PublishEventResponse);
+  rpc Subscribe(SubscribeRequest) returns (stream EventDelivery);
+  rpc AckEvent(AckEventRequest) returns (Ack);
+  rpc ReadBlob(ReadBlobRequest) returns (stream BlobChunk);
+  rpc WriteBlob(stream WriteBlobRequest) returns (BlobReference);
+  rpc LeaseSecret(LeaseSecretRequest) returns (SecretLease);
+}
+message MicroProxyHttpRequest {
+  RpcContext context = 1; // 必须属于实际MPR实例正在执行的micro Call。
+  string call_id = 2;
+  string endpoint_alias = 3; // 从该微版本清单及Call冻结绑定快照解析，不能给URL。
+  uint32 sequence = 4; // 1..3；同Call同seq同指纹只能得到原结果。
+  bytes payload_json = 5; // <=64KiB且匹配固定endpoint.payload_schema。
+  string payload_digest = 6;
+}
+message MicroProxyHttpResponse {
+  bytes result_json = 1; // MicroProxyResult JSON，<=600KiB；解压后上游body<=512KiB。
+}
+message ListSkillCandidatesRequest {
+  RpcContext context = 1;
+  repeated string plugin_ids = 2; // 1..8稳定plugin ID；不是任意地址。
+  repeated string capability_names = 3; // 1..8明确目标能力名；仅返回capability型Skill。
+  uint32 page_size = 4; // 0取50，1..200；未知或多余过滤不允许。
+  string cursor = 5; // 空表示首页，绑定当前主体/过滤/插件安装水位，15min有效。
+}
+message SkillCandidate {
+  string skill_id = 1;
+  string name = 2;
+  string version = 3;
+  string definition_digest = 4;
+  string installation_id = 5;
+  string plugin_id = 6;
+  ContractRef target_contract = 7;
+  bool ready = 8;
+  repeated string reason_codes = 9;
+}
+message ListSkillCandidatesResponse {
+  repeated SkillCandidate items = 1;
+  string next_cursor = 2; // 空表示无后页；不返回未授权对象或内部地址。
+}
+message ResolveSkillRequest { RpcContext context = 1; string skill_id = 2; }
+message ResolveSkillResponse {
+  string skill_id = 1;
+  string definition_digest = 2;
+  bytes definition_json = 3; // SkillDefinition JSON，最多1MiB，不含内部网络地址。
+  bool ready = 4;
+  repeated string reason_codes = 5;
+}
+message CheckSkillAccessRequest {
+  RpcContext context = 1;
+  string skill_id = 2; // 必填不可变UUID；使用当前调用委托，不接受自报主体。
+  string expected_definition_digest = 3; // 必填sha256，防止缓存检查与固定索引定义漂移。
+}
+message CheckSkillAccessResponse {
+  string skill_id = 1;
+  string definition_digest = 2;
+  bool ready = 3; // 鉴权成功之后才说明当前提供者可用性。
+  repeated string reason_codes = 4;
+}
+message SkillInvokeRequest {
+  RpcContext context = 1;
+  string skill_id = 2; // 不可变版本UUID，不能以同名“最新版”替代。
+  bytes input_json = 3; // 最大4MiB，必须匹配Skill输入Schema。
+  string input_digest = 4;
+}
+message ResolveRequest { RpcContext context = 1; ContractRef contract = 2; string binding_scope_id = 3; }
+message ResolveResponse {
+  // 返回不透明绑定，不向插件泄漏其他实例内部地址。
+  string binding_id = 1;
+  string provider_deployment_id = 2;
+  ContractRef contract = 3;
+  int64 expires_unix_ms = 4;
+}
+message PublishEventRequest {
+  RpcContext context = 1;
+  string topic = 2;
+  string version = 3;
+  bytes payload_json = 4;
+  string dedupe_key = 5;
+}
+message PublishEventResponse { string event_id = 1; bool duplicate = 2; }
+message SubscribeRequest { RpcContext context = 1; string subscription_id = 2; }
+message EventDelivery {
+  string delivery_id = 1;
+  string event_id = 2;
+  string topic = 3;
+  string version = 4;
+  bytes payload_json = 5;
+  uint32 attempt = 6;
+  string lease_token = 7;
+  int64 lease_expires_unix_ms = 8;
+}
+message AckEventRequest {
+  RpcContext context = 1;
+  string subscription_id = 2;
+  string delivery_id = 3;
+  string lease_token = 4;
+  enum Outcome { OUTCOME_UNSPECIFIED = 0; OUTCOME_ACK = 1; OUTCOME_RETRY = 2; OUTCOME_DEAD_LETTER = 3; }
+  Outcome outcome = 5;
+}
+message ReadBlobRequest { RpcContext context = 1; string blob_id = 2; }
+message BlobChunk { uint64 offset = 1; bytes data = 2; } // 每帧最多 256 KiB；offset 必须连续。
+message WriteBlobHeader {
+  RpcContext context = 1;
+  string content_type = 2;
+  uint64 size_bytes = 3;
+  string digest = 4;
+}
+message WriteBlobRequest {
+  // 首帧必须 header 且仅一次，后续仅 data；不接受混合或缺帧。
+  oneof body { WriteBlobHeader header = 1; BlobChunk data = 2; }
+}
+message BlobReference { string blob_id = 1; uint64 size_bytes = 2; string digest = 3; }
+message LeaseSecretRequest { RpcContext context = 1; string binding_id = 2; uint32 requested_seconds = 3; }
+message SecretLease {
+  string lease_id = 1;
+  bytes value = 2; // 不超过 64 KiB；只在受保护通道交给绑定的实例，禁止日志记录。
+  uint64 secret_version = 3;
+  int64 expires_unix_ms = 4;
+}

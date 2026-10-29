@@ -1,0 +1,1162 @@
+{
+  "version": "2.6.0",
+  "definitions": {
+    "platform.read": {
+      "resource_kinds": [
+        "platform"
+      ],
+      "operations": [
+        "getNode",
+        "getMetrics",
+        "getDefaultUi"
+      ],
+      "description": "读取本机预算和资源状态",
+      "self_service": false
+    },
+    "platform.configure": {
+      "resource_kinds": [
+        "platform"
+      ],
+      "operations": [
+        "updateNodeConfig",
+        "setDefaultUi"
+      ],
+      "description": "更新本机资源预留配置",
+      "self_service": false
+    },
+    "operation.read": {
+      "resource_kinds": [
+        "operation"
+      ],
+      "operations": [
+        "getOperation"
+      ],
+      "description": "查询异步操作",
+      "self_service": false
+    },
+    "operation.cancel": {
+      "resource_kinds": [
+        "operation"
+      ],
+      "operations": [
+        "cancelOperation"
+      ],
+      "description": "取消异步操作",
+      "self_service": false
+    },
+    "audit.read": {
+      "resource_kinds": [
+        "audit"
+      ],
+      "operations": [
+        "listAuditEvents"
+      ],
+      "description": "查询脱敏审计",
+      "self_service": false
+    },
+    "session.read": {
+      "resource_kinds": [
+        "account"
+      ],
+      "operations": [
+        "listSessions"
+      ],
+      "description": "列出本人会话",
+      "self_service": true
+    },
+    "session.revoke": {
+      "resource_kinds": [
+        "credential"
+      ],
+      "operations": [
+        "revokeSession"
+      ],
+      "description": "吊销会话",
+      "self_service": true
+    },
+    "account.read": {
+      "resource_kinds": [
+        "account"
+      ],
+      "operations": [
+        "listAccounts",
+        "getAccount"
+      ],
+      "description": "列出可管理或可见账户",
+      "self_service": false
+    },
+    "account.manage": {
+      "resource_kinds": [
+        "account"
+      ],
+      "operations": [
+        "updateAccount",
+        "archiveAccount"
+      ],
+      "description": "更新或禁用账户",
+      "self_service": false
+    },
+    "account.child.create": {
+      "resource_kinds": [
+        "account"
+      ],
+      "operations": [
+        "createChildAccount"
+      ],
+      "description": "创建子账户",
+      "self_service": true
+    },
+    "account.child.manage": {
+      "resource_kinds": [
+        "account"
+      ],
+      "operations": [
+        "updateInheritance"
+      ],
+      "description": "调整子账户继承范围",
+      "self_service": true
+    },
+    "account.permissions.read": {
+      "resource_kinds": [
+        "account"
+      ],
+      "operations": [
+        "getEffectivePermissions",
+        "listGrants",
+        "getGrant"
+      ],
+      "description": "查询有效权限",
+      "self_service": true
+    },
+    "group.read": {
+      "resource_kinds": [
+        "group"
+      ],
+      "operations": [
+        "listGroups",
+        "getGroup",
+        "getGroupVersion"
+      ],
+      "description": "列出可见权限组",
+      "self_service": true
+    },
+    "group.create": {
+      "resource_kinds": [
+        "group"
+      ],
+      "operations": [
+        "createGroup"
+      ],
+      "description": "建立个人或公共权限组",
+      "self_service": true
+    },
+    "group.archive": {
+      "resource_kinds": [
+        "group"
+      ],
+      "operations": [
+        "archiveGroup"
+      ],
+      "description": "归档组并撤销其有效绑定",
+      "self_service": true
+    },
+    "group.update": {
+      "resource_kinds": [
+        "group"
+      ],
+      "operations": [
+        "publishGroupVersion"
+      ],
+      "description": "发布不可变组版本",
+      "self_service": true
+    },
+    "grant.create": {
+      "resource_kinds": [
+        "account"
+      ],
+      "operations": [
+        "createGrant"
+      ],
+      "description": "绑定角色或组版本",
+      "self_service": false
+    },
+    "grant.revoke": {
+      "resource_kinds": [
+        "account"
+      ],
+      "operations": [
+        "revokeGrant"
+      ],
+      "description": "撤销单一授权来源",
+      "self_service": false
+    },
+    "credential.api-key.read": {
+      "resource_kinds": [
+        "account",
+        "credential"
+      ],
+      "operations": [
+        "listApiKeys",
+        "getApiKey"
+      ],
+      "description": "列出密钥元数据",
+      "self_service": true
+    },
+    "credential.api-key.create": {
+      "resource_kinds": [
+        "account"
+      ],
+      "operations": [
+        "createApiKey"
+      ],
+      "description": "创建部分或全部权限密钥",
+      "self_service": true
+    },
+    "credential.api-key.revoke": {
+      "resource_kinds": [
+        "credential"
+      ],
+      "operations": [
+        "revokeApiKey"
+      ],
+      "description": "永久吊销密钥及其派生链",
+      "self_service": true
+    },
+    "credential.api-key.rotate": {
+      "resource_kinds": [
+        "credential"
+      ],
+      "operations": [
+        "rotateApiKey"
+      ],
+      "description": "签发替代密钥并吊销原密钥",
+      "self_service": true
+    },
+    "quota.read": {
+      "resource_kinds": [
+        "account"
+      ],
+      "operations": [
+        "getQuota"
+      ],
+      "description": "读取账户树配额",
+      "self_service": false
+    },
+    "quota.manage": {
+      "resource_kinds": [
+        "account"
+      ],
+      "operations": [
+        "updateQuota"
+      ],
+      "description": "调整账户树额度",
+      "self_service": false
+    },
+    "client.read": {
+      "resource_kinds": [
+        "client"
+      ],
+      "operations": [
+        "listClients",
+        "getClient"
+      ],
+      "description": "列出 WebUI 客户端",
+      "self_service": false
+    },
+    "client.create": {
+      "resource_kinds": [
+        "client"
+      ],
+      "operations": [
+        "createClient"
+      ],
+      "description": "注册 WebUI 公共客户端",
+      "self_service": false
+    },
+    "client.update": {
+      "resource_kinds": [
+        "client"
+      ],
+      "operations": [
+        "updateClient"
+      ],
+      "description": "修改客户端白名单与权限上限",
+      "self_service": false
+    },
+    "client.disable": {
+      "resource_kinds": [
+        "client"
+      ],
+      "operations": [
+        "disableClient"
+      ],
+      "description": "禁用客户端并撤销其会话委托",
+      "self_service": false
+    },
+    "publisher.read": {
+      "resource_kinds": [
+        "publisher"
+      ],
+      "operations": [
+        "listPublishers",
+        "getPublisher"
+      ],
+      "description": "列出发布者信任根",
+      "self_service": false
+    },
+    "publisher.trust": {
+      "resource_kinds": [
+        "publisher"
+      ],
+      "operations": [
+        "trustPublisher"
+      ],
+      "description": "信任发布者公钥",
+      "self_service": false
+    },
+    "publisher.revoke": {
+      "resource_kinds": [
+        "publisher"
+      ],
+      "operations": [
+        "revokePublisher"
+      ],
+      "description": "撤销发布者信任",
+      "self_service": false
+    },
+    "plugin.read": {
+      "resource_kinds": [
+        "plugin",
+        "deployment",
+        "instance"
+      ],
+      "operations": [
+        "listInstallations",
+        "getInstallation",
+        "listDeployments",
+        "getDeployment",
+        "getPluginApproval",
+        "listInstances",
+        "getInstance"
+      ],
+      "description": "列出已安装插件版本",
+      "self_service": false
+    },
+    "plugin.install": {
+      "resource_kinds": [
+        "plugin"
+      ],
+      "operations": [
+        "installPlugin"
+      ],
+      "description": "验证并安装插件制品",
+      "self_service": false
+    },
+    "plugin.uninstall": {
+      "resource_kinds": [
+        "plugin"
+      ],
+      "operations": [
+        "uninstallPlugin"
+      ],
+      "description": "卸载插件程序版本",
+      "self_service": false
+    },
+    "plugin.deploy": {
+      "resource_kinds": [
+        "deployment"
+      ],
+      "operations": [
+        "createDeployment"
+      ],
+      "description": "创建部署期望配置",
+      "self_service": false
+    },
+    "plugin.configure": {
+      "resource_kinds": [
+        "deployment"
+      ],
+      "operations": [
+        "updateDeployment"
+      ],
+      "description": "更新完整部署配置",
+      "self_service": false
+    },
+    "plugin.delete": {
+      "resource_kinds": [
+        "deployment"
+      ],
+      "operations": [
+        "deleteDeployment"
+      ],
+      "description": "排空并归档部署",
+      "self_service": false
+    },
+    "plugin.enable": {
+      "resource_kinds": [
+        "deployment"
+      ],
+      "operations": [
+        "setDeploymentEnabled"
+      ],
+      "description": "只启用或禁用已批准部署",
+      "self_service": false
+    },
+    "plugin.permission.grant": {
+      "resource_kinds": [
+        "deployment"
+      ],
+      "operations": [
+        "approvePlugin"
+      ],
+      "description": "批准插件代理与出口权限",
+      "self_service": false
+    },
+    "plugin.upgrade": {
+      "resource_kinds": [
+        "deployment"
+      ],
+      "operations": [
+        "upgradeDeployment"
+      ],
+      "description": "升级到已安装版本",
+      "self_service": false
+    },
+    "plugin.rollback": {
+      "resource_kinds": [
+        "deployment"
+      ],
+      "operations": [
+        "rollbackDeployment"
+      ],
+      "description": "程序回退或经核实的数据恢复",
+      "self_service": false
+    },
+    "plugin.logs.read": {
+      "resource_kinds": [
+        "instance"
+      ],
+      "operations": [
+        "listInstanceLogs"
+      ],
+      "description": "读取脱敏日志",
+      "self_service": false
+    },
+    "plugin.dependencies.read": {
+      "resource_kinds": [
+        "deployment"
+      ],
+      "operations": [
+        "resolveDependencies"
+      ],
+      "description": "预览依赖和资源计划",
+      "self_service": false
+    },
+    "capability.discover": {
+      "resource_kinds": [
+        "capability",
+        "model"
+      ],
+      "operations": [
+        "listCapabilities",
+        "getCapabilityContract",
+        "listModelAliases"
+      ],
+      "description": "发现当前可调用的能力提供者",
+      "self_service": false
+    },
+    "capability.invoke": {
+      "resource_kinds": [
+        "capability",
+        "model"
+      ],
+      "operations": [
+        "invokeCapability",
+        "streamCapability",
+        "createChatCompletion",
+        "createEmbedding"
+      ],
+      "description": "非流式调用能力",
+      "self_service": false
+    },
+    "capability.call.read": {
+      "resource_kinds": [
+        "call"
+      ],
+      "operations": [
+        "getCall"
+      ],
+      "description": "查询调用结果和结果未知状态",
+      "self_service": true
+    },
+    "capability.call.cancel": {
+      "resource_kinds": [
+        "call"
+      ],
+      "operations": [
+        "cancelCall"
+      ],
+      "description": "取消调用",
+      "self_service": true
+    },
+    "volume.read": {
+      "resource_kinds": [
+        "volume"
+      ],
+      "operations": [
+        "listVolumes",
+        "getVolume"
+      ],
+      "description": "列出可见卷",
+      "self_service": false
+    },
+    "volume.create": {
+      "resource_kinds": [
+        "volume"
+      ],
+      "operations": [
+        "createVolume"
+      ],
+      "description": "创建有硬配额的持久卷",
+      "self_service": false
+    },
+    "volume.delete": {
+      "resource_kinds": [
+        "volume"
+      ],
+      "operations": [
+        "deleteVolume"
+      ],
+      "description": "显式销毁未挂载数据卷",
+      "self_service": false
+    },
+    "volume.resize": {
+      "resource_kinds": [
+        "volume"
+      ],
+      "operations": [
+        "resizeVolume"
+      ],
+      "description": "扩容数据卷",
+      "self_service": false
+    },
+    "backup.read": {
+      "resource_kinds": [
+        "backup"
+      ],
+      "operations": [
+        "listBackups",
+        "getBackup"
+      ],
+      "description": "列出备份",
+      "self_service": false
+    },
+    "backup.create": {
+      "resource_kinds": [
+        "backup"
+      ],
+      "operations": [
+        "createBackup"
+      ],
+      "description": "创建宿主外一致性备份",
+      "self_service": false
+    },
+    "backup.restore": {
+      "resource_kinds": [
+        "backup"
+      ],
+      "operations": [
+        "restoreBackup"
+      ],
+      "description": "恢复备份到新卷",
+      "self_service": false
+    },
+    "secret.metadata.read": {
+      "resource_kinds": [
+        "secret"
+      ],
+      "operations": [
+        "listSecrets",
+        "getSecretMetadata"
+      ],
+      "description": "列出密钥元数据",
+      "self_service": false
+    },
+    "secret.create": {
+      "resource_kinds": [
+        "secret"
+      ],
+      "operations": [
+        "createSecret"
+      ],
+      "description": "写入托管密钥",
+      "self_service": false
+    },
+    "secret.rotate": {
+      "resource_kinds": [
+        "secret"
+      ],
+      "operations": [
+        "rotateSecret"
+      ],
+      "description": "轮换托管密钥内容",
+      "self_service": false
+    },
+    "secret.revoke": {
+      "resource_kinds": [
+        "secret"
+      ],
+      "operations": [
+        "revokeSecret"
+      ],
+      "description": "撤销密钥和后续租约",
+      "self_service": false
+    },
+    "secret.bind": {
+      "resource_kinds": [
+        "secret"
+      ],
+      "operations": [
+        "bindSecret",
+        "listSecretBindings",
+        "getSecretBinding",
+        "revokeSecretBinding"
+      ],
+      "description": "授权工作负载使用密钥",
+      "self_service": false
+    },
+    "blob.create": {
+      "resource_kinds": [
+        "blob"
+      ],
+      "operations": [
+        "uploadBlob"
+      ],
+      "description": "上传不可变业务对象",
+      "self_service": false
+    },
+    "blob.read": {
+      "resource_kinds": [
+        "blob"
+      ],
+      "operations": [
+        "getBlob",
+        "downloadBlob"
+      ],
+      "description": "读取对象元数据",
+      "self_service": false
+    },
+    "blob.delete": {
+      "resource_kinds": [
+        "blob"
+      ],
+      "operations": [
+        "deleteBlob"
+      ],
+      "description": "删除业务对象",
+      "self_service": false
+    },
+    "workflow.read": {
+      "resource_kinds": [
+        "workflow"
+      ],
+      "operations": [
+        "listWorkflows",
+        "getWorkflow"
+      ],
+      "description": "列出工作流版本",
+      "self_service": false
+    },
+    "workflow.create": {
+      "resource_kinds": [
+        "workflow"
+      ],
+      "operations": [
+        "createWorkflow"
+      ],
+      "description": "发布完整工作流版本",
+      "self_service": false
+    },
+    "workflow.archive": {
+      "resource_kinds": [
+        "workflow"
+      ],
+      "operations": [
+        "archiveWorkflow"
+      ],
+      "description": "归档工作流版本",
+      "self_service": false
+    },
+    "task.read": {
+      "resource_kinds": [
+        "task"
+      ],
+      "operations": [
+        "listTasks",
+        "getTask",
+        "listTaskSteps",
+        "listAttempts"
+      ],
+      "description": "列出本人或获授权任务",
+      "self_service": false
+    },
+    "task.create": {
+      "resource_kinds": [
+        "task"
+      ],
+      "operations": [
+        "createTask"
+      ],
+      "description": "提交持久化工作流任务",
+      "self_service": false
+    },
+    "task.cancel": {
+      "resource_kinds": [
+        "task"
+      ],
+      "operations": [
+        "cancelTask"
+      ],
+      "description": "请求取消整个任务",
+      "self_service": false
+    },
+    "task.retry": {
+      "resource_kinds": [
+        "task"
+      ],
+      "operations": [
+        "retryTask"
+      ],
+      "description": "对可安全重试的失败步骤重新排队",
+      "self_service": false
+    },
+    "task.resolve": {
+      "resource_kinds": [
+        "task"
+      ],
+      "operations": [
+        "resolveUnknownStep"
+      ],
+      "description": "核实结果未知步骤",
+      "self_service": false
+    },
+    "schedule.read": {
+      "resource_kinds": [
+        "schedule"
+      ],
+      "operations": [
+        "listSchedules",
+        "getSchedule"
+      ],
+      "description": "列出定时计划",
+      "self_service": false
+    },
+    "schedule.create": {
+      "resource_kinds": [
+        "schedule"
+      ],
+      "operations": [
+        "createSchedule"
+      ],
+      "description": "创建带执行委托的定时计划",
+      "self_service": false
+    },
+    "schedule.update": {
+      "resource_kinds": [
+        "schedule"
+      ],
+      "operations": [
+        "updateSchedule"
+      ],
+      "description": "更新定时计划并重新核实授权",
+      "self_service": false
+    },
+    "schedule.delete": {
+      "resource_kinds": [
+        "schedule"
+      ],
+      "operations": [
+        "deleteSchedule"
+      ],
+      "description": "停止后续计划触发",
+      "self_service": false
+    },
+    "event.publish": {
+      "resource_kinds": [
+        "event"
+      ],
+      "operations": [
+        "publishEvent"
+      ],
+      "description": "发布持久化事件",
+      "self_service": false
+    },
+    "event.subscribe": {
+      "resource_kinds": [
+        "event"
+      ],
+      "operations": [
+        "listSubscriptions",
+        "createSubscription",
+        "getSubscription",
+        "deleteSubscription",
+        "streamDeliveries",
+        "ackDelivery"
+      ],
+      "description": "列出事件订阅",
+      "self_service": false
+    },
+    "model.read": {
+      "resource_kinds": [
+        "model"
+      ],
+      "operations": [
+        "listAliasMappings",
+        "getAliasMapping"
+      ],
+      "description": "列出模型别名映射配置",
+      "self_service": false
+    },
+    "model.manage": {
+      "resource_kinds": [
+        "model"
+      ],
+      "operations": [
+        "createAliasMapping",
+        "updateAliasMapping",
+        "deleteAliasMapping"
+      ],
+      "description": "创建获准的模型别名映射",
+      "self_service": false
+    },
+    "account.profile.update": {
+      "resource_kinds": [
+        "account"
+      ],
+      "operations": [],
+      "description": "仅本人显示名称等非安全资料变更",
+      "self_service": true
+    },
+    "group.publish": {
+      "resource_kinds": [
+        "group"
+      ],
+      "operations": [],
+      "description": "发布公共权限组，条件动作",
+      "self_service": false
+    },
+    "secret.use": {
+      "resource_kinds": [
+        "secret"
+      ],
+      "operations": [],
+      "description": "仅批准的工作负载绑定内部使用，不是用户明文读取",
+      "self_service": false
+    },
+    "plugin.http.invoke": {
+      "resource_kinds": [
+        "plugin"
+      ],
+      "operations": [],
+      "description": "声明式 HTTP 路由默认业务调用动作；插件可另注册自己命名空间动作",
+      "self_service": false
+    },
+    "skill.read": {
+      "resource_kinds": [
+        "skill"
+      ],
+      "operations": [
+        "listSkills",
+        "getSkill"
+      ],
+      "description": "列出可见的 Skill 版本",
+      "self_service": false
+    },
+    "skill.register": {
+      "resource_kinds": [
+        "skill"
+      ],
+      "operations": [
+        "registerSkill"
+      ],
+      "description": "校验并注册不可变 Skill",
+      "self_service": false
+    },
+    "skill.archive": {
+      "resource_kinds": [
+        "skill"
+      ],
+      "operations": [
+        "archiveSkill"
+      ],
+      "description": "归档 Skill 版本",
+      "self_service": false
+    },
+    "skill.enable": {
+      "resource_kinds": [
+        "skill"
+      ],
+      "operations": [
+        "setSkillEnabled"
+      ],
+      "description": "启用或禁用 Skill 路由",
+      "self_service": false
+    },
+    "skill.invoke": {
+      "resource_kinds": [
+        "skill"
+      ],
+      "operations": [
+        "invokeSkill",
+        "streamSkill"
+      ],
+      "description": "经核心转发调用插件业务接口",
+      "self_service": false
+    },
+    "batch.create": {
+      "resource_kinds": [
+        "skill_batch"
+      ],
+      "operations": [
+        "createSkillBatch"
+      ],
+      "description": "提交有固定Skill/授权上限的持久化批次",
+      "self_service": false
+    },
+    "batch.read": {
+      "resource_kinds": [
+        "skill_batch"
+      ],
+      "operations": [
+        "listSkillBatches",
+        "getSkillBatch",
+        "listSkillBatchItems",
+        "getSkillBatchItemResult"
+      ],
+      "description": "读取明确范围批次；结果另校验当前业务权",
+      "self_service": false
+    },
+    "batch.cancel": {
+      "resource_kinds": [
+        "skill_batch"
+      ],
+      "operations": [
+        "cancelSkillBatch"
+      ],
+      "description": "取消明确范围批次，不撤回已提交写入",
+      "self_service": false
+    },
+    "batch.resume": {
+      "resource_kinds": [
+        "skill_batch"
+      ],
+      "operations": [
+        "resumeSkillBatch"
+      ],
+      "description": "原owner显式重新授权暂停批次，不恢复unknown",
+      "self_service": false
+    },
+    "plugin.ui.open": {
+      "resource_kinds": [
+        "plugin"
+      ],
+      "operations": [
+        "listUiContributions",
+        "getUiContribution"
+      ],
+      "description": "发现/打开明确共享的插件UI，不授予Skill调用权",
+      "self_service": false
+    },
+    "ui.preferences.read": {
+      "resource_kinds": [
+        "account"
+      ],
+      "operations": [
+        "getMyUiPreferences"
+      ],
+      "description": "读取本人非敏感UI偏好",
+      "self_service": true
+    },
+    "ui.preferences.update": {
+      "resource_kinds": [
+        "account"
+      ],
+      "operations": [
+        "setMyUiPreferences"
+      ],
+      "description": "修改本人非敏感UI偏好",
+      "self_service": true
+    },
+    "batch.resolve": {
+      "resource_kinds": [
+        "skill_batch"
+      ],
+      "operations": [
+        "resolveSkillBatchItem"
+      ],
+      "description": "有独立权限的人工证据核实，不能自动重放unknown",
+      "self_service": false
+    },
+    "micro.read": {
+      "resource_kinds": [
+        "micro_plugin"
+      ],
+      "operations": [
+        "listMicroPlugins",
+        "getMicroPlugin",
+        "listMicroVersions",
+        "getMicroVersion",
+        "listMicroDeployments",
+        "getMicroDeployment"
+      ],
+      "description": "列出可见微插件",
+      "self_service": false
+    },
+    "micro.create": {
+      "resource_kinds": [
+        "micro_plugin"
+      ],
+      "operations": [
+        "createMicroPlugin"
+      ],
+      "description": "创建微插件身份",
+      "self_service": false
+    },
+    "micro.update": {
+      "resource_kinds": [
+        "micro_plugin"
+      ],
+      "operations": [
+        "updateMicroPlugin"
+      ],
+      "description": "更新微插件显示资料",
+      "self_service": false
+    },
+    "micro.archive": {
+      "resource_kinds": [
+        "micro_plugin"
+      ],
+      "operations": [
+        "archiveMicroPlugin"
+      ],
+      "description": "归档微插件及撤销新执行",
+      "self_service": false
+    },
+    "micro.publish": {
+      "resource_kinds": [
+        "micro_plugin"
+      ],
+      "operations": [
+        "publishMicroVersion"
+      ],
+      "description": "发布固定微脚本制品",
+      "self_service": false
+    },
+    "micro.source.read": {
+      "resource_kinds": [
+        "micro_plugin"
+      ],
+      "operations": [
+        "getMicroSource"
+      ],
+      "description": "读取精确微版本源码",
+      "self_service": false
+    },
+    "micro.deploy": {
+      "resource_kinds": [
+        "micro_plugin"
+      ],
+      "operations": [
+        "createMicroDeployment",
+        "archiveMicroDeployment"
+      ],
+      "description": "绑定微版本和MPR父部署",
+      "self_service": false
+    },
+    "micro.enable": {
+      "resource_kinds": [
+        "micro_plugin"
+      ],
+      "operations": [
+        "setMicroDeploymentEnabled"
+      ],
+      "description": "启停微插件运行绑定",
+      "self_service": false
+    },
+    "micro.diagnostics.read": {
+      "resource_kinds": [
+        "micro_plugin"
+      ],
+      "operations": [
+        "getMicroCallDiagnostics"
+      ],
+      "description": "读取本人或获准微调用诊断",
+      "self_service": false
+    },
+    "micro.invoke": {
+      "resource_kinds": [
+        "micro_plugin"
+      ],
+      "operations": [],
+      "description": "通过固定micro Skill执行明确微插件，与skill.invoke及micro.runtime.use求交",
+      "self_service": false
+    },
+    "micro.runtime.use": {
+      "resource_kinds": [
+        "deployment"
+      ],
+      "operations": [],
+      "description": "使用明确MPR父部署承载微插件，不授予普通部署启停/扩权权限",
+      "self_service": false
+    },
+    "micro.http.read": {
+      "resource_kinds": [
+        "micro_plugin"
+      ],
+      "operations": [
+        "listMicroHttpBindings",
+        "getMicroHttpBinding"
+      ],
+      "description": "列出微部署HTTP服务商配置",
+      "self_service": false
+    },
+    "micro.http.bind": {
+      "resource_kinds": [
+        "micro_plugin"
+      ],
+      "operations": [
+        "createMicroHttpBinding",
+        "updateMicroHttpBinding",
+        "deleteMicroHttpBinding"
+      ],
+      "description": "绑定微服务商与托管密钥",
+      "self_service": false
+    },
+    "micro.http.request": {
+      "resource_kinds": [
+        "micro_plugin"
+      ],
+      "operations": [],
+      "description": "通过固定微Call调用已批准HTTP别名；不能读取原始Secret或提供任意URL",
+      "self_service": false
+    }
+  },
+  "self_service_actions": [
+    "account.child.create",
+    "account.child.manage",
+    "account.profile.update",
+    "account.permissions.read",
+    "session.read",
+    "session.revoke",
+    "credential.api-key.create",
+    "credential.api-key.read",
+    "credential.api-key.revoke",
+    "credential.api-key.rotate",
+    "group.create",
+    "group.read",
+    "group.update",
+    "group.archive",
+    "capability.call.read",
+    "capability.call.cancel"
+  ]
+}

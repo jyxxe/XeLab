@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MicroBusinessSchema",
+  "type": [
+    "object",
+    "boolean"
+  ],
+  "description": "受限JSON Schema2020-12；每份<=64KiB、<=256节点/深度16，无$ref/正则/自定义format或资源能力标记",
+  "properties": {
+    "$schema": {
+      "const": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "title": {
+      "type": "string",
+      "maxLength": 128
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2048
+    },
+    "type": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "null",
+            "boolean",
+            "object",
+            "array",
+            "number",
+            "integer",
+            "string"
+          ]
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "null",
+              "boolean",
+              "object",
+              "array",
+              "number",
+              "integer",
+              "string"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 7,
+          "uniqueItems": true
+        }
+      ]
+    },
+    "properties": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "../openapi.json#/components/schemas/MicroBusinessSchema"
+      },
+      "maxProperties": 128
+    },
+    "required": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 128
+      },
+      "maxItems": 128,
+      "uniqueItems": true
+    },
+    "additionalProperties": {
+      "type": "boolean"
+    },
+    "items": {
+      "$ref": "../openapi.json#/components/schemas/MicroBusinessSchema"
+    },
+    "minLength": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1048576
+    },
+    "maxLength": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1048576
+    },
+    "minItems": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10000
+    },
+    "maxItems": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10000
+    },
+    "uniqueItems": {
+      "type": "boolean"
+    },
+    "minProperties": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10000
+    },
+    "maxProperties": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10000
+    },
+    "minimum": {
+      "type": "number"
+    },
+    "maximum": {
+      "type": "number"
+    },
+    "exclusiveMinimum": {
+      "type": "number"
+    },
+    "exclusiveMaximum": {
+      "type": "number"
+    },
+    "enum": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/JsonValue"
+      },
+      "minItems": 1,
+      "maxItems": 256,
+      "uniqueItems": true
+    },
+    "const": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue"
+    },
+    "anyOf": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/MicroBusinessSchema"
+      },
+      "minItems": 1,
+      "maxItems": 8
+    },
+    "oneOf": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/MicroBusinessSchema"
+      },
+      "minItems": 1,
+      "maxItems": 8
+    },
+    "allOf": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/MicroBusinessSchema"
+      },
+      "minItems": 1,
+      "maxItems": 8
+    },
+    "not": {
+      "$ref": "../openapi.json#/components/schemas/MicroBusinessSchema"
+    },
+    "default": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue",
+      "description": "仅默认值注解，不自动改写业务输入；应用需显式解释"
+    }
+  },
+  "additionalProperties": false
+}

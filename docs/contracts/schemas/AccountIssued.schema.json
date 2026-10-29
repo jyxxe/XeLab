@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AccountIssued",
+  "type": "object",
+  "description": "创建结果；激活凭证只在首次成功响应展示",
+  "additionalProperties": false,
+  "properties": {
+    "account": {
+      "$ref": "../openapi.json#/components/schemas/Account"
+    },
+    "activation_token": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "仅用户账户返回；有效期 24h；重放响应不含明文"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "仅用户账户返回；有效期 24h；重放响应不含明文"
+    },
+    "activation_expires_at": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "激活凭证到期时间",
+          "format": "date-time",
+          "example": "2026-10-28T12:00:00Z"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "激活凭证到期时间"
+    }
+  },
+  "required": [
+    "account",
+    "activation_token",
+    "activation_expires_at"
+  ]
+}

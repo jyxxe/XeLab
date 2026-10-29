@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EmbeddingRequest",
+  "type": "object",
+  "description": "文本 embedding 子集",
+  "additionalProperties": false,
+  "properties": {
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "模型别名"
+    },
+    "input": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 262144,
+        "description": "单项文本，空文本拒绝"
+      },
+      "minItems": 1,
+      "maxItems": 128,
+      "description": "文本批次"
+    },
+    "encoding_format": {
+      "type": "string",
+      "enum": [
+        "float"
+      ],
+      "description": "仅支持 float",
+      "default": "float"
+    }
+  },
+  "required": [
+    "model",
+    "input"
+  ]
+}

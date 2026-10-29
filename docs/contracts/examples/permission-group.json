@@ -1,0 +1,16 @@
+{
+  "name": "document-reader",
+  "visibility": "private",
+  "rules": [
+    {
+      "action": "capability.invoke",
+      "resource": {
+        "kind": "capability",
+        "match": "ids",
+        "ids": [
+          "document.parse"
+        ]
+      }
+    }
+  ]
+}

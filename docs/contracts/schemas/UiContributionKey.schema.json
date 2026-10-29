@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UiContributionKey",
+  "type": "object",
+  "description": "用户布局只引用具体部署与贡献，不跨新安装静默恢复",
+  "additionalProperties": false,
+  "properties": {
+    "deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "contribution_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "插件内稳定标识",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    }
+  },
+  "required": [
+    "deployment_id",
+    "contribution_id"
+  ]
+}

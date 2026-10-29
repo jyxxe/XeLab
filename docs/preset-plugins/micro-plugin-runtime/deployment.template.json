@@ -1,0 +1,26 @@
+{
+  "installation_id": "00000000-0000-4000-8000-000000000006",
+  "display_name": "micro-plugin-runtime",
+  "enabled": false,
+  "replicas": 1,
+  "limits": {
+    "cpu_millis": 1000,
+    "memory_bytes": 1073741824,
+    "ephemeral_bytes": 268435456,
+    "pids": 128
+  },
+  "config": {
+    "engine": "javascript",
+    "protocol": "json-stdio-v1",
+    "maximum_active_requests": 4,
+    "maximum_queue_requests": 32,
+    "queue_timeout_ms": 5000,
+    "artifact_cache_max_bytes": 268435456,
+    "artifact_cache_max_entries": 128,
+    "artifact_cache_ttl_seconds": 300,
+    "worker_address_space_bytes": 134217728,
+    "maximum_sandbox_bytes": 536870912,
+    "control_memory_reserve_bytes": 134217728
+  },
+  "volume_ids": []
+}

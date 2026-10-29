@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MicroHttpEndpoint",
+  "type": "object",
+  "description": "由微版本固定的HTTPS API模板；业务输入不能选择URL/headers",
+  "properties": {
+    "alias": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "description": "不可变微清单中的endpoint别名",
+      "pattern": "^[a-z][a-z0-9-]{0,31}$",
+      "example": "brave"
+    },
+    "origin": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "精确HTTPS origin，仅443；无路径/用户信息/query/fragment，解析后验证公共目标IP",
+      "format": "uri",
+      "pattern": "^https://",
+      "example": "https://api.search.brave.com"
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "固定绝对API路径；拒绝dot/编码逃逸/query/fragment",
+      "pattern": "^/[A-Za-z0-9_./-]*$",
+      "example": "/res/v1/web/search"
+    },
+    "method": {
+      "type": "string",
+      "enum": [
+        "GET",
+        "POST"
+      ]
+    },
+    "auth_header": {
+      "type": "string",
+      "enum": [
+        "Authorization",
+        "X-Subscription-Token",
+        "X-API-Key"
+      ]
+    },
+    "auth_scheme": {
+      "type": "string",
+      "enum": [
+        "raw",
+        "bearer"
+      ]
+    },
+    "payload_schema": {
+      "$ref": "../openapi.json#/components/schemas/MicroBusinessSchema"
+    }
+  },
+  "required": [
+    "alias",
+    "origin",
+    "path",
+    "method",
+    "auth_header",
+    "auth_scheme",
+    "payload_schema"
+  ],
+  "additionalProperties": false
+}

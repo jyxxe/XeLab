@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Role",
+  "type": "object",
+  "description": "内置不可变角色模板；scope 在绑定时提供",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "enum": [
+        "Owner",
+        "Operator",
+        "Member",
+        "Auditor",
+        "Guest"
+      ],
+      "description": "角色名称"
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160,
+        "description": "已注册动作"
+      },
+      "minItems": 0,
+      "maxItems": 256,
+      "description": "默认动作"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "角色职责"
+    }
+  },
+  "required": [
+    "id",
+    "actions",
+    "description"
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "manifest": {
+    "format_version": "1",
+    "version": "1.0.0",
+    "description": "返回输入text字段的轻量纯计算脚本",
+    "engine": "javascript",
+    "protocol": "json-stdio-v1",
+    "entrypoint": "main.js",
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "limits": {
+      "timeout_ms": 2000,
+      "heap_bytes": 16777216,
+      "stack_bytes": 1048576,
+      "maximum_input_bytes": 1048576,
+      "maximum_output_bytes": 1048576,
+      "maximum_stderr_bytes": 65536,
+      "max_active_requests": 1
+    },
+    "side_effect": "none"
+  },
+  "source_blob_id": "00000000-0000-4000-8000-000000000001",
+  "source_digest": "sha256:4998c3388e27b1aef9ae5214f62f8107e39f312b7bfcada37e4df7ef0d290ab9",
+  "runtime_installation_id": "00000000-0000-4000-8000-000000000006"
+}

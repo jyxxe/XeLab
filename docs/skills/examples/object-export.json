@@ -1,0 +1,7 @@
+{
+  "input": {
+    "key": "reports/empty.txt",
+    "expected_revision": 1
+  },
+  "timeout_ms": 120000
+}

@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SkillDefinition",
+  "type": "object",
+  "description": "不可变的核心转发声明，不是可执行脚本或 Codex SKILL.md",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "description": "插件命名空间内唯一名称，plugin_id 前缀",
+      "pattern": "^[a-z][a-z0-9.-]+$"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "SemVer 2.0.0；版本约束语法见插件版本文档",
+      "example": "1.0.0",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "description": "业务用途"
+    },
+    "input_schema": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue",
+      "description": "目标业务输入Schema；micro与MicroManifest精确相等，不等同运行时RPC控制封装"
+    },
+    "output_schema": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue",
+      "description": "必须与目标响应一致"
+    },
+    "stream_item_schema": {
+      "anyOf": [
+        {
+          "$ref": "../openapi.json#/components/schemas/JsonValue"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "target": {
+      "$ref": "../openapi.json#/components/schemas/SkillTarget"
+    },
+    "mapping": {
+      "type": "string",
+      "description": "首版仅支持原样传入传出",
+      "enum": [
+        "identity"
+      ],
+      "default": "identity"
+    },
+    "maximum_timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 300000,
+      "description": "含排队、转发、推理的总期限",
+      "default": 120000
+    },
+    "input_blobs": {
+      "type": "boolean",
+      "description": "根据输入 Schema 的资源标记生成本次 blob.read 精确白名单",
+      "default": false
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80,
+        "description": "功能发现标签，不是授权凭证"
+      },
+      "description": "如 embedding/text/multimodal",
+      "minItems": 0,
+      "maxItems": 32
+    }
+  },
+  "required": [
+    "name",
+    "version",
+    "description",
+    "input_schema",
+    "output_schema",
+    "stream_item_schema",
+    "target",
+    "mapping",
+    "maximum_timeout_ms",
+    "input_blobs",
+    "tags"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "target": {
+            "properties": {
+              "kind": {
+                "const": "micro"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "target"
+        ]
+      },
+      "then": {
+        "properties": {
+          "stream_item_schema": {
+            "type": "null"
+          },
+          "input_blobs": {
+            "const": false
+          },
+          "maximum_timeout_ms": {
+            "maximum": 30000
+          },
+          "input_schema": {
+            "$ref": "../openapi.json#/components/schemas/MicroBusinessSchema"
+          },
+          "output_schema": {
+            "$ref": "../openapi.json#/components/schemas/MicroBusinessSchema"
+          }
+        }
+      }
+    }
+  ]
+}

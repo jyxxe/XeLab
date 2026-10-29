@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RouteSpec",
+  "type": "object",
+  "description": "插件路由声明，平台批准后才生效",
+  "additionalProperties": false,
+  "properties": {
+    "path_prefix": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "以 /plugins/{plugin_id}/ 或 /ui/{plugin_id}/ 开头"
+    },
+    "methods": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "GET",
+          "POST",
+          "PUT",
+          "PATCH",
+          "DELETE",
+          "HEAD"
+        ],
+        "description": "HTTP 方法"
+      },
+      "minItems": 1,
+      "maxItems": 6,
+      "description": "方法"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "http",
+        "static",
+        "webui"
+      ],
+      "description": "转发类型"
+    },
+    "required_action": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "description": "注册的调用权限"
+    },
+    "maximum_body_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 16777216,
+      "description": "请求体上限"
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 300000,
+      "description": "代理期限"
+    },
+    "http_contract_digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 71,
+      "description": "制品或内容 SHA-256 摘要",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "authentication": {
+      "type": "string",
+      "enum": [
+        "user",
+        "public"
+      ],
+      "default": "user",
+      "description": "public仅允许批准的static/webui GET/HEAD，不公开管理或业务接口"
+    }
+  },
+  "required": [
+    "path_prefix",
+    "methods",
+    "kind",
+    "required_action",
+    "maximum_body_bytes",
+    "timeout_ms"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "http"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "http_contract_digest"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "authentication": {
+            "const": "public"
+          }
+        },
+        "required": [
+          "authentication"
+        ]
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "static",
+              "webui"
+            ]
+          },
+          "methods": {
+            "items": {
+              "enum": [
+                "GET",
+                "HEAD"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

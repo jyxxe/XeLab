@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DependencyBinding",
+  "type": "object",
+  "description": "已解析提供者绑定",
+  "additionalProperties": false,
+  "properties": {
+    "alias": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "依赖别名"
+    },
+    "contract": {
+      "$ref": "../openapi.json#/components/schemas/ContractRef"
+    },
+    "deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "提供者部署",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "instance_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "按请求绑定时可以为空",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "按请求绑定时可以为空"
+    },
+    "binding_scope": {
+      "type": "string",
+      "enum": [
+        "request",
+        "deployment",
+        "task"
+      ],
+      "description": "范围"
+    }
+  },
+  "required": [
+    "alias",
+    "contract",
+    "deployment_id",
+    "instance_id",
+    "binding_scope"
+  ]
+}

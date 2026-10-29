@@ -1,0 +1,659 @@
+[
+  {
+    "name": "bridge_ready",
+    "schema": {
+      "$ref": "../ui-bridge.schema.json#"
+    },
+    "value": {
+      "protocol": "xelab.ui/1",
+      "view_id": "00000000-0000-4000-8000-000000000001",
+      "channel_nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 1,
+      "type": "ready"
+    },
+    "valid": true
+  },
+  {
+    "name": "bridge_batch_user",
+    "schema": {
+      "$ref": "../ui-bridge.schema.json#"
+    },
+    "value": {
+      "protocol": "xelab.ui/1",
+      "view_id": "00000000-0000-4000-8000-000000000001",
+      "channel_nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 2,
+      "type": "request",
+      "request_id": 1,
+      "method": "batch.create",
+      "params": {
+        "binding_alias": "embed",
+        "idempotency_key": "import-2026-10-29-001",
+        "request": {
+          "items": [
+            {
+              "id": "one",
+              "input": {
+                "items": [
+                  "example"
+                ],
+                "dimensions": 128
+              }
+            }
+          ],
+          "run_as": "user"
+        }
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "no_arbitrary_method",
+    "schema": {
+      "$ref": "../ui-bridge.schema.json#"
+    },
+    "value": {
+      "protocol": "xelab.ui/1",
+      "view_id": "00000000-0000-4000-8000-000000000001",
+      "channel_nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 2,
+      "type": "request",
+      "request_id": 1,
+      "method": "kernel.exec",
+      "params": {
+        "binding_alias": "embed",
+        "idempotency_key": "import-2026-10-29-001",
+        "request": {
+          "items": [
+            {
+              "id": "one",
+              "input": {
+                "items": [
+                  "example"
+                ],
+                "dimensions": 128
+              }
+            }
+          ],
+          "run_as": "user"
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "no_frame_service_impersonation",
+    "schema": {
+      "$ref": "../ui-bridge.schema.json#"
+    },
+    "value": {
+      "protocol": "xelab.ui/1",
+      "view_id": "00000000-0000-4000-8000-000000000001",
+      "channel_nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 2,
+      "type": "request",
+      "request_id": 1,
+      "method": "batch.create",
+      "params": {
+        "binding_alias": "embed",
+        "idempotency_key": "import-2026-10-29-001",
+        "request": {
+          "items": [
+            {
+              "id": "one",
+              "input": {
+                "items": [
+                  "example"
+                ],
+                "dimensions": 128
+              }
+            }
+          ],
+          "run_as": "service",
+          "service_account_id": "00000000-0000-4000-8000-000000000001"
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "nonce_256bit",
+    "schema": {
+      "$ref": "../ui-bridge.schema.json#"
+    },
+    "value": {
+      "protocol": "xelab.ui/1",
+      "view_id": "00000000-0000-4000-8000-000000000001",
+      "channel_nonce": "short",
+      "seq": 1,
+      "type": "ready"
+    },
+    "valid": false
+  },
+  {
+    "name": "no_token_field",
+    "schema": {
+      "$ref": "../ui-bridge.schema.json#"
+    },
+    "value": {
+      "protocol": "xelab.ui/1",
+      "view_id": "00000000-0000-4000-8000-000000000001",
+      "channel_nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "seq": 2,
+      "type": "request",
+      "request_id": 1,
+      "method": "batch.create",
+      "params": {
+        "binding_alias": "embed",
+        "idempotency_key": "import-2026-10-29-001",
+        "request": {
+          "items": [
+            {
+              "id": "one",
+              "input": {
+                "items": [
+                  "example"
+                ],
+                "dimensions": 128
+              }
+            }
+          ],
+          "run_as": "user"
+        }
+      },
+      "access_token": "forbidden"
+    },
+    "valid": false
+  },
+  {
+    "name": "window_and_widget",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/PluginUiSpec"
+    },
+    "value": {
+      "protocol_version": "1",
+      "base_path": "/ui/org.xelab.knowledge-base/",
+      "contributions": [
+        {
+          "id": "tables",
+          "kind": "window",
+          "title": "知识库",
+          "description": "表格、表达式检索和异步批次状态",
+          "entry_path": "/desktop/tables.html",
+          "skill_bindings": [
+            {
+              "alias": "query",
+              "name": "org.xelab.knowledge-base.rows-query",
+              "version": "1.0.0",
+              "modes": [
+                "call",
+                "batch"
+              ]
+            }
+          ],
+          "window": {
+            "width": 1000,
+            "height": 680,
+            "min_width": 640,
+            "min_height": 400,
+            "max_width": 1920,
+            "max_height": 1200,
+            "resizable": true
+          },
+          "refresh_interval_seconds": 0
+        },
+        {
+          "id": "index_status",
+          "kind": "widget",
+          "title": "索引状态",
+          "description": "按需显示本人字段向量进度",
+          "entry_path": "/desktop/index-status.html",
+          "skill_bindings": [
+            {
+              "alias": "status",
+              "name": "org.xelab.knowledge-base.vector-status",
+              "version": "1.0.0",
+              "modes": [
+                "call"
+              ]
+            }
+          ],
+          "widget": {
+            "columns": 3,
+            "rows": 2,
+            "min_columns": 2,
+            "min_rows": 1,
+            "max_columns": 4,
+            "max_rows": 3
+          },
+          "refresh_interval_seconds": 60
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "window_widget_xor",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/PluginUiSpec"
+    },
+    "value": {
+      "protocol_version": "1",
+      "base_path": "/ui/org.xelab.knowledge-base/",
+      "contributions": [
+        {
+          "id": "tables",
+          "kind": "window",
+          "title": "知识库",
+          "description": "表格、表达式检索和异步批次状态",
+          "entry_path": "/desktop/tables.html",
+          "skill_bindings": [
+            {
+              "alias": "query",
+              "name": "org.xelab.knowledge-base.rows-query",
+              "version": "1.0.0",
+              "modes": [
+                "call",
+                "batch"
+              ]
+            }
+          ],
+          "window": {
+            "width": 1000,
+            "height": 680,
+            "min_width": 640,
+            "min_height": 400,
+            "max_width": 1920,
+            "max_height": 1200,
+            "resizable": true
+          },
+          "refresh_interval_seconds": 0,
+          "widget": {
+            "columns": 3,
+            "rows": 2,
+            "min_columns": 2,
+            "min_rows": 1,
+            "max_columns": 4,
+            "max_rows": 3
+          }
+        },
+        {
+          "id": "index_status",
+          "kind": "widget",
+          "title": "索引状态",
+          "description": "按需显示本人字段向量进度",
+          "entry_path": "/desktop/index-status.html",
+          "skill_bindings": [
+            {
+              "alias": "status",
+              "name": "org.xelab.knowledge-base.vector-status",
+              "version": "1.0.0",
+              "modes": [
+                "call"
+              ]
+            }
+          ],
+          "widget": {
+            "columns": 3,
+            "rows": 2,
+            "min_columns": 2,
+            "min_rows": 1,
+            "max_columns": 4,
+            "max_rows": 3
+          },
+          "refresh_interval_seconds": 60
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "no_refresh_storm",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/PluginUiSpec"
+    },
+    "value": {
+      "protocol_version": "1",
+      "base_path": "/ui/org.xelab.knowledge-base/",
+      "contributions": [
+        {
+          "id": "tables",
+          "kind": "window",
+          "title": "知识库",
+          "description": "表格、表达式检索和异步批次状态",
+          "entry_path": "/desktop/tables.html",
+          "skill_bindings": [
+            {
+              "alias": "query",
+              "name": "org.xelab.knowledge-base.rows-query",
+              "version": "1.0.0",
+              "modes": [
+                "call",
+                "batch"
+              ]
+            }
+          ],
+          "window": {
+            "width": 1000,
+            "height": 680,
+            "min_width": 640,
+            "min_height": 400,
+            "max_width": 1920,
+            "max_height": 1200,
+            "resizable": true
+          },
+          "refresh_interval_seconds": 0
+        },
+        {
+          "id": "index_status",
+          "kind": "widget",
+          "title": "索引状态",
+          "description": "按需显示本人字段向量进度",
+          "entry_path": "/desktop/index-status.html",
+          "skill_bindings": [
+            {
+              "alias": "status",
+              "name": "org.xelab.knowledge-base.vector-status",
+              "version": "1.0.0",
+              "modes": [
+                "call"
+              ]
+            }
+          ],
+          "widget": {
+            "columns": 3,
+            "rows": 2,
+            "min_columns": 2,
+            "min_rows": 1,
+            "max_columns": 4,
+            "max_rows": 3
+          },
+          "refresh_interval_seconds": 1
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "no_external_entry",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/PluginUiSpec"
+    },
+    "value": {
+      "protocol_version": "1",
+      "base_path": "/ui/org.xelab.knowledge-base/",
+      "contributions": [
+        {
+          "id": "tables",
+          "kind": "window",
+          "title": "知识库",
+          "description": "表格、表达式检索和异步批次状态",
+          "entry_path": "https://evil.example/page",
+          "skill_bindings": [
+            {
+              "alias": "query",
+              "name": "org.xelab.knowledge-base.rows-query",
+              "version": "1.0.0",
+              "modes": [
+                "call",
+                "batch"
+              ]
+            }
+          ],
+          "window": {
+            "width": 1000,
+            "height": 680,
+            "min_width": 640,
+            "min_height": 400,
+            "max_width": 1920,
+            "max_height": 1200,
+            "resizable": true
+          },
+          "refresh_interval_seconds": 0
+        },
+        {
+          "id": "index_status",
+          "kind": "widget",
+          "title": "索引状态",
+          "description": "按需显示本人字段向量进度",
+          "entry_path": "/desktop/index-status.html",
+          "skill_bindings": [
+            {
+              "alias": "status",
+              "name": "org.xelab.knowledge-base.vector-status",
+              "version": "1.0.0",
+              "modes": [
+                "call"
+              ]
+            }
+          ],
+          "widget": {
+            "columns": 3,
+            "rows": 2,
+            "min_columns": 2,
+            "min_rows": 1,
+            "max_columns": 4,
+            "max_rows": 3
+          },
+          "refresh_interval_seconds": 60
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "system_preferences",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/UiPreferencesSpec"
+    },
+    "value": {
+      "theme": {
+        "mode": "system",
+        "reduce_motion": false,
+        "reduce_transparency": false
+      },
+      "dock": {
+        "position": "bottom",
+        "auto_hide": false,
+        "pinned": []
+      },
+      "widgets": [],
+      "restore_windows": true
+    },
+    "valid": true
+  },
+  {
+    "name": "custom_requires_tokens",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/UiPreferencesSpec"
+    },
+    "value": {
+      "theme": {
+        "mode": "custom",
+        "reduce_motion": false,
+        "reduce_transparency": false
+      },
+      "dock": {
+        "position": "bottom",
+        "auto_hide": false,
+        "pinned": []
+      },
+      "widgets": [],
+      "restore_windows": true
+    },
+    "valid": false
+  },
+  {
+    "name": "custom_tokens",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/UiPreferencesSpec"
+    },
+    "value": {
+      "theme": {
+        "mode": "custom",
+        "reduce_motion": false,
+        "reduce_transparency": false,
+        "custom_tokens": {
+          "accent": "#4F7CFF",
+          "desktop": "#E9EEF7",
+          "surface": "#FFFFFF",
+          "text": "#18202C",
+          "muted_text": "#526074",
+          "border": "#CBD5E1",
+          "danger": "#B42318",
+          "radius_px": 12,
+          "blur_px": 16,
+          "panel_opacity": 0.92,
+          "font": "system"
+        }
+      },
+      "dock": {
+        "position": "bottom",
+        "auto_hide": false,
+        "pinned": []
+      },
+      "widgets": [],
+      "restore_windows": true
+    },
+    "valid": true
+  },
+  {
+    "name": "no_css_injection",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/UiPreferencesSpec"
+    },
+    "value": {
+      "theme": {
+        "mode": "custom",
+        "reduce_motion": false,
+        "reduce_transparency": false,
+        "custom_tokens": {
+          "accent": "url(https://evil.example)",
+          "desktop": "#E9EEF7",
+          "surface": "#FFFFFF",
+          "text": "#18202C",
+          "muted_text": "#526074",
+          "border": "#CBD5E1",
+          "danger": "#B42318",
+          "radius_px": 12,
+          "blur_px": 16,
+          "panel_opacity": 0.92,
+          "font": "system"
+        }
+      },
+      "dock": {
+        "position": "bottom",
+        "auto_hide": false,
+        "pinned": []
+      },
+      "widgets": [],
+      "restore_windows": true
+    },
+    "valid": false
+  },
+  {
+    "name": "no_hidden_custom_tokens",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/UiPreferencesSpec"
+    },
+    "value": {
+      "theme": {
+        "mode": "system",
+        "reduce_motion": false,
+        "reduce_transparency": false,
+        "custom_tokens": {
+          "accent": "#4F7CFF",
+          "desktop": "#E9EEF7",
+          "surface": "#FFFFFF",
+          "text": "#18202C",
+          "muted_text": "#526074",
+          "border": "#CBD5E1",
+          "danger": "#B42318",
+          "radius_px": 12,
+          "blur_px": 16,
+          "panel_opacity": 0.92,
+          "font": "system"
+        }
+      },
+      "dock": {
+        "position": "bottom",
+        "auto_hide": false,
+        "pinned": []
+      },
+      "widgets": [],
+      "restore_windows": true
+    },
+    "valid": false
+  },
+  {
+    "name": "batch_valid",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/SkillBatchRequest"
+    },
+    "value": {
+      "items": [
+        {
+          "id": "text-001",
+          "input": {
+            "items": [
+              {
+                "text": "知识库检索"
+              }
+            ],
+            "purpose": "retrieval_query",
+            "dimensions": 128
+          }
+        }
+      ],
+      "item_timeout_ms": 120000,
+      "timeout_ms": 86400000,
+      "max_parallel": 1,
+      "failure_policy": "continue",
+      "run_as": "user"
+    },
+    "valid": true
+  },
+  {
+    "name": "batch_nonempty",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/SkillBatchRequest"
+    },
+    "value": {
+      "items": [],
+      "item_timeout_ms": 120000,
+      "timeout_ms": 86400000,
+      "max_parallel": 1,
+      "failure_policy": "continue",
+      "run_as": "user"
+    },
+    "valid": false
+  },
+  {
+    "name": "bounded_fanout",
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/SkillBatchRequest"
+    },
+    "value": {
+      "items": [
+        {
+          "id": "text-001",
+          "input": {
+            "items": [
+              {
+                "text": "知识库检索"
+              }
+            ],
+            "purpose": "retrieval_query",
+            "dimensions": 128
+          }
+        }
+      ],
+      "item_timeout_ms": 120000,
+      "timeout_ms": 86400000,
+      "max_parallel": 17,
+      "failure_policy": "continue",
+      "run_as": "user"
+    },
+    "valid": false
+  }
+]

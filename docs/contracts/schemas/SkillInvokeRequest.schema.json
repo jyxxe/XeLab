@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SkillInvokeRequest",
+  "type": "object",
+  "description": "目标由 Skill 固定，调用方不能覆盖 plugin/contract/address",
+  "additionalProperties": false,
+  "properties": {
+    "input": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue"
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 300000,
+      "description": "显式值不超过Skill.maximum_timeout_ms；省略取min(120000,Skill上限)",
+      "default": 120000
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "有副作用调用的稳定业务去重键"
+    }
+  },
+  "required": [
+    "input"
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OAuthTokenRequest",
+  "type": "object",
+  "description": "OAuth 表单：授权码+PKCE或刷新凭证",
+  "additionalProperties": false,
+  "properties": {
+    "grant_type": {
+      "type": "string",
+      "enum": [
+        "authorization_code",
+        "refresh_token"
+      ],
+      "description": "授权模式"
+    },
+    "client_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "注册客户端"
+    },
+    "code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "一次性授权码"
+    },
+    "redirect_uri": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "description": "必须与注册和授权请求一致",
+      "format": "uri"
+    },
+    "code_verifier": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 128,
+      "description": "PKCE verifier，43–128 字符",
+      "pattern": "^[A-Za-z0-9._~-]{43,128}$"
+    },
+    "refresh_token": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "刷新凭证；轮换并检测重用"
+    }
+  },
+  "required": [
+    "grant_type",
+    "client_id"
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "grant_type": {
+          "const": "authorization_code"
+        }
+      },
+      "required": [
+        "code",
+        "redirect_uri",
+        "code_verifier"
+      ],
+      "not": {
+        "required": [
+          "refresh_token"
+        ]
+      }
+    },
+    {
+      "properties": {
+        "grant_type": {
+          "const": "refresh_token"
+        }
+      },
+      "required": [
+        "refresh_token"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "code"
+            ]
+          },
+          {
+            "required": [
+              "redirect_uri"
+            ]
+          },
+          {
+            "required": [
+              "code_verifier"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

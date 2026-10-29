@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ResourceLimits",
+  "type": "object",
+  "description": "实例获批上限；磁盘限额由配额存储实施",
+  "additionalProperties": false,
+  "properties": {
+    "cpu_millis": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 1048576,
+      "description": "1000=1 vCPU"
+    },
+    "memory_bytes": {
+      "type": "integer",
+      "minimum": 16777216,
+      "maximum": 9007199254740991,
+      "description": "字节；最低 16 MiB"
+    },
+    "ephemeral_bytes": {
+      "type": "integer",
+      "minimum": 1048576,
+      "maximum": 9007199254740991,
+      "description": "临时存储字节"
+    },
+    "pids": {
+      "type": "integer",
+      "minimum": 16,
+      "maximum": 65536,
+      "description": "进程/线程计数上限"
+    }
+  },
+  "required": [
+    "cpu_millis",
+    "memory_bytes",
+    "ephemeral_bytes",
+    "pids"
+  ]
+}

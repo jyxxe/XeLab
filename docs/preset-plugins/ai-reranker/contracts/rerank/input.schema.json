@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "model_alias": {
+      "type": "string",
+      "description": "固定批准的连接/路由别名",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "query": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 65536
+    },
+    "documents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "text": {
+            "type": "string",
+            "description": "",
+            "minLength": 0,
+            "maxLength": 262144
+          }
+        },
+        "required": [
+          "id",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 1000
+    },
+    "top_k": {
+      "type": "integer",
+      "description": "",
+      "minimum": 1,
+      "maximum": 1000
+    }
+  },
+  "required": [
+    "model_alias",
+    "query",
+    "documents"
+  ],
+  "additionalProperties": false
+}

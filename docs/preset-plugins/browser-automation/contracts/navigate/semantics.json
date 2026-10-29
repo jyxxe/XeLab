@@ -1,0 +1,25 @@
+{
+  "status": "planned",
+  "version": "0.1.0",
+  "kind": "ordinary",
+  "capability_id": "browser.navigate",
+  "side_effect": "non_repeatable",
+  "maximum_input_bytes": 4194304,
+  "maximum_output_bytes": 16777216,
+  "maximum_json_depth": 64,
+  "streaming": false,
+  "batch": "core_async_skill_batch",
+  "unknown_fields": "reject",
+  "authorization": "future_skill_invoke_and_capability_invoke_and_current_owner_policy",
+  "cancellation": "cooperative_hard_deadline_no_partial_success",
+  "retries": "none_by_default_query_evidence_before_replay",
+  "feature_gates": [
+    "browser-sandbox",
+    "session-authorization",
+    "all-resource-network-interception"
+  ],
+  "notes": [
+    "Session bound to caller+fixed browser instance+TTL; cannot reuse another subject session.",
+    "All navigations/resources must obey network policy, no caller eval/OS access."
+  ]
+}

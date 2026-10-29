@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CapabilityProvider",
+  "type": "object",
+  "description": "可路由能力提供者；无宿主内部地址",
+  "additionalProperties": false,
+  "properties": {
+    "contract": {
+      "$ref": "../openapi.json#/components/schemas/ContractRef"
+    },
+    "deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "instance_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "availability": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "degraded",
+        "unavailable"
+      ],
+      "description": "逐能力就绪状态"
+    },
+    "features": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80,
+        "description": "特性标签"
+      },
+      "minItems": 0,
+      "maxItems": 256,
+      "description": "功能特性"
+    }
+  },
+  "required": [
+    "contract",
+    "deployment_id",
+    "instance_id",
+    "availability",
+    "features"
+  ]
+}

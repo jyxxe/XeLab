@@ -1,0 +1,7 @@
+{
+  "protocol": "xelab.ui/1",
+  "view_id": "00000000-0000-4000-8000-000000000001",
+  "channel_nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "seq": 1,
+  "type": "ready"
+}

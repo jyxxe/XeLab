@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TextMessage",
+  "type": "object",
+  "description": "兼容接口仅支持文本消息",
+  "additionalProperties": false,
+  "properties": {
+    "role": {
+      "type": "string",
+      "enum": [
+        "system",
+        "user",
+        "assistant"
+      ],
+      "description": "消息角色"
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 262144,
+      "description": "UTF-8 文本"
+    }
+  },
+  "required": [
+    "role",
+    "content"
+  ]
+}

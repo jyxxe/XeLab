@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HealthStatus",
+  "type": "object",
+  "description": "无敏感详情的探针返回",
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "not_ready"
+      ],
+      "description": "存活/就绪状态"
+    },
+    "spec_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "description": "平台规格版本",
+      "example": "2.1.0"
+    }
+  },
+  "required": [
+    "status",
+    "spec_version"
+  ]
+}

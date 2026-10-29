@@ -1,0 +1,6 @@
+{
+  "input": {
+    "text": "hello micro plugin"
+  },
+  "timeout_ms": 2000
+}

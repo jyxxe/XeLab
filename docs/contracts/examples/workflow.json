@@ -1,0 +1,34 @@
+{
+  "name": "echo-once",
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "text"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "text": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    }
+  },
+  "steps": [
+    {
+      "id": "echo",
+      "contract": {
+        "name": "tool.echo",
+        "version": "1.0.0",
+        "schema_digest": "sha256:30039c0229db5e7589c1b4c58d44712f431145b4377bc2b249b607844508b19d"
+      },
+      "depends_on": [],
+      "input_mapping": {
+        "text": {
+          "task_input": "/text"
+        }
+      },
+      "maximum_attempts": 1,
+      "timeout_ms": 30000
+    }
+  ]
+}

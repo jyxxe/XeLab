@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "csv": {
+      "type": "string",
+      "description": "",
+      "minLength": 0,
+      "maxLength": 1048576
+    },
+    "delimiter": {
+      "type": "string",
+      "enum": [
+        ",",
+        ";",
+        "\t"
+      ],
+      "description": "",
+      "default": ","
+    },
+    "header": {
+      "type": "boolean",
+      "default": true
+    },
+    "columns": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "minItems": 1,
+      "maxItems": 128,
+      "uniqueItems": true
+    },
+    "null_value": {
+      "type": "string",
+      "description": "",
+      "minLength": 0,
+      "maxLength": 256
+    },
+    "max_rows": {
+      "type": "integer",
+      "description": "",
+      "minimum": 1,
+      "maximum": 10000,
+      "default": 1000
+    },
+    "max_columns": {
+      "type": "integer",
+      "description": "",
+      "minimum": 1,
+      "maximum": 128,
+      "default": 128
+    }
+  },
+  "required": [
+    "csv"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "header": {
+            "const": false
+          }
+        },
+        "required": [
+          "header"
+        ]
+      },
+      "then": {
+        "required": [
+          "columns"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "columns"
+          ]
+        }
+      }
+    }
+  ]
+}

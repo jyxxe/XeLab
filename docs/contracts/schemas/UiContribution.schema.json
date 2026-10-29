@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UiContribution",
+  "type": "object",
+  "description": "按当前用户过滤后的已批准UI；地址由核心受控origin映射产生",
+  "additionalProperties": false,
+  "properties": {
+    "deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "installation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "plugin_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "插件稳定 ID；不含版本",
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+      "example": "org.xelab.echo"
+    },
+    "manifest_digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 71,
+      "description": "制品或内容 SHA-256 摘要",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "contribution_digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 71,
+      "description": "制品或内容 SHA-256 摘要",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "spec": {
+      "$ref": "../openapi.json#/components/schemas/UiContributionSpec"
+    },
+    "frame_url": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "description": "已批准HTTPS绝对URL；来源必须与桌面壳和内核登录源不同",
+          "format": "uri"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "未配置隔离源时null；ready必须为受控HTTPS地址"
+    },
+    "frame_origin": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "固定HTTPS origin，无路径/凭证/query/fragment",
+          "format": "uri"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "未配置隔离源时null；ready必须为受控HTTPS地址"
+    },
+    "availability": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "unavailable"
+      ],
+      "description": "无隔离origin/实例未就绪/绑定缺失时显示原因"
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80,
+        "description": "原因"
+      },
+      "minItems": 0,
+      "maxItems": 32,
+      "description": "稳定错误原因，不能泄露内部端点"
+    },
+    "bindings": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/UiResolvedSkillBinding"
+      },
+      "minItems": 0,
+      "maxItems": 32,
+      "description": "当前获准的桥接绑定；未获准绑定省略"
+    }
+  },
+  "required": [
+    "deployment_id",
+    "installation_id",
+    "plugin_id",
+    "manifest_digest",
+    "contribution_digest",
+    "spec",
+    "frame_url",
+    "frame_origin",
+    "availability",
+    "reason_codes",
+    "bindings"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "availability": {
+            "const": "ready"
+          }
+        },
+        "required": [
+          "availability"
+        ]
+      },
+      "then": {
+        "properties": {
+          "frame_url": {
+            "type": "string"
+          },
+          "frame_origin": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

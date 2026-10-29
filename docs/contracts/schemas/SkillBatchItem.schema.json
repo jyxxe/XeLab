@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SkillBatchItem",
+  "type": "object",
+  "description": "单项状态与结果引用；输入不在列表回显",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "调用方关联键；不是行ID或授权凭证",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
+    },
+    "index": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 999,
+      "description": "提交顺序，从0开始"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+        "canceled",
+        "unknown"
+      ],
+      "description": "unknown尚无可证实终态"
+    },
+    "call_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "资源唯一标识",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "attempts": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5,
+      "description": "物理尝试数；不等同重复计费"
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "创建时间，UTC",
+          "format": "date-time",
+          "example": "2026-10-28T12:00:00Z"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "completed_at": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "创建时间，UTC",
+          "format": "date-time",
+          "example": "2026-10-28T12:00:00Z"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result_bytes": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16777216,
+          "description": "完整SkillCallResult的JSON字节数，上限16MiB"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result_digest": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 71,
+          "description": "制品或内容 SHA-256 摘要",
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "../openapi.json#/components/schemas/ErrorDetail"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "resolution_source": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "automatic",
+            "manual"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "仅核实过unknown的项目非空；人工结果必须在UI标明"
+    }
+  },
+  "required": [
+    "id",
+    "index",
+    "state",
+    "call_id",
+    "attempts",
+    "started_at",
+    "completed_at",
+    "result_bytes",
+    "result_digest",
+    "error",
+    "resolution_source"
+  ]
+}

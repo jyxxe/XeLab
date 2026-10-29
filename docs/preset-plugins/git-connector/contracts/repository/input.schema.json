@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "repository_alias": {
+      "type": "string",
+      "description": "固定批准的连接/路由别名",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "operation": {
+      "type": "string",
+      "enum": [
+        "files",
+        "branches",
+        "log"
+      ],
+      "description": ""
+    },
+    "path": {
+      "type": "string",
+      "description": "",
+      "minLength": 0,
+      "maxLength": 1024
+    },
+    "ref": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "limit": {
+      "type": "integer",
+      "description": "",
+      "minimum": 1,
+      "maximum": 200,
+      "default": 50
+    },
+    "cursor": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 4096
+    }
+  },
+  "required": [
+    "repository_alias",
+    "operation"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,7 @@
+{
+  "source": "plan/v0.md, version 1.2 before migration",
+  "archive": "archive/v0-1.2.md",
+  "sha256": "855ff6303565ae1279735ae1250878f8957438bac76a33b74e6bffaeb27aa95c",
+  "migrated_on": "2026-10-28",
+  "spec_version": "2.0.0"
+}

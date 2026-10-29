@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LoginRequest",
+  "type": "object",
+  "description": "仅可信内核登录页与本机 CLI 使用；第三方 WebUI 跳转授权流程",
+  "additionalProperties": false,
+  "properties": {
+    "account_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "password": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "账户密码",
+      "writeOnly": true
+    }
+  },
+  "required": [
+    "account_id",
+    "password"
+  ]
+}

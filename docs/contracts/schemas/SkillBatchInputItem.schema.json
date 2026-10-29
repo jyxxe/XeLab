@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SkillBatchInputItem",
+  "type": "object",
+  "description": "一个有界 Skill 调用单元；id 在本批内唯一",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "调用方关联键；不是行ID或授权凭证",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
+    },
+    "input": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue"
+    }
+  },
+  "required": [
+    "id",
+    "input"
+  ]
+}

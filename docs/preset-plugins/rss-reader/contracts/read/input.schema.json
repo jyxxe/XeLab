@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "url": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 4096,
+      "format": "uri"
+    },
+    "http_policy_alias": {
+      "type": "string",
+      "description": "固定批准的连接/路由别名",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "max_items": {
+      "type": "integer",
+      "description": "",
+      "minimum": 1,
+      "maximum": 1000,
+      "default": 100
+    }
+  },
+  "required": [
+    "url",
+    "http_policy_alias"
+  ],
+  "additionalProperties": false
+}

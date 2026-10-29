@@ -1,0 +1,2551 @@
+[
+  {
+    "name": "ai.chat-input-valid",
+    "capability_id": "ai.chat",
+    "schema": {
+      "$ref": "../ai-chat-openai-compatible/contracts/chat/input.schema.json"
+    },
+    "value": {
+      "model": "approved-text",
+      "messages": [
+        {
+          "role": "user",
+          "content": "你好"
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "ai.chat-input-invalid",
+    "capability_id": "ai.chat",
+    "schema": {
+      "$ref": "../ai-chat-openai-compatible/contracts/chat/input.schema.json"
+    },
+    "value": {
+      "model": "approved-text",
+      "messages": []
+    },
+    "valid": false
+  },
+  {
+    "name": "ai.chat-output-valid",
+    "capability_id": "ai.chat",
+    "schema": {
+      "$ref": "../ai-chat-openai-compatible/contracts/chat/output.schema.json"
+    },
+    "value": {
+      "id": "chatcmpl_00000000-0000-4000-8000-000000000001",
+      "object": "chat.completion",
+      "created": 1793232000,
+      "model": "approved-text",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "你好"
+          },
+          "finish_reason": "stop"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 1,
+        "completion_tokens": 1,
+        "total_tokens": 2
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "document.parse-input-valid",
+    "capability_id": "document.parse",
+    "schema": {
+      "$ref": "../document-parser/contracts/parse/input.schema.json"
+    },
+    "value": {
+      "blob_id": "00000000-0000-4000-8000-000000000001"
+    },
+    "valid": true
+  },
+  {
+    "name": "document.parse-input-invalid",
+    "capability_id": "document.parse",
+    "schema": {
+      "$ref": "../document-parser/contracts/parse/input.schema.json"
+    },
+    "value": {
+      "blob_id": "00000000-0000-4000-8000-000000000001",
+      "options": {
+        "max_pages": 0
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "document.parse-output-valid",
+    "capability_id": "document.parse",
+    "schema": {
+      "$ref": "../document-parser/contracts/parse/output.schema.json"
+    },
+    "value": {
+      "format": "txt",
+      "text": "a",
+      "pages": [],
+      "paragraphs": [
+        {
+          "index": 0,
+          "text": "a",
+          "page_number": null
+        }
+      ],
+      "metadata": {
+        "title": null,
+        "author": null,
+        "language": null,
+        "page_count": null
+      },
+      "warnings": []
+    },
+    "valid": true
+  },
+  {
+    "name": "http.request-input-valid",
+    "capability_id": "http.request",
+    "schema": {
+      "$ref": "../http-client/contracts/request/input.schema.json"
+    },
+    "value": {
+      "policy_alias": "public-read",
+      "url": "https://example.com/"
+    },
+    "valid": true
+  },
+  {
+    "name": "http.request-input-invalid",
+    "capability_id": "http.request",
+    "schema": {
+      "$ref": "../http-client/contracts/request/input.schema.json"
+    },
+    "value": {
+      "policy_alias": "public-read",
+      "url": "https://example.com/",
+      "body_text": "x",
+      "body_blob_id": "00000000-0000-4000-8000-000000000001"
+    },
+    "valid": false
+  },
+  {
+    "name": "http.request-output-valid",
+    "capability_id": "http.request",
+    "schema": {
+      "$ref": "../http-client/contracts/request/output.schema.json"
+    },
+    "value": {
+      "status": 200,
+      "headers": {},
+      "final_url": "https://example.com/",
+      "body_text": "ok",
+      "size_bytes": 2,
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "valid": true
+  },
+  {
+    "name": "notification.send-input-valid",
+    "capability_id": "notification.send",
+    "schema": {
+      "$ref": "../notification/contracts/send/input.schema.json"
+    },
+    "value": {
+      "route_alias": "ops",
+      "recipients": [
+        "a@example.com"
+      ],
+      "message": {
+        "text": "ok"
+      },
+      "dedupe_key": "n-1"
+    },
+    "valid": true
+  },
+  {
+    "name": "notification.send-input-invalid",
+    "capability_id": "notification.send",
+    "schema": {
+      "$ref": "../notification/contracts/send/input.schema.json"
+    },
+    "value": {
+      "route_alias": "ops",
+      "recipients": [],
+      "message": {
+        "text": "ok"
+      },
+      "dedupe_key": "n-1"
+    },
+    "valid": false
+  },
+  {
+    "name": "notification.send-output-valid",
+    "capability_id": "notification.send",
+    "schema": {
+      "$ref": "../notification/contracts/send/output.schema.json"
+    },
+    "value": {
+      "notification_id": "00000000-0000-4000-8000-000000000001",
+      "status": "accepted",
+      "channel": "email",
+      "attempts": 1,
+      "provider_message_id": null
+    },
+    "valid": true
+  },
+  {
+    "name": "database.query-input-valid",
+    "capability_id": "database.query",
+    "schema": {
+      "$ref": "../database-postgres/contracts/query/input.schema.json"
+    },
+    "value": {
+      "connection_alias": "read-db",
+      "sql": "SELECT $1::bigint",
+      "parameters": [
+        {
+          "type": "int64",
+          "value": "9223372036854775807"
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "database.query-input-invalid",
+    "capability_id": "database.query",
+    "schema": {
+      "$ref": "../database-postgres/contracts/query/input.schema.json"
+    },
+    "value": {
+      "connection_alias": "read-db",
+      "sql": "SELECT $1",
+      "parameters": [
+        {
+          "type": "int64",
+          "value": 9223372036854775807
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "database.query-output-valid",
+    "capability_id": "database.query",
+    "schema": {
+      "$ref": "../database-postgres/contracts/query/output.schema.json"
+    },
+    "value": {
+      "columns": [
+        {
+          "name": "n",
+          "data_type": "int8"
+        }
+      ],
+      "rows": [
+        [
+          "9223372036854775807"
+        ]
+      ],
+      "row_count": 1,
+      "truncated": false,
+      "elapsed_ms": 1
+    },
+    "valid": true
+  },
+  {
+    "name": "database.execute-input-valid",
+    "capability_id": "database.execute",
+    "schema": {
+      "$ref": "../database-postgres/contracts/execute/input.schema.json"
+    },
+    "value": {
+      "connection_alias": "write-db",
+      "sql": "UPDATE items SET name=$1 WHERE id=$2",
+      "parameters": [
+        {
+          "type": "text",
+          "value": "新名称"
+        },
+        {
+          "type": "uuid",
+          "value": "00000000-0000-4000-8000-000000000001"
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "database.execute-input-invalid",
+    "capability_id": "database.execute",
+    "schema": {
+      "$ref": "../database-postgres/contracts/execute/input.schema.json"
+    },
+    "value": {
+      "connection_alias": "write-db",
+      "sql": "UPDATE items SET id=$1",
+      "parameters": [
+        {
+          "type": "uuid",
+          "value": "invalid"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "database.execute-output-valid",
+    "capability_id": "database.execute",
+    "schema": {
+      "$ref": "../database-postgres/contracts/execute/output.schema.json"
+    },
+    "value": {
+      "affected_rows": "1",
+      "elapsed_ms": 1
+    },
+    "valid": true
+  },
+  {
+    "name": "trigger.webhook-input-valid",
+    "capability_id": "trigger.webhook",
+    "schema": {
+      "$ref": "../automation-webhook-trigger/contracts/webhook/input.schema.json"
+    },
+    "value": {
+      "endpoint_alias": "hook-1",
+      "authenticated_event_id": "00000000-0000-4000-8000-000000000001",
+      "source_alias": "sender",
+      "event_id": "upstream-1",
+      "event_type": "change",
+      "payload": {
+        "id": 1
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "trigger.webhook-input-invalid",
+    "capability_id": "trigger.webhook",
+    "schema": {
+      "$ref": "../automation-webhook-trigger/contracts/webhook/input.schema.json"
+    },
+    "value": {
+      "endpoint_alias": "hook-1",
+      "authenticated_event_id": "00000000-0000-4000-8000-000000000001",
+      "source_alias": "sender",
+      "event_id": "upstream-1",
+      "event_type": "change",
+      "payload": {},
+      "authenticated": true
+    },
+    "valid": false
+  },
+  {
+    "name": "trigger.webhook-output-valid",
+    "capability_id": "trigger.webhook",
+    "schema": {
+      "$ref": "../automation-webhook-trigger/contracts/webhook/output.schema.json"
+    },
+    "value": {
+      "accepted": true,
+      "duplicate": false,
+      "receipt_id": "00000000-0000-4000-8000-000000000001",
+      "task_id": null,
+      "platform_event_id": "00000000-0000-4000-8000-000000000001"
+    },
+    "valid": true
+  },
+  {
+    "name": "email.send-input-valid",
+    "capability_id": "email.send",
+    "schema": {
+      "$ref": "../email-connector/contracts/send/input.schema.json"
+    },
+    "value": {
+      "transport_alias": "transactional",
+      "to": [
+        "a@example.com"
+      ],
+      "subject": "test",
+      "text": "ok",
+      "dedupe_key": "e-1"
+    },
+    "valid": true
+  },
+  {
+    "name": "email.send-input-invalid",
+    "capability_id": "email.send",
+    "schema": {
+      "$ref": "../email-connector/contracts/send/input.schema.json"
+    },
+    "value": {
+      "transport_alias": "transactional",
+      "to": [
+        "a@example.com"
+      ],
+      "subject": "test",
+      "text": "ok",
+      "template_alias": "welcome",
+      "template_data": {},
+      "dedupe_key": "e-1"
+    },
+    "valid": false
+  },
+  {
+    "name": "email.send-output-valid",
+    "capability_id": "email.send",
+    "schema": {
+      "$ref": "../email-connector/contracts/send/output.schema.json"
+    },
+    "value": {
+      "message_id": "00000000-0000-4000-8000-000000000001",
+      "status": "accepted",
+      "provider_message_id": null,
+      "accepted_recipients": [
+        "a@example.com"
+      ],
+      "rejected_recipients": []
+    },
+    "valid": true
+  },
+  {
+    "name": "archive.extract-input-valid",
+    "capability_id": "archive.extract",
+    "schema": {
+      "$ref": "../archive-processor/contracts/extract/input.schema.json"
+    },
+    "value": {
+      "blob_id": "00000000-0000-4000-8000-000000000001"
+    },
+    "valid": true
+  },
+  {
+    "name": "archive.extract-input-invalid",
+    "capability_id": "archive.extract",
+    "schema": {
+      "$ref": "../archive-processor/contracts/extract/input.schema.json"
+    },
+    "value": {
+      "blob_id": "00000000-0000-4000-8000-000000000001",
+      "max_depth": 33
+    },
+    "valid": false
+  },
+  {
+    "name": "archive.extract-output-valid",
+    "capability_id": "archive.extract",
+    "schema": {
+      "$ref": "../archive-processor/contracts/extract/output.schema.json"
+    },
+    "value": {
+      "files": [
+        {
+          "path": "a.txt",
+          "blob_id": "00000000-0000-4000-8000-000000000001",
+          "size_bytes": 0,
+          "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "content_type": "text/plain"
+        }
+      ],
+      "total_bytes": 0
+    },
+    "valid": true
+  },
+  {
+    "name": "archive.create-input-valid",
+    "capability_id": "archive.create",
+    "schema": {
+      "$ref": "../archive-processor/contracts/create/input.schema.json"
+    },
+    "value": {
+      "format": "zip",
+      "entries": [
+        {
+          "path": "a.txt",
+          "blob_id": "00000000-0000-4000-8000-000000000001"
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "archive.create-input-invalid",
+    "capability_id": "archive.create",
+    "schema": {
+      "$ref": "../archive-processor/contracts/create/input.schema.json"
+    },
+    "value": {
+      "format": "zip",
+      "entries": []
+    },
+    "valid": false
+  },
+  {
+    "name": "archive.create-output-valid",
+    "capability_id": "archive.create",
+    "schema": {
+      "$ref": "../archive-processor/contracts/create/output.schema.json"
+    },
+    "value": {
+      "blob_id": "00000000-0000-4000-8000-000000000001",
+      "size_bytes": 0,
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "content_type": "application/zip",
+      "file_count": 1
+    },
+    "valid": true
+  },
+  {
+    "name": "ai.rerank-input-valid",
+    "capability_id": "ai.rerank",
+    "schema": {
+      "$ref": "../ai-reranker/contracts/rerank/input.schema.json"
+    },
+    "value": {
+      "model_alias": "reranker",
+      "query": "what?",
+      "documents": [
+        {
+          "id": "a",
+          "text": "a"
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "ai.rerank-input-invalid",
+    "capability_id": "ai.rerank",
+    "schema": {
+      "$ref": "../ai-reranker/contracts/rerank/input.schema.json"
+    },
+    "value": {
+      "model_alias": "reranker",
+      "query": "what?",
+      "documents": []
+    },
+    "valid": false
+  },
+  {
+    "name": "ai.rerank-output-valid",
+    "capability_id": "ai.rerank",
+    "schema": {
+      "$ref": "../ai-reranker/contracts/rerank/output.schema.json"
+    },
+    "value": {
+      "model": "reranker",
+      "results": [
+        {
+          "id": "a",
+          "index": 0,
+          "score": 0.5
+        }
+      ],
+      "usage": null
+    },
+    "valid": true
+  },
+  {
+    "name": "browser.navigate-input-valid",
+    "capability_id": "browser.navigate",
+    "schema": {
+      "$ref": "../browser-automation/contracts/navigate/input.schema.json"
+    },
+    "value": {
+      "browser_alias": "public-browser",
+      "url": "https://example.com/"
+    },
+    "valid": true
+  },
+  {
+    "name": "browser.navigate-input-invalid",
+    "capability_id": "browser.navigate",
+    "schema": {
+      "$ref": "../browser-automation/contracts/navigate/input.schema.json"
+    },
+    "value": {
+      "browser_alias": "public-browser",
+      "url": "https://example.com/",
+      "wait_until": "networkidle"
+    },
+    "valid": false
+  },
+  {
+    "name": "browser.navigate-output-valid",
+    "capability_id": "browser.navigate",
+    "schema": {
+      "$ref": "../browser-automation/contracts/navigate/output.schema.json"
+    },
+    "value": {
+      "session_id": "00000000-0000-4000-8000-000000000001",
+      "final_url": "https://example.com/",
+      "title": "Example",
+      "expires_at": "2026-10-29T12:05:00Z"
+    },
+    "valid": true
+  },
+  {
+    "name": "browser.extract-input-valid",
+    "capability_id": "browser.extract",
+    "schema": {
+      "$ref": "../browser-automation/contracts/extract/input.schema.json"
+    },
+    "value": {
+      "session_id": "00000000-0000-4000-8000-000000000001",
+      "fields": [
+        {
+          "name": "heading",
+          "selector": "h1"
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "browser.extract-input-invalid",
+    "capability_id": "browser.extract",
+    "schema": {
+      "$ref": "../browser-automation/contracts/extract/input.schema.json"
+    },
+    "value": {
+      "session_id": "00000000-0000-4000-8000-000000000001",
+      "fields": [
+        {
+          "name": "heading",
+          "selector": "h1",
+          "attribute": null
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "browser.extract-output-valid",
+    "capability_id": "browser.extract",
+    "schema": {
+      "$ref": "../browser-automation/contracts/extract/output.schema.json"
+    },
+    "value": {
+      "session_id": "00000000-0000-4000-8000-000000000001",
+      "final_url": "https://example.com/",
+      "data": {
+        "heading": "Example"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "git.repository-input-valid",
+    "capability_id": "git.repository",
+    "schema": {
+      "$ref": "../git-connector/contracts/repository/input.schema.json"
+    },
+    "value": {
+      "repository_alias": "docs",
+      "operation": "files"
+    },
+    "valid": true
+  },
+  {
+    "name": "git.repository-input-invalid",
+    "capability_id": "git.repository",
+    "schema": {
+      "$ref": "../git-connector/contracts/repository/input.schema.json"
+    },
+    "value": {
+      "repository_alias": "docs",
+      "operation": "push"
+    },
+    "valid": false
+  },
+  {
+    "name": "git.repository-output-valid",
+    "capability_id": "git.repository",
+    "schema": {
+      "$ref": "../git-connector/contracts/repository/output.schema.json"
+    },
+    "value": {
+      "operation": "files",
+      "resolved_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "files": [
+        {
+          "path": "a.txt",
+          "kind": "file",
+          "size_bytes": 0,
+          "blob_id": "00000000-0000-4000-8000-000000000001"
+        }
+      ],
+      "branches": [],
+      "commits": [],
+      "next_cursor": null
+    },
+    "valid": true
+  },
+  {
+    "name": "feed.read-input-valid",
+    "capability_id": "feed.read",
+    "schema": {
+      "$ref": "../rss-reader/contracts/read/input.schema.json"
+    },
+    "value": {
+      "url": "https://example.com/rss.xml",
+      "http_policy_alias": "public-read"
+    },
+    "valid": true
+  },
+  {
+    "name": "feed.read-input-invalid",
+    "capability_id": "feed.read",
+    "schema": {
+      "$ref": "../rss-reader/contracts/read/input.schema.json"
+    },
+    "value": {
+      "url": "https://example.com/rss.xml",
+      "http_policy_alias": "public-read",
+      "max_items": 0
+    },
+    "valid": false
+  },
+  {
+    "name": "feed.read-output-valid",
+    "capability_id": "feed.read",
+    "schema": {
+      "$ref": "../rss-reader/contracts/read/output.schema.json"
+    },
+    "value": {
+      "source_url": "https://example.com/rss.xml",
+      "title": "Example",
+      "format": "rss",
+      "items": [
+        {
+          "id": "1",
+          "title": "A",
+          "link": "https://example.com/a",
+          "published_at": null,
+          "updated_at": null,
+          "summary": null
+        }
+      ],
+      "truncated": false,
+      "warnings": []
+    },
+    "valid": true
+  },
+  {
+    "name": "json.validate-input-valid",
+    "capability_id": "json.validate",
+    "schema": {
+      "$ref": "../micro-json-validator/contracts/validate/input.schema.json"
+    },
+    "value": {
+      "document": {
+        "x": 1
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "x"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "json.validate-input-invalid",
+    "capability_id": "json.validate",
+    "schema": {
+      "$ref": "../micro-json-validator/contracts/validate/input.schema.json"
+    },
+    "value": {
+      "document": {},
+      "schema": {},
+      "max_errors": 0
+    },
+    "valid": false
+  },
+  {
+    "name": "json.validate-output-valid",
+    "capability_id": "json.validate",
+    "schema": {
+      "$ref": "../micro-json-validator/contracts/validate/output.schema.json"
+    },
+    "value": {
+      "valid": true,
+      "errors": [],
+      "truncated": false
+    },
+    "valid": true
+  },
+  {
+    "name": "json.project-input-valid",
+    "capability_id": "json.project",
+    "schema": {
+      "$ref": "../micro-json-project/contracts/project/input.schema.json"
+    },
+    "value": {
+      "document": {
+        "a": 1
+      },
+      "fields": [
+        {
+          "from": "/a",
+          "to": "/b"
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "json.project-input-invalid",
+    "capability_id": "json.project",
+    "schema": {
+      "$ref": "../micro-json-project/contracts/project/input.schema.json"
+    },
+    "value": {
+      "document": {
+        "a": 1
+      },
+      "fields": [
+        {
+          "from": "/a",
+          "to": ""
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "json.project-output-valid",
+    "capability_id": "json.project",
+    "schema": {
+      "$ref": "../micro-json-project/contracts/project/output.schema.json"
+    },
+    "value": {
+      "document": {
+        "b": 1
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "json.merge-input-valid",
+    "capability_id": "json.merge",
+    "schema": {
+      "$ref": "../micro-json-merge/contracts/merge/input.schema.json"
+    },
+    "value": {
+      "objects": [
+        {
+          "a": 1
+        },
+        {
+          "b": 2
+        }
+      ],
+      "mode": "deep",
+      "array_policy": "concat"
+    },
+    "valid": true
+  },
+  {
+    "name": "json.merge-input-invalid",
+    "capability_id": "json.merge",
+    "schema": {
+      "$ref": "../micro-json-merge/contracts/merge/input.schema.json"
+    },
+    "value": {
+      "objects": []
+    },
+    "valid": false
+  },
+  {
+    "name": "json.merge-output-valid",
+    "capability_id": "json.merge",
+    "schema": {
+      "$ref": "../micro-json-merge/contracts/merge/output.schema.json"
+    },
+    "value": {
+      "document": {
+        "a": 1,
+        "b": 2
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "convert.csv-json-input-valid",
+    "capability_id": "convert.csv-json",
+    "schema": {
+      "$ref": "../micro-csv-json/contracts/csv-json/input.schema.json"
+    },
+    "value": {
+      "csv": "name,value\n你好,1\n"
+    },
+    "valid": true
+  },
+  {
+    "name": "convert.csv-json-input-invalid",
+    "capability_id": "convert.csv-json",
+    "schema": {
+      "$ref": "../micro-csv-json/contracts/csv-json/input.schema.json"
+    },
+    "value": {
+      "csv": "a,b\n",
+      "header": false
+    },
+    "valid": false
+  },
+  {
+    "name": "convert.csv-json-output-valid",
+    "capability_id": "convert.csv-json",
+    "schema": {
+      "$ref": "../micro-csv-json/contracts/csv-json/output.schema.json"
+    },
+    "value": {
+      "columns": [
+        "name",
+        "value"
+      ],
+      "rows": [
+        {
+          "name": "你好",
+          "value": "1"
+        }
+      ],
+      "row_count": 1
+    },
+    "valid": true
+  },
+  {
+    "name": "convert.json-csv-input-valid",
+    "capability_id": "convert.json-csv",
+    "schema": {
+      "$ref": "../micro-csv-json/contracts/json-csv/input.schema.json"
+    },
+    "value": {
+      "rows": [
+        {
+          "name": "你好",
+          "value": 1
+        }
+      ],
+      "columns": [
+        "name",
+        "value"
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "convert.json-csv-input-invalid",
+    "capability_id": "convert.json-csv",
+    "schema": {
+      "$ref": "../micro-csv-json/contracts/json-csv/input.schema.json"
+    },
+    "value": {
+      "rows": [],
+      "columns": [
+        "x",
+        "x"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "convert.json-csv-output-valid",
+    "capability_id": "convert.json-csv",
+    "schema": {
+      "$ref": "../micro-csv-json/contracts/json-csv/output.schema.json"
+    },
+    "value": {
+      "csv": "name,value\r\n你好,1\r\n",
+      "row_count": 1
+    },
+    "valid": true
+  },
+  {
+    "name": "convert.markdown-html-input-valid",
+    "capability_id": "convert.markdown-html",
+    "schema": {
+      "$ref": "../micro-markdown-html/contracts/markdown-html/input.schema.json"
+    },
+    "value": {
+      "markdown": "# Hello"
+    },
+    "valid": true
+  },
+  {
+    "name": "convert.markdown-html-input-invalid",
+    "capability_id": "convert.markdown-html",
+    "schema": {
+      "$ref": "../micro-markdown-html/contracts/markdown-html/input.schema.json"
+    },
+    "value": {
+      "markdown": "# Hello",
+      "allow_scripts": true
+    },
+    "valid": false
+  },
+  {
+    "name": "convert.markdown-html-output-valid",
+    "capability_id": "convert.markdown-html",
+    "schema": {
+      "$ref": "../micro-markdown-html/contracts/markdown-html/output.schema.json"
+    },
+    "value": {
+      "html": "<h1>Hello</h1>"
+    },
+    "valid": true
+  },
+  {
+    "name": "text.normalize-input-valid",
+    "capability_id": "text.normalize",
+    "schema": {
+      "$ref": "../micro-text-normalizer/contracts/normalize/input.schema.json"
+    },
+    "value": {
+      "text": "你好\r\n"
+    },
+    "valid": true
+  },
+  {
+    "name": "text.normalize-input-invalid",
+    "capability_id": "text.normalize",
+    "schema": {
+      "$ref": "../micro-text-normalizer/contracts/normalize/input.schema.json"
+    },
+    "value": {
+      "text": "x",
+      "unicode_form": "HOST"
+    },
+    "valid": false
+  },
+  {
+    "name": "text.normalize-output-valid",
+    "capability_id": "text.normalize",
+    "schema": {
+      "$ref": "../micro-text-normalizer/contracts/normalize/output.schema.json"
+    },
+    "value": {
+      "text": "你好\n"
+    },
+    "valid": true
+  },
+  {
+    "name": "text.regex-extract-input-valid",
+    "capability_id": "text.regex-extract",
+    "schema": {
+      "$ref": "../micro-regex-extract/contracts/regex-extract/input.schema.json"
+    },
+    "value": {
+      "text": "a1b2",
+      "pattern": "([0-9])"
+    },
+    "valid": true
+  },
+  {
+    "name": "text.regex-extract-input-invalid",
+    "capability_id": "text.regex-extract",
+    "schema": {
+      "$ref": "../micro-regex-extract/contracts/regex-extract/input.schema.json"
+    },
+    "value": {
+      "text": "a",
+      "pattern": "a",
+      "max_matches": 1001
+    },
+    "valid": false
+  },
+  {
+    "name": "text.regex-extract-output-valid",
+    "capability_id": "text.regex-extract",
+    "schema": {
+      "$ref": "../micro-regex-extract/contracts/regex-extract/output.schema.json"
+    },
+    "value": {
+      "matches": [
+        {
+          "value": "1",
+          "groups": [
+            "1"
+          ],
+          "start": 1,
+          "end": 2
+        }
+      ],
+      "truncated": false
+    },
+    "valid": true
+  },
+  {
+    "name": "datetime.convert-input-valid",
+    "capability_id": "datetime.convert",
+    "schema": {
+      "$ref": "../micro-datetime-convert/contracts/convert/input.schema.json"
+    },
+    "value": {
+      "value": "2026-10-29T12:00:00Z"
+    },
+    "valid": true
+  },
+  {
+    "name": "datetime.convert-input-invalid",
+    "capability_id": "datetime.convert",
+    "schema": {
+      "$ref": "../micro-datetime-convert/contracts/convert/input.schema.json"
+    },
+    "value": {
+      "value": "2026-10-29T12:00:00Z",
+      "input_format": "automatic"
+    },
+    "valid": false
+  },
+  {
+    "name": "datetime.convert-output-valid",
+    "capability_id": "datetime.convert",
+    "schema": {
+      "$ref": "../micro-datetime-convert/contracts/convert/output.schema.json"
+    },
+    "value": {
+      "value": "2026-10-29T12:00:00Z",
+      "utc_value": "2026-10-29T12:00:00Z",
+      "timezone": "UTC",
+      "offset_seconds": 0
+    },
+    "valid": true
+  },
+  {
+    "name": "flow.condition-input-valid",
+    "capability_id": "flow.condition",
+    "schema": {
+      "$ref": "../micro-flow-condition/contracts/condition/input.schema.json"
+    },
+    "value": {
+      "data": {
+        "title": "a"
+      },
+      "condition": {
+        "op": "exists",
+        "path": "/title"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "flow.condition-input-invalid",
+    "capability_id": "flow.condition",
+    "schema": {
+      "$ref": "../micro-flow-condition/contracts/condition/input.schema.json"
+    },
+    "value": {
+      "data": {
+        "title": "a"
+      },
+      "condition": {
+        "op": "in",
+        "path": "/title",
+        "value": 42
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "flow.condition-output-valid",
+    "capability_id": "flow.condition",
+    "schema": {
+      "$ref": "../micro-flow-condition/contracts/condition/output.schema.json"
+    },
+    "value": {
+      "matched": true
+    },
+    "valid": true
+  },
+  {
+    "name": "flow.map-input-valid",
+    "capability_id": "flow.map",
+    "schema": {
+      "$ref": "../micro-flow-map/contracts/map/input.schema.json"
+    },
+    "value": {
+      "document": {
+        "name": "a"
+      },
+      "mappings": [
+        {
+          "from": "/name",
+          "to": "/title"
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "flow.map-input-invalid",
+    "capability_id": "flow.map",
+    "schema": {
+      "$ref": "../micro-flow-map/contracts/map/input.schema.json"
+    },
+    "value": {
+      "document": {},
+      "mappings": [
+        {
+          "from": "/x",
+          "value": 1,
+          "to": "/x"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "flow.map-output-valid",
+    "capability_id": "flow.map",
+    "schema": {
+      "$ref": "../micro-flow-map/contracts/map/output.schema.json"
+    },
+    "value": {
+      "document": {
+        "title": "a"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "flow.filter-input-valid",
+    "capability_id": "flow.filter",
+    "schema": {
+      "$ref": "../micro-flow-filter/contracts/filter/input.schema.json"
+    },
+    "value": {
+      "items": [
+        {
+          "n": 1
+        },
+        {
+          "n": 2
+        }
+      ],
+      "condition": {
+        "op": "gte",
+        "path": "/n",
+        "value": 2
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "flow.filter-input-invalid",
+    "capability_id": "flow.filter",
+    "schema": {
+      "$ref": "../micro-flow-filter/contracts/filter/input.schema.json"
+    },
+    "value": {
+      "items": [],
+      "condition": {
+        "op": "not",
+        "args": [
+          {
+            "op": "exists",
+            "path": "/a"
+          },
+          {
+            "op": "exists",
+            "path": "/b"
+          }
+        ]
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "flow.filter-output-valid",
+    "capability_id": "flow.filter",
+    "schema": {
+      "$ref": "../micro-flow-filter/contracts/filter/output.schema.json"
+    },
+    "value": {
+      "items": [
+        {
+          "n": 2
+        }
+      ],
+      "indices": [
+        1
+      ],
+      "input_count": 2,
+      "matched_count": 1
+    },
+    "valid": true
+  },
+  {
+    "name": "flow.template-input-valid",
+    "capability_id": "flow.template",
+    "schema": {
+      "$ref": "../micro-flow-template/contracts/template/input.schema.json"
+    },
+    "value": {
+      "template": "hello {{ /name | text }}",
+      "data": {
+        "name": "你好"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "flow.template-input-invalid",
+    "capability_id": "flow.template",
+    "schema": {
+      "$ref": "../micro-flow-template/contracts/template/input.schema.json"
+    },
+    "value": {
+      "template": "x",
+      "data": {},
+      "output": "html"
+    },
+    "valid": false
+  },
+  {
+    "name": "flow.template-output-valid",
+    "capability_id": "flow.template",
+    "schema": {
+      "$ref": "../micro-flow-template/contracts/template/output.schema.json"
+    },
+    "value": {
+      "value": "hello 你好",
+      "output": "text"
+    },
+    "valid": true
+  },
+  {
+    "name": "data.redact-input-valid",
+    "capability_id": "data.redact",
+    "schema": {
+      "$ref": "../micro-data-redactor/contracts/redact/input.schema.json"
+    },
+    "value": {
+      "data": {
+        "token": "secret"
+      },
+      "rules": [
+        {
+          "path": "/token",
+          "action": "replace",
+          "replacement": "***"
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "data.redact-input-invalid",
+    "capability_id": "data.redact",
+    "schema": {
+      "$ref": "../micro-data-redactor/contracts/redact/input.schema.json"
+    },
+    "value": {
+      "data": {},
+      "rules": [
+        {
+          "path": "/token",
+          "action": "mask",
+          "pattern": "x"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "data.redact-output-valid",
+    "capability_id": "data.redact",
+    "schema": {
+      "$ref": "../micro-data-redactor/contracts/redact/output.schema.json"
+    },
+    "value": {
+      "data": {
+        "token": "***"
+      },
+      "applied": [
+        {
+          "rule_index": 0,
+          "target_exists": true,
+          "replacements": 1
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "url.parse-input-valid",
+    "capability_id": "url.parse",
+    "schema": {
+      "$ref": "../micro-url-parser/contracts/parse/input.schema.json"
+    },
+    "value": {
+      "url": "https://example.com/a?a=1&a=2#"
+    },
+    "valid": true
+  },
+  {
+    "name": "url.parse-input-invalid",
+    "capability_id": "url.parse",
+    "schema": {
+      "$ref": "../micro-url-parser/contracts/parse/input.schema.json"
+    },
+    "value": {
+      "url": ""
+    },
+    "valid": false
+  },
+  {
+    "name": "url.parse-output-valid",
+    "capability_id": "url.parse",
+    "schema": {
+      "$ref": "../micro-url-parser/contracts/parse/output.schema.json"
+    },
+    "value": {
+      "scheme": "https",
+      "host": "example.com",
+      "port": null,
+      "path": "/a",
+      "query": [
+        {
+          "name": "a",
+          "value": "1"
+        },
+        {
+          "name": "a",
+          "value": "2"
+        }
+      ],
+      "fragment": ""
+    },
+    "valid": true
+  },
+  {
+    "name": "file.metadata-input-valid",
+    "capability_id": "file.metadata",
+    "schema": {
+      "$ref": "../micro-file-metadata/contracts/metadata/input.schema.json"
+    },
+    "value": {
+      "descriptor": {
+        "name": "a.txt",
+        "size_bytes": 0,
+        "media_type": "text/plain"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "file.metadata-input-invalid",
+    "capability_id": "file.metadata",
+    "schema": {
+      "$ref": "../micro-file-metadata/contracts/metadata/input.schema.json"
+    },
+    "value": {
+      "source": "verified",
+      "descriptor": {
+        "name": "a.txt",
+        "size_bytes": 0,
+        "media_type": null
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "file.metadata-output-valid",
+    "capability_id": "file.metadata",
+    "schema": {
+      "$ref": "../micro-file-metadata/contracts/metadata/output.schema.json"
+    },
+    "value": {
+      "name": "a.txt",
+      "extension": "txt",
+      "size_bytes": 0,
+      "declared_media_type": "text/plain",
+      "suggested_media_type": "text/plain",
+      "trust": "declared"
+    },
+    "valid": true
+  },
+  {
+    "name": "crypto.hash-input-valid",
+    "capability_id": "crypto.hash",
+    "schema": {
+      "$ref": "../micro-hash/contracts/hash/input.schema.json"
+    },
+    "value": {
+      "data": "abc"
+    },
+    "valid": true
+  },
+  {
+    "name": "crypto.hash-input-invalid",
+    "capability_id": "crypto.hash",
+    "schema": {
+      "$ref": "../micro-hash/contracts/hash/input.schema.json"
+    },
+    "value": {
+      "algorithm": "md5",
+      "data": "abc"
+    },
+    "valid": false
+  },
+  {
+    "name": "crypto.hash-output-valid",
+    "capability_id": "crypto.hash",
+    "schema": {
+      "$ref": "../micro-hash/contracts/hash/output.schema.json"
+    },
+    "value": {
+      "algorithm": "sha256",
+      "digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+      "bytes": 3
+    },
+    "valid": true
+  },
+  {
+    "name": "text.chunk-input-valid",
+    "capability_id": "text.chunk",
+    "schema": {
+      "$ref": "../micro-text-chunk/contracts/chunk/input.schema.json"
+    },
+    "value": {
+      "text": "甲乙丙丁",
+      "size": 2,
+      "overlap": 1
+    },
+    "valid": true
+  },
+  {
+    "name": "text.chunk-input-invalid",
+    "capability_id": "text.chunk",
+    "schema": {
+      "$ref": "../micro-text-chunk/contracts/chunk/input.schema.json"
+    },
+    "value": {
+      "text": "x",
+      "size": 10,
+      "mode": "tokens"
+    },
+    "valid": false
+  },
+  {
+    "name": "text.chunk-output-valid",
+    "capability_id": "text.chunk",
+    "schema": {
+      "$ref": "../micro-text-chunk/contracts/chunk/output.schema.json"
+    },
+    "value": {
+      "chunks": [
+        {
+          "text": "甲乙",
+          "start": 0,
+          "end": 2
+        },
+        {
+          "text": "乙丙",
+          "start": 1,
+          "end": 3
+        },
+        {
+          "text": "丙丁",
+          "start": 2,
+          "end": 4
+        }
+      ],
+      "source_length": 4,
+      "mode": "characters",
+      "estimated": false
+    },
+    "valid": true
+  },
+  {
+    "name": "text.encoding-convert-input-valid",
+    "capability_id": "text.encoding-convert",
+    "schema": {
+      "$ref": "../micro-text-encoding/contracts/encoding-convert/input.schema.json"
+    },
+    "value": {
+      "data": "5L2g5aW9",
+      "from": "utf-8",
+      "to": "utf-16le"
+    },
+    "valid": true
+  },
+  {
+    "name": "text.encoding-convert-input-invalid",
+    "capability_id": "text.encoding-convert",
+    "schema": {
+      "$ref": "../micro-text-encoding/contracts/encoding-convert/input.schema.json"
+    },
+    "value": {
+      "data": "",
+      "from": "auto",
+      "to": "utf-8"
+    },
+    "valid": false
+  },
+  {
+    "name": "text.encoding-convert-output-valid",
+    "capability_id": "text.encoding-convert",
+    "schema": {
+      "$ref": "../micro-text-encoding/contracts/encoding-convert/output.schema.json"
+    },
+    "value": {
+      "data": "YE99WQ==",
+      "encoding": "utf-16le",
+      "replacement_count": 0
+    },
+    "valid": true
+  },
+  {
+    "name": "convert.xml-json-input-valid",
+    "capability_id": "convert.xml-json",
+    "schema": {
+      "$ref": "../micro-xml-json/contracts/xml-json/input.schema.json"
+    },
+    "value": {
+      "direction": "xml-to-json",
+      "data": "<root>text</root>"
+    },
+    "valid": true
+  },
+  {
+    "name": "convert.xml-json-input-invalid",
+    "capability_id": "convert.xml-json",
+    "schema": {
+      "$ref": "../micro-xml-json/contracts/xml-json/input.schema.json"
+    },
+    "value": {
+      "direction": "xml-to-json",
+      "data": {
+        "name": "root",
+        "namespace_uri": null,
+        "prefix": null,
+        "namespaces": [],
+        "attributes": [],
+        "children": [
+          "text"
+        ]
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "convert.xml-json-output-valid",
+    "capability_id": "convert.xml-json",
+    "schema": {
+      "$ref": "../micro-xml-json/contracts/xml-json/output.schema.json"
+    },
+    "value": {
+      "direction": "xml-to-json",
+      "data": {
+        "name": "root",
+        "namespace_uri": null,
+        "prefix": null,
+        "namespaces": [],
+        "attributes": [],
+        "children": [
+          "text"
+        ]
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "data.sort-input-valid",
+    "capability_id": "data.sort",
+    "schema": {
+      "$ref": "../micro-data-sort-group/contracts/sort/input.schema.json"
+    },
+    "value": {
+      "items": [
+        {
+          "n": 2
+        },
+        {
+          "n": 1
+        }
+      ],
+      "keys": [
+        {
+          "path": "/n"
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "data.sort-input-invalid",
+    "capability_id": "data.sort",
+    "schema": {
+      "$ref": "../micro-data-sort-group/contracts/sort/input.schema.json"
+    },
+    "value": {
+      "items": [],
+      "keys": []
+    },
+    "valid": false
+  },
+  {
+    "name": "data.sort-output-valid",
+    "capability_id": "data.sort",
+    "schema": {
+      "$ref": "../micro-data-sort-group/contracts/sort/output.schema.json"
+    },
+    "value": {
+      "items": [
+        {
+          "n": 1
+        },
+        {
+          "n": 2
+        }
+      ],
+      "indices": [
+        1,
+        0
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "data.group-input-valid",
+    "capability_id": "data.group",
+    "schema": {
+      "$ref": "../micro-data-sort-group/contracts/group/input.schema.json"
+    },
+    "value": {
+      "items": [
+        {
+          "n": 1
+        },
+        {
+          "n": 1
+        }
+      ],
+      "keys": [
+        "/n"
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "data.group-input-invalid",
+    "capability_id": "data.group",
+    "schema": {
+      "$ref": "../micro-data-sort-group/contracts/group/input.schema.json"
+    },
+    "value": {
+      "items": [],
+      "keys": [
+        "/n"
+      ],
+      "missing": "auto"
+    },
+    "valid": false
+  },
+  {
+    "name": "data.group-output-valid",
+    "capability_id": "data.group",
+    "schema": {
+      "$ref": "../micro-data-sort-group/contracts/group/output.schema.json"
+    },
+    "value": {
+      "groups": [
+        {
+          "key": [
+            1
+          ],
+          "items": [
+            {
+              "n": 1
+            },
+            {
+              "n": 1
+            }
+          ],
+          "indices": [
+            0,
+            1
+          ]
+        }
+      ],
+      "group_count": 1
+    },
+    "valid": true
+  },
+  {
+    "name": "convert.csv-json-header-columns-conflict",
+    "capability_id": "convert.csv-json",
+    "schema": {
+      "$ref": "../micro-csv-json/contracts/csv-json/input.schema.json"
+    },
+    "value": {
+      "csv": "a,b\n1,2\n",
+      "columns": [
+        "a",
+        "b"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "convert.csv-json-headerless-explicit-columns",
+    "capability_id": "convert.csv-json",
+    "schema": {
+      "$ref": "../micro-csv-json/contracts/csv-json/input.schema.json"
+    },
+    "value": {
+      "csv": "1;2\n",
+      "header": false,
+      "columns": [
+        "a",
+        "b"
+      ],
+      "delimiter": ";"
+    },
+    "valid": true
+  },
+  {
+    "name": "convert.csv-json-no-number-inference",
+    "capability_id": "convert.csv-json",
+    "schema": {
+      "$ref": "../micro-csv-json/contracts/csv-json/output.schema.json"
+    },
+    "value": {
+      "columns": [
+        "n"
+      ],
+      "rows": [
+        {
+          "n": 1
+        }
+      ],
+      "row_count": 1
+    },
+    "valid": false
+  },
+  {
+    "name": "flow.condition-in-array-bound",
+    "capability_id": "flow.condition",
+    "schema": {
+      "$ref": "../micro-flow-condition/contracts/condition/input.schema.json"
+    },
+    "value": {
+      "data": {},
+      "condition": {
+        "op": "in",
+        "path": "",
+        "value": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65,
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89,
+          90,
+          91,
+          92,
+          93,
+          94,
+          95,
+          96,
+          97,
+          98,
+          99,
+          100,
+          101,
+          102,
+          103,
+          104,
+          105,
+          106,
+          107,
+          108,
+          109,
+          110,
+          111,
+          112,
+          113,
+          114,
+          115,
+          116,
+          117,
+          118,
+          119,
+          120,
+          121,
+          122,
+          123,
+          124,
+          125,
+          126,
+          127,
+          128,
+          129,
+          130,
+          131,
+          132,
+          133,
+          134,
+          135,
+          136,
+          137,
+          138,
+          139,
+          140,
+          141,
+          142,
+          143,
+          144,
+          145,
+          146,
+          147,
+          148,
+          149,
+          150,
+          151,
+          152,
+          153,
+          154,
+          155,
+          156,
+          157,
+          158,
+          159,
+          160,
+          161,
+          162,
+          163,
+          164,
+          165,
+          166,
+          167,
+          168,
+          169,
+          170,
+          171,
+          172,
+          173,
+          174,
+          175,
+          176,
+          177,
+          178,
+          179,
+          180,
+          181,
+          182,
+          183,
+          184,
+          185,
+          186,
+          187,
+          188,
+          189,
+          190,
+          191,
+          192,
+          193,
+          194,
+          195,
+          196,
+          197,
+          198,
+          199,
+          200,
+          201,
+          202,
+          203,
+          204,
+          205,
+          206,
+          207,
+          208,
+          209,
+          210,
+          211,
+          212,
+          213,
+          214,
+          215,
+          216,
+          217,
+          218,
+          219,
+          220,
+          221,
+          222,
+          223,
+          224,
+          225,
+          226,
+          227,
+          228,
+          229,
+          230,
+          231,
+          232,
+          233,
+          234,
+          235,
+          236,
+          237,
+          238,
+          239,
+          240,
+          241,
+          242,
+          243,
+          244,
+          245,
+          246,
+          247,
+          248,
+          249,
+          250,
+          251,
+          252,
+          253,
+          254,
+          255,
+          256
+        ]
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "flow.condition-is-null-no-value",
+    "capability_id": "flow.condition",
+    "schema": {
+      "$ref": "../micro-flow-condition/contracts/condition/input.schema.json"
+    },
+    "value": {
+      "data": null,
+      "condition": {
+        "op": "is_null",
+        "path": "",
+        "value": null
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "flow.condition-nested-condition",
+    "capability_id": "flow.condition",
+    "schema": {
+      "$ref": "../micro-flow-condition/contracts/condition/input.schema.json"
+    },
+    "value": {
+      "data": 1,
+      "condition": {
+        "op": "and",
+        "args": [
+          {
+            "op": "gte",
+            "path": "",
+            "value": 1
+          },
+          {
+            "op": "in",
+            "path": "",
+            "value": [
+              1,
+              2
+            ]
+          }
+        ]
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "flow.map-constant-no-default",
+    "capability_id": "flow.map",
+    "schema": {
+      "$ref": "../micro-flow-map/contracts/map/input.schema.json"
+    },
+    "value": {
+      "document": {},
+      "mappings": [
+        {
+          "to": "/x",
+          "value": 1,
+          "default": 0
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "flow.template-text-output-string",
+    "capability_id": "flow.template",
+    "schema": {
+      "$ref": "../micro-flow-template/contracts/template/output.schema.json"
+    },
+    "value": {
+      "value": {},
+      "output": "text"
+    },
+    "valid": false
+  },
+  {
+    "name": "data.redact-regex-replacement-string",
+    "capability_id": "data.redact",
+    "schema": {
+      "$ref": "../micro-data-redactor/contracts/redact/input.schema.json"
+    },
+    "value": {
+      "data": "abc",
+      "rules": [
+        {
+          "path": "",
+          "action": "regex-replace",
+          "pattern": "a",
+          "replacement": 42
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "url.parse-absent-fragment",
+    "capability_id": "url.parse",
+    "schema": {
+      "$ref": "../micro-url-parser/contracts/parse/output.schema.json"
+    },
+    "value": {
+      "scheme": "https",
+      "host": "example.com",
+      "port": null,
+      "path": "/a",
+      "query": [
+        {
+          "name": "a",
+          "value": "1"
+        },
+        {
+          "name": "a",
+          "value": "2"
+        }
+      ],
+      "fragment": null
+    },
+    "valid": true
+  },
+  {
+    "name": "url.parse-no-file-scheme",
+    "capability_id": "url.parse",
+    "schema": {
+      "$ref": "../micro-url-parser/contracts/parse/output.schema.json"
+    },
+    "value": {
+      "scheme": "file",
+      "host": "example.com",
+      "port": null,
+      "path": "/a",
+      "query": [
+        {
+          "name": "a",
+          "value": "1"
+        },
+        {
+          "name": "a",
+          "value": "2"
+        }
+      ],
+      "fragment": ""
+    },
+    "valid": false
+  },
+  {
+    "name": "file.metadata-nullable-declared-mime",
+    "capability_id": "file.metadata",
+    "schema": {
+      "$ref": "../micro-file-metadata/contracts/metadata/input.schema.json"
+    },
+    "value": {
+      "descriptor": {
+        "name": "a",
+        "size_bytes": 0,
+        "media_type": null
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "file.metadata-no-forged-verification",
+    "capability_id": "file.metadata",
+    "schema": {
+      "$ref": "../micro-file-metadata/contracts/metadata/output.schema.json"
+    },
+    "value": {
+      "name": "a.txt",
+      "extension": "txt",
+      "size_bytes": 0,
+      "declared_media_type": "text/plain",
+      "suggested_media_type": "text/plain",
+      "trust": "verified"
+    },
+    "valid": false
+  },
+  {
+    "name": "text.chunk-paragraph-overlap",
+    "capability_id": "text.chunk",
+    "schema": {
+      "$ref": "../micro-text-chunk/contracts/chunk/input.schema.json"
+    },
+    "value": {
+      "text": "abc",
+      "mode": "paragraphs",
+      "size": 1,
+      "overlap": 1
+    },
+    "valid": false
+  },
+  {
+    "name": "text.chunk-explicit-estimator",
+    "capability_id": "text.chunk",
+    "schema": {
+      "$ref": "../micro-text-chunk/contracts/chunk/input.schema.json"
+    },
+    "value": {
+      "text": "abc",
+      "mode": "tokens-estimate",
+      "size": 2,
+      "estimator_id": "utf8-div4-v1",
+      "estimator_version": "0.1.0"
+    },
+    "valid": true
+  },
+  {
+    "name": "text.chunk-no-tokenizer-in-characters",
+    "capability_id": "text.chunk",
+    "schema": {
+      "$ref": "../micro-text-chunk/contracts/chunk/output.schema.json"
+    },
+    "value": {
+      "chunks": [
+        {
+          "text": "甲乙",
+          "start": 0,
+          "end": 2
+        },
+        {
+          "text": "乙丙",
+          "start": 1,
+          "end": 3
+        },
+        {
+          "text": "丙丁",
+          "start": 2,
+          "end": 4
+        }
+      ],
+      "source_length": 4,
+      "mode": "characters",
+      "estimated": false,
+      "tokenizer_id": "x",
+      "tokenizer_version": "1"
+    },
+    "valid": false
+  },
+  {
+    "name": "text.chunk-no-estimate-flag-in-characters",
+    "capability_id": "text.chunk",
+    "schema": {
+      "$ref": "../micro-text-chunk/contracts/chunk/output.schema.json"
+    },
+    "value": {
+      "chunks": [
+        {
+          "text": "甲乙",
+          "start": 0,
+          "end": 2
+        },
+        {
+          "text": "乙丙",
+          "start": 1,
+          "end": 3
+        },
+        {
+          "text": "丙丁",
+          "start": 2,
+          "end": 4
+        }
+      ],
+      "source_length": 4,
+      "mode": "characters",
+      "estimated": true
+    },
+    "valid": false
+  },
+  {
+    "name": "text.chunk-estimated-output",
+    "capability_id": "text.chunk",
+    "schema": {
+      "$ref": "../micro-text-chunk/contracts/chunk/output.schema.json"
+    },
+    "value": {
+      "chunks": [],
+      "source_length": 0,
+      "mode": "tokens-estimate",
+      "estimated": true,
+      "estimator_id": "utf8-div4-v1",
+      "estimator_version": "0.1.0"
+    },
+    "valid": true
+  },
+  {
+    "name": "convert.xml-json-reverse-direction",
+    "capability_id": "convert.xml-json",
+    "schema": {
+      "$ref": "../micro-xml-json/contracts/xml-json/input.schema.json"
+    },
+    "value": {
+      "direction": "json-to-xml",
+      "data": {
+        "name": "root",
+        "namespace_uri": null,
+        "prefix": null,
+        "namespaces": [],
+        "attributes": [],
+        "children": [
+          "text"
+        ]
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "convert.xml-json-reverse-output",
+    "capability_id": "convert.xml-json",
+    "schema": {
+      "$ref": "../micro-xml-json/contracts/xml-json/output.schema.json"
+    },
+    "value": {
+      "direction": "json-to-xml",
+      "data": "<root>text</root>"
+    },
+    "valid": true
+  },
+  {
+    "name": "data.group-nonempty-key-tuple",
+    "capability_id": "data.group",
+    "schema": {
+      "$ref": "../micro-data-sort-group/contracts/group/output.schema.json"
+    },
+    "value": {
+      "groups": [
+        {
+          "key": [],
+          "items": [],
+          "indices": []
+        }
+      ],
+      "group_count": 1
+    },
+    "valid": false
+  },
+  {
+    "name": "data.group-scalar-key-only",
+    "capability_id": "data.group",
+    "schema": {
+      "$ref": "../micro-data-sort-group/contracts/group/output.schema.json"
+    },
+    "value": {
+      "groups": [
+        {
+          "key": [
+            {}
+          ],
+          "items": [],
+          "indices": []
+        }
+      ],
+      "group_count": 1
+    },
+    "valid": false
+  },
+  {
+    "name": "database.execute-exact-bigint-encoding",
+    "capability_id": "database.execute",
+    "schema": {
+      "$ref": "../database-postgres/contracts/execute/output.schema.json"
+    },
+    "value": {
+      "affected_rows": 1,
+      "elapsed_ms": 1
+    },
+    "valid": false
+  },
+  {
+    "name": "database.query-timestamp-utc-only",
+    "capability_id": "database.query",
+    "schema": {
+      "$ref": "../database-postgres/contracts/query/input.schema.json"
+    },
+    "value": {
+      "connection_alias": "db",
+      "sql": "SELECT $1",
+      "parameters": [
+        {
+          "type": "timestamp",
+          "value": "2026-10-29T12:00:00+08:00"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "http.request-response-body-exclusive",
+    "capability_id": "http.request",
+    "schema": {
+      "$ref": "../http-client/contracts/request/output.schema.json"
+    },
+    "value": {
+      "status": 200,
+      "headers": {},
+      "final_url": "https://example.com/",
+      "body_text": "ok",
+      "size_bytes": 2,
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "body_json": {}
+    },
+    "valid": false
+  },
+  {
+    "name": "ai.chat-stream-frame",
+    "capability_id": "ai.chat",
+    "schema": {
+      "$ref": "../ai-chat-openai-compatible/contracts/chat/stream.schema.json"
+    },
+    "value": {
+      "id": "chatcmpl_00000000-0000-4000-8000-000000000001",
+      "object": "chat.completion.chunk",
+      "created": 1793232000,
+      "model": "approved-text",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {
+            "content": "你"
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "text.normalize-stream-disabled",
+    "capability_id": "text.normalize",
+    "schema": {
+      "$ref": "../micro-text-normalizer/contracts/normalize/stream.schema.json"
+    },
+    "value": {
+      "text": "a"
+    },
+    "valid": false
+  }
+]

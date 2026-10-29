@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MicroHttpBindingPage",
+  "type": "object",
+  "description": "最多8项，无隐式分页遗漏",
+  "properties": {
+    "items": {
+      "type": "array",
+      "description": "当前获准绑定",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/MicroHttpBinding"
+      },
+      "minItems": 0,
+      "maxItems": 8
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "additionalProperties": false
+}

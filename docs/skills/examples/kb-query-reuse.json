@@ -1,0 +1,13 @@
+{
+  "input": {
+    "table_id": "00000000-0000-4000-8000-000000000001",
+    "input_ids": [
+      "00000000-0000-4000-8000-000000000002"
+    ],
+    "expression": "a.match(len(title)>=7)",
+    "expected_schema_revision": 1,
+    "expected_data_revision": 4,
+    "cache_policy": "auto"
+  },
+  "timeout_ms": 120000
+}

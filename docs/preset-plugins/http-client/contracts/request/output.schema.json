@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "status": {
+      "type": "integer",
+      "description": "",
+      "minimum": 100,
+      "maximum": 599
+    },
+    "headers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "description": "",
+        "minLength": 0,
+        "maxLength": 4096
+      },
+      "maxProperties": 64
+    },
+    "final_url": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 4096,
+      "format": "uri"
+    },
+    "body_json": {
+      "$ref": "../../../planned/shared.schema.json#/$defs/JsonValue"
+    },
+    "body_text": {
+      "type": "string",
+      "description": "",
+      "minLength": 0,
+      "maxLength": 16777216
+    },
+    "body_blob_id": {
+      "type": "string",
+      "description": "UUID",
+      "minLength": 1,
+      "maxLength": 36,
+      "format": "uuid"
+    },
+    "size_bytes": {
+      "type": "integer",
+      "description": "",
+      "minimum": 0,
+      "maximum": 67108864
+    },
+    "digest": {
+      "type": "string",
+      "description": "SHA256",
+      "minLength": 1,
+      "maxLength": 71,
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  },
+  "required": [
+    "status",
+    "headers",
+    "final_url",
+    "size_bytes",
+    "digest"
+  ],
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "required": [
+        "body_json"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "body_text"
+            ]
+          },
+          {
+            "required": [
+              "body_blob_id"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "required": [
+        "body_text"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "body_json"
+            ]
+          },
+          {
+            "required": [
+              "body_blob_id"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "required": [
+        "body_blob_id"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "body_json"
+            ]
+          },
+          {
+            "required": [
+              "body_text"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

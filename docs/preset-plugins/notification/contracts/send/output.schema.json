@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "notification_id": {
+      "type": "string",
+      "description": "UUID",
+      "minLength": 1,
+      "maxLength": 36,
+      "format": "uuid"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "delivered",
+        "failed",
+        "unknown"
+      ],
+      "description": ""
+    },
+    "channel": {
+      "type": "string",
+      "enum": [
+        "email",
+        "webhook"
+      ],
+      "description": ""
+    },
+    "attempts": {
+      "type": "integer",
+      "description": "",
+      "minimum": 0,
+      "maximum": 10
+    },
+    "provider_message_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "description": "",
+          "minLength": 0,
+          "maxLength": 256
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "notification_id",
+    "status",
+    "channel",
+    "attempts",
+    "provider_message_id"
+  ],
+  "additionalProperties": false
+}

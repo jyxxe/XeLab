@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ChatChunk",
+  "type": "object",
+  "description": "兼容流式增量；结束后发送 data: [DONE]",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "chatcmpl_ + UUID"
+    },
+    "object": {
+      "type": "string",
+      "enum": [
+        "chat.completion.chunk"
+      ],
+      "description": "类型"
+    },
+    "created": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "Unix 秒"
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "模型别名"
+    },
+    "choices": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/ChatChunkChoice"
+      },
+      "minItems": 1,
+      "maxItems": 1,
+      "description": "单个 choice"
+    }
+  },
+  "required": [
+    "id",
+    "object",
+    "created",
+    "model",
+    "choices"
+  ]
+}

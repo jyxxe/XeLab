@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DependencySpec",
+  "type": "object",
+  "description": "必要性、目标类型和绑定范围为独立维度",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "插件内唯一依赖别名"
+    },
+    "required": {
+      "type": "boolean",
+      "description": "强依赖为 true"
+    },
+    "target_kind": {
+      "type": "string",
+      "enum": [
+        "capability",
+        "plugin"
+      ],
+      "description": "目标类型"
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "能力名称或插件 ID"
+    },
+    "version_range": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "支持 >=x.y.z <a.b.c 空格交集；不支持隐式 OR"
+    },
+    "binding_scope": {
+      "type": "string",
+      "enum": [
+        "request",
+        "deployment",
+        "task"
+      ],
+      "description": "按调用、部署或任务固定提供者"
+    },
+    "failure_policy": {
+      "type": "string",
+      "enum": [
+        "wait",
+        "fail",
+        "fallback",
+        "degrade"
+      ],
+      "description": "失效处理"
+    },
+    "features": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80,
+        "description": "需要的功能标签"
+      },
+      "minItems": 0,
+      "maxItems": 256,
+      "description": "必需特性"
+    }
+  },
+  "required": [
+    "name",
+    "required",
+    "target_kind",
+    "target",
+    "version_range",
+    "binding_scope",
+    "failure_policy",
+    "features"
+  ]
+}

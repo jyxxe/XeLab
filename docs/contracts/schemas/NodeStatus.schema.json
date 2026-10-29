@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NodeStatus",
+  "type": "object",
+  "description": "单节点预算与实际用量",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "乐观锁版本，每次持久化变更加一"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "创建时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "updated_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "最近变更时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "config": {
+      "$ref": "../openapi.json#/components/schemas/NodeConfig"
+    },
+    "host_cpu_millis": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576,
+      "description": "发现的宿主 CPU 容量"
+    },
+    "host_memory_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "宿主物理内存"
+    },
+    "plugin_cpu_pool_millis": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1048576,
+      "description": "扣除内核和系统预留后的 CPU 容量"
+    },
+    "plugin_memory_pool_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "扣除预留后的内存容量"
+    },
+    "reserved_cpu_millis": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1048576,
+      "description": "插件已准入总 CPU"
+    },
+    "reserved_memory_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "插件已准入总内存"
+    },
+    "admission_enabled": {
+      "type": "boolean",
+      "description": "对账完成且预算有效才可接受新实例"
+    }
+  },
+  "required": [
+    "id",
+    "revision",
+    "created_at",
+    "updated_at",
+    "config",
+    "host_cpu_millis",
+    "host_memory_bytes",
+    "plugin_cpu_pool_millis",
+    "plugin_memory_pool_bytes",
+    "reserved_cpu_millis",
+    "reserved_memory_bytes",
+    "admission_enabled"
+  ]
+}

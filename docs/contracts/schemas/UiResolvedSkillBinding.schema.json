@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UiResolvedSkillBinding",
+  "type": "object",
+  "description": "仅返回当前调用者获准的固定Skill绑定",
+  "additionalProperties": false,
+  "properties": {
+    "alias": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "贡献内唯一别名",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    },
+    "skill_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "definition_digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 71,
+      "description": "制品或内容 SHA-256 摘要",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "modes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "call",
+          "batch"
+        ],
+        "description": "方式"
+      },
+      "minItems": 1,
+      "maxItems": 2,
+      "description": "允许的宿主桥方法；未声明默认全部禁止",
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "alias",
+    "skill_id",
+    "definition_digest",
+    "modes"
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UiDockSpec",
+  "type": "object",
+  "description": "应用Dock偏好；pinned中同贡献不得重复",
+  "additionalProperties": false,
+  "properties": {
+    "position": {
+      "type": "string",
+      "enum": [
+        "bottom",
+        "left",
+        "right"
+      ],
+      "description": "Dock位置",
+      "default": "bottom"
+    },
+    "auto_hide": {
+      "type": "boolean",
+      "default": false,
+      "description": "自动隐藏"
+    },
+    "pinned": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/UiContributionKey"
+      },
+      "minItems": 0,
+      "maxItems": 64,
+      "description": "固定的插件窗口；仅window种类可固定"
+    }
+  },
+  "required": [
+    "position",
+    "auto_hide",
+    "pinned"
+  ]
+}

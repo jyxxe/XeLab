@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AuthorizationDecision",
+  "type": "object",
+  "description": "决策只供界面提示；不能替代执行时重新鉴权",
+  "additionalProperties": false,
+  "properties": {
+    "allowed": {
+      "type": "boolean",
+      "description": "是否允许"
+    },
+    "code": {
+      "type": "string",
+      "enum": [
+        "ALLOW",
+        "NO_GRANT",
+        "PARENT_DISABLED",
+        "CREDENTIAL_REVOKED",
+        "SCOPE_MISMATCH",
+        "POLICY_DENIED"
+      ],
+      "description": "决策码"
+    },
+    "authz_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "决策使用的版本"
+    }
+  },
+  "required": [
+    "allowed",
+    "code",
+    "authz_revision"
+  ]
+}

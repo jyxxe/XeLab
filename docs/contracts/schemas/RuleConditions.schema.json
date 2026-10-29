@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RuleConditions",
+  "type": "object",
+  "description": "规则附加约束；省略表示没有该项约束",
+  "additionalProperties": false,
+  "properties": {
+    "not_before": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "最早生效时间",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "expires_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "到期时间",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "source_cidrs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "description": "IPv4/IPv6 CIDR；服务端严格解析"
+      },
+      "minItems": 1,
+      "maxItems": 32,
+      "description": "允许的请求来源网段"
+    },
+    "audiences": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "description": "目标服务标识"
+      },
+      "minItems": 1,
+      "maxItems": 32,
+      "description": "允许接收凭证的服务"
+    }
+  },
+  "required": []
+}

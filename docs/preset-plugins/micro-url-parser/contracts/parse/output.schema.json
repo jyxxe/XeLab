@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "scheme": {
+      "type": "string",
+      "enum": [
+        "http",
+        "https"
+      ]
+    },
+    "host": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 253
+    },
+    "port": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "description": "",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "path": {
+      "type": "string",
+      "description": "",
+      "minLength": 0,
+      "maxLength": 8192
+    },
+    "query": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "",
+            "minLength": 0,
+            "maxLength": 4096
+          },
+          "value": {
+            "type": "string",
+            "description": "",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 1000
+    },
+    "fragment": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 8192
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "scheme",
+    "host",
+    "port",
+    "path",
+    "query",
+    "fragment"
+  ],
+  "additionalProperties": false
+}

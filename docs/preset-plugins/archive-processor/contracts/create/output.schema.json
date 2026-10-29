@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "blob_id": {
+      "type": "string",
+      "description": "UUID",
+      "minLength": 1,
+      "maxLength": 36,
+      "format": "uuid"
+    },
+    "size_bytes": {
+      "type": "integer",
+      "description": "",
+      "minimum": 0,
+      "maximum": 67108864
+    },
+    "digest": {
+      "type": "string",
+      "description": "SHA256",
+      "minLength": 1,
+      "maxLength": 71,
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "content_type": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "file_count": {
+      "type": "integer",
+      "description": "",
+      "minimum": 1,
+      "maximum": 1000
+    }
+  },
+  "required": [
+    "blob_id",
+    "size_bytes",
+    "digest",
+    "content_type",
+    "file_count"
+  ],
+  "additionalProperties": false
+}

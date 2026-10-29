@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "文本 embedding 请求",
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "一条文本输入",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536,
+            "description": "原始 UTF-8 文本；超 token 限额拒绝"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "仅 retrieval_document 可用"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "description": "逐项返回向量",
+      "minItems": 1,
+      "maxItems": 16
+    },
+    "purpose": {
+      "type": "string",
+      "enum": [
+        "retrieval_query",
+        "retrieval_document",
+        "semantic_similarity"
+      ],
+      "description": "任务用途，由插件固定映射前缀",
+      "default": "semantic_similarity"
+    },
+    "dimensions": {
+      "type": "integer",
+      "enum": [
+        128,
+        256,
+        512,
+        768
+      ],
+      "default": 768,
+      "description": "先保留前 d 维再 L2 归一化"
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "transport_alias": {
+      "type": "string",
+      "description": "固定批准的连接/路由别名",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "to": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "",
+        "minLength": 1,
+        "maxLength": 320
+      },
+      "minItems": 1,
+      "maxItems": 100
+    },
+    "cc": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "",
+        "minLength": 1,
+        "maxLength": 320
+      },
+      "minItems": 0,
+      "maxItems": 100
+    },
+    "bcc": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "",
+        "minLength": 1,
+        "maxLength": 320
+      },
+      "minItems": 0,
+      "maxItems": 100
+    },
+    "subject": {
+      "type": "string",
+      "description": "拒绝CR/LF",
+      "minLength": 0,
+      "maxLength": 998
+    },
+    "text": {
+      "type": "string",
+      "description": "",
+      "minLength": 0,
+      "maxLength": 1048576
+    },
+    "html": {
+      "type": "string",
+      "description": "",
+      "minLength": 0,
+      "maxLength": 1048576
+    },
+    "template_alias": {
+      "type": "string",
+      "description": "固定批准的连接/路由别名",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "template_data": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "attachments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "",
+        "properties": {
+          "blob_id": {
+            "type": "string",
+            "description": "UUID",
+            "minLength": 1,
+            "maxLength": 36,
+            "format": "uuid",
+            "x-xelab-resource-kind": "blob"
+          },
+          "filename": {
+            "type": "string",
+            "description": "安全显示名，不是路径",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "content_type": {
+            "type": "string",
+            "description": "",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "blob_id",
+          "filename",
+          "content_type"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 10
+    },
+    "dedupe_key": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 128
+    }
+  },
+  "required": [
+    "transport_alias",
+    "to",
+    "subject",
+    "dedupe_key"
+  ],
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "anyOf": [
+        {
+          "required": [
+            "text"
+          ]
+        },
+        {
+          "required": [
+            "html"
+          ]
+        }
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "template_alias"
+            ]
+          },
+          {
+            "required": [
+              "template_data"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "required": [
+        "template_alias",
+        "template_data"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "text"
+            ]
+          },
+          {
+            "required": [
+              "html"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

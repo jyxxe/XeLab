@@ -1,0 +1,200 @@
+{
+  "name": "org.xelab.object-storage.object-put",
+  "version": "1.0.0",
+  "description": "从当前获准Blob持久复制一个对象",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "从当前获准Blob持久复制一个对象",
+    "properties": {
+      "key": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024,
+        "description": "NFC逻辑key，UTF8<=1024字节；拒绝首尾斜线/空段/dot段/控制符/反斜线，不作URL decode",
+        "pattern": "^[^\u0000-\u001f\\\\]+$",
+        "example": "reports/example.txt"
+      },
+      "blob_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "UUID",
+        "format": "uuid",
+        "x-xelab-resource-kind": "blob"
+      },
+      "size_bytes": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 67108864,
+        "description": "完整内容长度"
+      },
+      "digest": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 71,
+        "description": "原始内容SHA-256",
+        "pattern": "^sha256:[a-f0-9]{64}$"
+      },
+      "content_type": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "description": "声明MIME，不含CR/LF"
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "create",
+          "replace"
+        ]
+      },
+      "expected_revision": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991,
+        "description": "按owner/key永久head单调修订，不因删除重建归零"
+      }
+    },
+    "required": [
+      "key",
+      "blob_id",
+      "size_bytes",
+      "digest",
+      "content_type",
+      "mode"
+    ],
+    "additionalProperties": false,
+    "oneOf": [
+      {
+        "properties": {
+          "mode": {
+            "const": "create"
+          }
+        },
+        "not": {
+          "required": [
+            "expected_revision"
+          ]
+        }
+      },
+      {
+        "properties": {
+          "mode": {
+            "const": "replace"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ]
+      }
+    ]
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "原子发布后的完整元数据",
+    "properties": {
+      "object": {
+        "type": "object",
+        "description": "持久对象元数据；不包含物理路径或原始字节",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "description": "UUID",
+            "format": "uuid"
+          },
+          "owner_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "description": "UUID",
+            "format": "uuid"
+          },
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "description": "NFC逻辑key，UTF8<=1024字节；拒绝首尾斜线/空段/dot段/控制符/反斜线，不作URL decode",
+            "pattern": "^[^\u0000-\u001f\\\\]+$",
+            "example": "reports/example.txt"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "description": "按owner/key永久head单调修订，不因删除重建归零"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 67108864,
+            "description": "内容长度，允许空文件"
+          },
+          "digest": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 71,
+            "description": "原始内容SHA-256",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "content_type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "声明MIME，不含CR/LF"
+          },
+          "created_at": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40,
+            "description": "UTC时间",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40,
+            "description": "UTC时间",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "owner_id",
+          "key",
+          "revision",
+          "size_bytes",
+          "digest",
+          "content_type",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "object"
+    ],
+    "additionalProperties": false
+  },
+  "stream_item_schema": null,
+  "target": {
+    "kind": "capability",
+    "plugin_id": "org.xelab.object-storage",
+    "contract": {
+      "name": "data.object.put",
+      "version": "1.0.0",
+      "schema_digest": "sha256:1d6e52730bee82172976ba1f7e03929d5c1a9e36ca10c3bd4db0bc182ae152cc"
+    }
+  },
+  "mapping": "identity",
+  "maximum_timeout_ms": 300000,
+  "input_blobs": true,
+  "tags": [
+    "object-storage",
+    "object-put"
+  ]
+}

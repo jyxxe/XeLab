@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MicroManifest",
+  "type": "object",
+  "description": "核心独立保存的不可变微制品清单；不是OCI Manifest",
+  "properties": {
+    "format_version": {
+      "const": "1"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "SemVer 2.0.0；版本约束语法见插件版本文档",
+      "example": "1.0.0",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "description": "用途"
+    },
+    "engine": {
+      "const": "javascript"
+    },
+    "protocol": {
+      "const": "json-stdio-v1"
+    },
+    "entrypoint": {
+      "const": "main.js"
+    },
+    "input_schema": {
+      "$ref": "../openapi.json#/components/schemas/MicroBusinessSchema",
+      "description": "有界纯数据Schema；节点/深度/字节/求值预算由核心及运行时再次检查"
+    },
+    "output_schema": {
+      "$ref": "../openapi.json#/components/schemas/MicroBusinessSchema",
+      "description": "有界纯数据Schema；节点/深度/字节/求值预算由核心及运行时再次检查"
+    },
+    "limits": {
+      "$ref": "../openapi.json#/components/schemas/MicroExecutionLimits"
+    },
+    "side_effect": {
+      "type": "string",
+      "enum": [
+        "none",
+        "non_repeatable"
+      ],
+      "description": "纯计算为none；HTTP转发可能计费，必须non_repeatable"
+    },
+    "execution_profile": {
+      "type": "string",
+      "enum": [
+        "pure-json-v1",
+        "controlled-http-v1"
+      ],
+      "default": "pure-json-v1",
+      "description": "省略保留纯计算；HTTP需新制品和显式绑定/审批"
+    },
+    "http_endpoints": {
+      "type": "array",
+      "description": "别名唯一；仅声明可经核心代理使用的固定模板",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/MicroHttpEndpoint"
+      },
+      "minItems": 0,
+      "maxItems": 8
+    },
+    "business_errors": {
+      "type": "array",
+      "description": "host.fail只允许报告已声明码，不得伪造平台认证/授权失败",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/MicroBusinessError"
+      },
+      "minItems": 0,
+      "maxItems": 32
+    }
+  },
+  "required": [
+    "format_version",
+    "version",
+    "description",
+    "engine",
+    "protocol",
+    "entrypoint",
+    "input_schema",
+    "output_schema",
+    "limits",
+    "side_effect"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "execution_profile": {
+            "const": "controlled-http-v1"
+          }
+        },
+        "required": [
+          "execution_profile"
+        ]
+      },
+      "then": {
+        "required": [
+          "http_endpoints"
+        ],
+        "properties": {
+          "side_effect": {
+            "const": "non_repeatable"
+          },
+          "http_endpoints": {
+            "minItems": 1
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "side_effect": {
+            "const": "none"
+          },
+          "http_endpoints": {
+            "maxItems": 0
+          },
+          "business_errors": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ]
+}

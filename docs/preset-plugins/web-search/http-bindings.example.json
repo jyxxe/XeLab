@@ -1,0 +1,16 @@
+[
+  {
+    "endpoint_alias": "brave",
+    "priority": 10,
+    "enabled": false,
+    "secret_id": "00000000-0000-4000-8000-000000000201",
+    "timeout_ms": 4000
+  },
+  {
+    "endpoint_alias": "tavily",
+    "priority": 20,
+    "enabled": false,
+    "secret_id": "00000000-0000-4000-8000-000000000202",
+    "timeout_ms": 4000
+  }
+]

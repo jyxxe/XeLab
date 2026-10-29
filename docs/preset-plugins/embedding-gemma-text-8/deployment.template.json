@@ -1,0 +1,32 @@
+{
+  "installation_id": "00000000-0000-4000-8000-000000000001",
+  "display_name": "embedding-gemma-text-8",
+  "enabled": false,
+  "replicas": 1,
+  "limits": {
+    "cpu_millis": 1000,
+    "memory_bytes": 4294967296,
+    "ephemeral_bytes": 1073741824,
+    "pids": 128
+  },
+  "config": {
+    "model_lock_path": "/xelab/models/embeddinggemma-2.lock.json",
+    "device": "cpu",
+    "dtype": "float32",
+    "load_vision": false,
+    "load_audio": false,
+    "max_active_requests": 8,
+    "inference_threads": 1,
+    "inter_op_threads": 1,
+    "maximum_tokens_per_item": 1024,
+    "maximum_total_tokens_per_request": 8192,
+    "maximum_batch_items": 16,
+    "maximum_media_bytes": 0,
+    "maximum_image_pixels": 0,
+    "maximum_audio_seconds": 0,
+    "maximum_video_seconds": 0,
+    "default_dimensions": 768,
+    "normalize": true
+  },
+  "volume_ids": []
+}

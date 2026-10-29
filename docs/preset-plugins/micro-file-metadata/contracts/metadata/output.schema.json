@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "extension": {
+      "type": "string",
+      "description": "",
+      "minLength": 0,
+      "maxLength": 255
+    },
+    "size_bytes": {
+      "type": "integer",
+      "description": "",
+      "minimum": 0,
+      "maximum": 67108864
+    },
+    "declared_media_type": {
+      "anyOf": [
+        {
+          "type": "string",
+          "description": "",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "suggested_media_type": {
+      "anyOf": [
+        {
+          "type": "string",
+          "description": "",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "trust": {
+      "const": "declared"
+    }
+  },
+  "required": [
+    "name",
+    "extension",
+    "size_bytes",
+    "declared_media_type",
+    "suggested_media_type",
+    "trust"
+  ],
+  "additionalProperties": false
+}

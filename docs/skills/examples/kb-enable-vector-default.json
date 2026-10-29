@@ -1,0 +1,9 @@
+{
+  "input": {
+    "table_id": "00000000-0000-4000-8000-000000000001",
+    "field_id": "00000000-0000-4000-8000-000000000002",
+    "expected_schema_revision": 1,
+    "enabled": true
+  },
+  "timeout_ms": 300000
+}

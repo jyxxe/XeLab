@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MicroRuntimeDescriptor",
+  "type": "object",
+  "description": "普通OCI插件可提供的受审微执行适配协议声明，不是业务能力",
+  "properties": {
+    "api_major": {
+      "const": 1
+    },
+    "engines": {
+      "type": "array",
+      "items": {
+        "const": "javascript"
+      },
+      "minItems": 1,
+      "maxItems": 1,
+      "uniqueItems": true
+    },
+    "protocols": {
+      "type": "array",
+      "items": {
+        "const": "json-stdio-v1"
+      },
+      "minItems": 1,
+      "maxItems": 1,
+      "uniqueItems": true
+    },
+    "execution_profiles": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "pure-json-v1",
+          "controlled-http-v1"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "default": [
+        "pure-json-v1"
+      ]
+    }
+  },
+  "required": [
+    "api_major",
+    "engines",
+    "protocols"
+  ],
+  "additionalProperties": false
+}

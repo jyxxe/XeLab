@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "建表输入",
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "description": "账户内唯一表名",
+      "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}$"
+    },
+    "fields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "创建列，向量另行配置且默认不建立",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63,
+            "description": "ASCII 列名；下划线开头留给系统",
+            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}$"
+          },
+          "type": {
+            "type": "object",
+            "description": "列类型；int64/decimal 使用字符串 wire 值",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "boolean",
+                  "int32",
+                  "int64",
+                  "float32",
+                  "float64",
+                  "decimal",
+                  "string",
+                  "text",
+                  "bytes",
+                  "date",
+                  "timestamp",
+                  "uuid",
+                  "json",
+                  "media",
+                  "array"
+                ],
+                "description": "基本列类型"
+              },
+              "precision": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 38,
+                "description": "decimal 总位数"
+              },
+              "scale": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 38,
+                "description": "decimal 小数位"
+              },
+              "element_kind": {
+                "type": "string",
+                "enum": [
+                  "boolean",
+                  "int32",
+                  "int64",
+                  "float32",
+                  "float64",
+                  "decimal",
+                  "string",
+                  "text",
+                  "bytes",
+                  "date",
+                  "timestamp",
+                  "uuid",
+                  "json"
+                ],
+                "description": "array 元素只允许基本标量，不允许 array/media"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "decimal"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "precision",
+                    "scale"
+                  ]
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "array"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "element_kind"
+                  ]
+                }
+              }
+            ]
+          },
+          "nullable": {
+            "type": "boolean",
+            "description": "默认允许 null",
+            "default": true
+          },
+          "default": {
+            "type": [
+              "object",
+              "array",
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ],
+            "description": "固定列默认值，按 type 校验"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "additionalProperties": false
+      },
+      "description": "列",
+      "minItems": 1,
+      "maxItems": 128
+    }
+  },
+  "required": [
+    "name",
+    "fields"
+  ],
+  "additionalProperties": false
+}

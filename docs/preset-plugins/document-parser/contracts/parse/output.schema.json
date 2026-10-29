@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "format": {
+      "type": "string",
+      "enum": [
+        "pdf",
+        "docx",
+        "txt",
+        "html"
+      ],
+      "description": ""
+    },
+    "text": {
+      "type": "string",
+      "description": "",
+      "minLength": 0,
+      "maxLength": 8388608
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "",
+        "properties": {
+          "number": {
+            "type": "integer",
+            "description": "",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "text": {
+            "type": "string",
+            "description": "",
+            "minLength": 0,
+            "maxLength": 8388608
+          }
+        },
+        "required": [
+          "number",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 1000
+    },
+    "paragraphs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "",
+        "properties": {
+          "index": {
+            "type": "integer",
+            "description": "",
+            "minimum": 0,
+            "maximum": 99999
+          },
+          "text": {
+            "type": "string",
+            "description": "",
+            "minLength": 0,
+            "maxLength": 1048576
+          },
+          "page_number": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "description": "",
+                "minimum": 1,
+                "maximum": 1000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "index",
+          "text",
+          "page_number"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 100000
+    },
+    "metadata": {
+      "type": "object",
+      "description": "",
+      "properties": {
+        "title": {
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "",
+              "minLength": 0,
+              "maxLength": 1024
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "author": {
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "",
+              "minLength": 0,
+              "maxLength": 1024
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "language": {
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "",
+              "minLength": 0,
+              "maxLength": 32
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "page_count": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "description": "",
+              "minimum": 0,
+              "maximum": 1000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "title",
+        "author",
+        "language",
+        "page_count"
+      ],
+      "additionalProperties": false
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "",
+        "minLength": 0,
+        "maxLength": 512
+      },
+      "minItems": 0,
+      "maxItems": 1000
+    }
+  },
+  "required": [
+    "format",
+    "text",
+    "pages",
+    "paragraphs",
+    "metadata",
+    "warnings"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BackupRequest",
+  "type": "object",
+  "description": "创建一致性备份；数据卷冻结由批准的插件迁移/排空流程执行",
+  "additionalProperties": false,
+  "properties": {
+    "volume_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "资源唯一标识",
+        "format": "uuid",
+        "example": "00000000-0000-4000-8000-000000000001"
+      },
+      "minItems": 1,
+      "maxItems": 16,
+      "description": "同一一致性组的卷"
+    },
+    "deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "destination": {
+      "type": "string",
+      "enum": [
+        "off_host"
+      ],
+      "description": "宿主外备份存储；连接配置由宿主管理"
+    }
+  },
+  "required": [
+    "volume_ids",
+    "deployment_id",
+    "destination"
+  ]
+}

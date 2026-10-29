@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AccountPatch",
+  "type": "object",
+  "description": "仅修改显示名称或启用状态；禁止修改 parent_id、kind 和根标记",
+  "additionalProperties": false,
+  "properties": {
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "新的显示名称"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "disabled"
+      ],
+      "description": "恢复 active 仍需祖先有效"
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "由合法父级/账户管理员调整，不能突破源凭证链；本人资料修改权限不包含此项"
+    }
+  },
+  "required": [],
+  "minProperties": 1
+}

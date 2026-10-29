@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "browser_alias": {
+      "type": "string",
+      "description": "固定批准的连接/路由别名",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "url": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 4096,
+      "format": "uri"
+    },
+    "wait_until": {
+      "type": "string",
+      "enum": [
+        "domcontentloaded",
+        "load"
+      ],
+      "description": "",
+      "default": "domcontentloaded"
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "description": "",
+      "minimum": 100,
+      "maximum": 60000,
+      "default": 30000
+    }
+  },
+  "required": [
+    "browser_alias",
+    "url"
+  ],
+  "additionalProperties": false
+}

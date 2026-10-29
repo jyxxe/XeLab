@@ -1,0 +1,56 @@
+syntax = "proto3";
+package xelab.v1;
+import "xelab/v1/common.proto";
+import "xelab/v1/capability.proto";
+
+// 由Manifest.micro_runtime声明；仅当前内核mTLS身份可调用，不是公共业务接口。
+service MicroRuntimeService {
+  rpc Prepare(MicroPrepareRequest) returns (MicroPrepareResponse);
+  rpc Invoke(MicroInvokeRequest) returns (MicroInvokeResponse);
+  rpc Release(MicroReleaseRequest) returns (Ack);
+}
+message MicroPrepareRequest {
+  RpcContext context = 1; // 纯控制Prepare可为空委托；内核先验证资源/运行时使用权。
+  string micro_plugin_id = 2;
+  string micro_version_id = 3;
+  string micro_deployment_id = 4;
+  uint64 micro_generation = 5;
+  string package_digest = 6;
+  string source_digest = 7;
+  bytes manifest_json = 8; // MicroManifest JCS JSON，<=256KiB，input/output Schema各<=64KiB。
+  bytes source_utf8 = 9; // <=256KiB；无NUL/BOM，原始字节SHA-256必须匹配。
+  bytes limits_json = 10; // MicroExecutionLimits，<=4KiB，不超过manifest和父MPR获批上限。
+  string owner_id = 11; // 内核固定资源owner，仅控制器填写；不交给脚本。
+}
+message MicroPrepareResponse {
+  string prepared_handle = 1; // 256bit随机十六进制，非授权票据，不暴露给终端调用者。
+  string package_digest = 2;
+  uint64 observed_micro_generation = 3;
+  int64 expires_unix_ms = 4; // 缓存可提前淘汰；后续Invoke可要求原制品重新Prepare。
+}
+message MicroInvokeRequest {
+  RpcContext context = 1; // 当前Call委托，仅runtime控制端使用，不传脚本VM。
+  string call_id = 2;
+  string prepared_handle = 3;
+  string micro_plugin_id = 4;
+  string micro_version_id = 5;
+  string micro_deployment_id = 6;
+  uint64 micro_generation = 7;
+  string package_digest = 8;
+  bytes input_json = 9; // <=1MiB且匹配MicroManifest.input_schema；每调用新VM。
+  string input_digest = 10;
+  bytes http_bindings_json = 11; // <=8KiB，冻结的非敏感绑定投影，无Secret ID/原值；pure为空。
+}
+message MicroInvokeResponse {
+  oneof outcome {
+    InvokeResponse result = 1; // output_json<=1MiB且符合微output_schema。
+    ErrorDetail error = 3; // 已识别Call的脚本/输出/资源失败；不是业务成功。
+  }
+  bytes diagnostics_json = 2; // MicroCallDiagnostics，<=128KiB；stderr最多64KiB，不写公共日志。
+}
+message MicroReleaseRequest {
+  RpcContext context = 1;
+  string prepared_handle = 2;
+  string micro_deployment_id = 3;
+  uint64 micro_generation = 4;
+}

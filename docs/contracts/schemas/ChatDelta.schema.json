@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ChatDelta",
+  "type": "object",
+  "description": "文本流增量；首帧 role=assistant，中间帧 content，终帧可为空",
+  "additionalProperties": false,
+  "properties": {
+    "role": {
+      "type": "string",
+      "enum": [
+        "assistant"
+      ],
+      "description": "可选角色"
+    },
+    "content": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 262144,
+      "description": "增量文本"
+    }
+  },
+  "required": []
+}

@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "读取当前subject命名空间使用量",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}

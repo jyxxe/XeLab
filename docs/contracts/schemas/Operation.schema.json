@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Operation",
+  "type": "object",
+  "description": "持久化异步管理操作",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "乐观锁版本，每次持久化变更加一"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "创建时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "updated_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "最近变更时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "kind": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "操作类型，与 operationId 对应"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "running",
+        "cancel_requested",
+        "succeeded",
+        "failed",
+        "canceled"
+      ],
+      "description": "终态不可再次运行"
+    },
+    "progress_percent": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "进度；仅为提示"
+    },
+    "resource_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "description": "主要结果资源标识"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "主要结果资源标识"
+    },
+    "result": {
+      "anyOf": [
+        {
+          "$ref": "../openapi.json#/components/schemas/JsonValue"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "可为空"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "../openapi.json#/components/schemas/ErrorDetail"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "可为空"
+    }
+  },
+  "required": [
+    "id",
+    "revision",
+    "created_at",
+    "updated_at",
+    "kind",
+    "state",
+    "progress_percent",
+    "resource_id",
+    "result",
+    "error"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "micro_version_id": "00000000-0000-4000-8000-000000000100",
+  "runtime_deployment_id": "00000000-0000-4000-8000-000000000006",
+  "limits": {
+    "timeout_ms": 15000,
+    "heap_bytes": 16777216,
+    "stack_bytes": 1048576,
+    "maximum_input_bytes": 1048576,
+    "maximum_output_bytes": 1048576,
+    "maximum_stderr_bytes": 65536,
+    "max_active_requests": 1
+  }
+}

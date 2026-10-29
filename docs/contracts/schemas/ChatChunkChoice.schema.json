@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ChatChunkChoice",
+  "type": "object",
+  "description": "流式单个 choice",
+  "additionalProperties": false,
+  "properties": {
+    "index": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 0,
+      "description": "固定 0"
+    },
+    "delta": {
+      "$ref": "../openapi.json#/components/schemas/ChatDelta"
+    },
+    "finish_reason": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "stop",
+            "length"
+          ],
+          "description": "最后一帧前为空"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "最后一帧前为空"
+    }
+  },
+  "required": [
+    "index",
+    "delta",
+    "finish_reason"
+  ]
+}

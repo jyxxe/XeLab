@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Account",
+  "type": "object",
+  "description": "用户或服务账户；API Key 不属于账户",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "乐观锁版本，每次持久化变更加一"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "创建时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "updated_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "最近变更时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "parent_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "父账户；独立根账户为空",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "父账户；独立根账户为空"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "user",
+        "service"
+      ],
+      "description": "主体类型"
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "显示名称"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "active",
+        "disabled",
+        "archived"
+      ],
+      "description": "归档为逻辑删除，不解除继承链"
+    },
+    "independent_owner": {
+      "type": "boolean",
+      "description": "仅宿主可信初始化/恢复可建立的恢复根标记"
+    },
+    "authz_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "授权版本"
+    },
+    "inheritance": {
+      "anyOf": [
+        {
+          "$ref": "../openapi.json#/components/schemas/InheritanceSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "可为空"
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time",
+          "description": "账户到期时间"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "可为空；仍受源链有效期限制"
+    }
+  },
+  "required": [
+    "id",
+    "revision",
+    "created_at",
+    "updated_at",
+    "parent_id",
+    "kind",
+    "display_name",
+    "status",
+    "independent_owner",
+    "authz_revision",
+    "inheritance",
+    "expires_at"
+  ]
+}

@@ -1,0 +1,243 @@
+{
+  "name": "org.xelab.embedding-gemma.multimodal-1.embed",
+  "version": "1.0.0",
+  "description": "EmbeddingGemma 2 embedding",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "多模态 embedding，单请求单项",
+    "properties": {
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "description": "按顺序组合为一条向量",
+          "properties": {
+            "parts": {
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "description": "文本片段",
+                    "properties": {
+                      "type": {
+                        "const": "text"
+                      },
+                      "text": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 65536,
+                        "description": "原始文本，不接受媒体控制占位符"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "text"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "description": "受控媒体输入；不接受路径、外部 URL、Base64 大对象",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "image",
+                          "audio",
+                          "video"
+                        ],
+                        "description": "模态"
+                      },
+                      "blob_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 36,
+                        "description": "调用者获准读取的 Blob",
+                        "format": "uuid",
+                        "x-xelab-resource-kind": "blob"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "blob_id"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "description": "文本和媒体序列",
+              "minItems": 1,
+              "maxItems": 8
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "description": "仅 document 用途"
+            }
+          },
+          "required": [
+            "parts"
+          ],
+          "additionalProperties": false
+        },
+        "description": "单项",
+        "minItems": 1,
+        "maxItems": 1
+      },
+      "purpose": {
+        "type": "string",
+        "enum": [
+          "retrieval_query",
+          "retrieval_document",
+          "semantic_similarity"
+        ],
+        "description": "任务用途，由插件固定映射前缀",
+        "default": "semantic_similarity"
+      },
+      "dimensions": {
+        "type": "integer",
+        "enum": [
+          128,
+          256,
+          512,
+          768
+        ],
+        "default": 768,
+        "description": "先保留前 d 维再 L2 归一化"
+      }
+    },
+    "required": [
+      "items"
+    ],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "向量和兼容性标识",
+    "properties": {
+      "data": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "description": "对应一项输入",
+          "properties": {
+            "index": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 15,
+              "description": "从 0 开始"
+            },
+            "embedding": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "description": "有限 float32 值，拒绝 NaN/Infinity"
+              },
+              "description": "维度必须与 dimensions 相同",
+              "minItems": 128,
+              "maxItems": 768
+            }
+          },
+          "required": [
+            "index",
+            "embedding"
+          ],
+          "additionalProperties": false
+        },
+        "description": "顺序与输入相同",
+        "minItems": 1,
+        "maxItems": 16
+      },
+      "dimensions": {
+        "type": "integer",
+        "enum": [
+          128,
+          256,
+          512,
+          768
+        ]
+      },
+      "normalized": {
+        "const": true
+      },
+      "model": {
+        "const": "google/embeddinggemma-2"
+      },
+      "model_revision": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40,
+        "description": "构建时锁定的上游 commit",
+        "pattern": "^[a-f0-9]{40}$"
+      },
+      "embedding_space_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 71,
+        "description": "不含 CPU/并发数的向量空间指纹",
+        "pattern": "^sha256:[a-f0-9]{64}$"
+      },
+      "profile_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "description": "实际插件 ID"
+      },
+      "usage": {
+        "type": "object",
+        "description": "本批输入计量，不是模型性能承诺",
+        "properties": {
+          "input_items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16,
+            "description": "项数"
+          },
+          "input_tokens": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 131072,
+            "description": "含前缀与模态的总计"
+          }
+        },
+        "required": [
+          "input_items",
+          "input_tokens"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "data",
+      "dimensions",
+      "normalized",
+      "model",
+      "model_revision",
+      "embedding_space_id",
+      "profile_id",
+      "usage"
+    ],
+    "additionalProperties": false
+  },
+  "stream_item_schema": null,
+  "target": {
+    "kind": "capability",
+    "plugin_id": "org.xelab.embedding-gemma.multimodal-1",
+    "contract": {
+      "name": "ai.embedding.multimodal",
+      "version": "1.0.0",
+      "schema_digest": "sha256:8f3c653f8f8826aae8fb8d44fa90104e903a082964b1ff20518db565e3d21aee"
+    }
+  },
+  "mapping": "identity",
+  "maximum_timeout_ms": 300000,
+  "input_blobs": true,
+  "tags": [
+    "preset",
+    "multimodal-1"
+  ]
+}

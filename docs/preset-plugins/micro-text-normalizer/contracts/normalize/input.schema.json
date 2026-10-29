@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "text": {
+      "type": "string",
+      "description": "",
+      "minLength": 0,
+      "maxLength": 1048576
+    },
+    "unicode_form": {
+      "type": "string",
+      "enum": [
+        "none",
+        "NFC",
+        "NFD",
+        "NFKC",
+        "NFKD"
+      ],
+      "description": "",
+      "default": "none"
+    },
+    "normalize_newlines": {
+      "type": "boolean",
+      "default": true
+    },
+    "trim": {
+      "type": "boolean",
+      "default": false
+    },
+    "collapse_spaces": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [
+    "text"
+  ],
+  "additionalProperties": false
+}

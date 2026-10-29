@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "完整有序ID列表查询；链式算子从左到右执行，无隐式分页",
+  "properties": {
+    "table_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "UUID",
+      "format": "uuid"
+    },
+    "expression": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192,
+      "default": "a",
+      "description": "UTF-8最多8192字节；a.match(...).topk(...).match(...)"
+    },
+    "input_ids": {
+      "type": "array",
+      "description": "可选按值绑定a；省略为当前全表，[]为显式空列表；全部ID须在该表存在",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "UUID",
+        "format": "uuid"
+      },
+      "minItems": 0,
+      "maxItems": 100000,
+      "uniqueItems": true
+    },
+    "params": {
+      "type": "object",
+      "description": "命名参数，不含冒号",
+      "additionalProperties": {
+        "type": "object",
+        "description": "显式类型参数；禁止字符串拼接到表达式",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "boolean",
+              "int32",
+              "int64",
+              "float32",
+              "float64",
+              "decimal",
+              "string",
+              "text",
+              "bytes",
+              "date",
+              "timestamp",
+              "uuid",
+              "json",
+              "media",
+              "array",
+              "vector_query"
+            ],
+            "description": "查询参数类别"
+          },
+          "value": {
+            "type": [
+              "object",
+              "array",
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ],
+            "description": "按 type/目标字段严格校验"
+          }
+        },
+        "required": [
+          "type",
+          "value"
+        ],
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "vector_query"
+              },
+              "value": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "description": "文本向量查询",
+                    "properties": {
+                      "kind": {
+                        "const": "text"
+                      },
+                      "text": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 65536,
+                        "description": "检索查询文本"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "text"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "description": "同表持久媒体组合查询",
+                    "properties": {
+                      "kind": {
+                        "const": "media"
+                      },
+                      "parts": {
+                        "type": "array",
+                        "items": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "description": "文本片段",
+                              "properties": {
+                                "type": {
+                                  "const": "text"
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 65536,
+                                  "description": "原始文本，不接受媒体控制占位符"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "text"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "description": "已导入同表媒体引用",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "enum": [
+                                    "image",
+                                    "audio",
+                                    "video"
+                                  ],
+                                  "description": "模态"
+                                },
+                                "media_id": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 36,
+                                  "description": "UUID",
+                                  "format": "uuid"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "media_id"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "description": "一条多模态数据",
+                        "minItems": 1,
+                        "maxItems": 8
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "parts"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "description": "预先计算且空间匹配的向量",
+                    "properties": {
+                      "kind": {
+                        "const": "vector"
+                      },
+                      "values": {
+                        "type": "array",
+                        "items": {
+                          "type": "number",
+                          "description": "有限 float32 值，拒绝 NaN/Infinity"
+                        },
+                        "description": "维度必须与 dimensions 相同",
+                        "minItems": 128,
+                        "maxItems": 768
+                      },
+                      "embedding_space_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 71,
+                        "description": "SHA-256",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "values",
+                      "embedding_space_id"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "properties": {
+              "type": {
+                "not": {
+                  "const": "vector_query"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "maxProperties": 64,
+      "propertyNames": {
+        "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$"
+      }
+    },
+    "expected_schema_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "可选快照前置；两个expected水位必须成对"
+    },
+    "expected_data_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "快照水位"
+    },
+    "require_complete_index": {
+      "type": "boolean",
+      "default": true,
+      "description": "每个topk阶段是否必须覆盖其全部非空源候选"
+    },
+    "cache_policy": {
+      "type": "string",
+      "description": "只控制本请求缓存读写，不修改容量",
+      "enum": [
+        "auto",
+        "bypass"
+      ],
+      "default": "auto"
+    }
+  },
+  "required": [
+    "table_id"
+  ],
+  "additionalProperties": false,
+  "dependentRequired": {
+    "expected_schema_revision": [
+      "expected_data_revision"
+    ],
+    "expected_data_revision": [
+      "expected_schema_revision"
+    ]
+  }
+}

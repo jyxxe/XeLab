@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "独立字段向量开关",
+  "properties": {
+    "table_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "UUID",
+      "format": "uuid"
+    },
+    "expected_schema_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "CAS，创建/删除等另见语义"
+    },
+    "field_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "字段 ID，不随列重命名改变",
+      "format": "uuid"
+    },
+    "enabled": {
+      "type": "boolean",
+      "description": "false 保留数据但停止向量查询与构建"
+    },
+    "dimensions": {
+      "type": "integer",
+      "enum": [
+        128,
+        256,
+        512,
+        768
+      ],
+      "default": 128
+    },
+    "embedding_skill_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "可选单一Skill；解释为query/index均该候选且不fallback，与embedding_routes/refresh_routes=true互斥",
+      "format": "uuid"
+    },
+    "embedding_routes": {
+      "type": "object",
+      "description": "两用途分别固定有序候选；每个候选必须在配置时验证同一向量空间",
+      "properties": {
+        "query_skill_ids": {
+          "type": "array",
+          "description": "查询候选，第一项为首选",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "description": "UUID",
+            "format": "uuid"
+          },
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true
+        },
+        "index_skill_ids": {
+          "type": "array",
+          "description": "建向量候选，第一项为首选",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "description": "UUID",
+            "format": "uuid"
+          },
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true
+        },
+        "allow_fallback": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "required": [
+        "query_skill_ids",
+        "index_skill_ids"
+      ],
+      "additionalProperties": false
+    },
+    "refresh_routes": {
+      "type": "boolean",
+      "default": false,
+      "description": "已有字段显式重新按部署偏好发现并固定；省略则保留现有路由"
+    }
+  },
+  "required": [
+    "table_id",
+    "expected_schema_revision",
+    "field_id",
+    "enabled"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "not": {
+        "required": [
+          "embedding_skill_id",
+          "embedding_routes"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "refresh_routes": {
+            "const": true
+          }
+        },
+        "required": [
+          "refresh_routes"
+        ]
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "embedding_skill_id"
+              ]
+            },
+            {
+              "required": [
+                "embedding_routes"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "enabled": {
+            "const": false
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "embedding_skill_id"
+              ]
+            },
+            {
+              "required": [
+                "embedding_routes"
+              ]
+            },
+            {
+              "required": [
+                "dimensions"
+              ]
+            },
+            {
+              "properties": {
+                "refresh_routes": {
+                  "const": true
+                }
+              },
+              "required": [
+                "refresh_routes"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

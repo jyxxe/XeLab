@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UiThemeSpec",
+  "type": "object",
+  "description": "系统/明亮/深色或自定义令牌；系统模式使用浏览器偏好",
+  "additionalProperties": false,
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": [
+        "system",
+        "light",
+        "dark",
+        "custom"
+      ],
+      "description": "主题模式",
+      "default": "system"
+    },
+    "custom_tokens": {
+      "$ref": "../openapi.json#/components/schemas/UiThemeTokens"
+    },
+    "reduce_motion": {
+      "type": "boolean",
+      "default": false,
+      "description": "叠加系统偏好，任一要求时减少动画"
+    },
+    "reduce_transparency": {
+      "type": "boolean",
+      "default": false,
+      "description": "以实色面板替代模糊透明"
+    }
+  },
+  "required": [
+    "mode",
+    "reduce_motion",
+    "reduce_transparency"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "custom"
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      },
+      "then": {
+        "required": [
+          "custom_tokens"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "custom_tokens"
+          ]
+        }
+      }
+    }
+  ]
+}

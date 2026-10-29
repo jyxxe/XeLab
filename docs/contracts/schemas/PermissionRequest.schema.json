@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PermissionRequest",
+  "type": "object",
+  "description": "申请权限与必需性",
+  "additionalProperties": false,
+  "properties": {
+    "rule": {
+      "$ref": "../openapi.json#/components/schemas/PermissionRule"
+    },
+    "required": {
+      "type": "boolean",
+      "description": "为 true 时未批准则不能启用相关能力",
+      "default": true
+    }
+  },
+  "required": [
+    "rule",
+    "required"
+  ]
+}

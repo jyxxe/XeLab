@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "删除结果，保留用于防ABA的head水位",
+  "properties": {
+    "object_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "UUID",
+      "format": "uuid"
+    },
+    "deleted_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "按owner/key永久head单调修订，不因删除重建归零"
+    }
+  },
+  "required": [
+    "object_id",
+    "deleted_revision"
+  ],
+  "additionalProperties": false
+}

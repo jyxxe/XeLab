@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "提交结果",
+  "properties": {
+    "table_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "UUID",
+      "format": "uuid"
+    },
+    "data_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "新水位"
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "一行数据；values 由表的列类型校验",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "description": "UUID",
+            "format": "uuid"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "description": "行版本"
+          },
+          "values": {
+            "type": "object",
+            "description": "列名到类型化值",
+            "additionalProperties": {
+              "type": [
+                "object",
+                "array",
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ],
+              "description": "业务 JSON，按数据列类型继续校验"
+            },
+            "maxProperties": 128
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "values"
+        ],
+        "additionalProperties": false
+      },
+      "description": "完整提交行",
+      "minItems": 1,
+      "maxItems": 64
+    },
+    "pending_vector_fields": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "字段 ID，不随列重命名改变",
+        "format": "uuid"
+      },
+      "description": "发生向量待更新的字段",
+      "minItems": 0,
+      "maxItems": 128
+    }
+  },
+  "required": [
+    "table_id",
+    "data_revision",
+    "rows",
+    "pending_vector_fields"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SkillBatchPage",
+  "type": "object",
+  "description": "按created_at/id排序的可见批次",
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/SkillBatch"
+      },
+      "minItems": 0,
+      "maxItems": 200,
+      "description": "本页对象"
+    },
+    "next_cursor": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "description": "15min有效且绑定主体/过滤条件的游标"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "items",
+    "next_cursor"
+  ]
+}

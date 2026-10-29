@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PublisherSpec",
+  "type": "object",
+  "description": "添加发布者信任根",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "发布者名称"
+    },
+    "key_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "签名密钥标识"
+    },
+    "public_key_pem": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "Ed25519 PEM 公钥"
+    }
+  },
+  "required": [
+    "name",
+    "key_id",
+    "public_key_pem"
+  ]
+}

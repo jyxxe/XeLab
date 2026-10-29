@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "document": {
+      "$ref": "../../../planned/shared.schema.json#/$defs/JsonValue"
+    },
+    "schema": {
+      "type": [
+        "object",
+        "boolean"
+      ],
+      "description": "数据形式的MicroBusinessSchema受限集合；不是远程ref许可"
+    },
+    "max_errors": {
+      "type": "integer",
+      "description": "",
+      "minimum": 1,
+      "maximum": 256,
+      "default": 64
+    }
+  },
+  "required": [
+    "document",
+    "schema"
+  ],
+  "additionalProperties": false
+}

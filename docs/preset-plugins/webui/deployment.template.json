@@ -1,0 +1,22 @@
+{
+  "installation_id": "00000000-0000-4000-8000-000000000001",
+  "display_name": "webui",
+  "enabled": false,
+  "replicas": 1,
+  "limits": {
+    "cpu_millis": 500,
+    "memory_bytes": 536870912,
+    "ephemeral_bytes": 268435456,
+    "pids": 128
+  },
+  "config": {
+    "management_api_major": 1,
+    "default_page": "desktop",
+    "default_theme": "system",
+    "max_open_windows": 16,
+    "max_active_widgets": 8,
+    "widget_min_refresh_seconds": 30,
+    "ui_protocol_major": 1
+  },
+  "volume_ids": []
+}

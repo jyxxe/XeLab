@@ -1,0 +1,259 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "原子 schema 变更",
+  "properties": {
+    "table_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "UUID",
+      "format": "uuid"
+    },
+    "expected_schema_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "CAS，创建/删除等另见语义"
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "加列",
+            "properties": {
+              "op": {
+                "const": "add_field"
+              },
+              "field": {
+                "type": "object",
+                "description": "创建列，向量另行配置且默认不建立",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 63,
+                    "description": "ASCII 列名；下划线开头留给系统",
+                    "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}$"
+                  },
+                  "type": {
+                    "type": "object",
+                    "description": "列类型；int64/decimal 使用字符串 wire 值",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "boolean",
+                          "int32",
+                          "int64",
+                          "float32",
+                          "float64",
+                          "decimal",
+                          "string",
+                          "text",
+                          "bytes",
+                          "date",
+                          "timestamp",
+                          "uuid",
+                          "json",
+                          "media",
+                          "array"
+                        ],
+                        "description": "基本列类型"
+                      },
+                      "precision": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 38,
+                        "description": "decimal 总位数"
+                      },
+                      "scale": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 38,
+                        "description": "decimal 小数位"
+                      },
+                      "element_kind": {
+                        "type": "string",
+                        "enum": [
+                          "boolean",
+                          "int32",
+                          "int64",
+                          "float32",
+                          "float64",
+                          "decimal",
+                          "string",
+                          "text",
+                          "bytes",
+                          "date",
+                          "timestamp",
+                          "uuid",
+                          "json"
+                        ],
+                        "description": "array 元素只允许基本标量，不允许 array/media"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "kind": {
+                              "const": "decimal"
+                            }
+                          }
+                        },
+                        "then": {
+                          "required": [
+                            "precision",
+                            "scale"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "kind": {
+                              "const": "array"
+                            }
+                          }
+                        },
+                        "then": {
+                          "required": [
+                            "element_kind"
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "nullable": {
+                    "type": "boolean",
+                    "description": "默认允许 null",
+                    "default": true
+                  },
+                  "default": {
+                    "type": [
+                      "object",
+                      "array",
+                      "string",
+                      "number",
+                      "boolean",
+                      "null"
+                    ],
+                    "description": "固定列默认值，按 type 校验"
+                  }
+                },
+                "required": [
+                  "name",
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op",
+              "field"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "重命名",
+            "properties": {
+              "op": {
+                "const": "rename_field"
+              },
+              "field_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 36,
+                "description": "字段 ID，不随列重命名改变",
+                "format": "uuid"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 63,
+                "description": "ASCII 列名；下划线开头留给系统",
+                "pattern": "^[A-Za-z][A-Za-z0-9_]{0,62}$"
+              }
+            },
+            "required": [
+              "op",
+              "field_id",
+              "name"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "删列，显式数据删除",
+            "properties": {
+              "op": {
+                "const": "drop_field"
+              },
+              "field_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 36,
+                "description": "字段 ID，不随列重命名改变",
+                "format": "uuid"
+              },
+              "confirm_drop_data": {
+                "const": true
+              }
+            },
+            "required": [
+              "op",
+              "field_id",
+              "confirm_drop_data"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "批准索引维护身份",
+            "properties": {
+              "op": {
+                "const": "set_indexer"
+              },
+              "account_id": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 36,
+                    "description": "UUID",
+                    "format": "uuid"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "op",
+              "account_id"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "description": "有序变更，最多 16",
+      "minItems": 1,
+      "maxItems": 16
+    }
+  },
+  "required": [
+    "table_id",
+    "expected_schema_revision",
+    "actions"
+  ],
+  "additionalProperties": false
+}

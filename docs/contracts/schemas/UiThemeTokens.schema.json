@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UiThemeTokens",
+  "type": "object",
+  "description": "有限主题令牌；组件使用角色令牌，禁止传入任意CSS/HTML/脚本",
+  "additionalProperties": false,
+  "properties": {
+    "accent": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 7,
+      "description": "不透明sRGB #RRGGBB；不接受CSS表达式/URL",
+      "pattern": "^#[0-9A-Fa-f]{6}$",
+      "example": "#4F7CFF"
+    },
+    "desktop": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 7,
+      "description": "不透明sRGB #RRGGBB；不接受CSS表达式/URL",
+      "pattern": "^#[0-9A-Fa-f]{6}$",
+      "example": "#4F7CFF"
+    },
+    "surface": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 7,
+      "description": "不透明sRGB #RRGGBB；不接受CSS表达式/URL",
+      "pattern": "^#[0-9A-Fa-f]{6}$",
+      "example": "#4F7CFF"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 7,
+      "description": "不透明sRGB #RRGGBB；不接受CSS表达式/URL",
+      "pattern": "^#[0-9A-Fa-f]{6}$",
+      "example": "#4F7CFF"
+    },
+    "muted_text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 7,
+      "description": "不透明sRGB #RRGGBB；不接受CSS表达式/URL",
+      "pattern": "^#[0-9A-Fa-f]{6}$",
+      "example": "#4F7CFF"
+    },
+    "border": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 7,
+      "description": "不透明sRGB #RRGGBB；不接受CSS表达式/URL",
+      "pattern": "^#[0-9A-Fa-f]{6}$",
+      "example": "#4F7CFF"
+    },
+    "danger": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 7,
+      "description": "不透明sRGB #RRGGBB；不接受CSS表达式/URL",
+      "pattern": "^#[0-9A-Fa-f]{6}$",
+      "example": "#4F7CFF"
+    },
+    "radius_px": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 24,
+      "description": "窗口/面板圆角"
+    },
+    "blur_px": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 32,
+      "description": "背景模糊强度"
+    },
+    "panel_opacity": {
+      "type": "number",
+      "minimum": 0.6,
+      "maximum": 1,
+      "description": "面板不透明度；减少透明度时强制1"
+    },
+    "font": {
+      "type": "string",
+      "enum": [
+        "system",
+        "sans",
+        "serif",
+        "mono"
+      ],
+      "description": "宿主内置字体族，不加载外部字体"
+    }
+  },
+  "required": [
+    "accent",
+    "desktop",
+    "surface",
+    "text",
+    "muted_text",
+    "border",
+    "danger",
+    "radius_px",
+    "blur_px",
+    "panel_opacity",
+    "font"
+  ]
+}

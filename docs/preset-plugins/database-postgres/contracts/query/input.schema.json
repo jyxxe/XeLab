@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "connection_alias": {
+      "type": "string",
+      "description": "固定批准的连接/路由别名",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "sql": {
+      "type": "string",
+      "description": "单条参数化语句，非shell",
+      "minLength": 1,
+      "maxLength": 65536
+    },
+    "parameters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "null",
+              "boolean",
+              "int64",
+              "decimal",
+              "float64",
+              "text",
+              "bytes",
+              "uuid",
+              "timestamp",
+              "json"
+            ],
+            "description": ""
+          },
+          "value": {
+            "$ref": "../../../planned/shared.schema.json#/$defs/JsonValue"
+          }
+        },
+        "required": [
+          "type",
+          "value"
+        ],
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "null"
+              },
+              "value": {
+                "type": "null"
+              }
+            }
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "boolean"
+              },
+              "value": {
+                "type": "boolean"
+              }
+            }
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "int64"
+              },
+              "value": {
+                "type": "string",
+                "pattern": "^-?(0|[1-9][0-9]{0,18})$",
+                "maxLength": 20,
+                "description": "严格int64范围，拒绝-0"
+              }
+            }
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "decimal"
+              },
+              "value": {
+                "type": "string",
+                "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+                "maxLength": 4096
+              }
+            }
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "float64"
+              },
+              "value": {
+                "type": "number"
+              }
+            }
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "text"
+              },
+              "value": {
+                "type": "string",
+                "maxLength": 1048576
+              }
+            }
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "bytes"
+              },
+              "value": {
+                "type": "string",
+                "maxLength": 1048576,
+                "contentEncoding": "base64"
+              }
+            }
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "uuid"
+              },
+              "value": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "timestamp"
+              },
+              "value": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "Z$"
+              }
+            }
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "json"
+              },
+              "value": {
+                "$ref": "../../../planned/shared.schema.json#/$defs/JsonValue"
+              }
+            }
+          }
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 128
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "description": "",
+      "minimum": 100,
+      "maximum": 30000,
+      "default": 10000
+    },
+    "max_rows": {
+      "type": "integer",
+      "description": "",
+      "minimum": 1,
+      "maximum": 10000,
+      "default": 1000
+    }
+  },
+  "required": [
+    "connection_alias",
+    "sql"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "../../../planned/shared.schema.json#/$defs/JsonValue"
+      },
+      "minItems": 0,
+      "maxItems": 10000
+    },
+    "keys": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "",
+        "properties": {
+          "path": {
+            "$ref": "../../../planned/shared.schema.json#/$defs/JsonPointer"
+          },
+          "order": {
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "",
+            "default": "asc"
+          },
+          "nulls": {
+            "type": "string",
+            "enum": [
+              "first",
+              "last"
+            ],
+            "description": "",
+            "default": "last"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 8
+    }
+  },
+  "required": [
+    "items",
+    "keys"
+  ],
+  "additionalProperties": false
+}

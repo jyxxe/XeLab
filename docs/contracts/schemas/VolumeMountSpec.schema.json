@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VolumeMountSpec",
+  "type": "object",
+  "description": "声明卷需求而非宿主路径",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "插件内挂载别名"
+    },
+    "mount_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "容器绝对路径，禁止 /、/proc、/sys、/dev",
+      "pattern": "^/"
+    },
+    "access": {
+      "type": "string",
+      "enum": [
+        "ro",
+        "rw"
+      ],
+      "description": "读写模式"
+    },
+    "scope": {
+      "type": "string",
+      "enum": [
+        "instance",
+        "deployment"
+      ],
+      "description": "卷归属范围"
+    },
+    "minimum_bytes": {
+      "type": "integer",
+      "minimum": 1048576,
+      "maximum": 9007199254740991,
+      "description": "容量需求"
+    }
+  },
+  "required": [
+    "name",
+    "mount_path",
+    "access",
+    "scope",
+    "minimum_bytes"
+  ]
+}

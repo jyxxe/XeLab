@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SkillBatchResume",
+  "type": "object",
+  "description": "仅同一所有者显式重新授权；保留原subject/服务账户/Skill/输入和固定上限",
+  "additionalProperties": false,
+  "properties": {},
+  "required": []
+}

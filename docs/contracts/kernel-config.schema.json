@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "kernel.toml 解析后配置",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "server",
+    "database",
+    "runtime",
+    "resources",
+    "storage",
+    "security",
+    "quota_defaults"
+  ],
+  "properties": {
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "listen",
+        "public_origin",
+        "tls_cert_file",
+        "tls_key_file",
+        "unix_socket",
+        "host_rpc_listen"
+      ],
+      "properties": {
+        "listen": {
+          "type": "string",
+          "minLength": 1,
+          "description": "host:port 监听地址"
+        },
+        "public_origin": {
+          "type": "string",
+          "minLength": 1,
+          "description": "可信内核 HTTPS origin，无路径",
+          "format": "uri"
+        },
+        "tls_cert_file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "服务端证书文件",
+          "pattern": "^/"
+        },
+        "tls_key_file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "服务端私钥文件",
+          "pattern": "^/"
+        },
+        "unix_socket": {
+          "type": "string",
+          "minLength": 1,
+          "description": "受保护控制 socket",
+          "pattern": "^/"
+        },
+        "host_rpc_listen": {
+          "type": "string",
+          "minLength": 1,
+          "description": "插件受控网络内的 HostService mTLS 监听 host:port，不允许公网暴露"
+        }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dsn_file"
+      ],
+      "properties": {
+        "dsn_file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "0600 数据库连接串文件",
+          "pattern": "^/"
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "socket",
+        "namespace",
+        "network_cidr"
+      ],
+      "properties": {
+        "socket": {
+          "type": "string",
+          "minLength": 1,
+          "description": "containerd Unix socket",
+          "pattern": "^/"
+        },
+        "namespace": {
+          "type": "string",
+          "minLength": 1,
+          "description": "运行时对象命名空间",
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+        },
+        "network_cidr": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "专用插件网络 IPv4/IPv6 CIDR，禁止与宿主其他网络重叠"
+        }
+      }
+    },
+    "resources": {
+      "$ref": "./openapi.json#/components/schemas/NodeConfig"
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root_path",
+        "quota_backend",
+        "off_host_backup_uri"
+      ],
+      "properties": {
+        "root_path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "平台数据根目录",
+          "pattern": "^/"
+        },
+        "quota_backend": {
+          "enum": [
+            "xfs_project"
+          ]
+        },
+        "off_host_backup_uri": {
+          "type": "string",
+          "minLength": 1,
+          "description": "宿主外受保护备份后端地址",
+          "format": "uri"
+        }
+      }
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "token_hmac_key_file",
+        "master_key_file",
+        "workload_ca_cert_file",
+        "workload_ca_key_file"
+      ],
+      "properties": {
+        "token_hmac_key_file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "至少32随机字节，0600",
+          "pattern": "^/"
+        },
+        "master_key_file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "32字节认证加密主密钥，0600",
+          "pattern": "^/"
+        },
+        "workload_ca_cert_file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "工作负载CA证书",
+          "pattern": "^/"
+        },
+        "workload_ca_key_file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "工作负载CA私钥，0600",
+          "pattern": "^/"
+        }
+      }
+    },
+    "quota_defaults": {
+      "$ref": "./openapi.json#/components/schemas/QuotaSpec"
+    },
+    "ui_gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "可选插件iframe独立源映射；缺失时UI贡献unavailable，不影响核心启动",
+      "properties": {
+        "base_domain": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 253,
+          "pattern": "^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$",
+          "description": "受控DNS后缀；拒绝IP、通配符、空label和越界label，不能由插件选择",
+          "example": "plugins.example.org"
+        },
+        "public_port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 443,
+          "description": "外部HTTPS端口"
+        },
+        "shell_origins": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://",
+            "maxLength": 512
+          },
+          "description": "允许承载iframe的精确壳源，无路径/凭证/query/fragment；不自动授予OAuth/API权"
+        }
+      },
+      "required": [
+        "base_domain",
+        "public_port",
+        "shell_origins"
+      ]
+    }
+  }
+}

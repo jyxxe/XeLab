@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ScheduleSpec",
+  "type": "object",
+  "description": "使用 IANA 时区的五字段 cron；明确 DST 和错过触发规则",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "名称"
+    },
+    "workflow_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "cron": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "分 时 日 月 周；支持 *、范围、列表、步长"
+    },
+    "timezone": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "IANA 时区",
+      "default": "Asia/Shanghai"
+    },
+    "input": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue"
+    },
+    "enabled": {
+      "type": "boolean",
+      "description": "是否触发",
+      "default": true
+    },
+    "misfire": {
+      "type": "string",
+      "enum": [
+        "skip",
+        "run_once"
+      ],
+      "description": "停机错过时刻的处理",
+      "default": "skip"
+    },
+    "overlap": {
+      "type": "string",
+      "enum": [
+        "skip",
+        "queue_one"
+      ],
+      "description": "同一计划同时执行策略",
+      "default": "skip"
+    }
+  },
+  "required": [
+    "name",
+    "workflow_id",
+    "cron",
+    "input"
+  ]
+}

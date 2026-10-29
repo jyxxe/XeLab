@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "chunks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "",
+            "minLength": 0,
+            "maxLength": 1048576
+          },
+          "start": {
+            "type": "integer",
+            "description": "",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "end": {
+            "type": "integer",
+            "description": "",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "text",
+          "start",
+          "end"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 10000
+    },
+    "source_length": {
+      "type": "integer",
+      "description": "",
+      "minimum": 0,
+      "maximum": 1048576
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "characters",
+        "paragraphs",
+        "tokens",
+        "tokens-estimate"
+      ],
+      "description": ""
+    },
+    "estimated": {
+      "type": "boolean",
+      "default": false
+    },
+    "tokenizer_id": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "tokenizer_version": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "estimator_id": {
+      "const": "utf8-div4-v1"
+    },
+    "estimator_version": {
+      "const": "0.1.0"
+    }
+  },
+  "required": [
+    "chunks",
+    "source_length",
+    "mode",
+    "estimated"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "tokens"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "tokenizer_id",
+          "tokenizer_version"
+        ]
+      },
+      "else": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "tokenizer_id"
+              ]
+            },
+            {
+              "required": [
+                "tokenizer_version"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "tokens-estimate"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "estimator_id",
+          "estimator_version"
+        ],
+        "properties": {
+          "estimated": {
+            "const": true
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "estimated": {
+            "const": false
+          }
+        },
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "estimator_id"
+              ]
+            },
+            {
+              "required": [
+                "estimator_version"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

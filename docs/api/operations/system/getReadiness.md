@@ -1,0 +1,33 @@
+# getReadiness · 就绪探针
+
+[接口目录](README.md) · [公共约定](../../../communication/http.md) · [错误目录](../../../communication/errors.md)
+
+> 状态：规范性设计；并非已实现接口。结构来源为 OpenAPI，行为约束与主题文档共同构成契约。
+
+`GET /health/ready`
+
+只有元数据库可用、资源预算有效且启动对账完成才返回 200；否则 503。WebUI 不参与此判断。
+
+| 项目 | 定义 |
+|---|---|
+| 权限动作 | `public`；同时执行对象范围、完整祖先链及源凭证检查 |
+| 认证 | 本接口定义的公开/登录凭证流程 |
+| 超时 | 管理同步调用 10s；业务由 timeout_ms / 模型约束决定；异步操作不占用长 HTTP 连接 |
+| 请求编码 | UTF-8；未声明字段拒绝；未声明参数拒绝；数字不得为 NaN / Infinity |
+
+授权对象类型：`platform`。目标取值：collection：逐对象过滤；创建对象以已验证 subject 为 proposed owner。
+
+默认拒绝；校验对象归属、完整祖先/源凭证链、固定上限、当前授权版本和额度；特殊字段条件见接口说明。
+
+请求体：无。发送非空请求体返回 `400 INVALID_ARGUMENT`。
+
+## 响应
+
+| HTTP | 内容 | 语义 |
+|---|---|---|
+| 200 | `application/json` → [HealthStatus](../../models/HealthStatus.md) | 成功 |
+| 400 | `application/json` → [ErrorEnvelope](../../models/ErrorEnvelope.md) | 请求或字段非法 |
+| 401 | `application/json` → [ErrorEnvelope](../../models/ErrorEnvelope.md) | 未认证、凭证失效或来源链失效 |
+| 429 | `application/json` → [ErrorEnvelope](../../models/ErrorEnvelope.md) | 调用配额/限流 |
+| 500 | `application/json` → [ErrorEnvelope](../../models/ErrorEnvelope.md) | 内部错误，不泄露敏感信息 |
+| 503 | `application/json` → [ErrorEnvelope](../../models/ErrorEnvelope.md) | 内核未就绪或后端不可用 |

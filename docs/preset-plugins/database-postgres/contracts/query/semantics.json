@@ -1,0 +1,25 @@
+{
+  "status": "planned",
+  "version": "0.1.0",
+  "kind": "ordinary",
+  "capability_id": "database.query",
+  "side_effect": "none",
+  "maximum_input_bytes": 4194304,
+  "maximum_output_bytes": 16777216,
+  "maximum_json_depth": 64,
+  "streaming": false,
+  "batch": "core_async_skill_batch",
+  "unknown_fields": "reject",
+  "authorization": "future_skill_invoke_and_capability_invoke_and_current_owner_policy",
+  "cancellation": "cooperative_hard_deadline_no_partial_success",
+  "retries": "bounded_same_definition_same_deadline",
+  "feature_gates": [
+    "database-profile-acl",
+    "sql-policy-parser"
+  ],
+  "notes": [
+    "Read-only DB transaction plus approved schema/table/function policy; no string-built parameters.",
+    "Numbers/int64/decimal/binary follow explicit typed encoding; truncation is explicit.",
+    "Typed SQL values are fixed: bigint/decimal canonical strings, bytea base64, timestamp UTC RFC3339, json I-JSON, null null; reject unsupported types/nonfinite numbers/precision loss; int64 range checked at runtime."
+  ]
+}

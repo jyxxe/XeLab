@@ -1,0 +1,573 @@
+{
+  "version": "2.6.0",
+  "methods": [
+    {
+      "module": "Identity",
+      "method": "authenticate",
+      "context": "AuthContext",
+      "request": "AuthenticateInput",
+      "response": "AuthContext",
+      "deadline_ms": 2000,
+      "transaction": "只读当前凭证、祖先及源链；不允许凭证缓存绕过当前状态",
+      "rule": "凭证唯一确定主体；Cookie/Bearer 主体冲突拒绝；system=false。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Identity",
+      "method": "revoke",
+      "context": "AuthContext",
+      "request": "IdRequest",
+      "response": "Ack",
+      "deadline_ms": 10000,
+      "transaction": "锁凭证并递增授权版本、写 outbox/审计，同事务",
+      "rule": "重复撤销成功，不能恢复 revoked。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Authorizer",
+      "method": "evaluate",
+      "context": "AuthContext",
+      "request": "AuthorizeInput",
+      "response": "AuthorizationDecision",
+      "deadline_ms": 2000,
+      "transaction": "只读真实资源、当前角色/组/祖先/源凭证版本",
+      "rule": "无法确认当前状态即拒绝，内部任务入口与 HTTP 共用此决策。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Authorizer",
+      "method": "invalidate",
+      "context": "AuthContext",
+      "request": "InvalidateInput",
+      "response": "Ack",
+      "deadline_ms": 2000,
+      "transaction": "仅接收已提交版本，更新本机缓存水位",
+      "rule": "通知可重放；不能把丢通知视为旧授权永久有效。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Delegator",
+      "method": "issue",
+      "context": "AuthContext",
+      "request": "DelegationInput",
+      "response": "DelegationRecord",
+      "deadline_ms": 10000,
+      "transaction": "冻结规则、来源凭证和有效期，同事务写入",
+      "rule": "不得扩大实际调用凭证范围；服务模式独立批准。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Quota",
+      "method": "reserve",
+      "context": "AuthContext",
+      "request": "QuotaReserveInput",
+      "response": "Reservation",
+      "deadline_ms": 10000,
+      "transaction": "按根至叶锁全部 quota 行，增量占额与预留同事务",
+      "rule": "operation_id 唯一防重复计数，检查所有祖先；调用每日额度同事务累计。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Quota",
+      "method": "release",
+      "context": "AuthContext",
+      "request": "IdRequest",
+      "response": "Ack",
+      "deadline_ms": 10000,
+      "transaction": "锁预留行；首次 released 才减并发/对象计数",
+      "rule": "重复释放不重复减计数；已消费日调用量不回滚。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Admission",
+      "method": "reserve",
+      "context": "AuthContext",
+      "request": "AdmissionInput",
+      "response": "Reservation",
+      "deadline_ms": 10000,
+      "transaction": "锁 node_budget，校验代次和实例唯一预留后提交",
+      "rule": "不能超插件池或借用内核预留，实例总量不超已批 limits。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Admission",
+      "method": "release",
+      "context": "AuthContext",
+      "request": "IdRequest",
+      "response": "Ack",
+      "deadline_ms": 10000,
+      "transaction": "确认真实停止/卸载后锁实例和预算释放",
+      "rule": "未确认容器停止不能提前归还运行资源；可重放。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Runtime",
+      "method": "ensure",
+      "context": "AuthContext",
+      "request": "EnsureInstanceInput",
+      "response": "RuntimeObservation",
+      "deadline_ms": 60000,
+      "transaction": "数据库计划已提交；外部 OCI 操作不在长事务内",
+      "rule": "按 instance_id 标签幂等，镜像/代次/资源冲突隔离，不创建第二个实例。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Runtime",
+      "method": "observe",
+      "context": "AuthContext",
+      "request": "IdRequest",
+      "response": "RuntimeObservation",
+      "deadline_ms": 2000,
+      "transaction": "真实运行时查询，不把期望状态当观测",
+      "rule": "不存在返回 exists=false；运行时不可达返回 PROVIDER_UNAVAILABLE。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Runtime",
+      "method": "stop",
+      "context": "AuthContext",
+      "request": "StopInput",
+      "response": "RuntimeObservation",
+      "deadline_ms": 302000,
+      "transaction": "外部停止后观测，再由控制器提交结果",
+      "rule": "撤路由/Drain 后执行，停止和删除可重放，不删除持久卷。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Registry",
+      "method": "publish",
+      "context": "AuthContext",
+      "request": "ProviderPublishInput",
+      "response": "RegistryRevision",
+      "deadline_ms": 10000,
+      "transaction": "校验代次、审批、健康后提交 provider_records",
+      "rule": "端点仅内核可见；未 Ready 能力不进入可用快照。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Registry",
+      "method": "withdraw",
+      "context": "AuthContext",
+      "request": "IdRequest",
+      "response": "RegistryRevision",
+      "deadline_ms": 2000,
+      "transaction": "撤销指定 instance_id 的所有可用能力记录",
+      "rule": "快照原子替换；重复撤销成功，不删除部署。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Registry",
+      "method": "resolve",
+      "context": "AuthContext",
+      "request": "ResolveInput",
+      "response": "Binding",
+      "deadline_ms": 2000,
+      "transaction": "读当前注册表并校验当前授权；固定绑定落库",
+      "rule": "先权限/契约/特性过滤再确定性选择；不返回裸端点给插件。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "DependencyResolver",
+      "method": "plan",
+      "context": "AuthContext",
+      "request": "DependencyPlanRequest",
+      "response": "DependencyPlan",
+      "deadline_ms": 10000,
+      "transaction": "读取版本一致的安装/部署/审批快照",
+      "rule": "无外部副作用；强依赖环拒绝，执行前重新核对计划 revision。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Lifecycle",
+      "method": "reconcile",
+      "context": "AuthContext",
+      "request": "ReconcileInput",
+      "response": "ReconcileResult",
+      "deadline_ms": 60000,
+      "transaction": "短事务记录进度→外部操作→短事务写观测/outbox",
+      "rule": "revision 过时重新排队；数据库连接失效停止提交。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "TaskEngine",
+      "method": "claim",
+      "context": "AuthContext",
+      "request": "ClaimInput",
+      "response": "ClaimResult",
+      "deadline_ms": 10000,
+      "transaction": "锁 ready 步骤 SKIP LOCKED，过期尝试转态，fence++",
+      "rule": "领取前检查执行委托及依赖，不存在可领取记录返回 attempt=null。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "TaskEngine",
+      "method": "commit",
+      "context": "AuthContext",
+      "request": "AttemptCommitInput",
+      "response": "TaskStep",
+      "deadline_ms": 10000,
+      "transaction": "验证当前 fence/租约/授权；提交结果及下游 outbox",
+      "rule": "旧 fence 或过期租约拒绝；同一合法终态结果可幂等确认。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "EventStore",
+      "method": "append",
+      "context": "AuthContext",
+      "request": "EventPublish",
+      "response": "Event",
+      "deadline_ms": 10000,
+      "transaction": "去重指纹、事件/outbox 与业务变更同事务",
+      "rule": "topic/version 授权有效；同键不同 payload 冲突。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "EventStore",
+      "method": "lease",
+      "context": "AuthContext",
+      "request": "LeaseEventInput",
+      "response": "LeaseEventResult",
+      "deadline_ms": 10000,
+      "transaction": "锁 subscription，最多一个 leased delivery",
+      "rule": "无事件返回 null；确认前不推进游标，30s 到期重投。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "EventStore",
+      "method": "ack",
+      "context": "AuthContext",
+      "request": "AckDelivery",
+      "response": "Ack",
+      "deadline_ms": 10000,
+      "transaction": "校验当前 lease_token，更新游标或重试状态",
+      "rule": "旧租约不能确认新投递；重复合法 ack 成功。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "SecretBroker",
+      "method": "lease",
+      "context": "AuthContext",
+      "request": "SecretLeaseInput",
+      "response": "SecretLeaseResult",
+      "deadline_ms": 2000,
+      "transaction": "验证实际工作负载、绑定、当前 secret 状态及版本",
+      "rule": "返回值只存在安全通道内存，不序列化到普通审计和幂等缓存。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Audit",
+      "method": "append",
+      "context": "AuthContext",
+      "request": "AuditAppendInput",
+      "response": "AuditEvent",
+      "deadline_ms": 10000,
+      "transaction": "追加，与业务事务共提交或安全失败通道持久缓冲",
+      "rule": "调用方不得伪造 ctx；时间、ID、主体和策略版本由内核写入。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "SkillRouter",
+      "method": "resolve",
+      "context": "AuthContext",
+      "request": "SkillResolveInput",
+      "response": "SkillResolution",
+      "deadline_ms": 10000,
+      "transaction": "短事务锁定 Skill 版本/审批/调用记录；外部请求不持有长数据库事务",
+      "rule": "读取不可变定义，验证双层授权及输入 Schema，提取精确 Blob 引用；按固定 plugin_id/contract 解析，不做任意 URL 或静默换插件。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "PROVIDER_UNAVAILABLE",
+        "RESOURCE_EXHAUSTED",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "SkillRouter",
+      "method": "invoke",
+      "context": "AuthContext",
+      "request": "SkillInvokeInput",
+      "response": "SkillCallResult",
+      "deadline_ms": 300000,
+      "transaction": "短事务锁定 Skill 版本/审批/调用记录；外部请求不持有长数据库事务",
+      "rule": "记录 Skill 摘要和 Call，实例级准入后通过 Broker 转发；取消、期限、流控和当前来源链持续生效。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "PROVIDER_UNAVAILABLE",
+        "RESOURCE_EXHAUSTED",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "BatchEngine",
+      "method": "submit",
+      "context": "AuthContext",
+      "request": "BatchSubmitInput",
+      "response": "SkillBatch",
+      "deadline_ms": 10000,
+      "transaction": "短事务锁定批次/项目，外部Skill调用与对象存储写入不持有数据库事务",
+      "rule": "校验全部输入与固定上限；批次、项目、幂等、outbox同事务提交；返回前不执行业务。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "OUTCOME_UNKNOWN",
+        "RESOURCE_EXHAUSTED",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "BatchEngine",
+      "method": "claim",
+      "context": "AuthContext",
+      "request": "BatchClaimInput",
+      "response": "BatchClaimResult",
+      "deadline_ms": 10000,
+      "transaction": "短事务锁定批次/项目，外部Skill调用与对象存储写入不持有数据库事务",
+      "rule": "复用SKIP LOCKED/30s租约/10s续约/fence规则；先检查授权、期限与并行配额；unknown不领取。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "OUTCOME_UNKNOWN",
+        "RESOURCE_EXHAUSTED",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "BatchEngine",
+      "method": "renew",
+      "context": "AuthContext",
+      "request": "BatchLeaseInput",
+      "response": "BatchLeaseInput",
+      "deadline_ms": 10000,
+      "transaction": "短事务锁定批次/项目，外部Skill调用与对象存储写入不持有数据库事务",
+      "rule": "在有效租约和当前授权下续约；失效fence不能续命；不改变业务deadline。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "OUTCOME_UNKNOWN",
+        "RESOURCE_EXHAUSTED",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "BatchEngine",
+      "method": "commit",
+      "context": "AuthContext",
+      "request": "BatchCommitInput",
+      "response": "SkillBatchItem",
+      "deadline_ms": 10000,
+      "transaction": "短事务锁定批次/项目，外部Skill调用与对象存储写入不持有数据库事务",
+      "rule": "校验租约/fence/当前授权与结果契约，CAS提交项状态、汇总计数及outbox；迟到结果核实但不覆盖。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "OUTCOME_UNKNOWN",
+        "RESOURCE_EXHAUSTED",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "MicroRegistry",
+      "method": "publish",
+      "context": "AuthContext",
+      "request": "MicroPublishInput",
+      "response": "MicroPluginVersion",
+      "deadline_ms": 10000,
+      "transaction": "短事务固定微/父依赖和授权；对象复制、Prepare/执行不持有长DB事务",
+      "rule": "校验完整微资源权限、源Blob、UTF8与两个JSON Schema；固定runtime安装，源码先复制私有不可变存储，再原子提交版本/幂等/outbox，不执行代码。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "PROVIDER_UNAVAILABLE",
+        "RESOURCE_EXHAUSTED",
+        "DEADLINE_EXCEEDED",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "MicroController",
+      "method": "reconcile",
+      "context": "AuthContext",
+      "request": "MicroReconcileInput",
+      "response": "MicroDeployment",
+      "deadline_ms": 10000,
+      "transaction": "短事务固定微/父依赖和授权；对象复制、Prepare/执行不持有长DB事务",
+      "rule": "固定runtime安装/部署、单副本、微generation和批准预算；Prepare后CAS绑定实际实例代次，迟到结果不覆盖，停用先撤路由/Cancel再Release，不创建独立OCI。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "PROVIDER_UNAVAILABLE",
+        "RESOURCE_EXHAUSTED",
+        "DEADLINE_EXCEEDED",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "MicroExecutor",
+      "method": "invoke",
+      "context": "AuthContext",
+      "request": "SkillInvokeInput",
+      "response": "SkillCallResult",
+      "deadline_ms": 30000,
+      "transaction": "短事务固定微/父依赖和授权；对象复制、Prepare/执行不持有长DB事务",
+      "rule": "skill.invoke、micro.invoke与micro.runtime.use联合检查；双层槽/预算准入，调用受控MicroRuntimeService并验证微输出Schema，持久结果附微制品来源；无任意source/path或通用执行旁路。 controlled-http-v1另检查micro.http.request并冻结绑定计划/Secret版本；non_repeatable禁止盲重放，返回前检查HTTP台账unknown/终止错误优先。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "PROVIDER_UNAVAILABLE",
+        "RESOURCE_EXHAUSTED",
+        "DEADLINE_EXCEEDED",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "OutboundProxy",
+      "method": "invoke",
+      "context": "AuthContext",
+      "request": "MicroProxyInput",
+      "response": "MicroProxyResult",
+      "deadline_ms": 4000,
+      "transaction": "发送前事务锁Call冻结计划/seq/alias并记录；网络不持有数据库长事务；结果短事务落账",
+      "rule": "从实际委托导出受控微Call，逐请求核查绑定/Secret/出口；固定HTTPS模板注入密钥，拒绝任意URL/headers；相同seq重放已有结果，unknown封锁Call并覆盖脚本成功结果。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "RESOURCE_EXHAUSTED",
+        "UPSTREAM_OUTCOME_UNKNOWN",
+        "DEADLINE_EXCEEDED",
+        "INTERNAL"
+      ]
+    }
+  ]
+}

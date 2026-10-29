@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "data": {
+      "type": "string",
+      "description": "base64输出",
+      "minLength": 0,
+      "maxLength": 1048576
+    },
+    "encoding": {
+      "type": "string",
+      "enum": [
+        "utf-8",
+        "utf-16le",
+        "utf-16be"
+      ],
+      "description": ""
+    },
+    "replacement_count": {
+      "type": "integer",
+      "description": "",
+      "minimum": 0,
+      "maximum": 1048576
+    }
+  },
+  "required": [
+    "data",
+    "encoding",
+    "replacement_count"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GroupVersion",
+  "type": "object",
+  "description": "不可变权限组版本",
+  "additionalProperties": false,
+  "properties": {
+    "group_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "版本号"
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/PermissionRule"
+      },
+      "minItems": 1,
+      "maxItems": 256,
+      "description": "完整规则"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "发布时间",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "created_by": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    }
+  },
+  "required": [
+    "group_id",
+    "version",
+    "rules",
+    "created_at",
+    "created_by"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "side_effect": "non_repeatable",
+  "errors": [
+    "SEARCH_INPUT_INVALID",
+    "SEARCH_NO_PROVIDER",
+    "SEARCH_PROVIDERS_EXHAUSTED",
+    "SEARCH_RESPONSE_INVALID",
+    "UPSTREAM_OUTCOME_UNKNOWN",
+    "INVALID_ARGUMENT",
+    "PERMISSION_DENIED",
+    "DEADLINE_EXCEEDED"
+  ],
+  "cancellation": "cooperative_without_upstream_billing_rollback",
+  "idempotency": "core_call_and_outbound_operation_ledger_no_automatic_replay",
+  "query_result": "call_record"
+}

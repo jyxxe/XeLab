@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ModelList",
+  "type": "object",
+  "description": "兼容模型列表，不使用平台分页包装",
+  "additionalProperties": false,
+  "properties": {
+    "object": {
+      "type": "string",
+      "enum": [
+        "list"
+      ],
+      "description": "类型"
+    },
+    "data": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/ModelAlias"
+      },
+      "minItems": 0,
+      "maxItems": 200,
+      "description": "获授权且健康的模型别名"
+    }
+  },
+  "required": [
+    "object",
+    "data"
+  ]
+}

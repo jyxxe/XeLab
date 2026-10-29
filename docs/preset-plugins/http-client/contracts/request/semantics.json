@@ -1,0 +1,25 @@
+{
+  "status": "planned",
+  "version": "0.1.0",
+  "kind": "ordinary",
+  "capability_id": "http.request",
+  "side_effect": "non_repeatable",
+  "maximum_input_bytes": 4194304,
+  "maximum_output_bytes": 16777216,
+  "maximum_json_depth": 64,
+  "streaming": false,
+  "batch": "core_async_skill_batch",
+  "unknown_fields": "reject",
+  "authorization": "future_skill_invoke_and_capability_invoke_and_current_owner_policy",
+  "cancellation": "cooperative_hard_deadline_no_partial_success",
+  "retries": "none_by_default_query_evidence_before_replay",
+  "feature_gates": [
+    "http-policy-binding",
+    "response-blob-streaming"
+  ],
+  "notes": [
+    "No raw credentials or unapproved destination via headers/body.",
+    "Cross-origin redirects never carry original credentials; maximum3 and each target validated.",
+    "Binary/large response uses Blob<=64MiB, not inline JSON."
+  ]
+}

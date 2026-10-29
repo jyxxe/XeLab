@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CreateGroupVersion",
+  "type": "object",
+  "description": "发布新版本；旧绑定保持固定版本",
+  "additionalProperties": false,
+  "properties": {
+    "rules": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/PermissionRule"
+      },
+      "minItems": 1,
+      "maxItems": 256,
+      "description": "新版本完整规则"
+    }
+  },
+  "required": [
+    "rules"
+  ]
+}

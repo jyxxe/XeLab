@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "CAS导出当前版本为临时核心Blob",
+  "properties": {
+    "key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "NFC逻辑key，UTF8<=1024字节；拒绝首尾斜线/空段/dot段/控制符/反斜线，不作URL decode",
+      "pattern": "^[^\u0000-\u001f\\\\]+$",
+      "example": "reports/example.txt"
+    },
+    "expected_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "按owner/key永久head单调修订，不因删除重建归零"
+    }
+  },
+  "required": [
+    "key",
+    "expected_revision"
+  ],
+  "additionalProperties": false
+}

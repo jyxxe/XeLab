@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CreateGroup",
+  "type": "object",
+  "description": "建立组并发布 v1；所有规则须在实际调用主体可授权范围内",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "组名称"
+    },
+    "visibility": {
+      "type": "string",
+      "enum": [
+        "private",
+        "public"
+      ],
+      "description": "默认 private",
+      "default": "private"
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/PermissionRule"
+      },
+      "minItems": 1,
+      "maxItems": 256,
+      "description": "组规则"
+    }
+  },
+  "required": [
+    "name",
+    "rules"
+  ]
+}

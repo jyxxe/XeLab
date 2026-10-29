@@ -1,0 +1,1535 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Xelab internal module types",
+  "$defs": {
+    "AuthContext": {
+      "type": "object",
+      "description": "仅由认证入口生成的内存不可变结构，不接受外部反序列化",
+      "additionalProperties": false,
+      "required": [
+        "subject_id",
+        "credential_id",
+        "workload_instance_id",
+        "client_id",
+        "delegation_id",
+        "source_credential_ids",
+        "authz_revision",
+        "request_id",
+        "deadline_unix_ms",
+        "system",
+        "rpc_delegation_id"
+      ],
+      "properties": {
+        "subject_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "description": "用户/服务主体"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "credential_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "description": "当前验证的凭证"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "workload_instance_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "description": "实际 peer 绑定实例"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "client_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "description": "已验证 UI 客户端"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "delegation_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "description": "执行委托"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_credential_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid",
+            "description": "从根到叶的受限源凭证"
+          },
+          "maxItems": 256,
+          "description": "来源链"
+        },
+        "authz_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "已读取的策略版本"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "服务端追踪 UUID"
+        },
+        "deadline_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "整体截止时刻"
+        },
+        "system": {
+          "type": "boolean",
+          "description": "仅内核引导/控制循环允许，外部不能指定"
+        },
+        "rpc_delegation_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "HostService 已核验的实际 RPC 委托记录，不是客户端可填身份"
+        }
+      }
+    },
+    "Ack": {
+      "type": "object",
+      "description": "幂等确认",
+      "additionalProperties": false,
+      "required": [
+        "accepted"
+      ],
+      "properties": {
+        "accepted": {
+          "type": "boolean",
+          "description": "成功持久化或已是目标状态"
+        }
+      }
+    },
+    "IdRequest": {
+      "type": "object",
+      "description": "资源定位",
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "目标资源 UUID"
+        }
+      }
+    },
+    "AuthenticateInput": {
+      "type": "object",
+      "description": "来自网络监听器/CLI UDS 的原始认证输入",
+      "additionalProperties": false,
+      "required": [
+        "bearer",
+        "cookie",
+        "peer_address",
+        "peer_workload_identity"
+      ],
+      "properties": {
+        "bearer": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "description": "原始 Bearer，仅短暂在内存中"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cookie": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "description": "内核 session cookie"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "peer_address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "description": "从 socket 获得，不采信代理正文"
+        },
+        "peer_workload_identity": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "description": "TLS/UDS 已验证对端结果"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "AuthorizeInput": {
+      "type": "object",
+      "description": "一次操作的授权判定",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "resource",
+        "expected_authz_revision"
+      ],
+      "properties": {
+        "action": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "description": "注册动作"
+        },
+        "resource": {
+          "$ref": "./openapi.json#/components/schemas/ResourceSelector"
+        },
+        "expected_authz_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "调用者观察的版本；0 表示首次读取"
+        }
+      }
+    },
+    "InvalidateInput": {
+      "type": "object",
+      "description": "失效通知只是优化，不能替代逐请求版本校验",
+      "additionalProperties": false,
+      "required": [
+        "subject_ids",
+        "new_revision"
+      ],
+      "properties": {
+        "subject_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid",
+            "description": "受影响主体"
+          },
+          "maxItems": 256,
+          "description": "失效对象"
+        },
+        "new_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "已提交的新版本"
+        }
+      }
+    },
+    "DelegationInput": {
+      "type": "object",
+      "description": "固定任务/调用委托",
+      "additionalProperties": false,
+      "required": [
+        "subject_id",
+        "rules",
+        "expires_at",
+        "run_as",
+        "service_account_id"
+      ],
+      "properties": {
+        "subject_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "以谁的权限执行"
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "./openapi.json#/components/schemas/PermissionRule"
+          },
+          "maxItems": 256,
+          "description": "本次固定上限"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "run_as": {
+          "enum": [
+            "user",
+            "service"
+          ]
+        },
+        "service_account_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "description": "service 时必需"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "DelegationRecord": {
+      "type": "object",
+      "description": "可撤销委托",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "subject_id",
+        "issuer_credential_id",
+        "rules",
+        "expires_at",
+        "status"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "委托 ID"
+        },
+        "subject_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "执行主体"
+        },
+        "issuer_credential_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "description": "源凭证"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "./openapi.json#/components/schemas/PermissionRule"
+          },
+          "maxItems": 256,
+          "description": "固定上限"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "revoked",
+            "expired"
+          ]
+        }
+      }
+    },
+    "QuotaReserveInput": {
+      "type": "object",
+      "description": "账户树原子占额",
+      "additionalProperties": false,
+      "required": [
+        "account_id",
+        "kind",
+        "amount",
+        "operation_id"
+      ],
+      "properties": {
+        "account_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "目标账户"
+        },
+        "kind": {
+          "enum": [
+            "descendant",
+            "api_key",
+            "call"
+          ]
+        },
+        "amount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "正数"
+        },
+        "operation_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "关联操作/调用，防止重复占额"
+        }
+      }
+    },
+    "Reservation": {
+      "type": "object",
+      "description": "可追溯预留",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "account_id",
+        "instance_id",
+        "cpu_millis",
+        "memory_bytes",
+        "state"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "预留 UUID"
+        },
+        "account_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "description": "树配额主体"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "instance_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "description": "实例主体"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cpu_millis": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "CPU 预留"
+        },
+        "memory_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "内存预留"
+        },
+        "state": {
+          "enum": [
+            "reserved",
+            "active",
+            "released"
+          ]
+        }
+      }
+    },
+    "AdmissionInput": {
+      "type": "object",
+      "description": "已审批的本机实例增量",
+      "additionalProperties": false,
+      "required": [
+        "instance_id",
+        "deployment_id",
+        "generation",
+        "limits"
+      ],
+      "properties": {
+        "instance_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "稳定实例 UUID"
+        },
+        "deployment_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "部署"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "代次"
+        },
+        "limits": {
+          "$ref": "./openapi.json#/components/schemas/ResourceLimits"
+        }
+      }
+    },
+    "EnsureInstanceInput": {
+      "type": "object",
+      "description": "运行时只接受内核已准入计划",
+      "additionalProperties": false,
+      "required": [
+        "instance_id",
+        "deployment_id",
+        "generation",
+        "installation_id",
+        "reservation_id",
+        "volume_ids",
+        "config_digest"
+      ],
+      "properties": {
+        "instance_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "稳定实例 UUID"
+        },
+        "deployment_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "部署"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "代次"
+        },
+        "installation_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "已验证安装"
+        },
+        "reservation_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "已提交预留"
+        },
+        "volume_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid",
+            "description": "授权卷"
+          },
+          "maxItems": 256,
+          "description": "挂载对象"
+        },
+        "config_digest": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "description": "普通配置 SHA-256"
+        }
+      }
+    },
+    "RuntimeObservation": {
+      "type": "object",
+      "description": "真实运行时观测，不能由插件正文替代",
+      "additionalProperties": false,
+      "required": [
+        "instance_id",
+        "exists",
+        "running",
+        "runtime_id",
+        "observed_image_digest",
+        "rpc_endpoint",
+        "exit_code",
+        "oom_killed"
+      ],
+      "properties": {
+        "instance_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "实例"
+        },
+        "exists": {
+          "type": "boolean",
+          "description": "是否存在"
+        },
+        "running": {
+          "type": "boolean",
+          "description": "是否运行"
+        },
+        "runtime_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "description": "运行时容器 ID"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_image_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "description": "镜像摘要"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rpc_endpoint": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048,
+              "description": "仅内核可见的受控地址"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "退出码"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "oom_killed": {
+          "type": "boolean",
+          "description": "是否内存终止"
+        }
+      }
+    },
+    "StopInput": {
+      "type": "object",
+      "description": "有界停止",
+      "additionalProperties": false,
+      "required": [
+        "instance_id",
+        "grace_ms"
+      ],
+      "properties": {
+        "instance_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "实例"
+        },
+        "grace_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 300000
+        }
+      }
+    },
+    "ProviderPublishInput": {
+      "type": "object",
+      "description": "来自健康控制器的提供者状态",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "generation",
+        "rpc_endpoint"
+      ],
+      "properties": {
+        "provider": {
+          "$ref": "./openapi.json#/components/schemas/CapabilityProvider"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "观测代次"
+        },
+        "rpc_endpoint": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "description": "已由运行时验证的端点"
+        }
+      }
+    },
+    "RegistryRevision": {
+      "type": "object",
+      "description": "路由快照版本",
+      "additionalProperties": false,
+      "required": [
+        "revision"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "本机单调版本"
+        }
+      }
+    },
+    "ResolveInput": {
+      "type": "object",
+      "description": "选择当前可用提供者",
+      "additionalProperties": false,
+      "required": [
+        "contract",
+        "binding_scope",
+        "scope_id",
+        "preferred_deployment_id",
+        "required_plugin_id",
+        "required_installation_id"
+      ],
+      "properties": {
+        "contract": {
+          "$ref": "./openapi.json#/components/schemas/ContractRef"
+        },
+        "binding_scope": {
+          "enum": [
+            "request",
+            "deployment",
+            "task"
+          ]
+        },
+        "scope_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "调用/部署/任务 ID"
+        },
+        "preferred_deployment_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "description": "可选指定实现"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "required_plugin_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Skill 固定的插件实现，普通直接调用可为空"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "required_installation_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Skill调用必填为签名来源安装；直接调用可为空"
+        }
+      }
+    },
+    "Binding": {
+      "type": "object",
+      "description": "受控绑定，不授予权限",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "provider_deployment_id",
+        "instance_id",
+        "contract",
+        "registry_revision"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "绑定 ID"
+        },
+        "provider_deployment_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "提供者部署"
+        },
+        "instance_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "description": "实例"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contract": {
+          "$ref": "./openapi.json#/components/schemas/ContractRef"
+        },
+        "registry_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "注册版本"
+        }
+      }
+    },
+    "ReconcileInput": {
+      "type": "object",
+      "description": "一次部署收敛",
+      "additionalProperties": false,
+      "required": [
+        "deployment_id",
+        "expected_revision"
+      ],
+      "properties": {
+        "deployment_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "目标部署"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "期望 revision"
+        }
+      }
+    },
+    "ReconcileResult": {
+      "type": "object",
+      "description": "控制循环结果",
+      "additionalProperties": false,
+      "required": [
+        "observed_generation",
+        "changed",
+        "requeue_after_ms",
+        "operation_id"
+      ],
+      "properties": {
+        "observed_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "已处理代次"
+        },
+        "changed": {
+          "type": "boolean",
+          "description": "是否推进状态"
+        },
+        "requeue_after_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "下一次检查延迟"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "description": "关联管理操作"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "ClaimInput": {
+      "type": "object",
+      "description": "任务执行器领取一个步骤",
+      "additionalProperties": false,
+      "required": [
+        "worker_id",
+        "lease_seconds"
+      ],
+      "properties": {
+        "worker_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "内核 worker UUID"
+        },
+        "lease_seconds": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 30
+        }
+      }
+    },
+    "ClaimResult": {
+      "type": "object",
+      "description": "当前没有可执行步骤时为空",
+      "additionalProperties": false,
+      "required": [
+        "attempt"
+      ],
+      "properties": {
+        "attempt": {
+          "anyOf": [
+            {
+              "$ref": "./openapi.json#/components/schemas/Attempt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "AttemptCommitInput": {
+      "type": "object",
+      "description": "只有当前租约持有者可提交",
+      "additionalProperties": false,
+      "required": [
+        "attempt_id",
+        "execution_id",
+        "fence",
+        "state",
+        "output",
+        "error"
+      ],
+      "properties": {
+        "attempt_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "尝试 ID"
+        },
+        "execution_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "执行 ID"
+        },
+        "fence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "当前租约 fence"
+        },
+        "state": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "unknown"
+          ]
+        },
+        "output": {
+          "anyOf": [
+            {
+              "$ref": "./openapi.json#/components/schemas/JsonValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "./openapi.json#/components/schemas/ErrorDetail"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "LeaseEventInput": {
+      "type": "object",
+      "description": "领取单条订阅事件",
+      "additionalProperties": false,
+      "required": [
+        "subscription_id",
+        "lease_seconds"
+      ],
+      "properties": {
+        "subscription_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "订阅"
+        },
+        "lease_seconds": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 30
+        }
+      }
+    },
+    "LeaseEventResult": {
+      "type": "object",
+      "description": "没有可投递事件时为空",
+      "additionalProperties": false,
+      "required": [
+        "delivery"
+      ],
+      "properties": {
+        "delivery": {
+          "anyOf": [
+            {
+              "$ref": "./openapi.json#/components/schemas/Delivery"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "SecretLeaseInput": {
+      "type": "object",
+      "description": "工作负载取绑定密钥",
+      "additionalProperties": false,
+      "required": [
+        "binding_id",
+        "requested_seconds"
+      ],
+      "properties": {
+        "binding_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "绑定对象"
+        },
+        "requested_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 900
+        }
+      }
+    },
+    "SecretLeaseResult": {
+      "type": "object",
+      "description": "仅工作负载安全通道使用，不是 HTTP 用户返回值",
+      "additionalProperties": false,
+      "required": [
+        "lease_id",
+        "value_base64",
+        "secret_version",
+        "expires_unix_ms"
+      ],
+      "properties": {
+        "lease_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "租约"
+        },
+        "value_base64": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 87384,
+          "description": "原值，解码最多 64 KiB，严禁日志/持久响应缓存"
+        },
+        "secret_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "密钥版本"
+        },
+        "expires_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "到期时刻"
+        }
+      }
+    },
+    "AuditAppendInput": {
+      "type": "object",
+      "description": "追加前已去除密码、token 和原始个人数据",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "resource",
+        "outcome",
+        "reason_code"
+      ],
+      "properties": {
+        "action": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "description": "注册动作"
+        },
+        "resource": {
+          "$ref": "./openapi.json#/components/schemas/ResourceSelector"
+        },
+        "outcome": {
+          "enum": [
+            "allowed",
+            "denied",
+            "succeeded",
+            "failed"
+          ]
+        },
+        "reason_code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "description": "稳定原因码"
+        }
+      }
+    },
+    "SkillResolveInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "skill_id",
+        "input"
+      ],
+      "properties": {
+        "skill_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "UUID",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "input": {
+          "$ref": "./openapi.json#/components/schemas/JsonValue"
+        }
+      }
+    },
+    "SkillResolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "skill_id",
+        "definition_digest",
+        "target",
+        "input_blob_ids",
+        "binding_id",
+        "installation_id"
+      ],
+      "properties": {
+        "skill_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "UUID",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "definition_digest": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 71,
+          "description": "制品或内容 SHA-256 摘要",
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "target": {
+          "$ref": "./openapi.json#/components/schemas/SkillTarget"
+        },
+        "input_blob_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "description": "UUID",
+            "format": "uuid",
+            "example": "00000000-0000-4000-8000-000000000001"
+          },
+          "description": "当前请求获准 Blob 白名单",
+          "minItems": 0,
+          "maxItems": 256
+        },
+        "binding_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "UUID",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "installation_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "固定签名安装制品"
+        }
+      }
+    },
+    "SkillInvokeInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "skill_id",
+        "request"
+      ],
+      "properties": {
+        "skill_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "UUID",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "request": {
+          "$ref": "./openapi.json#/components/schemas/SkillInvokeRequest"
+        }
+      }
+    },
+    "BatchSubmitInput": {
+      "type": "object",
+      "description": "HTTP/受控宿主桥提交；subject来自AuthContext",
+      "additionalProperties": false,
+      "properties": {
+        "skill_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "资源唯一标识",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "request": {
+          "$ref": "openapi.json#/components/schemas/SkillBatchRequest"
+        }
+      },
+      "required": [
+        "skill_id",
+        "request"
+      ]
+    },
+    "BatchClaimInput": {
+      "type": "object",
+      "description": "内部执行器领取；不可由用户伪造worker身份",
+      "additionalProperties": false,
+      "properties": {
+        "worker_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "资源唯一标识",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "maximum": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16,
+          "description": "本次最多领取数"
+        }
+      },
+      "required": [
+        "worker_id",
+        "maximum"
+      ]
+    },
+    "BatchLease": {
+      "type": "object",
+      "description": "租约锁定输入与身份；原始令牌不入库",
+      "additionalProperties": false,
+      "properties": {
+        "batch_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "资源唯一标识",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "item_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "调用方关联键；不是行ID或授权凭证",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
+        },
+        "execution_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "资源唯一标识",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "fence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "单调fence"
+        },
+        "lease_expires_at": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "创建时间，UTC",
+          "format": "date-time",
+          "example": "2026-10-28T12:00:00Z"
+        },
+        "skill_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "资源唯一标识",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "definition_digest": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 71,
+          "description": "制品或内容 SHA-256 摘要",
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "input": {
+          "$ref": "openapi.json#/components/schemas/JsonValue"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "稳定业务键"
+        }
+      },
+      "required": [
+        "batch_id",
+        "item_id",
+        "execution_id",
+        "fence",
+        "lease_expires_at",
+        "skill_id",
+        "definition_digest",
+        "input",
+        "idempotency_key"
+      ]
+    },
+    "BatchClaimResult": {
+      "type": "object",
+      "description": "有界领取结果，空数组表示暂时无任务",
+      "additionalProperties": false,
+      "properties": {
+        "leases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BatchLease"
+          },
+          "minItems": 0,
+          "maxItems": 16,
+          "description": "已领取项"
+        }
+      },
+      "required": [
+        "leases"
+      ]
+    },
+    "BatchLeaseInput": {
+      "type": "object",
+      "description": "续约或提交均需匹配此租约",
+      "additionalProperties": false,
+      "properties": {
+        "batch_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "资源唯一标识",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "item_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "调用方关联键；不是行ID或授权凭证",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
+        },
+        "execution_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "资源唯一标识",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        "fence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "当前fence"
+        }
+      },
+      "required": [
+        "batch_id",
+        "item_id",
+        "execution_id",
+        "fence"
+      ]
+    },
+    "BatchCommitInput": {
+      "type": "object",
+      "description": "结果先写私有不可变对象，再原子提交引用/计数/outbox",
+      "additionalProperties": false,
+      "properties": {
+        "lease": {
+          "$ref": "#/$defs/BatchLeaseInput"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "succeeded",
+            "failed",
+            "canceled",
+            "unknown"
+          ],
+          "description": "仅合法结果"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "openapi.json#/components/schemas/SkillCallResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "openapi.json#/components/schemas/ErrorDetail"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "lease",
+        "state",
+        "result",
+        "error"
+      ]
+    },
+    "MicroPublishInput": {
+      "type": "object",
+      "properties": {
+        "micro_plugin_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "request": {
+          "$ref": "openapi.json#/components/schemas/PublishMicroVersion"
+        }
+      },
+      "required": [
+        "micro_plugin_id",
+        "request"
+      ],
+      "additionalProperties": false
+    },
+    "MicroReconcileInput": {
+      "type": "object",
+      "properties": {
+        "micro_deployment_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "micro_deployment_id",
+        "expected_revision"
+      ],
+      "additionalProperties": false
+    },
+    "MicroProxyInput": {
+      "type": "object",
+      "properties": {
+        "call_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "endpoint_alias": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "payload": {
+          "$ref": "openapi.json#/components/schemas/JsonValue"
+        },
+        "payload_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "call_id",
+        "endpoint_alias",
+        "sequence",
+        "payload",
+        "payload_digest"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "status": "planned",
+  "version": "0.1.0",
+  "kind": "ordinary",
+  "capability_id": "document.parse",
+  "side_effect": "none",
+  "maximum_input_bytes": 4194304,
+  "maximum_output_bytes": 16777216,
+  "maximum_json_depth": 64,
+  "streaming": false,
+  "batch": "core_async_skill_batch",
+  "unknown_fields": "reject",
+  "authorization": "future_skill_invoke_and_capability_invoke_and_current_owner_policy",
+  "cancellation": "cooperative_hard_deadline_no_partial_success",
+  "retries": "bounded_same_definition_same_deadline",
+  "feature_gates": [
+    "document-parser-libraries"
+  ],
+  "notes": [
+    "No default OCR, Office macro or external HTML fetch.",
+    "Output16MiB hard cap includes duplicated page/text; refuse overflow."
+  ]
+}

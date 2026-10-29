@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ErrorEnvelope",
+  "type": "object",
+  "description": "平台 HTTP 错误响应",
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "$ref": "../openapi.json#/components/schemas/ErrorDetail"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "与 X-Request-ID 一致",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    }
+  },
+  "required": [
+    "error",
+    "request_id"
+  ]
+}

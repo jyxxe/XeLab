@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "description": "UUID",
+      "minLength": 1,
+      "maxLength": 36,
+      "format": "uuid"
+    },
+    "fields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "selector": {
+            "type": "string",
+            "description": "CSS selector, not JS",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "attribute": {
+            "type": "string",
+            "description": "",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "multiple": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "name",
+          "selector"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 32
+    },
+    "max_items": {
+      "type": "integer",
+      "description": "",
+      "minimum": 1,
+      "maximum": 1000,
+      "default": 100
+    }
+  },
+  "required": [
+    "session_id",
+    "fields"
+  ],
+  "additionalProperties": false
+}

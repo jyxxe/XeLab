@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "InputMapping",
+  "type": "object",
+  "description": "输出对象每个字段映射一个 MappingLeaf，禁止脚本",
+  "additionalProperties": {
+    "$ref": "../openapi.json#/components/schemas/MappingLeaf"
+  },
+  "maxProperties": 128
+}

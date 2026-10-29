@@ -1,0 +1,59 @@
+{
+  "installation_id": "00000000-0000-4000-8000-000000000001",
+  "display_name": "knowledge-base",
+  "enabled": false,
+  "replicas": 1,
+  "limits": {
+    "cpu_millis": 2000,
+    "memory_bytes": 4294967296,
+    "ephemeral_bytes": 1073741824,
+    "pids": 128
+  },
+  "config": {
+    "engine": "sqlite",
+    "data_path": "/data/kb",
+    "default_vector_dimensions": 128,
+    "vector_dtype": "float32",
+    "metric": "cosine",
+    "maximum_query_bytes": 8192,
+    "maximum_ast_nodes": 256,
+    "maximum_ast_depth": 32,
+    "maximum_vector_candidates": 100000,
+    "maximum_import_bytes": 33554432,
+    "maximum_expression_in_items": 1000,
+    "maximum_query_time_ms": 120000,
+    "maximum_active_requests": 8,
+    "automatic_background_indexing": false,
+    "maximum_query_ids": 100000,
+    "maximum_row_fetch_ids": 200,
+    "maximum_query_stages": 32,
+    "maximum_topk_stages": 8,
+    "query_cache": {
+      "enabled": true,
+      "data_max_bytes": 128000000,
+      "text_max_bytes": 128000000,
+      "vector_max_bytes": 128000000,
+      "max_entry_bytes": 8388608,
+      "ttl_seconds": 300
+    },
+    "embedding_routing": {
+      "text_query_preference": [
+        "org.xelab.embedding-gemma.text-1",
+        "org.xelab.embedding-gemma.text-8",
+        "org.xelab.embedding-gemma.multimodal-1"
+      ],
+      "text_index_preference": [
+        "org.xelab.embedding-gemma.text-8",
+        "org.xelab.embedding-gemma.text-1",
+        "org.xelab.embedding-gemma.multimodal-1"
+      ],
+      "multimodal_preference": [
+        "org.xelab.embedding-gemma.multimodal-1"
+      ],
+      "allow_fallback": true
+    }
+  },
+  "volume_ids": [
+    "00000000-0000-4000-8000-000000000001"
+  ]
+}

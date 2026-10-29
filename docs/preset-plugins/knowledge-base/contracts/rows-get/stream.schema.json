@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "null",
+  "description": "本契约不提供流式输出"
+}

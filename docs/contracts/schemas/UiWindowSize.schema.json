@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UiWindowSize",
+  "type": "object",
+  "description": "窗口逻辑像素约束，min<=default<=max；小屏由宿主裁剪到可用工作区",
+  "additionalProperties": false,
+  "properties": {
+    "width": {
+      "type": "integer",
+      "minimum": 320,
+      "maximum": 4096,
+      "description": "初始宽"
+    },
+    "height": {
+      "type": "integer",
+      "minimum": 200,
+      "maximum": 2160,
+      "description": "初始高"
+    },
+    "min_width": {
+      "type": "integer",
+      "minimum": 320,
+      "maximum": 4096,
+      "description": "最小宽"
+    },
+    "min_height": {
+      "type": "integer",
+      "minimum": 200,
+      "maximum": 2160,
+      "description": "最小高"
+    },
+    "max_width": {
+      "type": "integer",
+      "minimum": 320,
+      "maximum": 4096,
+      "description": "最大宽"
+    },
+    "max_height": {
+      "type": "integer",
+      "minimum": 200,
+      "maximum": 2160,
+      "description": "最大高"
+    },
+    "resizable": {
+      "type": "boolean",
+      "default": true,
+      "description": "是否允许用户调整"
+    }
+  },
+  "required": [
+    "width",
+    "height",
+    "min_width",
+    "min_height",
+    "max_width",
+    "max_height",
+    "resizable"
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DependencyPlan",
+  "type": "object",
+  "description": "可审核解析结果；执行前重新核对版本与资源",
+  "additionalProperties": false,
+  "properties": {
+    "deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "依据的部署版本"
+    },
+    "bindings": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/DependencyBinding"
+      },
+      "minItems": 0,
+      "maxItems": 256,
+      "description": "绑定结果"
+    },
+    "required_cpu_millis": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1048576,
+      "description": "增量资源"
+    },
+    "required_memory_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "增量内存"
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512,
+        "description": "不可解析原因"
+      },
+      "minItems": 0,
+      "maxItems": 64,
+      "description": "冲突；非空不可执行"
+    }
+  },
+  "required": [
+    "deployment_id",
+    "revision",
+    "bindings",
+    "required_cpu_millis",
+    "required_memory_bytes",
+    "conflicts"
+  ]
+}

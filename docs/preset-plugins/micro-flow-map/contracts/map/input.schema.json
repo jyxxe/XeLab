@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "document": {
+      "$ref": "../../../planned/shared.schema.json#/$defs/JsonValue"
+    },
+    "mappings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "",
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "非空JSON Pointer，对象目标路径",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^(?:/(?:[^~]|~[01])*)+$"
+          },
+          "from": {
+            "$ref": "../../../planned/shared.schema.json#/$defs/JsonPointer"
+          },
+          "value": {
+            "$ref": "../../../planned/shared.schema.json#/$defs/JsonValue"
+          },
+          "default": {
+            "$ref": "../../../planned/shared.schema.json#/$defs/JsonValue"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "identity",
+              "string",
+              "number",
+              "integer",
+              "boolean"
+            ],
+            "description": "",
+            "default": "identity"
+          },
+          "required": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "to"
+        ],
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "from"
+            ],
+            "not": {
+              "required": [
+                "value"
+              ]
+            }
+          },
+          {
+            "required": [
+              "value"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "from"
+                  ]
+                },
+                {
+                  "required": [
+                    "default"
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 256
+    }
+  },
+  "required": [
+    "document",
+    "mappings"
+  ],
+  "additionalProperties": false
+}

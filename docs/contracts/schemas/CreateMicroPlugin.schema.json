@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CreateMicroPlugin",
+  "type": "object",
+  "description": "owner取当前认证主体；name在owner命名空间唯一",
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "稳定名称，创建后不变",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$",
+      "example": "json-echo"
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "普通文本显示名"
+    }
+  },
+  "required": [
+    "name",
+    "display_name"
+  ],
+  "additionalProperties": false
+}

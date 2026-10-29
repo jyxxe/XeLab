@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CreateApiKey",
+  "type": "object",
+  "description": "创建密钥；全量模式也保留实际创建凭证来源",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "用于识别用途"
+    },
+    "inheritance": {
+      "$ref": "../openapi.json#/components/schemas/InheritanceSpec"
+    },
+    "conditions": {
+      "$ref": "../openapi.json#/components/schemas/CredentialConditions"
+    }
+  },
+  "required": [
+    "name",
+    "inheritance",
+    "conditions"
+  ]
+}

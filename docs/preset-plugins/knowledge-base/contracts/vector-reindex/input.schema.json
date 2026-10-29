@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "每次请求独立有效授权",
+  "properties": {
+    "table_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "UUID",
+      "format": "uuid"
+    },
+    "field_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "字段 ID，不随列重命名改变",
+      "format": "uuid"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "必须与当前配置一致"
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 128,
+      "description": "本批最多128行",
+      "default": 32
+    },
+    "cursor": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "可选续点"
+    }
+  },
+  "required": [
+    "table_id",
+    "field_id",
+    "generation"
+  ],
+  "additionalProperties": false
+}

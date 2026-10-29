@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "HostService实际返回的Blob引用，不伪造完整Blob元数据",
+  "properties": {
+    "object_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "UUID",
+      "format": "uuid"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "按owner/key永久head单调修订，不因删除重建归零"
+    },
+    "blob_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "UUID",
+      "format": "uuid"
+    },
+    "size_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 67108864,
+      "description": "完整字节数"
+    },
+    "digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 71,
+      "description": "原始内容SHA-256",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "content_type": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "声明MIME"
+    }
+  },
+  "required": [
+    "object_id",
+    "revision",
+    "blob_id",
+    "size_bytes",
+    "digest",
+    "content_type"
+  ],
+  "additionalProperties": false
+}

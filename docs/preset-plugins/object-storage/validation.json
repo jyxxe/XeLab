@@ -1,0 +1,100 @@
+[
+  {
+    "name": "empty_file_allowed",
+    "contract": "object-put",
+    "value": {
+      "key": "reports/empty.txt",
+      "blob_id": "00000000-0000-4000-8000-000000000001",
+      "size_bytes": 0,
+      "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "content_type": "text/plain",
+      "mode": "create"
+    },
+    "valid": true
+  },
+  {
+    "name": "replace_requires_cas",
+    "contract": "object-put",
+    "value": {
+      "key": "reports/empty.txt",
+      "blob_id": "00000000-0000-4000-8000-000000000001",
+      "size_bytes": 0,
+      "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "content_type": "text/plain",
+      "mode": "replace"
+    },
+    "valid": false
+  },
+  {
+    "name": "create_disallows_cas",
+    "contract": "object-put",
+    "value": {
+      "key": "reports/empty.txt",
+      "blob_id": "00000000-0000-4000-8000-000000000001",
+      "size_bytes": 0,
+      "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "content_type": "text/plain",
+      "mode": "create",
+      "expected_revision": 1
+    },
+    "valid": false
+  },
+  {
+    "name": "namespace_not_user_selectable",
+    "contract": "object-put",
+    "value": {
+      "key": "reports/empty.txt",
+      "blob_id": "00000000-0000-4000-8000-000000000001",
+      "size_bytes": 0,
+      "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "content_type": "text/plain",
+      "mode": "create",
+      "owner_id": "00000000-0000-4000-8000-000000000002"
+    },
+    "valid": false
+  },
+  {
+    "name": "blob_maximum",
+    "contract": "object-put",
+    "value": {
+      "key": "reports/empty.txt",
+      "blob_id": "00000000-0000-4000-8000-000000000001",
+      "size_bytes": 67108865,
+      "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "content_type": "text/plain",
+      "mode": "create"
+    },
+    "valid": false
+  },
+  {
+    "name": "no_inline_file",
+    "contract": "object-put",
+    "value": {
+      "key": "reports/empty.txt",
+      "blob_id": "00000000-0000-4000-8000-000000000001",
+      "size_bytes": 0,
+      "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "content_type": "text/plain",
+      "mode": "create",
+      "content": "not inline bytes"
+    },
+    "valid": false
+  },
+  {
+    "name": "export_needs_revision",
+    "contract": "object-export",
+    "value": {
+      "key": "reports/empty.txt"
+    },
+    "valid": false
+  },
+  {
+    "name": "prefix_directory",
+    "contract": "object-list",
+    "value": {
+      "prefix": "reports/",
+      "limit": 50
+    },
+    "valid": true
+  }
+]

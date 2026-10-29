@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QuotaSpec",
+  "type": "object",
+  "description": "账户树总额度；所有后代累计而非复制",
+  "additionalProperties": false,
+  "properties": {
+    "maximum_depth": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8,
+      "description": "含当前根在内的最大层级",
+      "default": 4
+    },
+    "maximum_descendants": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10000,
+      "description": "后代总账户数",
+      "default": 20
+    },
+    "maximum_api_keys": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100000,
+      "description": "子树内有效密钥数",
+      "default": 50
+    },
+    "maximum_concurrent_calls": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000,
+      "description": "子树并发调用",
+      "default": 16
+    },
+    "daily_calls": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "UTC 自然日子树调用量",
+      "default": 10000
+    }
+  },
+  "required": [
+    "maximum_depth",
+    "maximum_descendants",
+    "maximum_api_keys",
+    "maximum_concurrent_calls",
+    "daily_calls"
+  ]
+}

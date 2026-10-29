@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GrantRequest",
+  "type": "object",
+  "description": "为路径账户添加授权；不改变父级上限",
+  "additionalProperties": false,
+  "properties": {
+    "source": {
+      "type": "string",
+      "enum": [
+        "role",
+        "group"
+      ],
+      "description": "来源类型"
+    },
+    "role_id": {
+      "type": "string",
+      "enum": [
+        "Owner",
+        "Operator",
+        "Member",
+        "Auditor",
+        "Guest"
+      ],
+      "description": "source=role 时必填"
+    },
+    "group_version": {
+      "$ref": "../openapi.json#/components/schemas/GroupVersionRef"
+    },
+    "scope": {
+      "$ref": "../openapi.json#/components/schemas/ResourceSelector"
+    },
+    "expires_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "可选有效期",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    }
+  },
+  "required": [
+    "source",
+    "scope"
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "source": {
+          "const": "role"
+        }
+      },
+      "required": [
+        "role_id"
+      ],
+      "not": {
+        "required": [
+          "group_version"
+        ]
+      }
+    },
+    {
+      "properties": {
+        "source": {
+          "const": "group"
+        }
+      },
+      "required": [
+        "group_version"
+      ],
+      "not": {
+        "required": [
+          "role_id"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FieldViolation",
+  "type": "object",
+  "description": "字段级错误",
+  "additionalProperties": false,
+  "properties": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "JSON Pointer 或参数名"
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "可读原因"
+    }
+  },
+  "required": [
+    "path",
+    "reason"
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "status": "planned",
+  "version": "0.1.0",
+  "kind": "micro",
+  "capability_id": "flow.condition",
+  "side_effect": "none",
+  "maximum_input_bytes": 1048576,
+  "maximum_output_bytes": 1048576,
+  "maximum_json_depth": 64,
+  "streaming": false,
+  "batch": "core_async_skill_batch",
+  "unknown_fields": "reject",
+  "authorization": "future_micro_skill_and_micro_resource_and_runtime",
+  "cancellation": "cooperative_hard_deadline_no_partial_success",
+  "retries": "bounded_same_definition_same_deadline",
+  "feature_gates": [
+    "condition-ast-library"
+  ],
+  "notes": [
+    "No eval/KB topk; missing compare false, exists and is_null distinct.",
+    "Returns data only; native workflow branching is a separate future feature."
+  ]
+}

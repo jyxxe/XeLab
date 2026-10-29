@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SkillBatchRequest",
+  "type": "object",
+  "description": "持久化异步批次；完整JSON最大4MiB，所有项目使用同一固定Skill版本",
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/SkillBatchInputItem"
+      },
+      "minItems": 1,
+      "maxItems": 1000,
+      "description": "提交前全部按目标输入Schema校验；同批id重复拒绝"
+    },
+    "item_timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 300000,
+      "description": "显式值不超过Skill上限；省略取min(120000,Skill.maximum_timeout_ms)",
+      "default": 120000
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 1000,
+      "maximum": 604800000,
+      "description": "整批期限，不能延长源授权有效期",
+      "default": 86400000
+    },
+    "max_parallel": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16,
+      "description": "整批在途项目上限，实际还受用户/实例/节点额度限制",
+      "default": 1
+    },
+    "failure_policy": {
+      "type": "string",
+      "enum": [
+        "continue",
+        "stop"
+      ],
+      "description": "continue继续独立项目；stop停止领取新项目，不回滚已提交项",
+      "default": "continue"
+    },
+    "run_as": {
+      "type": "string",
+      "enum": [
+        "user",
+        "service"
+      ],
+      "description": "默认 user；service 需要独立批准",
+      "default": "user"
+    },
+    "service_account_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "run_as=service 时必填",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "run_as": {
+            "const": "service"
+          }
+        },
+        "required": [
+          "run_as"
+        ]
+      },
+      "then": {
+        "required": [
+          "service_account_id"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "service_account_id"
+          ]
+        }
+      }
+    }
+  ]
+}

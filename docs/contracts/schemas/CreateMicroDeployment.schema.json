@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CreateMicroDeployment",
+  "type": "object",
+  "description": "独立绑定版本与MPR父部署；初始关闭，绑定/预算修改需新建",
+  "properties": {
+    "micro_version_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "runtime_deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "limits": {
+      "$ref": "../openapi.json#/components/schemas/MicroExecutionLimits"
+    }
+  },
+  "required": [
+    "micro_version_id",
+    "runtime_deployment_id",
+    "limits"
+  ],
+  "additionalProperties": false
+}

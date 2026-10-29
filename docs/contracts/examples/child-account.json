@@ -1,0 +1,19 @@
+{
+  "display_name": "report-reader",
+  "kind": "user",
+  "inheritance": {
+    "mode": "selected",
+    "rules": [
+      {
+        "action": "capability.invoke",
+        "resource": {
+          "kind": "capability",
+          "match": "ids",
+          "ids": [
+            "document.parse"
+          ]
+        }
+      }
+    ]
+  }
+}

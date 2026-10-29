@@ -1,0 +1,28 @@
+{
+  "input": {
+    "name": "documents",
+    "fields": [
+      {
+        "name": "title",
+        "type": {
+          "kind": "string"
+        },
+        "nullable": false
+      },
+      {
+        "name": "content",
+        "type": {
+          "kind": "text"
+        },
+        "nullable": false
+      },
+      {
+        "name": "attachments",
+        "type": {
+          "kind": "media"
+        },
+        "nullable": true
+      }
+    ]
+  }
+}

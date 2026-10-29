@@ -1,0 +1,78 @@
+{
+  "manifest_version": "1",
+  "plugin_id": "org.xelab.echo",
+  "version": "1.0.0",
+  "publisher_id": "00000000-0000-4000-8000-000000000001",
+  "host_api_major": 1,
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "entrypoint": [
+    "/usr/local/bin/echo-plugin"
+  ],
+  "capabilities": [
+    {
+      "contract": {
+        "name": "tool.echo",
+        "version": "1.0.0",
+        "schema_digest": "sha256:30039c0229db5e7589c1b4c58d44712f431145b4377bc2b249b607844508b19d"
+      },
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      },
+      "stream_item_schema": null,
+      "side_effect": "none",
+      "maximum_input_bytes": 65536,
+      "maximum_output_bytes": 65536
+    }
+  ],
+  "dependencies": [],
+  "requested_rules": [],
+  "minimum_resources": {
+    "cpu_millis": 100,
+    "memory_bytes": 67108864,
+    "ephemeral_bytes": 16777216,
+    "pids": 32
+  },
+  "health": {
+    "startup_timeout_ms": 60000,
+    "interval_ms": 5000,
+    "timeout_ms": 2000,
+    "failure_threshold": 3
+  },
+  "volumes": [],
+  "routes": [],
+  "config_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "data_schema_version": "none",
+  "upgrade_strategy": "recreate"
+}

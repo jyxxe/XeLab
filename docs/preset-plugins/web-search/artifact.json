@@ -1,0 +1,6 @@
+{
+  "source_file": "main.js",
+  "manifest_file": "micro-manifest.json",
+  "source_digest": "sha256:ef59d8dac4582cc5fb0ce15bccd32bce836ce3481abb98784b1b2755190daf09",
+  "package_digest": "sha256:480719e58264c84b63c1ba8bbf7ae5e43ec167e65981b5bb7b7bbf66c8b733f2"
+}

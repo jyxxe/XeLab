@@ -1,0 +1,319 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "表达式的完整有序去重ID列表；超预算失败，禁止截断或返回next_cursor",
+  "properties": {
+    "table_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "UUID",
+      "format": "uuid"
+    },
+    "schema_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "快照水位"
+    },
+    "data_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "快照水位"
+    },
+    "ids": {
+      "type": "array",
+      "description": "完整最终结果，顺序具有语义；空结果为[]",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "UUID",
+        "format": "uuid"
+      },
+      "minItems": 0,
+      "maxItems": 100000,
+      "uniqueItems": true
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000,
+      "description": "必须等于len(ids)"
+    },
+    "vector_stages": {
+      "type": "array",
+      "description": "按链顺序保留所有topk阶段的水位/计数",
+      "items": {
+        "type": "object",
+        "description": "一个topk阶段的实际候选和向量快照；仅作元数据，不给ID附着隐式score属性",
+        "properties": {
+          "stage_index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 31,
+            "description": "链中算子位置，从0起，包含match"
+          },
+          "field_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "description": "UUID",
+            "format": "uuid"
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "description": "配置代次"
+          },
+          "index_revision": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "description": "索引内容/状态提交的单调修订号"
+          },
+          "dimensions": {
+            "type": "integer",
+            "enum": [
+              128,
+              256,
+              512,
+              768
+            ]
+          },
+          "embedding_space_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 71,
+            "description": "SHA-256摘要",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "embedding_skill_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "description": "当前已核实可用的query候选；命中缓存或原始向量时可不运行模型",
+            "format": "uuid"
+          },
+          "embedding_skill_definition_digest": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 71,
+            "description": "当前选中query候选的固定定义摘要",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "input_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000,
+            "description": "上一阶段完整列表长度"
+          },
+          "indexed_rows": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000,
+            "description": "该阶段有效索引候选数"
+          },
+          "pending_rows": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000,
+            "description": "该阶段待建立/更新候选数"
+          },
+          "failed_rows": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000,
+            "description": "该阶段索引失败候选数"
+          },
+          "skipped_rows": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000,
+            "description": "该阶段NULL/空源跳过候选数"
+          },
+          "output_count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000,
+            "description": "该topk完整输出长度；后续match不改变此历史计数"
+          },
+          "k": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000,
+            "description": "调用者明确的排名截取数量"
+          },
+          "min_score": {
+            "type": "number",
+            "minimum": -1,
+            "maximum": 1,
+            "description": "cosine最低分，默认-1"
+          },
+          "metric": {
+            "const": "cosine"
+          },
+          "route_digest": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 71,
+            "description": "JCS后SHA-256",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "stage_index",
+          "field_id",
+          "generation",
+          "index_revision",
+          "dimensions",
+          "embedding_space_id",
+          "embedding_skill_id",
+          "embedding_skill_definition_digest",
+          "input_count",
+          "indexed_rows",
+          "pending_rows",
+          "failed_rows",
+          "skipped_rows",
+          "output_count",
+          "k",
+          "min_score",
+          "metric",
+          "route_digest"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 8
+    },
+    "cache": {
+      "type": "object",
+      "description": "本请求缓存诊断，不暴露其他账户缓存键/使用量",
+      "properties": {
+        "state": {
+          "type": "string",
+          "description": "仅数据/列表缓存状态；其它类别命中由classes计数表达",
+          "enum": [
+            "disabled",
+            "hit",
+            "partial_hit",
+            "miss",
+            "bypass"
+          ]
+        },
+        "hit_stages": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32,
+          "description": "复用的链算子阶段数，根a不计"
+        },
+        "stored_stages": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32,
+          "description": "本请求新缓存的完整链阶段数，根a不计"
+        },
+        "classes": {
+          "type": "object",
+          "description": "data/text/vector三类各自统计",
+          "properties": {
+            "data": {
+              "type": "object",
+              "description": "仅当前请求缓存计数，不暴露其他账户数据或全局使用量",
+              "properties": {
+                "hits": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "命中条目次数"
+                },
+                "stores": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "成功发布条目次数"
+                }
+              },
+              "required": [
+                "hits",
+                "stores"
+              ],
+              "additionalProperties": false
+            },
+            "text": {
+              "type": "object",
+              "description": "仅当前请求缓存计数，不暴露其他账户数据或全局使用量",
+              "properties": {
+                "hits": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "命中条目次数"
+                },
+                "stores": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "成功发布条目次数"
+                }
+              },
+              "required": [
+                "hits",
+                "stores"
+              ],
+              "additionalProperties": false
+            },
+            "vector": {
+              "type": "object",
+              "description": "仅当前请求缓存计数，不暴露其他账户数据或全局使用量",
+              "properties": {
+                "hits": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "命中条目次数"
+                },
+                "stores": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991,
+                  "description": "成功发布条目次数"
+                }
+              },
+              "required": [
+                "hits",
+                "stores"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "data",
+            "text",
+            "vector"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "state",
+        "hit_stages",
+        "stored_stages",
+        "classes"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "table_id",
+    "schema_revision",
+    "data_revision",
+    "ids",
+    "count",
+    "vector_stages",
+    "cache"
+  ],
+  "additionalProperties": false
+}

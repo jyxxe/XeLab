@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LogEntry",
+  "type": "object",
+  "description": "脱敏结构化日志；需要单独日志读取权限",
+  "additionalProperties": false,
+  "properties": {
+    "at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "日志时间",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "level": {
+      "type": "string",
+      "enum": [
+        "debug",
+        "info",
+        "warn",
+        "error"
+      ],
+      "description": "级别"
+    },
+    "instance_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "request_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "资源唯一标识",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "资源唯一标识"
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192,
+      "description": "脱敏日志文本"
+    }
+  },
+  "required": [
+    "at",
+    "level",
+    "instance_id",
+    "request_id",
+    "message"
+  ]
+}

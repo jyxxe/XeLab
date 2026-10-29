@@ -1,0 +1,9 @@
+{
+  "side_effect": "none",
+  "errors": [
+    "INVALID_ARGUMENT"
+  ],
+  "cancellation": "cooperative",
+  "idempotency": "not_required",
+  "query_result": "call_record"
+}

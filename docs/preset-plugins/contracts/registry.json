@@ -1,0 +1,150 @@
+{
+  "version": "2.6.0",
+  "contracts": [
+    {
+      "name": "ai.embedding.text",
+      "version": "1.0.0",
+      "digest": "sha256:564078c5844d8c94d94e4e4cd5415d63d20eadca8dc8ff8bdc384c08bda75e8a",
+      "folder": "embedding-text"
+    },
+    {
+      "name": "ai.embedding.multimodal",
+      "version": "1.0.0",
+      "digest": "sha256:8f3c653f8f8826aae8fb8d44fa90104e903a082964b1ff20518db565e3d21aee",
+      "folder": "embedding-multimodal"
+    },
+    {
+      "name": "data.kb.table.create",
+      "version": "2.0.0",
+      "digest": "sha256:4568347ba5a2b524cbb8536cedf1bbb6e56cd942f8f63c4f3e5fcaacf140a25f",
+      "folder": "../knowledge-base/contracts/table-create"
+    },
+    {
+      "name": "data.kb.table.list",
+      "version": "2.0.0",
+      "digest": "sha256:fc98aa982f7bb12fad4cd5a250d6e90fe8b9299446e577e561626dc4ef71baca",
+      "folder": "../knowledge-base/contracts/table-list"
+    },
+    {
+      "name": "data.kb.table.get",
+      "version": "2.0.0",
+      "digest": "sha256:a1e8f0ed8f320fb8f592d28ed36752a249ae094e6fbe72adbc76bf676de82f9d",
+      "folder": "../knowledge-base/contracts/table-get"
+    },
+    {
+      "name": "data.kb.table.alter",
+      "version": "2.0.0",
+      "digest": "sha256:f34518c4b447b89feca7888127bfa3893f58c71ca41447cbf80ff1f78e7bb539",
+      "folder": "../knowledge-base/contracts/table-alter"
+    },
+    {
+      "name": "data.kb.table.drop",
+      "version": "1.0.0",
+      "digest": "sha256:9a3cba855020c08f4a8223ef672e8d0fe0be9498ef91a876ad98fffcd5120bd1",
+      "folder": "../knowledge-base/contracts/table-drop"
+    },
+    {
+      "name": "data.kb.rows.upsert",
+      "version": "1.0.0",
+      "digest": "sha256:46ae7acda55c872d575c51e261e9b76c57dc3e9d3e9cadc353bad9cdb2c6326d",
+      "folder": "../knowledge-base/contracts/rows-upsert"
+    },
+    {
+      "name": "data.kb.rows.delete",
+      "version": "1.0.0",
+      "digest": "sha256:c9b891f24a0de955a41ddbc7848cc327066b74fca51f30a31273644e8408dd23",
+      "folder": "../knowledge-base/contracts/rows-delete"
+    },
+    {
+      "name": "data.kb.rows.query",
+      "version": "2.0.0",
+      "digest": "sha256:723f2fbdf1f64ec5625953c6fbb6fcb31dc2f25498222fb4a2e73ad743bd4c5a",
+      "folder": "../knowledge-base/contracts/rows-query"
+    },
+    {
+      "name": "data.kb.media.import",
+      "version": "1.0.0",
+      "digest": "sha256:ddb4c6e00264963b942044d9eb1b1cdb62ede45e26544fc9e3e6ad7d77119184",
+      "folder": "../knowledge-base/contracts/media-import"
+    },
+    {
+      "name": "data.kb.media.export",
+      "version": "1.0.0",
+      "digest": "sha256:a0e95d208d6f50fe2eacd8a2370cdd3503553ae2a3d04bbbabf5b90f79606037",
+      "folder": "../knowledge-base/contracts/media-export"
+    },
+    {
+      "name": "data.kb.vector.configure",
+      "version": "2.0.0",
+      "digest": "sha256:c3dacd0e628d07ade257541e01815f8b5100a08927eb8eec975872a80650c03c",
+      "folder": "../knowledge-base/contracts/vector-configure"
+    },
+    {
+      "name": "data.kb.vector.status",
+      "version": "2.0.0",
+      "digest": "sha256:bd178af74a78dc125e2670faa414336e845e0d97e9cc2839e4c7b4ef240b31d3",
+      "folder": "../knowledge-base/contracts/vector-status"
+    },
+    {
+      "name": "data.kb.vector.reindex",
+      "version": "1.0.0",
+      "digest": "sha256:1d9543c7789dd309e6e2af7f3f228917c098da1aaf69a80005c6f9fb605a2979",
+      "folder": "../knowledge-base/contracts/vector-reindex"
+    },
+    {
+      "name": "data.kb.vector.drop",
+      "version": "1.0.0",
+      "digest": "sha256:e84352da7fae63fb26ddefbbd0874f854d3bfd9957598e476bb63a6b7f9c7053",
+      "folder": "../knowledge-base/contracts/vector-drop"
+    },
+    {
+      "name": "data.kb.rows.get",
+      "version": "1.0.0",
+      "digest": "sha256:550f63f2183313cd999750e7875ecb16207a03f860116d9407ce49233f264233",
+      "folder": "../knowledge-base/contracts/rows-get"
+    },
+    {
+      "name": "data.object.put",
+      "version": "1.0.0",
+      "digest": "sha256:1d6e52730bee82172976ba1f7e03929d5c1a9e36ca10c3bd4db0bc182ae152cc",
+      "folder": "../object-storage/contracts/object-put"
+    },
+    {
+      "name": "data.object.list",
+      "version": "1.0.0",
+      "digest": "sha256:2dd1db5e881f8482d91489566c89145c65e689bcc658314443f3bcb9b6b79e19",
+      "folder": "../object-storage/contracts/object-list"
+    },
+    {
+      "name": "data.object.stat",
+      "version": "1.0.0",
+      "digest": "sha256:d525223c471a851e12100708fd74a7fb944fd9675dc4ab009262da7e64df7c74",
+      "folder": "../object-storage/contracts/object-stat"
+    },
+    {
+      "name": "data.object.export",
+      "version": "1.0.0",
+      "digest": "sha256:f1cf0208bbcb7eff045e1307d3d340f14f5dd908bcd99698e2b58dc352d9b57d",
+      "folder": "../object-storage/contracts/object-export"
+    },
+    {
+      "name": "data.object.delete",
+      "version": "1.0.0",
+      "digest": "sha256:9d7c1ffe820bf90d5221b961a56c3691cb16e4bb946d189a346d5e3eaf3f5466",
+      "folder": "../object-storage/contracts/object-delete"
+    },
+    {
+      "name": "data.object.usage.get",
+      "version": "1.0.0",
+      "digest": "sha256:6343e9c3b79aa482131a4c2ed5a11b6f0b5a4acc6707b0607e3fee68cafaadd3",
+      "folder": "../object-storage/contracts/usage-get"
+    },
+    {
+      "name": "web.search",
+      "version": "1.0.0",
+      "kind": "micro",
+      "digest": "sha256:32ef55dff492a743d558275641670533add2e2291828973dd952e59425474384",
+      "folder": "../web-search/contracts/search"
+    }
+  ]
+}

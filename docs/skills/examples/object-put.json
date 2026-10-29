@@ -1,0 +1,11 @@
+{
+  "input": {
+    "key": "reports/empty.txt",
+    "blob_id": "00000000-0000-4000-8000-000000000001",
+    "size_bytes": 0,
+    "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "content_type": "text/plain",
+    "mode": "create"
+  },
+  "timeout_ms": 120000
+}

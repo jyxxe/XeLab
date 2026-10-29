@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Task",
+  "type": "object",
+  "description": "一次工作流执行；流程版本及授权来源不可原地修改",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "乐观锁版本，每次持久化变更加一"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "创建时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "updated_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "最近变更时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "owner_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "workflow_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "delegation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "running",
+        "waiting_dependency",
+        "paused_authorization",
+        "cancel_requested",
+        "succeeded",
+        "failed",
+        "canceled",
+        "unknown"
+      ],
+      "description": "状态"
+    },
+    "input": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue"
+    },
+    "output": {
+      "anyOf": [
+        {
+          "$ref": "../openapi.json#/components/schemas/JsonValue"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "可为空"
+    },
+    "deadline_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "整体期限",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "../openapi.json#/components/schemas/ErrorDetail"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "可为空"
+    }
+  },
+  "required": [
+    "id",
+    "revision",
+    "created_at",
+    "updated_at",
+    "owner_id",
+    "workflow_id",
+    "delegation_id",
+    "state",
+    "input",
+    "output",
+    "deadline_at",
+    "error"
+  ]
+}

@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UiContributionSpec",
+  "type": "object",
+  "description": "可选独立iframe窗口或桌面组件；两种均不得将插件JS注入桌面壳",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "插件内稳定标识",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "window",
+        "widget"
+      ],
+      "description": "显示形态"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "作为普通文本渲染的名称"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "用途"
+    },
+    "entry_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "相对插件UI根的绝对路径；拒绝..、反斜线、编码逃逸、query/fragment、URL与双斜线",
+      "pattern": "^/[A-Za-z0-9_./-]*$",
+      "example": "/desktop/index.html"
+    },
+    "icon_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "相对插件UI根的绝对路径；拒绝..、反斜线、编码逃逸、query/fragment、URL与双斜线",
+      "pattern": "^/[A-Za-z0-9_./-]*$",
+      "example": "/desktop/index.html"
+    },
+    "skill_bindings": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/UiSkillBinding"
+      },
+      "minItems": 0,
+      "maxItems": 32,
+      "description": "只是桥接白名单申请，不授予任何权限"
+    },
+    "window": {
+      "$ref": "../openapi.json#/components/schemas/UiWindowSize"
+    },
+    "widget": {
+      "$ref": "../openapi.json#/components/schemas/UiWidgetSize"
+    },
+    "refresh_interval_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3600,
+      "description": "组件可见时刷新间隔；0关闭，非零必须>=30；窗口固定0",
+      "default": 0
+    }
+  },
+  "required": [
+    "id",
+    "kind",
+    "title",
+    "description",
+    "entry_path",
+    "skill_bindings"
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "kind": {
+          "const": "window"
+        },
+        "refresh_interval_seconds": {
+          "const": 0
+        }
+      },
+      "required": [
+        "window"
+      ],
+      "not": {
+        "required": [
+          "widget"
+        ]
+      }
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "widget"
+        },
+        "refresh_interval_seconds": {
+          "anyOf": [
+            {
+              "const": 0
+            },
+            {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 3600
+            }
+          ]
+        }
+      },
+      "required": [
+        "widget"
+      ],
+      "not": {
+        "required": [
+          "window"
+        ]
+      }
+    }
+  ]
+}

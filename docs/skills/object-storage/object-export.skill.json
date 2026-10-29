@@ -1,0 +1,103 @@
+{
+  "name": "org.xelab.object-storage.object-export",
+  "version": "1.0.0",
+  "description": "CAS导出当前版本为临时核心Blob",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "CAS导出当前版本为临时核心Blob",
+    "properties": {
+      "key": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024,
+        "description": "NFC逻辑key，UTF8<=1024字节；拒绝首尾斜线/空段/dot段/控制符/反斜线，不作URL decode",
+        "pattern": "^[^\u0000-\u001f\\\\]+$",
+        "example": "reports/example.txt"
+      },
+      "expected_revision": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991,
+        "description": "按owner/key永久head单调修订，不因删除重建归零"
+      }
+    },
+    "required": [
+      "key",
+      "expected_revision"
+    ],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "HostService实际返回的Blob引用，不伪造完整Blob元数据",
+    "properties": {
+      "object_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "UUID",
+        "format": "uuid"
+      },
+      "revision": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991,
+        "description": "按owner/key永久head单调修订，不因删除重建归零"
+      },
+      "blob_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "UUID",
+        "format": "uuid"
+      },
+      "size_bytes": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 67108864,
+        "description": "完整字节数"
+      },
+      "digest": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 71,
+        "description": "原始内容SHA-256",
+        "pattern": "^sha256:[a-f0-9]{64}$"
+      },
+      "content_type": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "description": "声明MIME"
+      }
+    },
+    "required": [
+      "object_id",
+      "revision",
+      "blob_id",
+      "size_bytes",
+      "digest",
+      "content_type"
+    ],
+    "additionalProperties": false
+  },
+  "stream_item_schema": null,
+  "target": {
+    "kind": "capability",
+    "plugin_id": "org.xelab.object-storage",
+    "contract": {
+      "name": "data.object.export",
+      "version": "1.0.0",
+      "schema_digest": "sha256:f1cf0208bbcb7eff045e1307d3d340f14f5dd908bcd99698e2b58dc352d9b57d"
+    }
+  },
+  "mapping": "identity",
+  "maximum_timeout_ms": 300000,
+  "input_blobs": false,
+  "tags": [
+    "object-storage",
+    "object-export"
+  ]
+}

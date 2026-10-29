@@ -1,0 +1,623 @@
+{
+  "manifest_version": "1",
+  "plugin_id": "org.xelab.embedding-gemma.multimodal-1",
+  "version": "1.0.0",
+  "publisher_id": "00000000-0000-4000-8000-000000000001",
+  "host_api_major": 1,
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "entrypoint": [
+    "/usr/local/bin/plugin"
+  ],
+  "capabilities": [
+    {
+      "contract": {
+        "name": "ai.embedding.multimodal",
+        "version": "1.0.0",
+        "schema_digest": "sha256:8f3c653f8f8826aae8fb8d44fa90104e903a082964b1ff20518db565e3d21aee"
+      },
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "description": "多模态 embedding，单请求单项",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "按顺序组合为一条向量",
+              "properties": {
+                "parts": {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "description": "文本片段",
+                        "properties": {
+                          "type": {
+                            "const": "text"
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65536,
+                            "description": "原始文本，不接受媒体控制占位符"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "text"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "description": "受控媒体输入；不接受路径、外部 URL、Base64 大对象",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "image",
+                              "audio",
+                              "video"
+                            ],
+                            "description": "模态"
+                          },
+                          "blob_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 36,
+                            "description": "调用者获准读取的 Blob",
+                            "format": "uuid",
+                            "x-xelab-resource-kind": "blob"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "blob_id"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "description": "文本和媒体序列",
+                  "minItems": 1,
+                  "maxItems": 8
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512,
+                  "description": "仅 document 用途"
+                }
+              },
+              "required": [
+                "parts"
+              ],
+              "additionalProperties": false
+            },
+            "description": "单项",
+            "minItems": 1,
+            "maxItems": 1
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "retrieval_query",
+              "retrieval_document",
+              "semantic_similarity"
+            ],
+            "description": "任务用途，由插件固定映射前缀",
+            "default": "semantic_similarity"
+          },
+          "dimensions": {
+            "type": "integer",
+            "enum": [
+              128,
+              256,
+              512,
+              768
+            ],
+            "default": 768,
+            "description": "先保留前 d 维再 L2 归一化"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "description": "向量和兼容性标识",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "对应一项输入",
+              "properties": {
+                "index": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 15,
+                  "description": "从 0 开始"
+                },
+                "embedding": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "description": "有限 float32 值，拒绝 NaN/Infinity"
+                  },
+                  "description": "维度必须与 dimensions 相同",
+                  "minItems": 128,
+                  "maxItems": 768
+                }
+              },
+              "required": [
+                "index",
+                "embedding"
+              ],
+              "additionalProperties": false
+            },
+            "description": "顺序与输入相同",
+            "minItems": 1,
+            "maxItems": 16
+          },
+          "dimensions": {
+            "type": "integer",
+            "enum": [
+              128,
+              256,
+              512,
+              768
+            ]
+          },
+          "normalized": {
+            "const": true
+          },
+          "model": {
+            "const": "google/embeddinggemma-2"
+          },
+          "model_revision": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40,
+            "description": "构建时锁定的上游 commit",
+            "pattern": "^[a-f0-9]{40}$"
+          },
+          "embedding_space_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 71,
+            "description": "不含 CPU/并发数的向量空间指纹",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "profile_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "实际插件 ID"
+          },
+          "usage": {
+            "type": "object",
+            "description": "本批输入计量，不是模型性能承诺",
+            "properties": {
+              "input_items": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 16,
+                "description": "项数"
+              },
+              "input_tokens": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 131072,
+                "description": "含前缀与模态的总计"
+              }
+            },
+            "required": [
+              "input_items",
+              "input_tokens"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "data",
+          "dimensions",
+          "normalized",
+          "model",
+          "model_revision",
+          "embedding_space_id",
+          "profile_id",
+          "usage"
+        ],
+        "additionalProperties": false
+      },
+      "stream_item_schema": null,
+      "side_effect": "none",
+      "maximum_input_bytes": 4194304,
+      "maximum_output_bytes": 16777216
+    }
+  ],
+  "dependencies": [],
+  "requested_rules": [
+    {
+      "rule": {
+        "action": "blob.read",
+        "resource": {
+          "kind": "blob",
+          "match": "all"
+        }
+      },
+      "required": true
+    }
+  ],
+  "minimum_resources": {
+    "cpu_millis": 1000,
+    "memory_bytes": 6442450944,
+    "ephemeral_bytes": 1073741824,
+    "pids": 128
+  },
+  "health": {
+    "startup_timeout_ms": 180000,
+    "interval_ms": 5000,
+    "timeout_ms": 2000,
+    "failure_threshold": 3
+  },
+  "volumes": [],
+  "routes": [],
+  "config_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "固定预设配置；调整并发/模态需发布新profile",
+    "properties": {
+      "model_lock_path": {
+        "const": "/xelab/models/embeddinggemma-2.lock.json",
+        "description": "固定预设值"
+      },
+      "device": {
+        "const": "cpu",
+        "description": "固定预设值"
+      },
+      "dtype": {
+        "const": "float32",
+        "description": "固定预设值"
+      },
+      "load_vision": {
+        "const": true,
+        "description": "固定预设值"
+      },
+      "load_audio": {
+        "const": true,
+        "description": "固定预设值"
+      },
+      "max_active_requests": {
+        "const": 1,
+        "description": "固定预设值"
+      },
+      "inference_threads": {
+        "const": 1,
+        "description": "固定预设值"
+      },
+      "inter_op_threads": {
+        "const": 1,
+        "description": "固定预设值"
+      },
+      "maximum_tokens_per_item": {
+        "const": 4096,
+        "description": "固定预设值"
+      },
+      "maximum_total_tokens_per_request": {
+        "const": 8192,
+        "description": "固定预设值"
+      },
+      "maximum_batch_items": {
+        "const": 1,
+        "description": "固定预设值"
+      },
+      "maximum_media_bytes": {
+        "const": 33554432,
+        "description": "固定预设值"
+      },
+      "maximum_image_pixels": {
+        "const": 1048576,
+        "description": "固定预设值"
+      },
+      "maximum_audio_seconds": {
+        "const": 60,
+        "description": "固定预设值"
+      },
+      "maximum_video_seconds": {
+        "const": 10,
+        "description": "固定预设值"
+      },
+      "default_dimensions": {
+        "const": 768,
+        "description": "固定预设值"
+      },
+      "normalize": {
+        "const": true,
+        "description": "固定预设值"
+      }
+    },
+    "required": [
+      "model_lock_path",
+      "device",
+      "dtype",
+      "load_vision",
+      "load_audio",
+      "max_active_requests",
+      "inference_threads",
+      "inter_op_threads",
+      "maximum_tokens_per_item",
+      "maximum_total_tokens_per_request",
+      "maximum_batch_items",
+      "maximum_media_bytes",
+      "maximum_image_pixels",
+      "maximum_audio_seconds",
+      "maximum_video_seconds",
+      "default_dimensions",
+      "normalize"
+    ],
+    "additionalProperties": false
+  },
+  "data_schema_version": "none",
+  "upgrade_strategy": "recreate",
+  "skills": [
+    {
+      "name": "org.xelab.embedding-gemma.multimodal-1.embed",
+      "version": "1.0.0",
+      "description": "EmbeddingGemma 2 embedding",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "description": "多模态 embedding，单请求单项",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "按顺序组合为一条向量",
+              "properties": {
+                "parts": {
+                  "type": "array",
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "description": "文本片段",
+                        "properties": {
+                          "type": {
+                            "const": "text"
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 65536,
+                            "description": "原始文本，不接受媒体控制占位符"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "text"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "description": "受控媒体输入；不接受路径、外部 URL、Base64 大对象",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "image",
+                              "audio",
+                              "video"
+                            ],
+                            "description": "模态"
+                          },
+                          "blob_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 36,
+                            "description": "调用者获准读取的 Blob",
+                            "format": "uuid",
+                            "x-xelab-resource-kind": "blob"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "blob_id"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "description": "文本和媒体序列",
+                  "minItems": 1,
+                  "maxItems": 8
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512,
+                  "description": "仅 document 用途"
+                }
+              },
+              "required": [
+                "parts"
+              ],
+              "additionalProperties": false
+            },
+            "description": "单项",
+            "minItems": 1,
+            "maxItems": 1
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "retrieval_query",
+              "retrieval_document",
+              "semantic_similarity"
+            ],
+            "description": "任务用途，由插件固定映射前缀",
+            "default": "semantic_similarity"
+          },
+          "dimensions": {
+            "type": "integer",
+            "enum": [
+              128,
+              256,
+              512,
+              768
+            ],
+            "default": 768,
+            "description": "先保留前 d 维再 L2 归一化"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "description": "向量和兼容性标识",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "对应一项输入",
+              "properties": {
+                "index": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 15,
+                  "description": "从 0 开始"
+                },
+                "embedding": {
+                  "type": "array",
+                  "items": {
+                    "type": "number",
+                    "description": "有限 float32 值，拒绝 NaN/Infinity"
+                  },
+                  "description": "维度必须与 dimensions 相同",
+                  "minItems": 128,
+                  "maxItems": 768
+                }
+              },
+              "required": [
+                "index",
+                "embedding"
+              ],
+              "additionalProperties": false
+            },
+            "description": "顺序与输入相同",
+            "minItems": 1,
+            "maxItems": 16
+          },
+          "dimensions": {
+            "type": "integer",
+            "enum": [
+              128,
+              256,
+              512,
+              768
+            ]
+          },
+          "normalized": {
+            "const": true
+          },
+          "model": {
+            "const": "google/embeddinggemma-2"
+          },
+          "model_revision": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40,
+            "description": "构建时锁定的上游 commit",
+            "pattern": "^[a-f0-9]{40}$"
+          },
+          "embedding_space_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 71,
+            "description": "不含 CPU/并发数的向量空间指纹",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "profile_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "实际插件 ID"
+          },
+          "usage": {
+            "type": "object",
+            "description": "本批输入计量，不是模型性能承诺",
+            "properties": {
+              "input_items": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 16,
+                "description": "项数"
+              },
+              "input_tokens": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 131072,
+                "description": "含前缀与模态的总计"
+              }
+            },
+            "required": [
+              "input_items",
+              "input_tokens"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "data",
+          "dimensions",
+          "normalized",
+          "model",
+          "model_revision",
+          "embedding_space_id",
+          "profile_id",
+          "usage"
+        ],
+        "additionalProperties": false
+      },
+      "stream_item_schema": null,
+      "target": {
+        "kind": "capability",
+        "plugin_id": "org.xelab.embedding-gemma.multimodal-1",
+        "contract": {
+          "name": "ai.embedding.multimodal",
+          "version": "1.0.0",
+          "schema_digest": "sha256:8f3c653f8f8826aae8fb8d44fa90104e903a082964b1ff20518db565e3d21aee"
+        }
+      },
+      "mapping": "identity",
+      "maximum_timeout_ms": 300000,
+      "input_blobs": true,
+      "tags": [
+        "preset",
+        "multimodal-1"
+      ]
+    }
+  ],
+  "business_entry": "skill_required",
+  "concurrency": {
+    "max_active_requests": 1,
+    "max_queue_requests": 32,
+    "queue_timeout_ms": 10000
+  }
+}

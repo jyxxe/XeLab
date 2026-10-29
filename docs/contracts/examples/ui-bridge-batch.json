@@ -1,0 +1,30 @@
+{
+  "protocol": "xelab.ui/1",
+  "view_id": "00000000-0000-4000-8000-000000000001",
+  "channel_nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "seq": 2,
+  "type": "request",
+  "request_id": 1,
+  "method": "batch.create",
+  "params": {
+    "binding_alias": "embed",
+    "idempotency_key": "import-2026-10-29-001",
+    "request": {
+      "items": [
+        {
+          "id": "one",
+          "input": {
+            "items": [
+              {
+                "text": "知识库检索"
+              }
+            ],
+            "purpose": "retrieval_query",
+            "dimensions": 128
+          }
+        }
+      ],
+      "run_as": "user"
+    }
+  }
+}

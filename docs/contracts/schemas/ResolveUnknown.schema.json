@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ResolveUnknown",
+  "type": "object",
+  "description": "核实结果未知的步骤；重放不是默认动作",
+  "additionalProperties": false,
+  "properties": {
+    "resolution": {
+      "type": "string",
+      "enum": [
+        "confirmed_succeeded",
+        "confirmed_not_executed"
+      ],
+      "description": "外部结果核实后确认"
+    },
+    "evidence": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "description": "人工或外部查询依据，必须审计"
+    },
+    "output": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue"
+    }
+  },
+  "required": [
+    "resolution",
+    "evidence"
+  ]
+}

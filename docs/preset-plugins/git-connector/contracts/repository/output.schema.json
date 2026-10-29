@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "operation": {
+      "type": "string",
+      "enum": [
+        "files",
+        "branches",
+        "log"
+      ],
+      "description": ""
+    },
+    "resolved_commit": {
+      "anyOf": [
+        {
+          "type": "string",
+          "description": "",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "file",
+              "directory"
+            ],
+            "description": ""
+          },
+          "size_bytes": {
+            "type": "integer",
+            "description": "",
+            "minimum": 0,
+            "maximum": 67108864
+          },
+          "blob_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "description": "UUID",
+                "minLength": 1,
+                "maxLength": 36,
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "kind",
+          "size_bytes",
+          "blob_id"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 200
+    },
+    "branches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "commit": {
+            "type": "string",
+            "description": "",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "name",
+          "commit"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 200
+    },
+    "commits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "parents": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "minItems": 0,
+            "maxItems": 32
+          },
+          "author_name": {
+            "type": "string",
+            "description": "",
+            "minLength": 0,
+            "maxLength": 256
+          },
+          "authored_at": {
+            "type": "string",
+            "description": "",
+            "minLength": 1,
+            "maxLength": 40,
+            "format": "date-time"
+          },
+          "subject": {
+            "type": "string",
+            "description": "",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "id",
+          "parents",
+          "author_name",
+          "authored_at",
+          "subject"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 200
+    },
+    "next_cursor": {
+      "anyOf": [
+        {
+          "type": "string",
+          "description": "",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "operation",
+    "resolved_commit",
+    "files",
+    "branches",
+    "commits",
+    "next_cursor"
+  ],
+  "additionalProperties": false
+}

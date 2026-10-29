@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ApiKey",
+  "type": "object",
+  "description": "密钥元数据；不含明文和摘要",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "乐观锁版本，每次持久化变更加一"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "创建时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "updated_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "最近变更时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "owner_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "用途名称"
+    },
+    "prefix": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "description": "安全显示前缀"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "revoked",
+        "expired"
+      ],
+      "description": "revoked 不能恢复"
+    },
+    "inheritance": {
+      "$ref": "../openapi.json#/components/schemas/InheritanceSpec"
+    },
+    "conditions": {
+      "$ref": "../openapi.json#/components/schemas/CredentialConditions"
+    },
+    "issuer_credential_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 36,
+          "description": "资源唯一标识",
+          "format": "uuid",
+          "example": "00000000-0000-4000-8000-000000000001"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "资源唯一标识"
+    },
+    "last_used_at": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "description": "最近使用时间",
+          "format": "date-time",
+          "example": "2026-10-28T12:00:00Z"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "最近使用时间"
+    }
+  },
+  "required": [
+    "id",
+    "revision",
+    "created_at",
+    "updated_at",
+    "owner_id",
+    "name",
+    "prefix",
+    "status",
+    "inheritance",
+    "conditions",
+    "issuer_credential_id",
+    "last_used_at"
+  ]
+}

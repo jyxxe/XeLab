@@ -1,0 +1,19 @@
+{
+  "model_lock_path": "/xelab/models/embeddinggemma-2.lock.json",
+  "device": "cpu",
+  "dtype": "float32",
+  "load_vision": true,
+  "load_audio": true,
+  "max_active_requests": 1,
+  "inference_threads": 1,
+  "inter_op_threads": 1,
+  "maximum_tokens_per_item": 4096,
+  "maximum_total_tokens_per_request": 8192,
+  "maximum_batch_items": 1,
+  "maximum_media_bytes": 33554432,
+  "maximum_image_pixels": 1048576,
+  "maximum_audio_seconds": 60,
+  "maximum_video_seconds": 10,
+  "default_dimensions": 768,
+  "normalize": true
+}

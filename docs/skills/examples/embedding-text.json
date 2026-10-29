@@ -1,0 +1,12 @@
+{
+  "input": {
+    "items": [
+      {
+        "text": "知识库检索"
+      }
+    ],
+    "purpose": "retrieval_query",
+    "dimensions": 128
+  },
+  "timeout_ms": 120000
+}

@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ResourceSelector",
+  "type": "object",
+  "description": "资源选择器；all 仅表示指定类型内所有资源",
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": [
+        "platform",
+        "account",
+        "group",
+        "credential",
+        "plugin",
+        "deployment",
+        "instance",
+        "capability",
+        "task",
+        "workflow",
+        "schedule",
+        "volume",
+        "secret",
+        "blob",
+        "event",
+        "subscription",
+        "client",
+        "publisher",
+        "backup",
+        "operation",
+        "audit",
+        "quota",
+        "model",
+        "call",
+        "skill",
+        "skill_batch",
+        "micro_plugin"
+      ],
+      "description": "资源类型"
+    },
+    "match": {
+      "type": "string",
+      "enum": [
+        "all",
+        "ids",
+        "owned_by"
+      ],
+      "description": "匹配方式"
+    },
+    "ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160,
+        "description": "具体资源 ID；能力/插件可使用名称"
+      },
+      "minItems": 1,
+      "maxItems": 256,
+      "description": "显式资源标识"
+    },
+    "owner_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "owned_by 的固定账户标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    }
+  },
+  "required": [
+    "kind",
+    "match"
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "match": {
+          "const": "all"
+        }
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "ids"
+            ]
+          },
+          {
+            "required": [
+              "owner_id"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "match": {
+          "const": "ids"
+        }
+      },
+      "required": [
+        "ids"
+      ],
+      "not": {
+        "required": [
+          "owner_id"
+        ]
+      }
+    },
+    {
+      "properties": {
+        "match": {
+          "const": "owned_by"
+        }
+      },
+      "required": [
+        "owner_id"
+      ],
+      "not": {
+        "required": [
+          "ids"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WorkflowStep",
+  "type": "object",
+  "description": "DAG 节点；contract 或 skill_id 二选一，Skill 节点锁定定义及提供者绑定",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "工作流内唯一标识",
+      "pattern": "^[a-z][a-z0-9_-]*$"
+    },
+    "contract": {
+      "$ref": "../openapi.json#/components/schemas/ContractRef"
+    },
+    "depends_on": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80,
+        "description": "同工作流节点 ID"
+      },
+      "minItems": 0,
+      "maxItems": 64,
+      "description": "依赖"
+    },
+    "input_mapping": {
+      "$ref": "../openapi.json#/components/schemas/InputMapping"
+    },
+    "maximum_attempts": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5,
+      "description": "总尝试数，含首次",
+      "default": 1
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 86400000,
+      "description": "单次期限"
+    },
+    "provider_deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "状态相关步骤需固定提供者",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "skill_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "不可变的 Skill 版本 UUID；与 contract 二选一",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    }
+  },
+  "required": [
+    "id",
+    "depends_on",
+    "input_mapping",
+    "timeout_ms"
+  ],
+  "oneOf": [
+    {
+      "required": [
+        "contract"
+      ],
+      "not": {
+        "required": [
+          "skill_id"
+        ]
+      }
+    },
+    {
+      "required": [
+        "skill_id"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "contract"
+            ]
+          },
+          {
+            "required": [
+              "provider_deployment_id"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

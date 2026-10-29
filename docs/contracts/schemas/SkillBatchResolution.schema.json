@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SkillBatchResolution",
+  "type": "object",
+  "additionalProperties": false,
+  "description": "人工核实unknown项目；需要单独batch.resolve和证据，禁止直接重放",
+  "properties": {
+    "resolution": {
+      "type": "string",
+      "enum": [
+        "confirmed_succeeded",
+        "confirmed_not_executed"
+      ],
+      "description": "外部证据核实结果"
+    },
+    "evidence": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "description": "审计依据，禁止填凭证/秘密"
+    },
+    "output": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue",
+      "description": "确认成功时必填，按原Skill.output_schema校验；核心构造结果封装"
+    }
+  },
+  "required": [
+    "resolution",
+    "evidence"
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "resolution": {
+          "const": "confirmed_succeeded"
+        }
+      },
+      "required": [
+        "output"
+      ]
+    },
+    {
+      "properties": {
+        "resolution": {
+          "const": "confirmed_not_executed"
+        }
+      },
+      "not": {
+        "required": [
+          "output"
+        ]
+      }
+    }
+  ]
+}

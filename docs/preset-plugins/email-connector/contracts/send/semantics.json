@@ -1,0 +1,24 @@
+{
+  "status": "planned",
+  "version": "0.1.0",
+  "kind": "ordinary",
+  "capability_id": "email.send",
+  "side_effect": "non_repeatable",
+  "maximum_input_bytes": 4194304,
+  "maximum_output_bytes": 16777216,
+  "maximum_json_depth": 64,
+  "streaming": false,
+  "batch": "core_async_skill_batch",
+  "unknown_fields": "reject",
+  "authorization": "future_skill_invoke_and_capability_invoke_and_current_owner_policy",
+  "cancellation": "cooperative_hard_deadline_no_partial_success",
+  "retries": "none_by_default_query_evidence_before_replay",
+  "feature_gates": [
+    "email-transport-profile",
+    "delivery-evidence-recovery"
+  ],
+  "notes": [
+    "Total recipients<=100 and attachments total<=64MiB before provider lower limits/encoding expansion.",
+    "Bcc private, no arbitrary sender/DSN/headers; partial acceptance blocks blind resend."
+  ]
+}

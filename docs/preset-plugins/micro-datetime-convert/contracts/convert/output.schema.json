@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "value": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "utc_value": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "timezone": {
+      "type": "string",
+      "description": "",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "offset_seconds": {
+      "type": "integer",
+      "description": "",
+      "minimum": -86399,
+      "maximum": 86399
+    }
+  },
+  "required": [
+    "value",
+    "utc_value",
+    "timezone",
+    "offset_seconds"
+  ],
+  "additionalProperties": false
+}

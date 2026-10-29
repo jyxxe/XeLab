@@ -1,0 +1,208 @@
+# 数据模型目录
+
+[HTTP 目录](../README.md) · [机器契约目录](../../contracts/README.md)
+
+- [Account](Account.md)：用户或服务账户；API Key 不属于账户
+- [AccountIssued](AccountIssued.md)：创建结果；激活凭证只在首次成功响应展示
+- [AccountPage](AccountPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [AccountPatch](AccountPatch.md)：仅修改显示名称或启用状态；禁止修改 parent_id、kind 和根标记
+- [AckDelivery](AckDelivery.md)：只接受当前订阅与当前有效租约
+- [ActivateAccount](ActivateAccount.md)：激活待启用用户并设置密码
+- [ApiKey](ApiKey.md)：密钥元数据；不含明文和摘要
+- [ApiKeyIssued](ApiKeyIssued.md)：只有首次签发成功响应携带密钥
+- [ApiKeyPage](ApiKeyPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [Attempt](Attempt.md)：带租约和 fencing 的单次执行
+- [AttemptPage](AttemptPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [AuditEvent](AuditEvent.md)：追加式审计，禁止更新和普通删除
+- [AuditEventPage](AuditEventPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [AuthorizationCheck](AuthorizationCheck.md)：只检查调用主体，不能伪装其他账户
+- [AuthorizationDecision](AuthorizationDecision.md)：决策只供界面提示；不能替代执行时重新鉴权
+- [Backup](Backup.md)：可恢复备份清单
+- [BackupPage](BackupPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [BackupRequest](BackupRequest.md)：创建一致性备份；数据卷冻结由批准的插件迁移/排空流程执行
+- [Blob](Blob.md)：业务大对象元数据；内容不可变
+- [CallResult](CallResult.md)：非流式结果；micro调用必须附全部微绑定/制品标识，contract使用候选Skill的name/version/definition_digest
+- [CallStatus](CallStatus.md)：调用状态与结果查询
+- [CancelOperation](CancelOperation.md)：请求取消；已提交的不可逆步骤不能保证撤回
+- [CapabilityContract](CapabilityContract.md)：能力契约；JSON Schema 2020-12 文档与注册制品摘要匹配
+- [CapabilityProvider](CapabilityProvider.md)：可路由能力提供者；无宿主内部地址
+- [CapabilityProviderPage](CapabilityProviderPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [ChangePassword](ChangePassword.md)：用户本人修改密码；服务账户不支持
+- [ChatChoice](ChatChoice.md)：文本生成结果
+- [ChatChunk](ChatChunk.md)：兼容流式增量；结束后发送 data: [DONE]
+- [ChatChunkChoice](ChatChunkChoice.md)：流式单个 choice
+- [ChatDelta](ChatDelta.md)：文本流增量；首帧 role=assistant，中间帧 content，终帧可为空
+- [ChatRequest](ChatRequest.md)：平台定义的 chat/completions 文本子集；不支持字段拒绝，不静默丢弃
+- [ChatResponse](ChatResponse.md)：文本兼容接口非流式结果
+- [Client](Client.md)：WebUI 客户端
+- [ClientPage](ClientPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [ClientSpec](ClientSpec.md)：浏览器公共客户端注册信息；不分配前端 client_secret
+- [ConsentDecision](ConsentDecision.md)：可信授权页提交；只接受绑定当前会话的 pending 请求
+- [ContractRef](ContractRef.md)：不可变能力契约引用
+- [CreateApiKey](CreateApiKey.md)：创建密钥；全量模式也保留实际创建凭证来源
+- [CreateChild](CreateChild.md)：创建属于路径账户的子账户；实际授权还受调用凭证限制
+- [CreateGroup](CreateGroup.md)：建立组并发布 v1；所有规则须在实际调用主体可授权范围内
+- [CreateGroupVersion](CreateGroupVersion.md)：发布新版本；旧绑定保持固定版本
+- [CreateMicroDeployment](CreateMicroDeployment.md)：独立绑定版本与MPR父部署；初始关闭，绑定/预算修改需新建
+- [CreateMicroPlugin](CreateMicroPlugin.md)：owner取当前认证主体；name在owner命名空间唯一
+- [CreateSkill](CreateSkill.md)：注册不可变Skill；普通来源须OCI签名覆盖，micro来源须核心候选与独立微制品匹配
+- [CredentialConditions](CredentialConditions.md)：密钥附加条件，创建者源凭证条件也持续适用
+- [DefaultUi](DefaultUi.md)：平台默认界面及配置版本
+- [DefaultUiSpec](DefaultUiSpec.md)：平台默认界面选择
+- [Delivery](Delivery.md)：至少一次事件投递
+- [DependencyBinding](DependencyBinding.md)：已解析提供者绑定
+- [DependencyPlan](DependencyPlan.md)：可审核解析结果；执行前重新核对版本与资源
+- [DependencyPlanRequest](DependencyPlanRequest.md)：解析不执行，计划有版本前置条件
+- [DependencySpec](DependencySpec.md)：必要性、目标类型和绑定范围为独立维度
+- [Deployment](Deployment.md)：期望状态及控制器观察结果
+- [DeploymentPage](DeploymentPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [DeploymentPatch](DeploymentPatch.md)：PUT 完整期望配置；独立通过 ETag 控制并发
+- [DeploymentSpec](DeploymentSpec.md)：部署期望配置；不直接填写容器地址
+- [EffectivePermissions](EffectivePermissions.md)：某个账户当前有效权限；不返回其他账户私有信息
+- [EmbeddingItem](EmbeddingItem.md)：向量输出
+- [EmbeddingRequest](EmbeddingRequest.md)：文本 embedding 子集
+- [EmbeddingResponse](EmbeddingResponse.md)：批量向量结果
+- [EnabledSpec](EnabledSpec.md)：只改变期望启用状态
+- [ErrorDetail](ErrorDetail.md)：稳定错误对象
+- [ErrorEnvelope](ErrorEnvelope.md)：平台 HTTP 错误响应
+- [Event](Event.md)：持久化事件信封
+- [EventPublish](EventPublish.md)：平台事件；业务数据必须匹配已注册主题契约
+- [EventTopicSpec](EventTopicSpec.md)：插件声明的事件主题契约
+- [FieldViolation](FieldViolation.md)：字段级错误
+- [Grant](Grant.md)：可追溯授权来源
+- [GrantPage](GrantPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [GrantRequest](GrantRequest.md)：为路径账户添加授权；不改变父级上限
+- [GroupVersion](GroupVersion.md)：不可变权限组版本
+- [GroupVersionRef](GroupVersionRef.md)：固定版本权限组引用
+- [HealthCheckSpec](HealthCheckSpec.md)：插件启动、存活和就绪检查
+- [HealthStatus](HealthStatus.md)：无敏感详情的探针返回
+- [InheritanceSpec](InheritanceSpec.md)：用户选择的继承方式；快照上限由内核展开并保存
+- [InputMapping](InputMapping.md)：输出对象每个字段映射一个 MappingLeaf，禁止脚本
+- [InstallRequest](InstallRequest.md)：安装不可变镜像；验证签名、清单及契约，不自动启用
+- [Installation](Installation.md)：安装记录；与部署和实例状态分离
+- [InstallationPage](InstallationPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [Instance](Instance.md)：实际运行实例；控制器维护，插件不能自报 Ready 绕过准入
+- [InstancePage](InstancePage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [InvokeRequest](InvokeRequest.md)：通用业务调用；input 必须匹配注册契约；大文件传 Blob 引用
+- [JsonValue](JsonValue.md)：业务契约定义的 JSON 值；业务输入输出必须另按对应能力的 JSON Schema 校验。控制面字段不能用此类型逃避定义。
+- [LogEntry](LogEntry.md)：脱敏结构化日志；需要单独日志读取权限
+- [LogEntryPage](LogEntryPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [LoginRequest](LoginRequest.md)：仅可信内核登录页与本机 CLI 使用；第三方 WebUI 跳转授权流程
+- [Manifest](Manifest.md)：OCI 镜像内 /xelab/plugin.json；未知字段拒绝
+- [MappingLeaf](MappingLeaf.md)：输入映射叶子，三个分支严格互斥
+- [MicroBusinessError](MicroBusinessError.md)：微制品声明的业务错误；不得使用平台保留码或认证状态
+- [MicroBusinessSchema](MicroBusinessSchema.md)：受限JSON Schema2020-12；每份<=64KiB、<=256节点/深度16，无$ref/正则/自定义format或资源能力标记
+- [MicroCallDiagnostics](MicroCallDiagnostics.md)：单次微调用诊断，不作为公共日志或业务输出
+- [MicroDeployment](MicroDeployment.md)：微插件运行绑定；不创建OCI容器，候选Skill在此生成
+- [MicroDeploymentPage](MicroDeploymentPage.md)：按created_at/id分页的可见对象
+- [MicroExecutionLimits](MicroExecutionLimits.md)：获批执行预算，必须同时不超过版本声明和MPR上限
+- [MicroHttpBinding](MicroHttpBinding.md)：属于一个微部署且endpoint_alias唯一的可配置绑定
+- [MicroHttpBindingPage](MicroHttpBindingPage.md)：最多8项，无隐式分页遗漏
+- [MicroHttpBindingSpec](MicroHttpBindingSpec.md)：管理者绑定固定endpoint及托管Secret；输入不含原始密钥/自选URL
+- [MicroHttpEndpoint](MicroHttpEndpoint.md)：由微版本固定的HTTPS API模板；业务输入不能选择URL/headers
+- [MicroManifest](MicroManifest.md)：核心独立保存的不可变微制品清单；不是OCI Manifest
+- [MicroPlugin](MicroPlugin.md)：第一类核心资源；无独立OCI容器和Deployment资源预留
+- [MicroPluginPage](MicroPluginPage.md)：按created_at/id分页的可见对象
+- [MicroPluginProfile](MicroPluginProfile.md)：仅改显示名，不改变owner/name/制品
+- [MicroPluginVersion](MicroPluginVersion.md)：发布后不可变；元数据验证不等于脚本已Prepare成功
+- [MicroProxyResult](MicroProxyResult.md)：受控桥返回，不暴露响应头/鉴权值；非2xx不返回原始错误body
+- [MicroRuntimeDescriptor](MicroRuntimeDescriptor.md)：普通OCI插件可提供的受审微执行适配协议声明，不是业务能力
+- [MicroSource](MicroSource.md)：原始UTF8 JavaScript源码，原始字节<=256KiB，返回text/javascript
+- [MicroVersionPage](MicroVersionPage.md)：按created_at/id分页的可见对象
+- [ModelAlias](ModelAlias.md)：对调用者可见的模型别名
+- [ModelAliasRecord](ModelAliasRecord.md)：平台模型别名记录
+- [ModelAliasRecordPage](ModelAliasRecordPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [ModelAliasSpec](ModelAliasSpec.md)：内核批准的模型别名映射，不依赖插件私有配置推断
+- [ModelList](ModelList.md)：兼容模型列表，不使用平台分页包装
+- [NodeConfig](NodeConfig.md)：本机资源预算；内核最低预留不能调低
+- [NodeStatus](NodeStatus.md)：单节点预算与实际用量
+- [OAuthError](OAuthError.md)：OAuth token 端点使用此错误，不使用平台错误包装
+- [OAuthToken](OAuthToken.md)：标准 OAuth token 响应；访问令牌绑定 subject/client/audience
+- [OAuthTokenRequest](OAuthTokenRequest.md)：OAuth 表单：授权码+PKCE或刷新凭证
+- [Operation](Operation.md)：持久化异步管理操作
+- [PermissionDefinition](PermissionDefinition.md)：权限注册项
+- [PermissionDefinitionPage](PermissionDefinitionPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [PermissionGroup](PermissionGroup.md)：权限组身份；版本不可原地修改
+- [PermissionGroupPage](PermissionGroupPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [PermissionRequest](PermissionRequest.md)：申请权限与必需性
+- [PermissionRule](PermissionRule.md)：动作与对象选择器共同定义授权
+- [PluginApproval](PluginApproval.md)：发布版本获批权限与外部网络访问；不是用户授权
+- [PluginUiSpec](PluginUiSpec.md)：可选UI贡献；独立于webui字段，允许仅窗口、仅组件、两者或均不提供
+- [PublishMicroVersion](PublishMicroVersion.md)：从当前获准Blob复制源码到核心不可变存储，不依赖源BlobTTL
+- [Publisher](Publisher.md)：发布者信任根元数据
+- [PublisherPage](PublisherPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [PublisherSpec](PublisherSpec.md)：添加发布者信任根
+- [Quota](Quota.md)：账户树预算及当前使用
+- [QuotaSpec](QuotaSpec.md)：账户树总额度；所有后代累计而非复制
+- [ResizeVolume](ResizeVolume.md)：仅支持扩容；仍须宿主存储准入
+- [ResolveUnknown](ResolveUnknown.md)：核实结果未知的步骤；重放不是默认动作
+- [ResourceLimits](ResourceLimits.md)：实例获批上限；磁盘限额由配额存储实施
+- [ResourceSelector](ResourceSelector.md)：资源选择器；all 仅表示指定类型内所有资源
+- [RestoreRequest](RestoreRequest.md)：恢复到新卷，默认不覆盖原卷
+- [Role](Role.md)：内置不可变角色模板；scope 在绑定时提供
+- [RolePage](RolePage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [RouteSpec](RouteSpec.md)：插件路由声明，平台批准后才生效
+- [RuleConditions](RuleConditions.md)：规则附加约束；省略表示没有该项约束
+- [Schedule](Schedule.md)：持久化定时计划；建立时冻结执行委托
+- [SchedulePage](SchedulePage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [ScheduleSpec](ScheduleSpec.md)：使用 IANA 时区的五字段 cron；明确 DST 和错过触发规则
+- [Secret](Secret.md)：仅元数据
+- [SecretBinding](SecretBinding.md)：密钥到工作负载的绑定
+- [SecretBindingPage](SecretBindingPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [SecretBindingSpec](SecretBindingSpec.md)：仅批准指定部署使用指定密钥版本；不授予明文读取给用户
+- [SecretPage](SecretPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [SecretSpec](SecretSpec.md)：创建平台托管密钥；仅首次写入，不提供用户明文读取端点
+- [Session](Session.md)：会话元数据，不返回校验摘要
+- [SessionIssued](SessionIssued.md)：登录创建会话；浏览器同时设置内核来源的安全 Cookie
+- [SessionPage](SessionPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [Skill](Skill.md)：Skill 版本与当前可用性
+- [SkillBatch](SkillBatch.md)：核心持久化业务批次；不是管理Operation，也不要求创建Workflow
+- [SkillBatchCounts](SkillBatchCounts.md)：同一读快照的计数；各状态之和必须等于total
+- [SkillBatchInputItem](SkillBatchInputItem.md)：一个有界 Skill 调用单元；id 在本批内唯一
+- [SkillBatchItem](SkillBatchItem.md)：单项状态与结果引用；输入不在列表回显
+- [SkillBatchItemPage](SkillBatchItemPage.md)：按提交index顺序分页；每页状态为读取当时快照
+- [SkillBatchPage](SkillBatchPage.md)：按created_at/id排序的可见批次
+- [SkillBatchRequest](SkillBatchRequest.md)：持久化异步批次；完整JSON最大4MiB，所有项目使用同一固定Skill版本
+- [SkillBatchResolution](SkillBatchResolution.md)：人工核实unknown项目；需要单独batch.resolve和证据，禁止直接重放
+- [SkillBatchResume](SkillBatchResume.md)：仅同一所有者显式重新授权；保留原subject/服务账户/Skill/输入和固定上限
+- [SkillCallResult](SkillCallResult.md)：Skill 固定版本与实际调用结果
+- [SkillDefinition](SkillDefinition.md)：不可变的核心转发声明，不是可执行脚本或 Codex SKILL.md
+- [SkillInvokeRequest](SkillInvokeRequest.md)：目标由 Skill 固定，调用方不能覆盖 plugin/contract/address
+- [SkillPage](SkillPage.md)：可见 Skill 版本列表
+- [SkillStreamEvent](SkillStreamEvent.md)：Skill SSE 信封；event 的序列和终态规则不变
+- [SkillTarget](SkillTarget.md)：普通capability/http目标或第一类micro目标；micro只固定核心微版本/微部署/制品，不接受即时源码或任意URL
+- [StreamEvent](StreamEvent.md)：SSE data 对象；terminal 只出现一次
+- [Subscription](Subscription.md)：独立游标和投递租约
+- [SubscriptionPage](SubscriptionPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [SubscriptionSpec](SubscriptionSpec.md)：拉取式事件订阅；禁止任意外部 webhook 目标
+- [Task](Task.md)：一次工作流执行；流程版本及授权来源不可原地修改
+- [TaskPage](TaskPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [TaskRequest](TaskRequest.md)：任务执行授权会冻结提交时上限
+- [TaskStep](TaskStep.md)：任务节点状态
+- [TaskStepPage](TaskStepPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [TextMessage](TextMessage.md)：兼容接口仅支持文本消息
+- [TokenUsage](TokenUsage.md)：插件提供并由网关校验的计量；不作为授权判断
+- [UiContribution](UiContribution.md)：按当前用户过滤后的已批准UI；地址由核心受控origin映射产生
+- [UiContributionKey](UiContributionKey.md)：用户布局只引用具体部署与贡献，不跨新安装静默恢复
+- [UiContributionPage](UiContributionPage.md)：按plugin_id/deployment_id/contribution_id排序的可见贡献
+- [UiContributionSpec](UiContributionSpec.md)：可选独立iframe窗口或桌面组件；两种均不得将插件JS注入桌面壳
+- [UiDockSpec](UiDockSpec.md)：应用Dock偏好；pinned中同贡献不得重复
+- [UiPreferences](UiPreferences.md)：首次GET惰性创建默认偏好，revision=1；更换WebUI插件仍使用此核心记录
+- [UiPreferencesSpec](UiPreferencesSpec.md)：当前账户跨登录保留的非敏感偏好；不允许存令牌/业务输入/结果
+- [UiResolvedSkillBinding](UiResolvedSkillBinding.md)：仅返回当前调用者获准的固定Skill绑定
+- [UiSkillBinding](UiSkillBinding.md)：构建期声明允许桥接的Skill；安装后解析为精确UUID/digest，不使用latest
+- [UiThemeSpec](UiThemeSpec.md)：系统/明亮/深色或自定义令牌；系统模式使用浏览器偏好
+- [UiThemeTokens](UiThemeTokens.md)：有限主题令牌；组件使用角色令牌，禁止传入任意CSS/HTML/脚本
+- [UiWidgetPlacement](UiWidgetPlacement.md)：同用户实例；column/row为0起始网格坐标；重叠需宿主整理
+- [UiWidgetSize](UiWidgetSize.md)：组件占用桌面网格，1格=96逻辑像素，间距12；不控制全局桌面
+- [UiWindowSize](UiWindowSize.md)：窗口逻辑像素约束，min<=default<=max；小屏由宿主裁剪到可用工作区
+- [UpgradeRequest](UpgradeRequest.md)：升级或回滚到已安装的明确目标版本
+- [Volume](Volume.md)：卷元数据
+- [VolumeMountSpec](VolumeMountSpec.md)：声明卷需求而非宿主路径
+- [VolumePage](VolumePage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [VolumeSpec](VolumeSpec.md)：平台管理卷；禁止指定任意宿主路径
+- [WebUiSpec](WebUiSpec.md)：浏览器界面元数据
+- [Workflow](Workflow.md)：工作流版本对象；更新创建新版本
+- [WorkflowPage](WorkflowPage.md)：按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象
+- [WorkflowSpec](WorkflowSpec.md)：不可变 DAG 版本；最多 64 步
+- [WorkflowStep](WorkflowStep.md)：DAG 节点；contract 或 skill_id 二选一，Skill 节点锁定定义及提供者绑定

@@ -1,0 +1,25 @@
+{
+  "status": "planned",
+  "version": "0.1.0",
+  "kind": "ordinary",
+  "capability_id": "archive.extract",
+  "side_effect": "idempotent",
+  "maximum_input_bytes": 4194304,
+  "maximum_output_bytes": 16777216,
+  "maximum_json_depth": 64,
+  "streaming": false,
+  "batch": "core_async_skill_batch",
+  "unknown_fields": "reject",
+  "authorization": "future_skill_invoke_and_capability_invoke_and_current_owner_policy",
+  "cancellation": "cooperative_hard_deadline_no_partial_success",
+  "retries": "none_by_default_query_evidence_before_replay",
+  "feature_gates": [
+    "archive-libraries",
+    "bounded-multi-blob-output"
+  ],
+  "notes": [
+    "All extracted files are temporary authorized Blob references; total<=64MiB.",
+    "Reject symlinks/hardlinks/traversal/absolute names/encrypted unsupported formats and archive bombs.",
+    "Output Blob publication is part of a durable per-Call idempotency ledger; replay reuses existing result/Blob IDs while authorized, never duplicate publication."
+  ]
+}

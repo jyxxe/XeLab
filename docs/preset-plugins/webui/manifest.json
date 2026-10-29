@@ -1,0 +1,116 @@
+{
+  "manifest_version": "1",
+  "plugin_id": "org.xelab.webui",
+  "version": "1.0.0",
+  "publisher_id": "00000000-0000-4000-8000-000000000001",
+  "host_api_major": 1,
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "entrypoint": [
+    "/usr/local/bin/plugin"
+  ],
+  "capabilities": [],
+  "dependencies": [],
+  "requested_rules": [],
+  "minimum_resources": {
+    "cpu_millis": 500,
+    "memory_bytes": 536870912,
+    "ephemeral_bytes": 268435456,
+    "pids": 128
+  },
+  "health": {
+    "startup_timeout_ms": 180000,
+    "interval_ms": 5000,
+    "timeout_ms": 2000,
+    "failure_threshold": 3
+  },
+  "volumes": [],
+  "routes": [
+    {
+      "path_prefix": "/ui/org.xelab.webui/",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "kind": "webui",
+      "required_action": "plugin.http.invoke",
+      "maximum_body_bytes": 0,
+      "timeout_ms": 10000,
+      "authentication": "public"
+    }
+  ],
+  "config_schema": {
+    "type": "object",
+    "description": "macOS风格可变主题桌面壳的部署默认；不是用户授权",
+    "additionalProperties": false,
+    "properties": {
+      "management_api_major": {
+        "const": 1
+      },
+      "default_page": {
+        "const": "desktop"
+      },
+      "default_theme": {
+        "type": "string",
+        "enum": [
+          "system",
+          "light",
+          "dark"
+        ],
+        "description": "首次用户偏好模式",
+        "default": "system"
+      },
+      "max_open_windows": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 32,
+        "description": "每浏览器桌面活动窗口上限",
+        "default": 16
+      },
+      "max_active_widgets": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 32,
+        "description": "同时挂载组件上限",
+        "default": 8
+      },
+      "widget_min_refresh_seconds": {
+        "type": "integer",
+        "minimum": 30,
+        "maximum": 3600,
+        "description": "部署可提高最低刷新间隔",
+        "default": 30
+      },
+      "ui_protocol_major": {
+        "const": 1
+      }
+    },
+    "required": [
+      "management_api_major",
+      "default_page",
+      "default_theme",
+      "max_open_windows",
+      "max_active_widgets",
+      "widget_min_refresh_seconds",
+      "ui_protocol_major"
+    ]
+  },
+  "data_schema_version": "none",
+  "upgrade_strategy": "recreate",
+  "skills": [],
+  "business_entry": "direct",
+  "concurrency": {
+    "max_active_requests": 32,
+    "max_queue_requests": 64,
+    "queue_timeout_ms": 5000
+  },
+  "webui": {
+    "base_path": "/ui/org.xelab.webui/",
+    "entry_path": "/",
+    "management_api_major": 1,
+    "isolation": "dedicated_origin",
+    "origin": "https://webui.example.org"
+  }
+}

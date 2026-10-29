@@ -1,0 +1,236 @@
+{
+  "version": "2.6.0",
+  "methods": {
+    "PluginLifecycle.Describe": {
+      "deadline_ms": 2000,
+      "peer": "kernel",
+      "permission": "控制面已验证该安装",
+      "idempotent": true,
+      "rules": "无副作用；manifest_json 不超过 1MiB，原始字节摘要必须与已安装 Manifest 一致；不一致拒绝后续初始化。"
+    },
+    "PluginLifecycle.Initialize": {
+      "deadline_ms": 60000,
+      "peer": "kernel",
+      "permission": "当前部署与实例代次已准入",
+      "idempotent": true,
+      "rules": "deployment/instance/generation 必须与实际挂载身份相符；同一代次同 config_digest 可重复，其他配置同代次返回 STATE_CONFLICT。config_json 验证 Schema，无原始 secret；不能隐式执行数据迁移。"
+    },
+    "PluginLifecycle.GetHealth": {
+      "deadline_ms": 2000,
+      "peer": "kernel",
+      "permission": "当前实例观测",
+      "idempotent": true,
+      "rules": "无业务副作用。每个契约必须声明 ready/reason，未声明的能力视为不可用。alive=true 不等于所有能力 Ready，observed_generation 必须匹配。"
+    },
+    "PluginLifecycle.Drain": {
+      "deadline_ms": 302000,
+      "peer": "kernel",
+      "permission": "部署停止/升级控制",
+      "idempotent": true,
+      "rules": "grace_ms 为 1000–300000。接收成功后 accepting_requests=false；不再接新调用，保留现有调用至完成/取消。重复 Drain 不恢复接流；超时由内核运行时终止。"
+    },
+    "PluginLifecycle.Shutdown": {
+      "deadline_ms": 302000,
+      "peer": "kernel",
+      "permission": "部署停止控制",
+      "idempotent": true,
+      "rules": "Ack 表示已接受停止，不证明进程已退出；先回复再退出。内核用运行时实际观测确定停止与资源释放，禁止删除持久卷。"
+    },
+    "CapabilityService.Invoke": {
+      "deadline_ms": 300000,
+      "peer": "kernel",
+      "permission": "capability.invoke + 有效用户/服务委托",
+      "idempotent": false,
+      "rules": "校验 call_id、契约和 input_digest，input_json<=4MiB，output_json<=16MiB。side_effect 决定去重和重试；不能仅因方法为 unary 就自动重放。成功结果和键映射持久化要求随契约声明。"
+    },
+    "CapabilityService.InvokeStream": {
+      "deadline_ms": 300000,
+      "peer": "kernel",
+      "permission": "capability.invoke + 有效委托",
+      "idempotent": false,
+      "rules": "契约必须有 stream_item_schema；sequence 从1连续，body oneof 必须恰有一项。item<=1MiB，completed/failed/canceled 恰一终帧。流断后不自动重新生成或切换提供者。"
+    },
+    "CapabilityService.Cancel": {
+      "deadline_ms": 2000,
+      "peer": "kernel",
+      "permission": "capability.call.cancel + 原调用范围",
+      "idempotent": true,
+      "rules": "只能取消本实例持有的目标调用；重复请求成功。accepted=true 不证明外部副作用撤回，最终状态通过 QueryResult 核实。 MPR复用本方法取消已知微Call，不支持通过公共Invoke提交即时脚本。"
+    },
+    "CapabilityService.QueryResult": {
+      "deadline_ms": 2000,
+      "peer": "kernel",
+      "permission": "capability.call.read + 原调用范围",
+      "idempotent": true,
+      "rules": "call_id 与原 idempotency_key 必须一致；SUCCEEDED 必须 completed，FAILED 必须 failed，RUNNING/ACCEPTED/UNKNOWN 无 outcome。记录丢失不能返回确定未执行。 MPR可返回本实例有界Call缓存；失效返回未找到，核心先查持久Call结果，纯计算安全恢复仍按原微制品/输入/预算。"
+    },
+    "TaskWorker.Execute": {
+      "deadline_ms": 86400000,
+      "peer": "kernel",
+      "permission": "固定 ExecutionDelegation + 当前账户/源链有效",
+      "idempotent": false,
+      "rules": "所有标识/fence 必需；input_json<=4MiB，沿稳定业务幂等键去重。每10s heartbeat，30s内核租约；TaskProgress.sequence 从1递增，result只一次。恢复检查点必须匹配插件/数据Schema版本。"
+    },
+    "TaskWorker.Cancel": {
+      "deadline_ms": 2000,
+      "peer": "kernel",
+      "permission": "task.cancel + 原执行委托",
+      "idempotent": true,
+      "rules": "execution_id/fence 匹配当前执行；旧 fence 不得取消接管后的新执行。取消协作完成，结果不明保留 UNKNOWN。"
+    },
+    "TaskWorker.Query": {
+      "deadline_ms": 2000,
+      "peer": "kernel",
+      "permission": "task.read + 原执行范围",
+      "idempotent": true,
+      "rules": "返回跨重启持久化结果；TaskResult.SUCCEEDED须output_json，FAILED须error，其余状态不携带终态outcome。未知结果不得伪装 FAILED 后让平台重试。"
+    },
+    "HostService.Resolve": {
+      "deadline_ms": 2000,
+      "peer": "plugin",
+      "permission": "插件代理上限 ∩ 主体当前权限 ∩ 委托 ∩ capability.discover",
+      "idempotent": true,
+      "rules": "binding_scope_id 必须属于当前获准调用/任务/部署；仅返回不透明 binding，不返回其他插件内网地址。绑定到期后重新解析，不代表未来Invoke必然授权。"
+    },
+    "HostService.Invoke": {
+      "deadline_ms": 300000,
+      "peer": "plugin",
+      "permission": "插件代理上限 ∩ 主体当前权限 ∩ 固定委托 ∩ capability.invoke",
+      "idempotent": false,
+      "rules": "call_id为新的下游调用，绑定父request/委托；校验 input摘要和契约，再由内核向目标代理。不得转交原始用户令牌或扩大代理范围。"
+    },
+    "HostService.InvokeStream": {
+      "deadline_ms": 300000,
+      "peer": "plugin",
+      "permission": "与 HostService.Invoke 相同",
+      "idempotent": false,
+      "rules": "向下游转发取消和背压；帧大小、顺序与终态规则同 CapabilityService.InvokeStream；持续鉴权不能仅检查首帧。"
+    },
+    "HostService.PublishEvent": {
+      "deadline_ms": 10000,
+      "peer": "plugin",
+      "permission": "event.publish + 插件主题命名空间 + 委托",
+      "idempotent": true,
+      "rules": "payload_json<=1MiB，匹配主题契约；dedupe_key必填，发布者/主题/版本24h去重，同键不同摘要冲突。duplicate=true返回原event_id。"
+    },
+    "HostService.Subscribe": {
+      "deadline_ms": 3600000,
+      "peer": "plugin",
+      "permission": "event.subscribe + 当前订阅对象",
+      "idempotent": true,
+      "rules": "最多一个未确认投递；30s租约，断线不ack；每次投递重新检查主体和源链，内核可要求客户端在1h期限后重新建立连接。"
+    },
+    "HostService.AckEvent": {
+      "deadline_ms": 2000,
+      "peer": "plugin",
+      "permission": "event.subscribe + 当前订阅及lease",
+      "idempotent": true,
+      "rules": "Outcome不能UNSPECIFIED；验证subscription/delivery/lease_token。旧租约返回STATE_CONFLICT，同一合法已ack租约重复确认成功。"
+    },
+    "HostService.ReadBlob": {
+      "deadline_ms": 300000,
+      "peer": "plugin",
+      "permission": "blob.read + 插件代理上限 + 本次数据范围",
+      "idempotent": true,
+      "rules": "只读完整不可变对象，无range；offset从0连续，每块<=256KiB，总长度等于已注册Blob.size_bytes；流中源链失效取消。"
+    },
+    "HostService.WriteBlob": {
+      "deadline_ms": 300000,
+      "peer": "plugin",
+      "permission": "blob.create + 插件代理上限 + 委托",
+      "idempotent": true,
+      "rules": "首帧仅header一次，后续仅data；校验size<=64MiB、连续offset和SHA256，先临时写入再原子发布。幂等键必填；不完整上传只留待GC临时文件。"
+    },
+    "HostService.LeaseSecret": {
+      "deadline_ms": 2000,
+      "peer": "plugin",
+      "permission": "实际工作负载的有效 SecretBinding + 内部 secret.use 授权",
+      "idempotent": false,
+      "rules": "requested_seconds=1..900，不能超绑定上限与secret到期；只向当前绑定部署的活跃实例返回原值<=64KiB。不得缓存明文用于重放。租约到期不能撤回插件已经知晓的第三方原始密钥。"
+    },
+    "DataMigration.Plan": {
+      "deadline_ms": 10000,
+      "peer": "kernel",
+      "permission": "已批准升级/回滚操作",
+      "idempotent": true,
+      "rules": "source_schema必须匹配当前卷记录，target匹配目标插件版本；Plan不得修改数据。返回计划ID/摘要/临时空间需求，并持久化用于Apply核对。"
+    },
+    "DataMigration.Apply": {
+      "deadline_ms": 3600000,
+      "peer": "kernel",
+      "permission": "已批准升级 + 可用备份 + 卷独占fence",
+      "idempotent": true,
+      "rules": "plan_id/digest/backup/fence全部必需且匹配；按计划幂等执行并持久化阶段；旧实例已停止，禁止借用内核预留临时空间。中断后先Verify，不盲目重做。"
+    },
+    "DataMigration.Verify": {
+      "deadline_ms": 60000,
+      "peer": "kernel",
+      "permission": "当前迁移操作与卷fence",
+      "idempotent": true,
+      "rules": "无新增业务写入；验证实际数据格式和完整性。succeeded=true要求error缺失，observed_schema与目标一致；不可确认时返回错误，不能仅相信旧进度标记。"
+    },
+    "HostService.ResolveSkill": {
+      "deadline_ms": 2000,
+      "peer": "plugin",
+      "permission": "skill.read ∩ 插件代理权限 ∩ 当前主体/委托",
+      "idempotent": true,
+      "rules": "skill_id为不可变版本UUID；返回当前Definition和可用性而不是授权凭证。definition_json<=1MiB，不含内部地址；未安装/归档/不可见返回对应错误。"
+    },
+    "HostService.InvokeSkill": {
+      "deadline_ms": 300000,
+      "peer": "plugin",
+      "permission": "skill.invoke ∩ 目标原动作 ∩ 插件代理权限 ∩ 当前主体/委托",
+      "idempotent": false,
+      "rules": "核心锁定定义摘要及plugin_id/契约，验证input_json<=4MiB和输入Blob白名单，再执行实例级并发准入。不接受任意URL；返回InvokeResponse.output_json为业务输出，调用记录保留Skill元数据。"
+    },
+    "HostService.InvokeSkillStream": {
+      "deadline_ms": 300000,
+      "peer": "plugin",
+      "permission": "同InvokeSkill，且Skill声明流式契约",
+      "idempotent": false,
+      "rules": "无stream_item_schema拒绝；embedding与知识库预设不支持流式。流控、终帧、取消及来源链校验沿用InvokeStream，不自动重启拼接。"
+    },
+    "HostService.CheckSkillAccess": {
+      "deadline_ms": 2000,
+      "peer": "plugin",
+      "permission": "skill.invoke ∩ 目标原能力/HTTP动作 ∩ 插件代理权限 ∩ 当前主体/完整委托源链",
+      "idempotent": true,
+      "rules": "skill_id和expected_definition_digest必填，验证实际mTLS实例、当前RpcDelegation与所有祖先/源凭证、固定Skill/安装审批及原目标调用权限；摘要失配CONTRACT_CONFLICT，缺权PERMISSION_DENIED。成功才返回当前ready/reason_codes，不包含地址/凭证。此检查不创建业务Call、额度reservation或执行模型，不代替实际Invoke时的输入/Blob/资源/当前授权检查；返回不是可复用授权票据。缓存每次命中及返回前为各依赖调用本方法；ready=false时不得以缓存绕过provider不可用。仅ResolveSkill的skill.read不能作为调用权限证明。 micro目标改为检查micro.invoke及父micro.runtime.use/固定微版本，不把运行时控制服务假作capability；ready依赖微部署及固定MPR。"
+    },
+    "HostService.ListSkillCandidates": {
+      "deadline_ms": 2000,
+      "peer": "plugin",
+      "permission": "skill.read ∩ 当前主体/完整委托源链 ∩ 插件代理审批",
+      "idempotent": true,
+      "rules": "plugin_ids/capability_names各1..8且不得重复，page_size默认50/上限200。仅列出匹配插件和能力、当前主体可见且安装审批有效的已注册固定capability型Skill；按plugin_id/name/version/UUID字典序稳定分页，不按latest选版本，不返回内部地址。游标绑定主体/过滤/安装注册水位，15min有效；变化STATE_CONFLICT需重新首页。ready说明可用性而非调用授权；调用前仍CheckSkillAccess并验证输入/实际空间。KB仅在首次配置或显式refresh使用该发现方法，并固定精确Skill/定义/installation候选，运行时不得重新发现替换。"
+    },
+    "MicroRuntimeService.Prepare": {
+      "deadline_ms": 10000,
+      "peer": "kernel",
+      "permission": "内核已授权micro.deploy/enable及micro.runtime.use；运行时仅接受内核mTLS控制",
+      "idempotent": true,
+      "rules": "验证所有UUID/微代次/包摘要/源码摘要、UTF8和MicroManifest Schema，limits不大于不可变版本及父预算。按micro_deployment_id/generation/package_digest幂等准备；生成绑定当前runtime实例/代次和微代次的prepared_handle，可LRU淘汰但不是授权票据。不得执行用户副作用；源码解析或沙箱自检失败不Ready。整个请求<=1MiB，控制调用无终端用户凭证转发。"
+    },
+    "MicroRuntimeService.Invoke": {
+      "deadline_ms": 30000,
+      "peer": "kernel",
+      "permission": "skill.invoke ∩ micro.invoke(micro_plugin) ∩ micro.runtime.use(父deployment) ∩ 当前源链/运行时审批",
+      "idempotent": false,
+      "rules": "核心先创建持久Call并锁定Skill/微版本/包/父安装，当前委托须绑定实际MPR实例。核对handle及全部固定ID/代次/摘要、input_digest/Schema和有效deadline，父槽与子槽均准入才创建新受限VM。虚拟stdin一个UTF8 JSON，stdout仅单个完整JSON且正常完成才成功，stdin/stdout各<=1MiB；stderr有界截断。脚本无HostService/文件/网络/secret和运行时凭证。side_effect=none仅表示纯计算可按统一预算安全重算，不承诺崩溃后结果原样缓存；InvokeResponse实际contract由微Skill固定。超时/取消必须销毁VM/worker，不返回部分输出。Call/Cancel/QueryResult沿用核心调用协议，未实现流式。 已识别Call的脚本异常/非法输出/资源失败通过MicroInvokeResponse.outcome.error返回并可附有界诊断，核心记录failed并映射对应HTTP错误，不把gRPC OK当业务成功。result/error恰有一个；未认证、非法控制封装或传输错误使用标准gRPC失败且不泄露日志。超时或进程崩溃可能无法取得诊断，核心仍按Call状态核实。 execution_profile默认pure-json-v1仍按none恢复；controlled-http-v1必须non_repeatable，VM仅暴露host.httpBindings同步投影与host.httpRequest Promise桥，由监督器调用ProxyHttp。只运行受控Promise事件泵，一Call最多1个在途proxy；等待计总wall且不忙等CPU，不开放timer/fetch。主Promise fulfilled且无pendingHostCall才判成功。host.fail只报告MicroManifest.business_errors声明的业务码；出网unknown或平台终止状态由核心优先裁决，不能用正常stdout覆盖。"
+    },
+    "MicroRuntimeService.Release": {
+      "deadline_ms": 10000,
+      "peer": "kernel",
+      "permission": "内核已撤路由的微部署控制操作，仅内核mTLS身份",
+      "idempotent": true,
+      "rules": "按prepared_handle和micro_deployment_id/generation撤销新Invoke并释放缓存引用；不存在或已释放返回accepted=true。不能用旧代Release影响新代句柄，活动调用先按核心Cancel收敛，不把删除缓存视作回滚输出。只影响微绑定，不停止父MPR或删除核心制品。"
+    },
+    "HostService.ProxyHttp": {
+      "deadline_ms": 4000,
+      "peer": "plugin",
+      "permission": "micro.http.request ∩ micro.invoke ∩ micro.runtime.use ∩ 当前MPR代理审批/出口白名单/受控Secret绑定",
+      "idempotent": false,
+      "rules": "仅当前controlled-http-v1微Call的实际MPR实例和RpcDelegation可调用；call_id须与委托绑定，alias从不可变endpoint及Call冻结HttpBinding快照解析。seq1..3，每alias最多一个真实请求；同(call,seq)同规范指纹重放有界已知结果，不再出网，异内容冲突。发送前持久记录，发送后无确定响应为unknown且封锁Call后续HTTP，最终Call状态不能被脚本stdout或catch覆盖。HTTPS443仅固定GET扁平标量query或POST JSON，无重定向，DNS/连接IP均拒绝私网/回环/link-local；密钥由核心按已批准精确绑定注入，MPR不获原值/LeaseSecret权。请求<=64KiB，解压响应<=512KiB，单次<=4s且取根剩余；节点最多64活动/128排队，队列最多1s仍计根deadline。MicroProxyResult无响应headers，非2xx丢弃原始错误body；2xx若JSON任何字符串含注入Secret原值则拒绝。平台鉴权/输入/出口策略错误终止Call，不伪装provider可回退错误。仅not_sent或已确定HTTP结果可由脚本按同一业务计划选择下一provider，禁止SDK/Core自动重发。"
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LogEntryPage",
+  "type": "object",
+  "description": "按公共约定及资源专属稳定顺序分页；仅包含当前主体可见对象",
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/LogEntry"
+      },
+      "minItems": 0,
+      "maxItems": 200,
+      "description": "本页对象"
+    },
+    "next_cursor": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "description": "绑定主体、过滤条件和创建水位的游标，15min 到期"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "绑定主体、过滤条件和创建水位的游标，15min 到期"
+    }
+  },
+  "required": [
+    "items",
+    "next_cursor"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "theme": {
+    "mode": "system",
+    "reduce_motion": false,
+    "reduce_transparency": false
+  },
+  "dock": {
+    "position": "bottom",
+    "auto_hide": false,
+    "pinned": []
+  },
+  "widgets": [],
+  "restore_windows": true
+}

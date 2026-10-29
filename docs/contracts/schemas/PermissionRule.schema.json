@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PermissionRule",
+  "type": "object",
+  "description": "动作与对象选择器共同定义授权",
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "description": "必须在权限目录注册，区分大小写",
+      "pattern": "^[a-z][a-z0-9._-]+$"
+    },
+    "resource": {
+      "$ref": "../openapi.json#/components/schemas/ResourceSelector"
+    },
+    "conditions": {
+      "$ref": "../openapi.json#/components/schemas/RuleConditions"
+    }
+  },
+  "required": [
+    "action",
+    "resource"
+  ]
+}

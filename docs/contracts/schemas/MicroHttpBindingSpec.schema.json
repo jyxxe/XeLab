@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MicroHttpBindingSpec",
+  "type": "object",
+  "description": "管理者绑定固定endpoint及托管Secret；输入不含原始密钥/自选URL",
+  "properties": {
+    "endpoint_alias": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "description": "不可变微清单中的endpoint别名",
+      "pattern": "^[a-z][a-z0-9-]{0,31}$",
+      "example": "brave"
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000,
+      "description": "越小越优先；同值按binding UUID稳定排序",
+      "default": 10
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": false
+    },
+    "secret_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "由secret.bind批准，只供核心代理注入",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 4000,
+      "description": "单次上游总时限，仍受根deadline剩余约束",
+      "default": 4000
+    }
+  },
+  "required": [
+    "endpoint_alias",
+    "secret_id"
+  ],
+  "additionalProperties": false
+}

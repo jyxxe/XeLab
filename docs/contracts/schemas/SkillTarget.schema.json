@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SkillTarget",
+  "type": "object",
+  "description": "普通capability/http目标或第一类micro目标；micro只固定核心微版本/微部署/制品，不接受即时源码或任意URL",
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "type": "string",
+      "description": "调用类型",
+      "enum": [
+        "capability",
+        "http",
+        "micro"
+      ]
+    },
+    "plugin_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "插件稳定 ID；不含版本",
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+      "example": "org.xelab.echo"
+    },
+    "contract": {
+      "$ref": "../openapi.json#/components/schemas/ContractRef"
+    },
+    "http_operation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "插件 OpenAPI 中的精确 operationId"
+    },
+    "http_contract_digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 71,
+      "description": "制品或内容 SHA-256 摘要",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "micro_version_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "micro_deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "package_digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 71,
+      "description": "制品或内容 SHA-256 摘要",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "required": [
+    "kind",
+    "plugin_id"
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "kind": {
+          "const": "capability"
+        }
+      },
+      "required": [
+        "contract"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "http_operation_id"
+            ]
+          },
+          {
+            "required": [
+              "http_contract_digest"
+            ]
+          },
+          {
+            "required": [
+              "micro_version_id"
+            ]
+          },
+          {
+            "required": [
+              "micro_deployment_id"
+            ]
+          },
+          {
+            "required": [
+              "package_digest"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "http"
+        }
+      },
+      "required": [
+        "http_operation_id",
+        "http_contract_digest"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "contract"
+            ]
+          },
+          {
+            "required": [
+              "micro_version_id"
+            ]
+          },
+          {
+            "required": [
+              "micro_deployment_id"
+            ]
+          },
+          {
+            "required": [
+              "package_digest"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "micro"
+        }
+      },
+      "required": [
+        "micro_version_id",
+        "micro_deployment_id",
+        "package_digest"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "contract"
+            ]
+          },
+          {
+            "required": [
+              "http_operation_id"
+            ]
+          },
+          {
+            "required": [
+              "http_contract_digest"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

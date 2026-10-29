@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "document": {
+      "$ref": "../../../planned/shared.schema.json#/$defs/JsonValue"
+    },
+    "fields": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "",
+        "properties": {
+          "from": {
+            "$ref": "../../../planned/shared.schema.json#/$defs/JsonPointer"
+          },
+          "to": {
+            "type": "string",
+            "description": "非空JSON Pointer，对象目标路径",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^(?:/(?:[^~]|~[01])*)+$"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 256
+    },
+    "missing": {
+      "type": "string",
+      "enum": [
+        "error",
+        "omit",
+        "null"
+      ],
+      "description": "",
+      "default": "error"
+    }
+  },
+  "required": [
+    "document",
+    "fields"
+  ],
+  "additionalProperties": false
+}

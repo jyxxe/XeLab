@@ -1,0 +1,7 @@
+{
+  "input": {
+    "query": "single node plugin architecture",
+    "limit": 5
+  },
+  "timeout_ms": 15000
+}

@@ -1,0 +1,13 @@
+{
+  "name": "reports-client",
+  "inheritance": {
+    "mode": "all_snapshot"
+  },
+  "conditions": {
+    "expires_at": "2026-11-28T12:00:00Z",
+    "audiences": [
+      "xelab-gateway"
+    ],
+    "max_calls": 1000
+  }
+}

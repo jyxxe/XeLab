@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ClientSpec",
+  "type": "object",
+  "description": "浏览器公共客户端注册信息；不分配前端 client_secret",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "客户端显示名称"
+    },
+    "plugin_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "插件稳定 ID；不含版本",
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+      "example": "org.xelab.echo"
+    },
+    "redirect_uris": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2048,
+        "description": "HTTPS 精确回调 URI；CLI 回环仅特殊注册允许",
+        "format": "uri"
+      },
+      "minItems": 1,
+      "maxItems": 8,
+      "description": "回调白名单"
+    },
+    "allowed_origins": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512,
+        "description": "scheme://host[:port]；无路径、无通配符"
+      },
+      "minItems": 1,
+      "maxItems": 8,
+      "description": "跨源白名单"
+    },
+    "maximum_rules": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/PermissionRule"
+      },
+      "minItems": 1,
+      "maxItems": 256,
+      "description": "可请求委托上限"
+    }
+  },
+  "required": [
+    "name",
+    "plugin_id",
+    "redirect_uris",
+    "allowed_origins",
+    "maximum_rules"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GroupVersionRef",
+  "type": "object",
+  "description": "固定版本权限组引用",
+  "additionalProperties": false,
+  "properties": {
+    "group_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "不可变的组版本"
+    }
+  },
+  "required": [
+    "group_id",
+    "version"
+  ]
+}

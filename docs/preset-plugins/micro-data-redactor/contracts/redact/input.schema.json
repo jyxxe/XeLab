@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "data": {
+      "$ref": "../../../planned/shared.schema.json#/$defs/JsonValue"
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "description": "",
+        "properties": {
+          "path": {
+            "$ref": "../../../planned/shared.schema.json#/$defs/JsonPointer"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "replace",
+              "mask",
+              "regex-replace"
+            ],
+            "description": ""
+          },
+          "replacement": {
+            "$ref": "../../../planned/shared.schema.json#/$defs/JsonValue"
+          },
+          "keep_start": {
+            "type": "integer",
+            "description": "",
+            "minimum": 0,
+            "maximum": 1048576,
+            "default": 0
+          },
+          "keep_end": {
+            "type": "integer",
+            "description": "",
+            "minimum": 0,
+            "maximum": 1048576,
+            "default": 0
+          },
+          "mask": {
+            "type": "string",
+            "description": "单个Unicode码点",
+            "minLength": 1,
+            "maxLength": 1,
+            "default": "*"
+          },
+          "pattern": {
+            "type": "string",
+            "description": "",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "required": [
+          "path",
+          "action"
+        ],
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "properties": {
+              "action": {
+                "const": "replace"
+              }
+            },
+            "required": [
+              "replacement"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "keep_start"
+                  ]
+                },
+                {
+                  "required": [
+                    "keep_end"
+                  ]
+                },
+                {
+                  "required": [
+                    "mask"
+                  ]
+                },
+                {
+                  "required": [
+                    "pattern"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "properties": {
+              "action": {
+                "const": "mask"
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "replacement"
+                  ]
+                },
+                {
+                  "required": [
+                    "pattern"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "properties": {
+              "action": {
+                "const": "regex-replace"
+              },
+              "replacement": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "replacement",
+              "pattern"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "keep_start"
+                  ]
+                },
+                {
+                  "required": [
+                    "keep_end"
+                  ]
+                },
+                {
+                  "required": [
+                    "mask"
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 128
+    }
+  },
+  "required": [
+    "data",
+    "rules"
+  ],
+  "additionalProperties": false
+}

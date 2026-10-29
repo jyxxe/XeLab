@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WebUiSpec",
+  "type": "object",
+  "description": "浏览器界面元数据",
+  "additionalProperties": false,
+  "properties": {
+    "base_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "平台内部转发路径"
+    },
+    "entry_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "容器内 HTTP 页面路径"
+    },
+    "management_api_major": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1,
+      "description": "兼容管理 API 主版本，当前为 1"
+    },
+    "isolation": {
+      "type": "string",
+      "enum": [
+        "dedicated_origin",
+        "sandbox"
+      ],
+      "description": "非互信 UI 必须独立源或 sandbox"
+    },
+    "origin": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "独立源或宿主沙箱页面的来源；必须注册"
+    }
+  },
+  "required": [
+    "base_path",
+    "entry_path",
+    "management_api_major",
+    "isolation",
+    "origin"
+  ]
+}

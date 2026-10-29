@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-xelab-status": "planned",
+  "type": "object",
+  "description": "",
+  "properties": {
+    "value": {
+      "$ref": "../../../planned/shared.schema.json#/$defs/JsonValue"
+    },
+    "output": {
+      "type": "string",
+      "enum": [
+        "text",
+        "json"
+      ],
+      "description": ""
+    }
+  },
+  "required": [
+    "value",
+    "output"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "output": {
+            "const": "text"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "value": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Publisher",
+  "type": "object",
+  "description": "发布者信任根元数据",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "乐观锁版本，每次持久化变更加一"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "创建时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "updated_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "最近变更时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "发布者名称"
+    },
+    "key_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "签名密钥标识"
+    },
+    "public_key_pem": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "Ed25519 公钥 PEM；服务端解析和校验"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "trusted",
+        "revoked"
+      ],
+      "description": "信任状态"
+    }
+  },
+  "required": [
+    "id",
+    "revision",
+    "created_at",
+    "updated_at",
+    "name",
+    "key_id",
+    "public_key_pem",
+    "status"
+  ]
+}

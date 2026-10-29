@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DeploymentSpec",
+  "type": "object",
+  "description": "部署期望配置；不直接填写容器地址",
+  "additionalProperties": false,
+  "properties": {
+    "installation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "部署名称"
+    },
+    "enabled": {
+      "type": "boolean",
+      "description": "期望启用状态",
+      "default": false
+    },
+    "replicas": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 32,
+      "description": "本机副本数；独占卷默认只能为 1",
+      "default": 1
+    },
+    "limits": {
+      "$ref": "../openapi.json#/components/schemas/ResourceLimits"
+    },
+    "config": {
+      "$ref": "../openapi.json#/components/schemas/JsonValue"
+    },
+    "volume_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "资源唯一标识",
+        "format": "uuid",
+        "example": "00000000-0000-4000-8000-000000000001"
+      },
+      "minItems": 0,
+      "maxItems": 16,
+      "description": "批准挂载的卷"
+    }
+  },
+  "required": [
+    "installation_id",
+    "display_name",
+    "limits",
+    "config",
+    "volume_ids"
+  ]
+}

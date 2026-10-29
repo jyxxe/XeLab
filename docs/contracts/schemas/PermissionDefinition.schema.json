@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PermissionDefinition",
+  "type": "object",
+  "description": "权限注册项",
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "description": "动作名称"
+    },
+    "resource_kinds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "description": "可接受的资源类型"
+      },
+      "minItems": 1,
+      "maxItems": 8,
+      "description": "动作支持的对象类型"
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "行为说明"
+    },
+    "self_service": {
+      "type": "boolean",
+      "description": "是否属于所有活跃用户的自助能力"
+    }
+  },
+  "required": [
+    "action",
+    "resource_kinds",
+    "description",
+    "self_service"
+  ]
+}

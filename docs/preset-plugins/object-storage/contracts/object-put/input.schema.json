@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "description": "从当前获准Blob持久复制一个对象",
+  "properties": {
+    "key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "description": "NFC逻辑key，UTF8<=1024字节；拒绝首尾斜线/空段/dot段/控制符/反斜线，不作URL decode",
+      "pattern": "^[^\u0000-\u001f\\\\]+$",
+      "example": "reports/example.txt"
+    },
+    "blob_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "UUID",
+      "format": "uuid",
+      "x-xelab-resource-kind": "blob"
+    },
+    "size_bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 67108864,
+      "description": "完整内容长度"
+    },
+    "digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 71,
+      "description": "原始内容SHA-256",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "content_type": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "声明MIME，不含CR/LF"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "create",
+        "replace"
+      ]
+    },
+    "expected_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "按owner/key永久head单调修订，不因删除重建归零"
+    }
+  },
+  "required": [
+    "key",
+    "blob_id",
+    "size_bytes",
+    "digest",
+    "content_type",
+    "mode"
+  ],
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "properties": {
+        "mode": {
+          "const": "create"
+        }
+      },
+      "not": {
+        "required": [
+          "expected_revision"
+        ]
+      }
+    },
+    {
+      "properties": {
+        "mode": {
+          "const": "replace"
+        }
+      },
+      "required": [
+        "expected_revision"
+      ]
+    }
+  ]
+}

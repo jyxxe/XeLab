@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HealthCheckSpec",
+  "type": "object",
+  "description": "插件启动、存活和就绪检查",
+  "additionalProperties": false,
+  "properties": {
+    "startup_timeout_ms": {
+      "type": "integer",
+      "minimum": 1000,
+      "maximum": 600000,
+      "description": "启动检查总期限",
+      "default": 60000
+    },
+    "interval_ms": {
+      "type": "integer",
+      "minimum": 1000,
+      "maximum": 60000,
+      "description": "存活检查间隔",
+      "default": 5000
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 10000,
+      "description": "单次检查期限",
+      "default": 2000
+    },
+    "failure_threshold": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10,
+      "description": "连续失败次数",
+      "default": 3
+    }
+  },
+  "required": [
+    "startup_timeout_ms",
+    "interval_ms",
+    "timeout_ms",
+    "failure_threshold"
+  ]
+}

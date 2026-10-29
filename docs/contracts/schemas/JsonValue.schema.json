@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "JsonValue",
+  "description": "业务契约定义的 JSON 值；业务输入输出必须另按对应能力的 JSON Schema 校验。控制面字段不能用此类型逃避定义。",
+  "type": [
+    "object",
+    "array",
+    "string",
+    "number",
+    "boolean",
+    "null"
+  ]
+}

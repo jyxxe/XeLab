@@ -1,0 +1,45 @@
+syntax = "proto3";
+package xelab.v1;
+import "xelab/v1/common.proto";
+
+// 插件声明 automation.execute 后必须实现；查询和去重信息须跨容器重启持久化。
+service TaskWorker {
+  rpc Execute(ExecuteTaskRequest) returns (stream TaskProgress);
+  rpc Cancel(CancelTaskRequest) returns (Ack);
+  rpc Query(QueryTaskRequest) returns (TaskResult);
+}
+message ExecuteTaskRequest {
+  RpcContext context = 1;
+  string task_id = 2;
+  string step_id = 3;
+  string attempt_id = 4;
+  string execution_id = 5;
+  uint64 fence = 6;
+  ContractRef contract = 7;
+  bytes input_json = 8;
+  optional string checkpoint_blob_id = 9;
+}
+message TaskProgress {
+  string execution_id = 1;
+  uint64 fence = 2;
+  uint64 sequence = 3;
+  oneof body {
+    Heartbeat heartbeat = 4;
+    Checkpoint checkpoint = 5;
+    TaskResult result = 6;
+  }
+}
+message Heartbeat { uint32 progress_percent = 1; string phase = 2; }
+message Checkpoint {
+  string blob_id = 1;
+  string data_schema_version = 2;
+  string plugin_version = 3;
+}
+message TaskResult {
+  string execution_id = 1;
+  uint64 fence = 2;
+  ExecutionState state = 3;
+  oneof outcome { bytes output_json = 4; ErrorDetail error = 5; }
+}
+message CancelTaskRequest { RpcContext context = 1; string execution_id = 2; uint64 fence = 3; }
+message QueryTaskRequest { RpcContext context = 1; string execution_id = 2; }

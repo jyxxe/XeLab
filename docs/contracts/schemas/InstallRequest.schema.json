@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "InstallRequest",
+  "type": "object",
+  "description": "安装不可变镜像；验证签名、清单及契约，不自动启用",
+  "additionalProperties": false,
+  "properties": {
+    "image": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "description": "OCI 仓库引用，必须固定 @sha256 摘要",
+      "pattern": "^.+@sha256:[a-f0-9]{64}$"
+    },
+    "publisher_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "signature": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "对签名信封的 Base64 Ed25519 签名；信封见制品文档"
+    }
+  },
+  "required": [
+    "image",
+    "publisher_id",
+    "signature"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "side_effect": "idempotent",
+  "errors": [
+    "INVALID_ARGUMENT",
+    "PERMISSION_DENIED",
+    "RESOURCE_NOT_FOUND",
+    "STATE_CONFLICT",
+    "RESOURCE_EXHAUSTED",
+    "DEADLINE_EXCEEDED",
+    "INTERNAL"
+  ],
+  "cancellation": "cooperative",
+  "idempotency": "persistent_subject_key_fingerprint_result",
+  "query_result": "call_record",
+  "data_isolation": "trusted_subject_namespace"
+}

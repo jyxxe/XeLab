@@ -1,0 +1,133 @@
+{
+  "name": "org.xelab.knowledge-base.media-export",
+  "version": "2.0.0",
+  "description": "导出媒体为临时核心Blob",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "定位",
+    "properties": {
+      "table_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "UUID",
+        "format": "uuid"
+      },
+      "media_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "UUID",
+        "format": "uuid"
+      }
+    },
+    "required": [
+      "table_id",
+      "media_id"
+    ],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "description": "业务大对象元数据；内容不可变",
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "资源唯一标识",
+        "format": "uuid",
+        "example": "00000000-0000-4000-8000-000000000001"
+      },
+      "revision": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 2147483647,
+        "description": "乐观锁版本，每次持久化变更加一"
+      },
+      "created_at": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40,
+        "description": "创建时间，UTC",
+        "format": "date-time",
+        "example": "2026-10-28T12:00:00Z"
+      },
+      "updated_at": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40,
+        "description": "最近变更时间，UTC",
+        "format": "date-time",
+        "example": "2026-10-28T12:00:00Z"
+      },
+      "owner_id": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 36,
+        "description": "资源唯一标识",
+        "format": "uuid",
+        "example": "00000000-0000-4000-8000-000000000001"
+      },
+      "content_type": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "description": "MIME 类型"
+      },
+      "size_bytes": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 67108864,
+        "description": "内容长度，上限 64 MiB"
+      },
+      "digest": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 71,
+        "description": "制品或内容 SHA-256 摘要",
+        "pattern": "^sha256:[a-f0-9]{64}$",
+        "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expires_at": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40,
+        "description": "过期时间；默认 24h",
+        "format": "date-time",
+        "example": "2026-10-28T12:00:00Z"
+      }
+    },
+    "required": [
+      "id",
+      "revision",
+      "created_at",
+      "updated_at",
+      "owner_id",
+      "content_type",
+      "size_bytes",
+      "digest",
+      "expires_at"
+    ]
+  },
+  "stream_item_schema": null,
+  "target": {
+    "kind": "capability",
+    "plugin_id": "org.xelab.knowledge-base",
+    "contract": {
+      "name": "data.kb.media.export",
+      "version": "1.0.0",
+      "schema_digest": "sha256:a0e95d208d6f50fe2eacd8a2370cdd3503553ae2a3d04bbbabf5b90f79606037"
+    }
+  },
+  "mapping": "identity",
+  "maximum_timeout_ms": 300000,
+  "input_blobs": false,
+  "tags": [
+    "preset",
+    "knowledge-base"
+  ]
+}

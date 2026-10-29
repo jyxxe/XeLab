@@ -1,0 +1,32 @@
+{
+  "side_effect": "idempotent",
+  "errors": [
+    "INVALID_ARGUMENT",
+    "PERMISSION_DENIED",
+    "RESOURCE_NOT_FOUND",
+    "STATE_CONFLICT",
+    "PROVIDER_UNAVAILABLE",
+    "RESOURCE_EXHAUSTED",
+    "DEADLINE_EXCEEDED",
+    "INTERNAL",
+    "KB_TABLE_NOT_FOUND",
+    "KB_FIELD_NOT_FOUND",
+    "KB_ROW_NOT_FOUND",
+    "KB_SCHEMA_CONFLICT",
+    "KB_ROW_CONFLICT",
+    "KB_VALUE_TYPE_ERROR",
+    "KB_QUERY_PARSE_ERROR",
+    "KB_QUERY_TYPE_ERROR",
+    "KB_QUERY_SNAPSHOT_EXPIRED",
+    "KB_VECTOR_NOT_ENABLED",
+    "KB_VECTOR_INDEX_NOT_READY",
+    "KB_EMBEDDING_SPACE_MISMATCH",
+    "KB_EMBEDDING_UNAVAILABLE",
+    "KB_MEDIA_INVALID",
+    "KB_STORAGE_FULL",
+    "KB_QUERY_BUDGET_EXCEEDED"
+  ],
+  "cancellation": "cooperative",
+  "idempotency": "persistent_context_key",
+  "query_result": "persistent_result_record"
+}

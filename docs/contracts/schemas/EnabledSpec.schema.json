@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EnabledSpec",
+  "type": "object",
+  "description": "只改变期望启用状态",
+  "additionalProperties": false,
+  "properties": {
+    "enabled": {
+      "type": "boolean",
+      "description": "false 先撤路由再排空"
+    }
+  },
+  "required": [
+    "enabled"
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ChatChoice",
+  "type": "object",
+  "description": "文本生成结果",
+  "additionalProperties": false,
+  "properties": {
+    "index": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 0,
+      "description": "本版固定 0"
+    },
+    "message": {
+      "$ref": "../openapi.json#/components/schemas/TextMessage"
+    },
+    "finish_reason": {
+      "type": "string",
+      "enum": [
+        "stop",
+        "length"
+      ],
+      "description": "结束原因"
+    }
+  },
+  "required": [
+    "index",
+    "message",
+    "finish_reason"
+  ]
+}

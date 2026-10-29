@@ -1,0 +1,46 @@
+[
+  {
+    "file": "embedding-text.json",
+    "schema_file": "../embedding-gemma/embedding-gemma-text-8.skill.json"
+  },
+  {
+    "file": "kb-query.json",
+    "schema_file": "../knowledge-base/rows-query.skill.json"
+  },
+  {
+    "file": "kb-create-table.json",
+    "schema_file": "../knowledge-base/table-create.skill.json"
+  },
+  {
+    "file": "kb-enable-vector.json",
+    "schema_file": "../knowledge-base/vector-configure.skill.json"
+  },
+  {
+    "file": "kb-query-chain.json",
+    "schema_file": "../knowledge-base/rows-query.skill.json"
+  },
+  {
+    "file": "kb-rows-get.json",
+    "schema_file": "../knowledge-base/rows-get.skill.json"
+  },
+  {
+    "file": "kb-query-reuse.json",
+    "schema_file": "../knowledge-base/rows-query.skill.json"
+  },
+  {
+    "file": "kb-enable-vector-default.json",
+    "schema_file": "../knowledge-base/vector-configure.skill.json"
+  },
+  {
+    "file": "kb-embedding-routes.json",
+    "schema_file": "../knowledge-base/vector-configure.skill.json"
+  },
+  {
+    "file": "object-put.json",
+    "schema_file": "../object-storage/object-put.skill.json"
+  },
+  {
+    "file": "object-export.json",
+    "schema_file": "../object-storage/object-export.skill.json"
+  }
+]

@@ -1,0 +1,18 @@
+{
+  "input": {
+    "table_id": "00000000-0000-4000-8000-000000000001",
+    "expression": "a.match(len(content)>=100).topk(content,:q,50).topk(title,:q,10)",
+    "params": {
+      "q": {
+        "type": "vector_query",
+        "value": {
+          "kind": "text",
+          "text": "插件资源隔离"
+        }
+      }
+    },
+    "require_complete_index": true,
+    "cache_policy": "auto"
+  },
+  "timeout_ms": 120000
+}

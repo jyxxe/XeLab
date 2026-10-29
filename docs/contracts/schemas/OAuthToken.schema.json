@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OAuthToken",
+  "type": "object",
+  "description": "标准 OAuth token 响应；访问令牌绑定 subject/client/audience",
+  "additionalProperties": false,
+  "properties": {
+    "access_token": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "Bearer 令牌"
+    },
+    "token_type": {
+      "type": "string",
+      "enum": [
+        "Bearer"
+      ],
+      "description": "类型"
+    },
+    "expires_in": {
+      "type": "integer",
+      "minimum": 900,
+      "maximum": 900,
+      "description": "秒，固定 900"
+    },
+    "refresh_token": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "可选轮换凭证，最长 24h"
+    },
+    "scope": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "平台授权范围句柄；实际规则保存在内核"
+    }
+  },
+  "required": [
+    "access_token",
+    "token_type",
+    "expires_in",
+    "scope"
+  ]
+}
