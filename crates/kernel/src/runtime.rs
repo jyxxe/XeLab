@@ -79,7 +79,7 @@ impl Runtime{
         let h=v["host"].as_str().ok_or_else(||Error::invalid("Invalid network state"))?;let p=v["peer"].as_str().ok_or_else(||Error::invalid("Invalid network state"))?;
         h.parse::<Ipv4Addr>().map_err(|_|Error::invalid("Invalid network state"))?;p.parse::<Ipv4Addr>().map_err(|_|Error::invalid("Invalid network state"))?;
         let rpc:std::net::SocketAddr=self.config.text("server","host_rpc_listen").parse().unwrap();
-        let nft=format!("table inet xl_{} {{\n chain ingress {{ type filter hook input priority -20; policy accept; iifname \"{host}\" ip daddr {} tcp dport {} accept; iifname \"{host}\" drop; }}\n chain transit {{ type filter hook forward priority -20; policy accept; iifname \"{host}\" drop; oifname \"{host}\" drop; }}\n}}\n",&short[..16],rpc.ip(),rpc.port());
+        let nft=format!("table inet xl_{} {{\n chain ingress {{ type filter hook input priority -20; policy accept; iifname \"{host}\" ct state established,related accept; iifname \"{host}\" ip daddr {} tcp dport {} accept; iifname \"{host}\" drop; }}\n chain transit {{ type filter hook forward priority -20; policy accept; iifname \"{host}\" drop; oifname \"{host}\" drop; }}\n}}\n",&short[..16],rpc.ip(),rpc.port());
         let nftfile=dir.join("network.nft");tls::atomic_file(&nftfile,nft.as_bytes(),0o600)?;
         command("nft",&vec!["-f".into(),nftfile.display().to_string()],Duration::from_secs(10)).await?;
         command("ip",&strs(&["netns","add",&ns]),Duration::from_secs(10)).await?;

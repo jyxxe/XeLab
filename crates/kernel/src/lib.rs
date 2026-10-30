@@ -16,4 +16,3 @@ pub mod rpc {
 }
 
 pub const SPEC_VERSION: &str = "2.8.0";
-

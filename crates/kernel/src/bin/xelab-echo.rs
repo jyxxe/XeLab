@@ -3,7 +3,7 @@ use tokio::sync::RwLock;
 use tonic::{Request,Response,Status};
 use xelab_kernel::{contracts::{digest,strict_json},rpc::{self,plugin_lifecycle_server::{PluginLifecycle,PluginLifecycleServer},capability_service_server::{CapabilityService,CapabilityServiceServer}},tls::require_kernel};
 
-#[derive(Clone)]struct Echo{manifest:Arc<Vec<u8>>,generation:u64,initialized:Arc<AtomicBool>,draining:Arc<AtomicBool>,results:Arc<RwLock<std::collections::HashMap<String,rpc::InvokeResponse>>>>}
+#[derive(Clone)]struct Echo{manifest:Arc<Vec<u8>>,generation:u64,initialized:Arc<AtomicBool>,draining:Arc<AtomicBool>,results:Arc<RwLock<std::collections::HashMap<String,rpc::InvokeResponse>>>}
 #[tonic::async_trait]impl PluginLifecycle for Echo{
     async fn describe(&self,_:Request<rpc::DescribeRequest>)->Result<Response<rpc::DescribeResponse>,Status>{Ok(Response::new(rpc::DescribeResponse{manifest_json:self.manifest.as_ref().clone(),manifest_digest:digest(&self.manifest)}))}
     async fn initialize(&self,r:Request<rpc::InitializeRequest>)->Result<Response<rpc::InitializeResponse>,Status>{let r=r.into_inner();if r.generation!=self.generation||r.instance_id!=std::env::var("XELAB_INSTANCE_ID").unwrap_or_default()||r.deployment_id!=std::env::var("XELAB_DEPLOYMENT_ID").unwrap_or_default()||digest(&r.config_json)!=r.config_digest{return Err(Status::failed_precondition("Identity or config differs"));}self.initialized.store(true,Ordering::SeqCst);self.draining.store(false,Ordering::SeqCst);Ok(Response::new(rpc::InitializeResponse{observed_generation:self.generation,initialized:true}))}
