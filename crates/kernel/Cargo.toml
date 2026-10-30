@@ -1,0 +1,46 @@
+[package]
+name = "xelab-kernel"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[dependencies]
+argon2 = "0.5"
+axum = "0.7.9"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem", "rand_core"] }
+hmac = "0.12"
+ipnet = "2"
+jsonschema = { version = "0.18", default-features = false, features = ["draft202012"] }
+libc = "0.2"
+prost = "0.13"
+rand = "0.8"
+rcgen = { version = "0.13", features = ["x509-parser"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-serde_json-1", "with-chrono-0_4"] }
+toml = "0.8"
+time = "0.3"
+tonic = { version = "0.12", features = ["tls"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+url = "2"
+uuid = { version = "1", features = ["serde", "v4"] }
+x509-parser = "0.16"
+
+[build-dependencies]
+tonic-build = "0.12"
+protoc-bin-vendored = "3"
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+

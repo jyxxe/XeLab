@@ -1,0 +1,47 @@
+name: Kernel M1
+on:
+  push:
+    branches: ["main", "feat/kernel-m1"]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: xelab
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_DB: xelab_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U xelab -d xelab_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      XELAB_TEST_DATABASE_URL: "host=127.0.0.1 port=5432 user=xelab password=test-only-password dbname=xelab_test"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Toolchain
+        run: rustc --version && cargo --version
+      - name: Format
+        run: cargo fmt --all
+      - name: Compile and test
+        run: cargo test --workspace --all-targets
+      - name: Lints
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Check formatting diff
+        if: always()
+        run: git diff --exit-code
+      - name: Lockfile for review
+        if: always()
+        run: |
+          if test -f Cargo.lock; then
+            echo XELAB_LOCKFILE_BEGIN
+            base64 -w0 Cargo.lock
+            echo
+            echo XELAB_LOCKFILE_END
+          fi
+
