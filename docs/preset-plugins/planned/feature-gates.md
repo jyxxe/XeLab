@@ -2,7 +2,7 @@
 
 [规划总览](README.md) · [实施顺序](delivery.md)
 
-> 规格版本：2.6.0；状态：planned。gate是发布检查项，不是现有配置开关或自动授予的权限。
+> 规格版本：2.8.0；状态：planned。gate是发布检查项，不是现有配置开关或自动授予的权限。
 
 `contracts/`指[平台共享契约](../contracts/README.md)；`core-blob`指既有受控Blob协议；`platform-secrets`指平台密钥绑定；`network-policy`指平台网络准入。下表将清单中的门槛落实到必须补齐的组件及证据。
 
@@ -34,6 +34,12 @@
 ## 微插件
 
 所有微规划先通过 `pure-json-v1` 的源码/静态Schema/资源与错误协议验收。当前MPR不承诺安装Node/Python包、任意import、宿主文件、网络、shell或动态依赖。需要库时静态打包进受限JS制品或明确扩展并版本化运行时库；后者需先更新内核能力协商与契约，不能仅修改微插件清单。
+
+MPR 1.2.0还须验证核心适配器配置的逐微cgroup：每微部署默认250mCPU/256MiB，由其全部worker合计共享，默认并发1/硬上限4，JS heap默认16MiB仍为子上限。MPR没有宿主cgroup管理权，也不为微部署创建独立OCI；缺少真实合计CPU/内存硬限制不能声称通过此门槛。
+
+验证资源及联网设置只在停用、disabled且排空后经带If-Match/Idempotency-Key的settings接口更新；generation/revision递增、旧句柄失效，原limits、版本、父绑定及Skill定义保持固定。默认network_enabled=false，Prepare/Ready和pure执行不被此开关阻塞，controlled Invoke须在worker创建前拒绝；开启仍依赖执行profile、权限、固定绑定及平台网络策略，不能开放任意fetch或外部XML实体。
+
+默认父MPR的4000mCPU/4294967296字节（4vCPU/4GiB）预算，工作池3500mCPU/3758096384字节（3584MiB）、控制CPU500m及控制内存128MiB、缓存256MiB；默认最多4个不同微部署活跃，总活动槽4不等于四份独立资源。必须验收工作池不足时的等待/拒绝、合计硬上限及无内核预留借用。
 
 | gate ID | 必须补齐或验证 |
 |---|---|

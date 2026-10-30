@@ -9,7 +9,7 @@ import re
 from urllib.parse import unquote, urlparse
 
 
-VERSION = "2.6.0"
+VERSION = "2.8.0"
 CONTRACT_VERSION = "0.1.0"
 FILES = ("input.schema.json", "output.schema.json", "stream.schema.json", "semantics.json")
 EXPECTED = {
@@ -148,6 +148,8 @@ def validate_planned(DOCS, check, read, strict=False):
         report(entry.get("kind") == kind, directory + " kind differs")
         report(entry.get("status") == "planned", directory + " status must be planned")
         report(entry.get("contract_version") == CONTRACT_VERSION, directory + " contract version differs")
+        if kind == "micro":
+            report(entry.get("deployment_defaults") == {"resources": {"cpu_millis": 250, "memory_bytes": 268435456}, "network_enabled": False}, directory + " deployment defaults must be 250m/256MiB/offline")
         ids = rows(entry.get("capability_ids"), directory + " capability_ids")
         report(len(ids) == len(set(ids)) and set(ids) == set(capabilities), directory + " capability IDs differ")
         operations = rows(entry.get("operations"), directory + " operations")
@@ -189,6 +191,8 @@ def validate_planned(DOCS, check, read, strict=False):
             if isinstance(semantics, dict):
                 for key, value in (("capability_id", capability), ("kind", kind), ("status", "planned"), ("version", CONTRACT_VERSION)):
                     report(semantics.get(key) == value, capability + " semantics " + key + " differs")
+                if kind == "micro":
+                    report(semantics.get("deployment_defaults") == entry.get("deployment_defaults") and semantics.get("resource_scope") == "aggregate_micro_deployment_cgroup", capability + " resource scope/defaults differ")
             for file in contract_folder.glob("*.schema.json"):
                 draft_schema_files.add(file)
                 schema = load(file)

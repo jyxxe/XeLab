@@ -2,7 +2,7 @@
 
 [知识库目录](README.md) · [文档总目录](../../README.md)
 
-> 规格版本：2.6.0；状态：设计契约，尚未实现。
+> 规格版本：2.8.0；状态：设计契约，尚未实现。
 
 所有业务接口使用 `POST /api/platform/v1/skills/{skill_id}/calls`，skill_id来自注册结果。表内是固定Skill版本的目标能力，不是另开未经认证的HTTP路径。
 

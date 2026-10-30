@@ -2,7 +2,7 @@
 
 [对象存储Skill目录](README.md) · [插件接口](../../preset-plugins/object-storage/interfaces.md)
 
-> 规格版本：2.6.0；状态：设计契约，尚未实现。
+> 规格版本：2.8.0；状态：设计契约，尚未实现。
 
 Skill `org.xelab.object-storage.object-put@1.0.0`，[定义](object-put.skill.json)；目标`data.object.put@1.0.0`。输入/输出为identity映射，响应位于`SkillCallResult.call.output`。
 

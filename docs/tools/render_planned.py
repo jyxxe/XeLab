@@ -91,7 +91,7 @@ def operation_page(entry):
     cap = entry['capability_id']
     lines = [f'# `{cap}` 字段契约草案', '',
              '[插件接口语义](../../interfaces.md) · [规划目录](../../../planned/README.md)', '',
-             '> 规格版本：2.6.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。', '',
+             '> 规格版本：2.8.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。', '',
              f'能力 ID：`{cap}`；操作目录：`{entry["operation"]}`。', '',
              '下表的字符串长度为 Unicode 码点数；整体 JSON 的 UTF-8 字节、深度与业务字段字节上限独立检查。嵌套必填只在父对象存在时生效。', '']
     for title, name in [('输入', 'input.schema.json'), ('输出', 'output.schema.json'), ('业务流', 'stream.schema.json')]:
@@ -114,11 +114,11 @@ def operation_page(entry):
 def index_page(kind, entries):
     label = '普通插件' if kind == 'ordinary' else '微插件'
     lines = [f'# {label}规划目录', '', '[规划总览](README.md) · [落地门槛](feature-gates.md) · [Skill规划](../../skills/planned/README.md)', '',
-             '> 规格版本：2.6.0；状态：planned；各业务契约草案为0.1.0。目录名与能力 ID 按需求保留。', '']
+             '> 规格版本：2.8.0；状态：planned；各业务契约草案为0.1.0。目录名与能力 ID 按需求保留。', '']
     if kind == 'ordinary':
         lines += ['普通插件运行在独立 CPU OCI 容器中，适合持续服务、外部连接、复杂依赖与独立资源配额。资源默认值须在实现测量后确定并写入正式部署模板。', '']
     else:
-        lines += ['微插件统一依赖 `contracts/` 与 Micro Plugin Runtime 执行协议；由 MPR 加载，不为每个微插件创建容器。库须静态打包或由版本化运行时库明确提供；未声明的宿主模块不可调用。', '']
+        lines += ['微插件统一依赖 `contracts/` 与 Micro Plugin Runtime 执行协议；由 MPR 加载，不为每个微插件创建容器。每微部署默认250mCPU/256MiB，总限额由其全部worker共享，联网默认关闭；资源与联网可在停用排空后通过settings接口手动配置。库须静态打包或由版本化运行时库明确提供；未声明的宿主模块不可调用。', '']
     lines += ['| 目录 | 能力 ID | 依赖项 | 用途 |', '|---|---|---|---|']
     for e in entries:
         deps = []
@@ -145,7 +145,7 @@ def render():
         entries = [x for x in catalog['entries'] if x['kind'] == kind]
         write(PRESETS / 'planned' / name, index_page(kind, entries))
     lines = ['# 规划能力逐接口索引', '', '[规划总览](README.md) · [共享接口规则](interface-rules.md)', '',
-             '> 规格版本：2.6.0；状态：planned；业务契约草案：0.1.0。共37个能力入口。', '',
+             '> 规格版本：2.8.0；状态：planned；业务契约草案：0.1.0。共37个能力入口。', '',
              '| 能力 ID | 插件目录 | 逐字段定义 |', '|---|---|---|']
     for entry in contracts:
         folder = '../' + entry['directory']

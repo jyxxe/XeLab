@@ -2,7 +2,7 @@
 
 [插件接口语义](../../interfaces.md) · [规划目录](../../../planned/README.md)
 
-> 规格版本：2.6.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
+> 规格版本：2.8.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
 
 能力 ID：`data.sort`；操作目录：`sort`。
 
@@ -57,4 +57,4 @@
 
 落地门槛：`typed-compare-library`、`json-pointer-library`；见[门槛说明](../../../planned/feature-gates.md)。
 
-四文件草案摘要：`sha256:02aab5568d3609323cc1f8f72b889ced9bd3676cc6d22f63dd8bca71d75a5b4d`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。
+四文件草案摘要：`sha256:d60c85f423e594703ad0ea7cbfd9418273fb5f3d0b90325fabdee07ff10033f4`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。

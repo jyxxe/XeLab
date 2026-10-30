@@ -2,7 +2,7 @@
 
 [MPR目录](README.md) · [HTTP接口目录](../../api/README.md) · [核心字段模型](../../api/models/README.md) · [RPC目录](../../rpc/README.md)
 
-> 规格版本：2.6.0；状态：待实现。核心HTTP负责微对象和HTTP绑定管理，Runtime只实现受控执行与监督器桥。
+> 规格版本：2.8.0；状态：待实现。核心HTTP负责微对象、运行设置和HTTP绑定管理，Runtime只实现受控执行与监督器桥。
 
 ## 核心管理职责
 
@@ -22,7 +22,7 @@
 
 发布MicroPluginVersion只保存不可变制品，不产生未绑定微部署的候选。创建MicroDeployment后，核心依据其UUID、固定微版本和limits生成candidate_skill；调用者另行按原样registerSkill，并分别启用微部署和Skill，不能把生成候选当自动开通执行权。
 
-`target.kind=micro`固定微版本、package_digest和micro_deployment_id，另由微部署固定Runtime安装/部署。调用方只提交该版本业务input，核心不能根据input中某个ID换脚本，也不解析同名latest版本。已有微部署只改变启停与观测；修改limits或父绑定须新建微部署和候选。
+`target.kind=micro`固定微版本、package_digest和micro_deployment_id，另由微部署固定Runtime安装/部署。调用方只提交业务input，不能根据input中某个ID换脚本或解析latest。原limits和父绑定不可变，修改须新建微部署；resources与network_enabled可在停用排空后经settings独立调整，不改candidate_skill定义。
 
 执行必须同时拥有`skill.invoke`、真实micro_plugin上的`micro.invoke`、父Runtime deployment上的`micro.runtime.use`，并满足当前来源链与Runtime审批。创建/启用微部署不能暗中开启父Runtime；普通执行权不授予发布、部署管理、源码或诊断读取权。
 
@@ -31,6 +31,16 @@
 MicroManifest.execution_profile省略解释为pure-json-v1，http_endpoints为空、side_effect=none；MPR1.1.0新增的controlled-http-v1须显式声明1..8个endpoint与non_repeatable。origin/path/method/鉴权模板/payload_schema固定在微版本中；新增宿主能力需新制品摘要和显式审批，不能只改调用input。
 
 核心负责把业务input与可信执行绑定组成受控RPC封装；这个封装不能由脚本或普通插件客户端自行构造。它是micro目标的显式转发语义，不表示内核执行JavaScript。
+
+## 微部署settings
+
+`PUT /api/platform/v1/micro-deployments/{id}/settings`，请求为`{resources:{cpu_millis,memory_bytes},network_enabled}`；携微部署If-Match和Idempotency-Key，按核心模型执行管理权限及父Runtime使用权/资源审批检查。
+
+resources默认250mCPU/268435456字节（256MiB），指该部署所有活动worker的合计上限；network_enabled默认false，true仅适用于controlled-http-v1。只有enabled=false、phase=disabled且无worker、Prepare、queued请求时可改，否则STATE_CONFLICT；同值请求无副作用。
+
+停用先原子enabled=false/generation++并phase=draining，撤路由、取消/回收队列、Prepare、worker、句柄及组；全部完成才disabled，失败保持draining/failed并拒绝settings。组内heap/stack/输入输出缓冲预算乘允许并发还须不超过resources.memory_bytes。
+
+成功更新revision/generation，旧准备句柄失效；重新启用后按新设置Prepare。原微版本/limits/父绑定不变，候选Skill不漂移。关闭联网的HTTP微部署可以Prepare/Ready，但业务Invoke在worker前PERMISSION_DENIED，violations.field=network_enabled，不消耗sequence或触发fallback；pure调用照常。
 
 ## Runtime RPC
 
@@ -43,6 +53,14 @@ MicroManifest.execution_profile省略解释为pure-json-v1，http_endpoints为�
 三者只接受当前核心可信mTLS身份，不把其他插件的工作负载证书当核心身份。字段与期限以Proto和逐RPC语义为准；Prepare成功不构成后续Invoke的可复用授权票据。
 
 取消和核实复用[CapabilityService.Cancel](../../rpc/CapabilityService.Cancel.md)、[CapabilityService.QueryResult](../../rpc/CapabilityService.QueryResult.md)，调用ID映射到准确的微执行单元。Lifecycle仍实现现有Describe/Initialize/GetHealth/Drain/Shutdown，不为每个脚本创建一套容器生命周期。
+
+## 核心资源组与AttachMicroWorker
+
+Runtime内部方法ensure_micro_pool、configure_micro_group、attach_micro_worker、release_micro_group负责父树、微部署组、受验证worker入组与回收；这些是核心受审适配器方法，不给VM或MPR任意cgroup写入口。
+
+HostService.AttachMicroWorker由监督器在当前微Call委托下提交核心group不透明句柄、容器PID和进程启动时间。worker必须停等且未加载用户代码；核心核对namespace/start-time/pidfd、Call/微部署/父实例代次并迁入正确组，Ack后才可执行JS，失败终止回收。启动过程计control预算，句柄不是跨Call授权。
+
+资源组按活跃微部署计一次，默认父4C4GiB中workloads为3584MiB/3500m，control为缓存256MiB+控制128MiB/500m。默认每微部署250m/256MiB、并发1，实例最多4活动槽；同微部署多个worker共享子组限额，最后worker退出且清理确认后释放资源。
 
 ## 核心HttpBinding接口
 
@@ -62,7 +80,7 @@ HttpBindingSpec字段为endpoint_alias、priority(0..1000)、enabled(默认false
 
 ## HostService.ProxyHttp
 
-监督器发送当前RpcContext、call_id、alias、sequence(1..3)、payload_json及payload_digest。核心从实际RpcDelegation核对MPR/微调用、固定endpoint和绑定快照，验证调用者micro.http.request、micro.invoke、micro.runtime.use、已批准绑定限定的内部secret.use及当前secret状态、父MPR的micro.http.request/egress审批后注入凭证。终端只需微HTTP及原微执行权限，不因此取得secret原值；MPR不请求secret.use或LeaseSecret。
+监督器发送当前RpcContext、call_id、alias、sequence(1..3)、payload_json及payload_digest。核心从实际RpcDelegation核对MPR/微调用、固定endpoint和绑定快照，验证当前network_enabled、enabled/原generation、调用者micro.http.request、micro.invoke、micro.runtime.use、已批准绑定限定的内部secret.use及当前secret状态、父MPR的micro.http.request/egress审批后注入凭证。终端只需微HTTP及原微执行权限，不因此取得secret原值；MPR不请求secret.use或LeaseSecret。
 
 HTTP代理只允许固定HTTPS443 GET/POST，无重定向/私网目标。GET把扁平string/int/bool payload编码成固定query，POST发送I-JSON；允许请求头仅为固定Accept/Content-Type及核心注入鉴权。请求≤64KiB、响应≤512KiB、单次≤4s，整体≤15s。
 

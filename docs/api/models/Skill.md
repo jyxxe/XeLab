@@ -19,7 +19,7 @@ Skill 版本与当前可用性
 | `enabled` | boolean | 是 | 见类型定义 | 期望启用状态 |
 | `availability` | string | 是 | enum=`["ready", "unavailable", "disabled"]` | 健康/依赖/审批过滤结果 |
 | `reason_codes` | array&lt;string&gt; | 是 | minItems=`0`; maxItems=`32` | 不可用原因 |
-| `installation_id` | string | 是 | format=`"uuid"` | 普通Skill声明来源安装；micro Skill必须等于固定微版本的runtime_installation_id |
+| `installation_id` | string | 是 | format=`"uuid"` | 实际物理rootOCI来源安装；micro为runtime安装，extension必须与固定宿主闭包root_installation_id相同，候选/包来源另核验 |
 
 ## 对象及跨字段约束
 

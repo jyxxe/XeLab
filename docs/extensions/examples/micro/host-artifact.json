@@ -1,0 +1,6 @@
+{
+  "source_file": "host-source.js",
+  "manifest_file": "host-manifest.json",
+  "source_digest": "sha256:006c17f99e9aa05f6a3e6228af2cd7fad4305f1a10f244bba9550e52d1e9cb44",
+  "package_digest": "sha256:b9b922f72ebfbbd5b7ae5d3527b3e7410f17c7e2f434e481e9ad65138444979a"
+}

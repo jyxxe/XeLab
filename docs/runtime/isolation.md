@@ -2,7 +2,7 @@
 
 [文档总目录](../README.md)
 
-> 规格版本：2.6.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
+> 规格版本：2.8.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
 
 ## 容器创建硬约束
 
@@ -33,4 +33,18 @@ containerd 不负责完整网络、外部卷管理和日志持久化，平台适
 
 ## 微脚本计算沙箱
 
-[Micro Plugin Runtime](../preset-plugins/micro-plugin-runtime/README.md)本身仍遵守本页OCI边界；其微插件无需独立OCI，但必须在受限VM/受控worker中执行。普通同UID的Python/Node子进程不具备该隔离能力，禁止默认授予文件/网络/HostService。逐微堆/stack/中断/墙钟限制与父cgroup总CPU/RSS边界不同，详见[执行隔离](../preset-plugins/micro-plugin-runtime/security.md)。
+[Micro Plugin Runtime](../preset-plugins/micro-plugin-runtime/README.md)本身仍遵守OCI边界；微插件无需独立OCI，每次调用必须在短命worker内运行受限VM。普通同UID Python/Node子进程不具备该隔离能力；脚本不获文件、真实网络或直接HostService。网络策略默认关闭，手动开启也只允许已声明受控HTTP与当前权限/出口审批。
+
+核心受审OCI适配器拥有cgroup管理职责，MPR没有privileged或宿主cgroup写权限。父MPR下设control叶子（监督器/缓存）与无进程的workloads内部域，后者每个活跃微部署各有叶子组；父MPR内部域也不驻留进程，以满足cgroup v2域控制拓扑。每组resources限制该微部署所有活动worker合计CPU时间带宽和计量内存，不是每Call重复配额。
+
+监督器创建尚未装载用户代码的停等worker后，经HostService.AttachMicroWorker提交当前Call委托、核心group句柄、容器PID及启动时间；核心验证namespace、实际PID/启动身份、父实例代次及pidfd，再迁入对应组。Ack前不得执行JS，失败应终止回收；仅凭请求给出的PID或路径不能控制宿主其他进程。
+
+核心必须验证cpu/memory控制器、先入组再执行、按组终止与空组回收能力，缺失则阻止Ready。worker地址空间上限1GiB只作虚拟空间保护，引擎heap/stack另限；微部署memory.max涵盖RSS等被计量内存。组OOM会影响该微部署的相关worker，单Call取消按稳定进程身份终止一个worker，已发HTTP仍按unknown证据处理。
+
+最后worker退出且清理确认后才释放活跃组预留；尚有残余进程或计量内存时继续计父池。详见[MPR执行隔离](../preset-plugins/micro-plugin-runtime/security.md)和[Linux cgroup v2](https://docs.kernel.org/admin-guide/cgroup-v2.html)。
+
+## 扩展执行隔离
+
+扩展功能仅由宿主显式版本化extension_point接纳。data贡献是≤256KiB严格JSON，不含任意可执行源码；skill模式只固定已注册处理器，由核心重新认证授权后调用，不提供动态库、任意JS/native代码、shell或宿主路径加载。
+
+微宿主的扩展Data在MPR1.3仅以只读extensionData暴露，不能改变原输入/输出Schema、副作用、网络profile或资源组。skill请求由监督器调用核心HostService.InvokeSkill，VM没有HostService、运行时凭证或任意目标权限。扩展链共享实际根故障域；独立handler仍处于自己的原隔离域，不能借链切换成宿主服务账户。

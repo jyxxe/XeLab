@@ -2,7 +2,7 @@
 
 [插件接口语义](../../interfaces.md) · [规划目录](../../../planned/README.md)
 
-> 规格版本：2.6.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
+> 规格版本：2.8.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
 
 能力 ID：`text.regex-extract`；操作目录：`regex-extract`。
 
@@ -59,4 +59,4 @@
 
 落地门槛：`linear-regex-library`；见[门槛说明](../../../planned/feature-gates.md)。
 
-四文件草案摘要：`sha256:2584c11abd3e2e21814914c79535e9481acd5493c5c28ee4f083dffc32de5953`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。
+四文件草案摘要：`sha256:b3f65344d9f24fa12baeb300d4d45d1fc7d136094c8d7eede638268564930193`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。

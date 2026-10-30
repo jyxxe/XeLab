@@ -2,7 +2,7 @@
 
 [插件接口语义](../../interfaces.md) · [规划目录](../../../planned/README.md)
 
-> 规格版本：2.6.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
+> 规格版本：2.8.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
 
 能力 ID：`text.chunk`；操作目录：`chunk`。
 
@@ -72,4 +72,4 @@
 
 落地门槛：`unicode-split-library`、`optional-tokenizer`、`token-estimator-library`；见[门槛说明](../../../planned/feature-gates.md)。
 
-四文件草案摘要：`sha256:4c8f16d9a7717000af007cbac0708722b37245ee2df6ae630ff683b7f0c18a1a`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。
+四文件草案摘要：`sha256:72f1d2dea6c926d2f3da2ad9d9cad479fce4d747810a8fb3230e438dfe499651`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。

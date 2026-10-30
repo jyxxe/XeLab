@@ -2,7 +2,7 @@
 
 [通信目录](README.md) · [插件贡献](../plugins/ui-contributions.md) · [消息Schema](../contracts/ui-bridge.schema.json) · [逐方法](ui-bridge-methods.md)
 
-> 规格版本：2.6.0；状态：待实现的规范。协议名xelab.ui/1，不是原生系统接口。
+> 规格版本：2.8.0；状态：待实现的规范。协议名xelab.ui/1，不是原生系统接口。
 
 ## 握手与封装
 
@@ -33,3 +33,9 @@ window.close/组件卸载/退出/升级销毁通道与UI等待回调；已提交
 允许列表、后台刷新、焦点与窗口限制由WebUI壳实施，是iframe隔离要求；内核按实际用户/客户端、完整源链和Skill原权限逐请求授权。任何框架内“已验证消息”都不能替代核心授权。WebUI本身不持有所有用户的管理后门。
 
 本地桥错误：PROTOCOL_ERROR、CHANNEL_CLOSED、METHOD_NOT_ALLOWED、BINDING_UNAVAILABLE、PERMISSION_DENIED、PAYLOAD_TOO_LARGE、RATE_LIMITED、DEADLINE_EXCEEDED、IDEMPOTENCY_CONFLICT；核心失败用BACKEND_ERROR并带原ErrorDetail。未知method不回退到通用HTTP代理。
+
+## 扩展插件边界
+
+Extension Plugin不会继承宿主iframe的origin、Cookie、登录令牌、channel_nonce或Skill允许列表，也不把扩展源码注入桌面/宿主DOM。现消息桥仍只使用本次握手明确批准的固定Skill绑定；逻辑微/扩展宿主没有可任意借用的网络origin。
+
+扩展Skill若被显式注册并获准作为业务绑定，核心仍逐次检查扩展、完整宿主链和handler权限；binding_alias、host_chain_digest与准备句柄不能代替授权。不提供从扩展页面到任意宿主管理HTTP或HostService的通用桥。

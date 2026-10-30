@@ -14,7 +14,7 @@
 
 ## 前置条件、执行及失败语义
 
-仅当前controlled-http-v1微Call的实际MPR实例和RpcDelegation可调用；call_id须与委托绑定，alias从不可变endpoint及Call冻结HttpBinding快照解析。seq1..3，每alias最多一个真实请求；同(call,seq)同规范指纹重放有界已知结果，不再出网，异内容冲突。发送前持久记录，发送后无确定响应为unknown且封锁Call后续HTTP，最终Call状态不能被脚本stdout或catch覆盖。HTTPS443仅固定GET扁平标量query或POST JSON，无重定向，DNS/连接IP均拒绝私网/回环/link-local；密钥由核心按已批准精确绑定注入，MPR不获原值/LeaseSecret权。请求<=64KiB，解压响应<=512KiB，单次<=4s且取根剩余；节点最多64活动/128排队，队列最多1s仍计根deadline。MicroProxyResult无响应headers，非2xx丢弃原始错误body；2xx若JSON任何字符串含注入Secret原值则拒绝。平台鉴权/输入/出口策略错误终止Call，不伪装provider可回退错误。仅not_sent或已确定HTTP结果可由脚本按同一业务计划选择下一provider，禁止SDK/Core自动重发。
+仅当前controlled-http-v1微Call的实际MPR实例和RpcDelegation可调用；call_id须与委托绑定，alias从不可变endpoint及Call冻结HttpBinding快照解析。seq1..3，每alias最多一个真实请求；同(call,seq)同规范指纹重放有界已知结果，不再出网，异内容冲突。发送前持久记录，发送后无确定响应为unknown且封锁Call后续HTTP，最终Call状态不能被脚本stdout或catch覆盖。HTTPS443仅固定GET扁平标量query或POST JSON，无重定向，DNS/连接IP均拒绝私网/回环/link-local；密钥由核心按已批准精确绑定注入，MPR不获原值/LeaseSecret权。请求<=64KiB，解压响应<=512KiB，单次<=4s且取根剩余；节点最多64活动/128排队，队列最多1s仍计根deadline。MicroProxyResult无响应headers，非2xx丢弃原始错误body；2xx若JSON任何字符串含注入Secret原值则拒绝。平台鉴权/输入/出口策略错误终止Call，不伪装provider可回退错误。仅not_sent或已确定HTTP结果可由脚本按同一业务计划选择下一provider，禁止SDK/Core自动重发。 MPR1.2每次真实出网前再次核对MicroDeployment当前enabled=true、network_enabled=true及其generation与原Call代次一致；关闭联网为PERMISSION_DENIED并注明violations.field=network_enabled，不消耗sequence且不触发fallback。HTTP profile默认network=false，不能通过绑定列表非空或父egress批准绕过开关；pure profile永远不可出网。已发送请求不保证撤回收费，状态不明仍sticky unknown。 若当前Call目标为extension，只允许已核准闭包中的controlled-http-v1 micro执行根使用原有HTTP桥，须与可信Call.micro_*快照及原微prepared registry完全一致，并叠加当前扩展全链权限检查。alias/endpoint/Secret来自原MicroManifest/HttpBinding，扩展contribution不能新增模板或把pure根升为联网profile。
 
 ## 请求字段
 

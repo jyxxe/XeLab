@@ -2,7 +2,7 @@
 
 [文档总目录](../README.md)
 
-> 规格版本：2.6.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
+> 规格版本：2.8.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
 
 ## 部署与实例
 
@@ -46,11 +46,29 @@ MicroPlugin的归档是核心期望变更，撤销其新版本发布/新路由�
 | 任意可运行态 → waiting_runtime | 固定MPR停用、未就绪、实例退出或代次改变；撤销微路由并作废旧句柄 |
 | waiting_runtime → preparing | 同一固定运行时部署/安装恢复，当前权限仍有效；重新Prepare原微版本 |
 | preparing → failed | 摘要/源码/Schema/引擎条件不匹配或准备失败；明确记录原因，不换微版本或运行时 |
-| ready/preparing/waiting_runtime/failed → disabled | enabled=false，先撤路由、取消在途纯计算，再幂等Release已持有句柄 |
+| ready/preparing/waiting_runtime/failed → draining | enabled=false且generation递增，立即撤新路由，取消排队/在途，再幂等Release旧句柄 |
+| draining → disabled | 队列、worker、Prepare和资源租约全部已排空；核心pidfd/cgroup观测确认真实退出与回收 |
 | 任意未归档phase → archived | 微部署归档或所属MicroPlugin归档；撤路由、取消及Release后保留历史，不再启用 |
 
 Release对象已不存在可幂等完成；不得因回收失败重新开放已停用路由。运行时离线时先持久化失效及待清理记录，恢复后清理旧代次，不阻塞内核管理API就绪。
 
-微部署创建时enabled=false、phase=disabled；limits和父运行时绑定不可原地变更，修改需新微部署。MicroPlugin归档对关联微部署执行同样的撤路由/取消/释放规则，并收敛为archived。微调用正在执行时遇到微停用、归档、授权失效或父实例停止，取消传播到受限引擎并释放活动预算；`side_effect=none`也不能把部分JSON输出当成功。
+微部署创建时enabled=false、phase=disabled，resources默认250m/256MiB、network_enabled=false；limits和父运行时绑定不可原地变更，修改需新微部署。resources/联网开关可在disabled且完全排空后通过settings修改，revision/generation递增，旧Prepare失效；已启用或仍draining时返回STATE_CONFLICT，不能先写新值再等待旧执行退出。
+
+MicroPlugin归档对关联微部署执行同样的撤路由/取消/释放规则并收敛为archived。微调用遇停用、归档、授权失效或父实例停止时取消传播，实际资源回收后释放预留；已发出的HTTP不保证撤回，证据不足保持unknown，不能把部分JSON输出当成功。
+
+资源租约reserved → attached必须经核心核实阻塞worker的实例namespace、PID启动时间和pidfd，并实际迁入微cgroup后Ack；失败强杀未证实退出时进入reaping继续占预留。只有真实退出和组无剩余租约才能released，MPR自报退出或RPC传输超时均不足以证明排空。
 
 batch/工作流引用的微Skill保持原版本/摘要/微部署。父运行时不可用时进入原任务的waiting_dependency，不自动改用另一个MPR或“最新”微版本。完整领域边界见[微插件架构](micro-plugins.md)。
+
+## 扩展部署
+
+| 转换 | 条件与收敛 |
+|---|---|
+| disabled → preparing | enabled=true、独立来源批准与当前授权有效、固定链DAG及扩展点兼容、宿主基础Ready |
+| preparing → ready | 物理根当前代次Prepare成功，逻辑链版本/摘要/配置及host_chain_digest完全匹配 |
+| preparing/ready → waiting_host | 任一固定宿主失效或代次变化；先撤扩展新路由、取消下游并失效旧句柄 |
+| waiting_host → preparing | 同一精确宿主链恢复且授权仍有效；不能转到latest或另一宿主 |
+| 任意运行态 → draining | 停用、归档、宿主撤权或版本不可用；扩展后代按逆拓扑撤路由、取消和Release |
+| draining → disabled/archived | 根及处理器调用已排空，旧句柄清理完成；超时或副作用未知不伪报回滚 |
+
+扩展部署固定配置、宿主和limits不能在线改写；新配置走新部署及候选。扩展停用不倒置宿主基础Ready依赖，宿主停用则使其全部后代停止新调用。详见[扩展生命周期](extension-plugins.md)。

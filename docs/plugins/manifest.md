@@ -2,7 +2,7 @@
 
 [文档总目录](../README.md)
 
-> 规格版本：2.6.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
+> 规格版本：2.8.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
 
 ## 文件与模型
 
@@ -45,3 +45,9 @@ ui字段声明PluginUiSpec；与webui桌面壳入口独立。窗口/组件均为
 ## 微插件运行时声明
 
 普通OCI Manifest可选micro_runtime（[MicroRuntimeDescriptor](../api/models/MicroRuntimeDescriptor.md)）声明MicroRuntimeService的受审版本、引擎和JSON协议。它不是通用业务execute能力，也不自动授权脚本；微插件使用独立[MicroManifest](../api/models/MicroManifest.md)及核心版本/运行绑定，不将源码加入普通容器entrypoint。
+
+## 显式扩展点
+
+普通Manifest与微MicroManifest可通过版本化extension_points声明可接受的扩展点；ExtensionManifest也可声明供下级使用的扩展点。点的版本、Schema、允许模式、输出和副作用边界都是不可变契约，核心按精确宿主版本与摘要验证，不能仅凭同名点加载。
+
+旧清单省略扩展点时解释为不支持扩展，不回填字段或重算既有签名/包摘要。ExtensionManifest为独立制品清单，mode=data仅包含严格JSON贡献，mode=skill仅固定已注册处理器及定义摘要；不借普通entrypoint加载任意代码。字段和发布规则见[扩展文档](../extensions/README.md)。

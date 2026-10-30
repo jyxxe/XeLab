@@ -2,7 +2,7 @@
 
 [文档总目录](../../README.md)
 
-> 规格版本：2.6.0；状态：设计预设，尚未构建或实测运行。
+> 规格版本：2.8.0；状态：设计预设，尚未构建或实测运行。
 
 Skill定义：[原始JSON](embedding-gemma-text-8.skill.json)。目标 `org.xelab.embedding-gemma.text-8` / `ai.embedding.text@1.0.0`。输入输出identity映射，无流式；响应业务对象位于SkillCallResult.call.output。
 

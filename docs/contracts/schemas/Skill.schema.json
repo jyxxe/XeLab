@@ -74,7 +74,7 @@
     "installation_id": {
       "type": "string",
       "format": "uuid",
-      "description": "普通Skill声明来源安装；micro Skill必须等于固定微版本的runtime_installation_id"
+      "description": "实际物理rootOCI来源安装；micro为runtime安装，extension必须与固定宿主闭包root_installation_id相同，候选/包来源另核验"
     }
   },
   "required": [

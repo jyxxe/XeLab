@@ -34,7 +34,8 @@
         "call",
         "skill",
         "skill_batch",
-        "micro_plugin"
+        "micro_plugin",
+        "extension_plugin"
       ],
       "description": "资源类型"
     },

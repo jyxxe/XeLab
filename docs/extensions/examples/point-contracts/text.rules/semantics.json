@@ -1,0 +1,42 @@
+{
+  "version": "1.0.0",
+  "point_id": "text.rules",
+  "mode": "data",
+  "side_effect": "none",
+  "maximum_timeout_ms": 2000,
+  "maximum_input_bytes": 1048576,
+  "maximum_output_bytes": 1048576,
+  "maximum_contributions": 16,
+  "contribution_schema": {
+    "type": "object",
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": [
+          "prefix",
+          "uppercase-ascii"
+        ]
+      },
+      "value": {
+        "type": "string",
+        "maxLength": 128
+      }
+    },
+    "required": [
+      "operation"
+    ],
+    "additionalProperties": false
+  },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "enabled": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "enabled"
+    ],
+    "additionalProperties": false
+  }
+}

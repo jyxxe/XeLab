@@ -1,0 +1,17 @@
+{
+  "manifest": {
+    "format_version": "1",
+    "version": "1.0.0",
+    "description": "给纯微宿主提供ASCII大写规则",
+    "host_kind": "micro",
+    "point_id": "text.rules",
+    "contract": {
+      "name": "example.text.rules",
+      "version": "1.0.0",
+      "schema_digest": "sha256:5333c5650605360d6e89df129d5e0dbdaf4b0f7244e3d0c4a72560fe87edf3f2"
+    },
+    "mode": "data"
+  },
+  "source_blob_id": "00000000-0000-4000-8000-000000000800",
+  "source_digest": "sha256:bcb9f924c472aa91f007e67be216556b05942206795f8ddcae05e002e07139ac"
+}

@@ -9,3 +9,4 @@
 - [状态机与转换前置条件](state-machines.md)
 
 - [核心微插件类型与运行时依赖](micro-plugins.md)
+- [Extension Plugin与递归宿主](extension-plugins.md)

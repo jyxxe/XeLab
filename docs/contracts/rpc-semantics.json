@@ -1,5 +1,5 @@
 {
-  "version": "2.6.0",
+  "version": "2.8.0",
   "methods": {
     "PluginLifecycle.Describe": {
       "deadline_ms": 2000,
@@ -181,7 +181,7 @@
       "peer": "plugin",
       "permission": "skill.invoke ∩ 目标原动作 ∩ 插件代理权限 ∩ 当前主体/委托",
       "idempotent": false,
-      "rules": "核心锁定定义摘要及plugin_id/契约，验证input_json<=4MiB和输入Blob白名单，再执行实例级并发准入。不接受任意URL；返回InvokeResponse.output_json为业务输出，调用记录保留Skill元数据。"
+      "rules": "核心锁定定义摘要及plugin_id/契约，验证input_json<=4MiB和输入Blob白名单，再执行实例级并发准入。不接受任意URL；返回InvokeResponse.output_json为业务输出，调用记录保留Skill元数据。 MPR1.3或其他ExtensionHost处理器路径必须另有当前宿主安装已批准的skill.invoke代理规则；可选申请未批准时skill模式拒绝，不能由extension.host.use替代。当前Call若为extension，只允许身份闭包中固定handler_skill_id/definition_digest，重查handler目标/输入Schema/副作用/权限且禁止路径重入；MPR的普通micro Call没有泛化InvokeSkill桥，即使父安装有可选代理规则也不得借用。"
     },
     "HostService.InvokeSkillStream": {
       "deadline_ms": 300000,
@@ -209,28 +209,56 @@
       "peer": "kernel",
       "permission": "内核已授权micro.deploy/enable及micro.runtime.use；运行时仅接受内核mTLS控制",
       "idempotent": true,
-      "rules": "验证所有UUID/微代次/包摘要/源码摘要、UTF8和MicroManifest Schema，limits不大于不可变版本及父预算。按micro_deployment_id/generation/package_digest幂等准备；生成绑定当前runtime实例/代次和微代次的prepared_handle，可LRU淘汰但不是授权票据。不得执行用户副作用；源码解析或沙箱自检失败不Ready。整个请求<=1MiB，控制调用无终端用户凭证转发。"
+      "rules": "验证所有UUID/微代次/包摘要/源码摘要、UTF8和MicroManifest Schema，limits不大于不可变版本及父预算。按micro_deployment_id/generation/package_digest幂等准备；生成绑定当前runtime实例/代次和微代次的prepared_handle，可LRU淘汰但不是授权票据。不得执行用户副作用；源码解析或沙箱自检失败不Ready。整个请求<=1MiB，控制调用无终端用户凭证转发。 MPR1.2要求resources_json为MicroResourceLimits且network_enabled与当前核心微部署设置一致；复用既有micro_generation表示当前MicroDeployment.generation，必填非0，prepared_handle绑定该代次和设置。pure-json-v1不得network=true；network=false不阻止Prepare/Ready。不创建微执行资源组或执行用户代码，后续Invoke按活跃调用准入。"
     },
     "MicroRuntimeService.Invoke": {
       "deadline_ms": 30000,
       "peer": "kernel",
       "permission": "skill.invoke ∩ micro.invoke(micro_plugin) ∩ micro.runtime.use(父deployment) ∩ 当前源链/运行时审批",
       "idempotent": false,
-      "rules": "核心先创建持久Call并锁定Skill/微版本/包/父安装，当前委托须绑定实际MPR实例。核对handle及全部固定ID/代次/摘要、input_digest/Schema和有效deadline，父槽与子槽均准入才创建新受限VM。虚拟stdin一个UTF8 JSON，stdout仅单个完整JSON且正常完成才成功，stdin/stdout各<=1MiB；stderr有界截断。脚本无HostService/文件/网络/secret和运行时凭证。side_effect=none仅表示纯计算可按统一预算安全重算，不承诺崩溃后结果原样缓存；InvokeResponse实际contract由微Skill固定。超时/取消必须销毁VM/worker，不返回部分输出。Call/Cancel/QueryResult沿用核心调用协议，未实现流式。 已识别Call的脚本异常/非法输出/资源失败通过MicroInvokeResponse.outcome.error返回并可附有界诊断，核心记录failed并映射对应HTTP错误，不把gRPC OK当业务成功。result/error恰有一个；未认证、非法控制封装或传输错误使用标准gRPC失败且不泄露日志。超时或进程崩溃可能无法取得诊断，核心仍按Call状态核实。 execution_profile默认pure-json-v1仍按none恢复；controlled-http-v1必须non_repeatable，VM仅暴露host.httpBindings同步投影与host.httpRequest Promise桥，由监督器调用ProxyHttp。只运行受控Promise事件泵，一Call最多1个在途proxy；等待计总wall且不忙等CPU，不开放timer/fetch。主Promise fulfilled且无pendingHostCall才判成功。host.fail只报告MicroManifest.business_errors声明的业务码；出网unknown或平台终止状态由核心优先裁决，不能用正常stdout覆盖。"
+      "rules": "核心先创建持久Call并锁定Skill/微版本/包/父安装，当前委托须绑定实际MPR实例。核对handle及全部固定ID/代次/摘要、input_digest/Schema和有效deadline，父槽与子槽均准入才创建新受限VM。虚拟stdin一个UTF8 JSON，stdout仅单个完整JSON且正常完成才成功，stdin/stdout各<=1MiB；stderr有界截断。脚本无HostService/文件/网络/secret和运行时凭证。side_effect=none仅表示纯计算可按统一预算安全重算，不承诺崩溃后结果原样缓存；InvokeResponse实际contract由微Skill固定。超时/取消必须销毁VM/worker，不返回部分输出。Call/Cancel/QueryResult沿用核心调用协议，未实现流式。 已识别Call的脚本异常/非法输出/资源失败通过MicroInvokeResponse.outcome.error返回并可附有界诊断，核心记录failed并映射对应HTTP错误，不把gRPC OK当业务成功。result/error恰有一个；未认证、非法控制封装或传输错误使用标准gRPC失败且不泄露日志。超时或进程崩溃可能无法取得诊断，核心仍按Call状态核实。 execution_profile默认pure-json-v1仍按none恢复；controlled-http-v1必须non_repeatable，VM仅暴露host.httpBindings同步投影与host.httpRequest Promise桥，由监督器调用ProxyHttp。只运行受控Promise事件泵，一Call最多1个在途proxy；等待计总wall且不忙等CPU，不开放timer/fetch。主Promise fulfilled且无pendingHostCall才判成功。host.fail只报告MicroManifest.business_errors声明的业务码；出网unknown或平台终止状态由核心优先裁决，不能用正常stdout覆盖。 MPR1.2检查既有micro_generation与Prepare及当前核心Call冻结的MicroDeployment.generation一致。controlled-http-v1且network_enabled=false时，在worker创建/发送前PERMISSION_DENIED(violations.field=network_enabled)，不计HTTPsequence、不fallback。pure正常计算。resource_group_handle只定位本Call已准入的微部署聚合资源组；监督器创建阻塞worker后调用HostService.AttachMicroWorker，核心实际入组Ack后才运行JS。每部署默认CPU250m/内存256MiB由cgroup聚合硬限额执行，单Call不复制额度；MPR不持有cgroup写权。"
     },
     "MicroRuntimeService.Release": {
       "deadline_ms": 10000,
       "peer": "kernel",
       "permission": "内核已撤路由的微部署控制操作，仅内核mTLS身份",
       "idempotent": true,
-      "rules": "按prepared_handle和micro_deployment_id/generation撤销新Invoke并释放缓存引用；不存在或已释放返回accepted=true。不能用旧代Release影响新代句柄，活动调用先按核心Cancel收敛，不把删除缓存视作回滚输出。只影响微绑定，不停止父MPR或删除核心制品。"
+      "rules": "按prepared_handle和micro_deployment_id/generation撤销新Invoke并释放缓存引用；不存在或已释放返回accepted=true。不能用旧代Release影响新代句柄，活动调用先按核心Cancel收敛，不把删除缓存视作回滚输出。只影响微绑定，不停止父MPR或删除核心制品。 设置或启停generation改变后旧句柄立即失效；Release不能代替核心pidfd/cgroup实际空组回收。enabled=false但尚有worker/queued/Prepare/资源租约时不满足settings可变前置。"
     },
     "HostService.ProxyHttp": {
       "deadline_ms": 4000,
       "peer": "plugin",
       "permission": "micro.http.request ∩ micro.invoke ∩ micro.runtime.use ∩ 当前MPR代理审批/出口白名单/受控Secret绑定",
       "idempotent": false,
-      "rules": "仅当前controlled-http-v1微Call的实际MPR实例和RpcDelegation可调用；call_id须与委托绑定，alias从不可变endpoint及Call冻结HttpBinding快照解析。seq1..3，每alias最多一个真实请求；同(call,seq)同规范指纹重放有界已知结果，不再出网，异内容冲突。发送前持久记录，发送后无确定响应为unknown且封锁Call后续HTTP，最终Call状态不能被脚本stdout或catch覆盖。HTTPS443仅固定GET扁平标量query或POST JSON，无重定向，DNS/连接IP均拒绝私网/回环/link-local；密钥由核心按已批准精确绑定注入，MPR不获原值/LeaseSecret权。请求<=64KiB，解压响应<=512KiB，单次<=4s且取根剩余；节点最多64活动/128排队，队列最多1s仍计根deadline。MicroProxyResult无响应headers，非2xx丢弃原始错误body；2xx若JSON任何字符串含注入Secret原值则拒绝。平台鉴权/输入/出口策略错误终止Call，不伪装provider可回退错误。仅not_sent或已确定HTTP结果可由脚本按同一业务计划选择下一provider，禁止SDK/Core自动重发。"
+      "rules": "仅当前controlled-http-v1微Call的实际MPR实例和RpcDelegation可调用；call_id须与委托绑定，alias从不可变endpoint及Call冻结HttpBinding快照解析。seq1..3，每alias最多一个真实请求；同(call,seq)同规范指纹重放有界已知结果，不再出网，异内容冲突。发送前持久记录，发送后无确定响应为unknown且封锁Call后续HTTP，最终Call状态不能被脚本stdout或catch覆盖。HTTPS443仅固定GET扁平标量query或POST JSON，无重定向，DNS/连接IP均拒绝私网/回环/link-local；密钥由核心按已批准精确绑定注入，MPR不获原值/LeaseSecret权。请求<=64KiB，解压响应<=512KiB，单次<=4s且取根剩余；节点最多64活动/128排队，队列最多1s仍计根deadline。MicroProxyResult无响应headers，非2xx丢弃原始错误body；2xx若JSON任何字符串含注入Secret原值则拒绝。平台鉴权/输入/出口策略错误终止Call，不伪装provider可回退错误。仅not_sent或已确定HTTP结果可由脚本按同一业务计划选择下一provider，禁止SDK/Core自动重发。 MPR1.2每次真实出网前再次核对MicroDeployment当前enabled=true、network_enabled=true及其generation与原Call代次一致；关闭联网为PERMISSION_DENIED并注明violations.field=network_enabled，不消耗sequence且不触发fallback。HTTP profile默认network=false，不能通过绑定列表非空或父egress批准绕过开关；pure profile永远不可出网。已发送请求不保证撤回收费，状态不明仍sticky unknown。 若当前Call目标为extension，只允许已核准闭包中的controlled-http-v1 micro执行根使用原有HTTP桥，须与可信Call.micro_*快照及原微prepared registry完全一致，并叠加当前扩展全链权限检查。alias/endpoint/Secret来自原MicroManifest/HttpBinding，扩展contribution不能新增模板或把pure根升为联网profile。"
+    },
+    "HostService.AttachMicroWorker": {
+      "deadline_ms": 10000,
+      "peer": "plugin",
+      "permission": "当前micro目标或已授权micro物理执行根ExtensionCall的MPR监督器委托 ∩ micro.invoke ∩ micro.runtime.use；ExtensionCall另查leaf extension.invoke与每层extension.host.use，不新增用户宿主资源管理权",
+      "idempotent": true,
+      "rules": "仅当前Call真实MPR实例/代次可请求，resource_group_handle须由核心为该Call/物理执行/微部署代次签发；所有UUID/代次/容器PID和启动时间必须匹配。核心Runtime.attach_micro_worker映射PID namespace、核对同实例/监督器子进程及启动时间、取pidfd防复用，将阻塞且未装载用户代码的worker迁入真实微cgroup，复核成功才Ack accepted=true。MPR收到Ack之前不得运行用户代码。失败kill/reap待启动worker并回收，禁止附宿主路径或直接指定host PID，MPR/VM不获得cgroup写权。脚本没有此Host入口；attach不是HTTP服务商请求，不计sequence1..3。 MPR1.3允许target.kind=extension的Call，但仅当核心已验证其ExtensionIdentityClosure最终逻辑宿主为该micro版本/部署，且Call.micro_*快照、root实例/代次、资源租约均一致；不能仅凭请求自报微ID或伪造source_kind取得Attach。"
+    },
+    "ExtensionHostService.Prepare": {
+      "deadline_ms": 10000,
+      "peer": "kernel",
+      "permission": "extension.deploy/enable ∩ 每层真实宿主extension.host.use ∩ 固定物理root当前审批；仅核心mTLS控制",
+      "idempotent": true,
+      "rules": "仅向当前精确root OCI实例发送；logical_host必须与核心ExtensionDeployment.host一致，不为micro/extension虚构网络实例。核对版本/package/source摘要、<=256KiB严格UTF8 JSON contribution、ExtensionManifest、point契约/Schema、固定config及完整身份闭包。identity_chain_json符合ExtensionIdentityClosure，host_snapshot_json符合ExtensionHostSnapshot；二者及config各自限额、宿主链和联合强依赖图深度<=16并无环。host_chain_digest只覆盖不可变宿主/版本/包/point/handler定义身份，不含generation、实例句柄、健康或时间；动态snapshot另外绑定当前各层代次与root实例代次。核对宿主显式ExtensionHostDescriptor/profile与point允许模式；micro宿主须MPR1.3显式支持，并保留原MicroManifest输入/输出及副作用限制。祖先按拓扑顺序已准备，未准备/不兼容时拒绝，不静默绕过中间扩展。data/skill两模式均生成候选但不自动注册启用。只挂载/验证声明式数据，不执行业务/handler，不赋予Secret/网络/宿主代码加载能力。按extension_deployment/generation/root代次/身份闭包幂等返回有期限句柄；迟到响应由核心CAS丢弃。 逻辑host链仅从直接宿主到首个非extension宿主（ordinary或micro），每项是真实点绑定；micro→MPR仅由root部署/安装表示但仍参与联合依赖DAG。每边config_digest只取所属扩展部署不可变config，不含宿主可变resources/network/启停。host_chain_digest=SHA256(JCS(ExtensionIdentityClosure))，含leaf版本/包及固定root部署/安装。 prepared贡献/链元数据必须计入物理root已批准的有界缓存与父内存；micro根与MPR既有artifact_cache_max_bytes/entries共同计量，不为扩展另建无界缓存。不能容纳时明确RESOURCE_EXHAUSTED，不反复Prepare或扩容父预算。"
+    },
+    "ExtensionHostService.Invoke": {
+      "deadline_ms": 30000,
+      "peer": "kernel",
+      "permission": "skill.invoke ∩ leaf extension.invoke ∩ 每层真实宿主extension.host.use ∩ 当前root审批；micro root另micro.invoke/runtime.use；实际handler Skill/目标权限及原来源链",
+      "idempotent": false,
+      "rules": "仅当前核心Call能调用固定prepared_handle。核对extension generation/package/host_chain_digest、input_digest和point输入Schema，execution_chain_json按ExtensionHostSnapshot冻结每层UUID/版本/包/generation、root实例/代次和handler定义摘要；每次检查当前启用、审批/撤权与完整祖先链。data模式调用宿主明确声明的数据适配器，以已核验contribution扩展处理并返回point.output；不得eval/import原数据。skill模式只由监督器经已有HostService.InvokeSkill调用manifest固定handler_skill_id/definition_digest，核心再次检查handler当前权限、精确目标、同一根deadline与调用祖先无重入，不得以扩展owner/宿主身份代替原调用者。VM没有HostService/RPC入口。副作用按point、handler及原root profile保守合成，不可通过扩展将non_repeatable降为none或扩大pure网络/文件/Secret能力。微root沿原MicroExecutor资源组/Attach和JS子限额执行，默认250m/256MiB共享，不复制父4C4GiB预算；network_enabled=false对HTTP执行仍拒绝且无fallback。所有业务经核心Skill，不支持扩展业务流；输入/输出受point、祖先和物理root最小上限，micro各<=1MiB。结果/error恰一，gRPC OK不是业务成功。Cancel/QueryResult复用CapabilityService；停止/撤权传播到固定handler Call，已发生外部副作用不撤回，unknown优先于正常输出且禁止盲重放。 ordinary root的扩展点准入使用专用extension.host.use及当前审批，不强求无关capability.invoke；只有实际另调已注册能力才按原动作检查。宿主仅提供点时不隐式执行全部祖先Skill，也不因此要求所有祖先extension.invoke；某祖先handler实际被执行时才检查它的Skill/invoke授权。 扩展点输入/输出JSON各最多1MiB、总期限最多30000ms，再与各点/handler/root更低预算求交；contribution/config/业务input同名控制字段不能覆盖固定handler、主体、宿主、代码或委托。 micro物理执行根必须携本ExtensionCall的resource_group_handle；核心先将可信root MicroPlugin/Version/Deployment/package/generation/resources/network写入Call.micro_*执行快照，再经Runtime.configure_micro_group按该微部署聚合准入，监督器使用此handle经HostService.AttachMicroWorker实际入组，只有Ack后运行。ordinary根要求handle为空，不得把任意MPR租约用于普通root。MPR从已Ready微prepared registry按identity闭包中的真实micro版本/部署/package及当前generation读取原代码/limits/resources/point，不从扩展contribution/input取得源码或替换root版本；一个物理执行只建立一个worker/准入，不额外调用MicroRuntimeService.Invoke复制执行或额度。 skill模式须宿主当前已批准的skill.invoke代理规则，具体资源限定到闭包handler；不批准不启用该模式，不把mode声明当授权。micro VM仅能按新版本声明读取固定data投影，不取得代理客户端。"
+    },
+    "ExtensionHostService.Release": {
+      "deadline_ms": 10000,
+      "peer": "kernel",
+      "permission": "核心已确认的扩展停用/归档/宿主失效清理；只清理精确旧绑定，不要求被撤销的业务授权继续有效",
+      "idempotent": true,
+      "rules": "核对extension deployment/generation、host_chain_digest与root实例/代次；先撤新路由，取消该扩展及依赖后代queued/在途和固定handler子Call，逆拓扑卸载贡献及准备句柄。对象或句柄已不存在可幂等Ack，不删除版本/Call/业务数据。旧代清理不得释放新代绑定，也不能卸载兄弟扩展；清理/传输超时不是业务未执行或已排空证明。等待micro worker/handler执行真实结束及资源租约回收后才收敛disabled/archived；root离线时持久待清理记录并waiting_host，不自动改绑其它宿主。"
     }
   }
 }

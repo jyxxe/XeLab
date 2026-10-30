@@ -10,7 +10,7 @@
 
 | 字段 | 类型 | 必填 | 约束 / 默认值 | 含义 |
 |---|---|---|---|---|
-| `kind` | string | 是 | enum=`["platform", "account", "group", "credential", "plugin", "deployment", "instance", "capability", "task", "workflow", "schedule", "volume", "secret", "blob", "event", "subscription", "client", "publisher", "backup", "operation", "audit", "quota", "model", "call", "skill", "skill_batch", "micro_plugin"]` | 资源类型 |
+| `kind` | string | 是 | enum=`["platform", "account", "group", "credential", "plugin", "deployment", "instance", "capability", "task", "workflow", "schedule", "volume", "secret", "blob", "event", "subscription", "client", "publisher", "backup", "operation", "audit", "quota", "model", "call", "skill", "skill_batch", "micro_plugin", "extension_plugin"]` | 资源类型 |
 | `match` | string | 是 | enum=`["all", "ids", "owned_by"]` | 匹配方式 |
 | `ids` | array&lt;string&gt; | 否 | minItems=`1`; maxItems=`256` | 显式资源标识 |
 | `owner_id` | string | 否 | format=`"uuid"`; minLength=`1`; maxLength=`36` | owned_by 的固定账户标识 |

@@ -2,7 +2,7 @@
 
 [插件说明](README.md) · [微执行协议](../micro-plugin-runtime/execution.md)
 
-> 规格版本：2.6.0；状态：planned；业务契约草案：0.1.0。
+> 规格版本：2.8.0；状态：planned；业务契约草案：0.1.0。
 
 ## `convert.markdown-html` / `markdown-html`
 

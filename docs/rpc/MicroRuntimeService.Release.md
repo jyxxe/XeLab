@@ -14,7 +14,7 @@
 
 ## 前置条件、执行及失败语义
 
-按prepared_handle和micro_deployment_id/generation撤销新Invoke并释放缓存引用；不存在或已释放返回accepted=true。不能用旧代Release影响新代句柄，活动调用先按核心Cancel收敛，不把删除缓存视作回滚输出。只影响微绑定，不停止父MPR或删除核心制品。
+按prepared_handle和micro_deployment_id/generation撤销新Invoke并释放缓存引用；不存在或已释放返回accepted=true。不能用旧代Release影响新代句柄，活动调用先按核心Cancel收敛，不把删除缓存视作回滚输出。只影响微绑定，不停止父MPR或删除核心制品。 设置或启停generation改变后旧句柄立即失效；Release不能代替核心pidfd/cgroup实际空组回收。enabled=false但尚有worker/queued/Prepare/资源租约时不满足settings可变前置。
 
 ## 请求字段
 

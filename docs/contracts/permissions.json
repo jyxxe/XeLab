@@ -1,5 +1,5 @@
 {
-  "version": "2.6.0",
+  "version": "2.8.0",
   "definitions": {
     "platform.read": {
       "resource_kinds": [
@@ -1068,9 +1068,10 @@
       ],
       "operations": [
         "createMicroDeployment",
-        "archiveMicroDeployment"
+        "archiveMicroDeployment",
+        "updateMicroDeploymentSettings"
       ],
-      "description": "绑定微版本和MPR父部署",
+      "description": "绑定/归档微部署，并在停用排空后手动配置CPU、内存与联网开关",
       "self_service": false
     },
     "micro.enable": {
@@ -1138,6 +1139,110 @@
       ],
       "operations": [],
       "description": "通过固定微Call调用已批准HTTP别名；不能读取原始Secret或提供任意URL",
+      "self_service": false
+    },
+    "extension.read": {
+      "resource_kinds": [
+        "extension_plugin"
+      ],
+      "operations": [
+        "listExtensionPlugins",
+        "getExtensionPlugin",
+        "listExtensionVersions",
+        "getExtensionVersion",
+        "listExtensionDeployments",
+        "getExtensionDeployment"
+      ],
+      "description": "列出可见扩展插件",
+      "self_service": false
+    },
+    "extension.create": {
+      "resource_kinds": [
+        "extension_plugin"
+      ],
+      "operations": [
+        "createExtensionPlugin"
+      ],
+      "description": "创建扩展插件身份",
+      "self_service": false
+    },
+    "extension.update": {
+      "resource_kinds": [
+        "extension_plugin"
+      ],
+      "operations": [
+        "updateExtensionPlugin"
+      ],
+      "description": "更新扩展插件显示资料",
+      "self_service": false
+    },
+    "extension.archive": {
+      "resource_kinds": [
+        "extension_plugin"
+      ],
+      "operations": [
+        "archiveExtensionPlugin"
+      ],
+      "description": "归档扩展插件及撤销新执行",
+      "self_service": false
+    },
+    "extension.publish": {
+      "resource_kinds": [
+        "extension_plugin"
+      ],
+      "operations": [
+        "publishExtensionVersion"
+      ],
+      "description": "发布固定扩展清单与JSON贡献制品",
+      "self_service": false
+    },
+    "extension.source.read": {
+      "resource_kinds": [
+        "extension_plugin"
+      ],
+      "operations": [
+        "getExtensionSource"
+      ],
+      "description": "读取精确扩展版本的JSON贡献原文",
+      "self_service": false
+    },
+    "extension.deploy": {
+      "resource_kinds": [
+        "extension_plugin"
+      ],
+      "operations": [
+        "createExtensionDeployment",
+        "archiveExtensionDeployment"
+      ],
+      "description": "固定扩展宿主点与配置/归档扩展绑定",
+      "self_service": false
+    },
+    "extension.enable": {
+      "resource_kinds": [
+        "extension_plugin"
+      ],
+      "operations": [
+        "setExtensionDeploymentEnabled"
+      ],
+      "description": "启停扩展插件运行绑定",
+      "self_service": false
+    },
+    "extension.invoke": {
+      "resource_kinds": [
+        "extension_plugin"
+      ],
+      "operations": [],
+      "description": "调用固定扩展Skill，与完整宿主链/handler权限求交，无宿主权限继承",
+      "self_service": false
+    },
+    "extension.host.use": {
+      "resource_kinds": [
+        "deployment",
+        "micro_plugin",
+        "extension_plugin"
+      ],
+      "operations": [],
+      "description": "允许使用明确宿主扩展点；ordinary解析deployment，micro/extension解析真实插件UUID。不是宿主全部业务/管理/Secret/网络权限",
       "self_service": false
     }
   },

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "MicroExecutionLimits",
   "type": "object",
-  "description": "获批执行预算，必须同时不超过版本声明和MPR上限",
+  "description": "不可变微版本/微部署的业务执行子限额；heap/stack不等于总RSS，CPU与总内存另见MicroResourceLimits",
   "properties": {
     "timeout_ms": {
       "type": "integer",

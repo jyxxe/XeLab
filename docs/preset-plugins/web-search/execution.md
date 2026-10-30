@@ -2,11 +2,13 @@
 
 [网页搜索目录](README.md) · [配置](configuration.md) · [适配器](providers.md) · [核心恢复](../../tasks/recovery.md)
 
-> 规格版本：2.6.0；状态：待实现的规范性执行协议。
+> 规格版本：2.8.0；状态：待实现的规范性执行协议。
 
 ## 固定调用上下文
 
 核心验证固定Skill、微版本摘要、微部署、父Runtime、当前来源链以及具体HTTP绑定的使用权限。调用者只提供query和limit；正文中的主体、Secret、provider、网络地址或运行时ID不能替代可信控制上下文。
+
+MPR 1.2.0允许在network_enabled=false时Prepare/Ready，但搜索业务Invoke必须在创建worker及任何发送前检查开关。false返回PERMISSION_DENIED（violations.field=network_enabled），不消耗sequence、不进入服务商fallback，也不把此平台拒绝变成SEARCH_NO_PROVIDER。默认关闭，须先在停用、disabled且排空状态手动设置后再启用搜索。
 
 输入通过Schema和额外词数校验后，核心冻结当前启用绑定形成当前Call的有序snapshot，并随可信执行封装交给MPR。脚本最多尝试其中三个不同alias。Prepare句柄仍固定原微版本、package_digest和运行时/微部署代次；不能因故障改用同名latest版本。
 
@@ -18,7 +20,7 @@
 | `host.httpRequest(alias,payload,seq)` | 返回Promise；请求当前snapshot内的alias，payload必须匹配不可变端点Schema，seq标识本Call内的唯一attempt |
 | `host.fail(code,message)` | 报告MicroManifest.business_errors声明的业务失败，由Runtime映射为MicroInvokeResponse.error，不把错误写成成功JSON |
 
-MPR监督器把脚本请求转换为受信`HostService.ProxyHttp`调用。核心根据实际MPR实例、Call委托、固定微部署和snapshot确认授权；脚本不能自行构造控制身份。桥不返回原始Secret、认证头或可复用委托。
+MPR监督器把脚本请求转换为受信`HostService.ProxyHttp`调用。核心根据实际MPR实例、Call委托、固定微部署和snapshot确认授权，并逐次复核network_enabled、enabled及generation；脚本不能自行构造控制身份。开关true仍需profile、当前权限、固定HttpBinding及平台策略共同允许。桥不返回原始Secret、认证头或可复用委托。
 
 脚本以async IIFE作为最外层执行表达式，逐次await受控HTTP Promise；VM不得同步阻塞MPR监督器。MPR事件泵在有界预算内等待完成，仅当主Promise fulfilled且没有pendingHostCall时，才把完整stdout送入成功输出校验。主Promise拒绝、提前结束后仍有未完成HTTP或输出不合法均不能报告业务成功。
 
@@ -40,7 +42,7 @@ MPR监督器把脚本请求转换为受信`HostService.ProxyHttp`调用。核心
 
 1. 若无候选绑定，通过host.fail报告`SEARCH_NO_PROVIDER`，不创建外部请求。
 2. 取snapshot下一alias，按其provider构造白名单payload，创建唯一attempt记录。
-3. 核心重新检查绑定、Secret与来源链是否撤销，并以根Call剩余时间和绑定timeout_ms的较小值作为期限。
+3. 核心重新检查部署联网开关、enabled/generation、绑定、Secret与来源链，并以根Call剩余时间和绑定timeout_ms的较小值作为期限。
 4. 先持久记录即将发送的attempt，再执行最多一次上游请求；不跟随重定向，不做HTTP库隐式重试。
 5. 成功响应通过大小、JSON和输出校验后，返回统一结果。即使items为空也直接成功。
 6. 仅对下表允许的确定失败进入下一个alias；没有剩余候选或预算时返回稳定错误。
@@ -69,6 +71,8 @@ HTTP 401/403只表示固定外部服务商的响应时，才适用auth_rejected�
 
 输入和输出各最多1MiB、深度64；JS heap 16MiB、stack 1MiB、stderr最多64KiB。每attempt请求最多64KiB，响应按解压后512KiB计量。达到硬期限时监督器取消代理和执行单元，并释放活动槽。
 
+微部署默认250mCPU/256MiB，由核心适配器配置逐微cgroup，全部worker合计受限；默认并发1/硬上限4共享预算，heap16MiB为每VM子上限。无每微OCI和MPR宿主cgroup权限。父4000mCPU/4294967296字节（4vCPU/4GiB）的工作池3500mCPU/3758096384字节（3584MiB）默认最多准入4个不同微部署，总活动槽4不是四份资源；控制CPU500m、控制内存128MiB、缓存256MiB另有预算，不借内核4C/16GiB。
+
 `usage.external_requests`统计已经可能发出请求字节的attempt数；确定未发送的连接失败不增加。`usage.potentially_billed_requests`保守统计其中可能收费的请求，不能据状态码推定免费。v1在不能确认不收费时将其计入，数值不高于external_requests。
 
 成功输出的`attempts`保留顺序和规范化outcome，`http_status`在已得到有效HTTP状态时填写，否则为null。`fallback_used`表示是否进入过初始alias之后的候选attempt，不因空结果而置true。
@@ -88,6 +92,8 @@ HTTP 401/403只表示固定外部服务商的响应时，才适用auth_rejected�
 取消传播到脚本、监督器和代理。尚未发送的请求不得继续发送；已发送的外部请求可能继续处理和收费。结果未能核实时仍保留未知状态，不能因为本地取消已确认就承诺没有外部费用。
 
 snapshot配置变更不改变当前顺序和参数，但下一attempt发送前必须重新检查Secret、绑定、微部署与权限撤销。禁用或删除绑定同样立即阻止新发送；迟到响应不能创建新attempt或覆盖已终结状态。
+
+资源及联网手改只接受停用、phase=disabled且排空后的PUT settings，携If-Match与Idempotency-Key；其他运行状态为STATE_CONFLICT。更新generation/revision并失效旧句柄，不改变原limits、微版本、父绑定或Skill定义；重新启用后新调用使用当前设置，历史unknown和外部计费证据不被代次更新覆盖。
 
 多条查询使用[核心异步batch](../../skills/batches.md)，各item引用同一固定Skill和一份业务输入。每项独立计量和诊断；unknown项不能由BatchEngine自动重放，其他已完成item不受其影响。
 

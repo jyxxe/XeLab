@@ -10,7 +10,7 @@
 
 期限上限：30000ms。事务：短事务固定微/父依赖和授权；对象复制、Prepare/执行不持有长DB事务。
 
-skill.invoke、micro.invoke与micro.runtime.use联合检查；双层槽/预算准入，调用受控MicroRuntimeService并验证微输出Schema，持久结果附微制品来源；无任意source/path或通用执行旁路。 controlled-http-v1另检查micro.http.request并冻结绑定计划/Secret版本；non_repeatable禁止盲重放，返回前检查HTTP台账unknown/终止错误优先。
+skill.invoke、micro.invoke与micro.runtime.use联合检查；双层槽/预算准入，调用受控MicroRuntimeService并验证微输出Schema，持久结果附微制品来源；无任意source/path或通用执行旁路。 controlled-http-v1另检查micro.http.request并冻结绑定计划/Secret版本；non_repeatable禁止盲重放，返回前检查HTTP台账unknown/终止错误优先。 受控HTTP且network_enabled=false时在worker/HTTP sequence之前PERMISSION_DENIED，violations.field=network_enabled，不fallback；pure不受此联网开关阻断。固定micro_deployment_generation/resources/network快照，父池/微组按部署聚合准入，获得每Call资源句柄；worker必须由HostService.AttachMicroWorker确认真实入组后才执行，结束后依据pidfd回收。
 
 | 输入字段 | 类型 | 语义 |
 |---|---|---|

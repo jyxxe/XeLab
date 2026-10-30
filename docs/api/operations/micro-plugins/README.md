@@ -19,3 +19,4 @@
 | DELETE | `/api/platform/v1/micro-deployments/{micro_deployment_id}` | [归档微插件运行绑定](archiveMicroDeployment.md) |
 | PUT | `/api/platform/v1/micro-deployments/{micro_deployment_id}/enabled` | [启停微插件运行绑定](setMicroDeploymentEnabled.md) |
 | GET | `/api/platform/v1/micro-calls/{call_id}/diagnostics` | [读取本人或获准微调用诊断](getMicroCallDiagnostics.md) |
+| PUT | `/api/platform/v1/micro-deployments/{micro_deployment_id}/settings` | [手动设置微部署CPU、内存与联网开关](updateMicroDeploymentSettings.md) |

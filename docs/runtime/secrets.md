@@ -2,7 +2,7 @@
 
 [文档总目录](../README.md)
 
-> 规格版本：2.6.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
+> 规格版本：2.8.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
 
 ## 写入与元数据
 
@@ -25,6 +25,8 @@ secret 元数据归档保留审计引用；后代 API Key 不因拥有 capabilit
 ## 微插件HTTP的无原值代理
 
 MPR1.1.0的controlled-http-v1使用核心HttpBinding绑定微部署endpoint_alias与secret引用，Runtime和VM均不获得原值租约。pure-json-v1继续没有HTTP桥；MPR申请可选micro.http.request也不使pure脚本取得网络或secret能力。
+
+MPR1.2.0增加微部署network_enabled手动开关，默认false；HTTP profile在开关关闭时于业务Invoke前拒绝，代理还逐次检查当前开关与部署generation。Prepare/Ready不触发联网。开关开启也不能跳过当前Secret/绑定/出口审批；已发送请求取消后按证据处理，未知结果不重放。
 
 创建/替换HTTP绑定由micro.http.bind管理，创建或换secret另需secret.bind及父egress审批。核心依据已批准绑定限定的secret.use目的、当前secret状态/版本及完整微调用授权执行代理使用；终端不因调用此微插件而获得secret原值或LeaseSecret权限，MPR也不申请通用secret.use。
 

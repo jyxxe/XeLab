@@ -6,7 +6,7 @@
 
 `POST /api/platform/v1/micro-deployments`
 
-检查micro.deploy与父deployment上的micro.runtime.use；父安装必须与微版本固定安装相同且支持engine/protocol、单副本。limits不得超过MicroManifest和MPR预算；创建enabled=false/phase=disabled并生成固定candidate_skill，不自动注册或启用Skill。
+检查micro.deploy与父deployment上的micro.runtime.use；父安装必须与微版本固定安装相同且支持engine/protocol、单副本。limits不得超过MicroManifest和MPR预算；创建enabled=false/phase=disabled并生成固定candidate_skill，不自动注册或启用Skill。 resources整对象省略时填cpu_millis=250/memory_bytes=268435456，network_enabled省略为false并显式保存；true仅允许controlled-http-v1。父Runtime须声明resource_isolation=cgroup-v2-per-micro-deployment-v1并具备实际核心适配能力；资源范围/业务子限额/父工作池共同校验，不复制父节点预留。
 
 | 项目 | 定义 |
 |---|---|
@@ -33,7 +33,9 @@ Content-Type：`application/json`；请求体必需。
 |---|---|---|---|---|
 | `micro_version_id` | string | 是 | format=`"uuid"`; minLength=`1`; maxLength=`36` | 资源唯一标识 |
 | `runtime_deployment_id` | string | 是 | format=`"uuid"`; minLength=`1`; maxLength=`36` | 资源唯一标识 |
-| `limits` | [MicroExecutionLimits](../../models/MicroExecutionLimits.md) | 是 | 见类型定义 | 获批执行预算，必须同时不超过版本声明和MPR上限 |
+| `limits` | [MicroExecutionLimits](../../models/MicroExecutionLimits.md) | 是 | 见类型定义 | 不可变微版本/微部署的业务执行子限额；heap/stack不等于总RSS，CPU与总内存另见MicroResourceLimits |
+| `resources` | [MicroResourceLimits](../../models/MicroResourceLimits.md) | 否 | default=`{"cpu_millis": 250, "memory_bytes": 268435456}` | 省略整对象由核心填入默认值；显式对象必须同时给出CPU和内存 |
+| `network_enabled` | boolean | 否 | default=`false` | 显式联网意图；true只允许已声明controlled-http-v1，仍须调用权限/HttpBinding/父egress；false拒绝HTTP profile Invoke与ProxyHttp |
 
 结构示例（标识和业务数据需替换为当前部署实际获准对象）：
 

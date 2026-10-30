@@ -2,7 +2,7 @@
 
 [预设目录](../README.md) · [文档总目录](../../README.md)
 
-> 规格版本：2.6.0；状态：`planned`，尚未实现、构建或实测；计划业务契约版本：0.1.0。
+> 规格版本：2.8.0；状态：`planned`，尚未实现、构建或实测；计划业务契约版本：0.1.0。
 
 插件目录：`email-connector/`；拟定插件ID：`org.xelab.email-connector`。使用批准的SMTP或邮件提供商API发送文本、HTML或模板邮件，支持受限Blob附件。
 

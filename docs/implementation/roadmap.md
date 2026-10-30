@@ -2,7 +2,7 @@
 
 [文档总目录](../README.md)
 
-> 规格版本：2.6.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
+> 规格版本：2.8.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
 
 ## M1：单节点内核与身份闭环
 
@@ -33,3 +33,9 @@ SDK、打包/契约测试工具、发布审核、兼容性验证、灰度策略�
 ## 新增插件规划
 
 [32个规划插件](../preset-plugins/planned/README.md)与[37个能力入口](../preset-plugins/planned/contracts.md)按[独立交付阶段](../preset-plugins/planned/delivery.md)实施：纯JSON处理、文本格式库、受控外部服务、文件/数据库、可信Webhook及浏览器。它们不扩大已有核心HTTP/RPC计数；缺少宿主任务提交、可信文件桥或运行时库时先补正式契约和兼容协商。
+
+## Extension Plugin落地
+
+在固定Skill、MPR及来源授权闭环后实现[扩展插件](../extensions/README.md)：独立扩展对象/版本/部署、显式版本化扩展点、ordinary/micro/extension typed宿主、完整DAG/16层限制、根ExtensionHostService及候选Skill。先提供有界data贡献，再接入固定handler Skill；MPR1.3须显式声明只读extensionData与监督器转发适配。
+
+每项发布前验证独立来源、原根/逐宿主/handler授权交集、资源不重复计量、宿主先Ready、拓扑Prepare及逆序Release。未实现宿主不得宣称支持扩展；缺扩展点的旧版本仍按原摘要运行，不把普通插件安装流程当作扩展制品登记。

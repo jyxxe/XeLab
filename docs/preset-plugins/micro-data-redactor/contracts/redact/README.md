@@ -2,7 +2,7 @@
 
 [插件接口语义](../../interfaces.md) · [规划目录](../../../planned/README.md)
 
-> 规格版本：2.6.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
+> 规格版本：2.8.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
 
 能力 ID：`data.redact`；操作目录：`redact`。
 
@@ -62,4 +62,4 @@
 
 落地门槛：`redaction-library`、`optional-linear-regex`；见[门槛说明](../../../planned/feature-gates.md)。
 
-四文件草案摘要：`sha256:c794a9a19f8d75a24e3d986f955718fe2705b952f9beaa8c507192c912654580`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。
+四文件草案摘要：`sha256:ebe6011ba53b28abd9fbf0ec4cb116ba89a9786222cf54247956265097fa85e0`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。

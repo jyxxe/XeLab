@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MicroSkillTarget",
+  "type": "object",
+  "description": "micro固定目标；其他种类字段拒绝，不改变既有wire结构",
+  "properties": {
+    "kind": {
+      "const": "micro"
+    },
+    "plugin_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "插件稳定 ID；不含版本",
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+      "example": "org.xelab.echo"
+    },
+    "micro_version_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "micro_deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "package_digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 71,
+      "description": "制品或内容 SHA-256 摘要",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "required": [
+    "kind",
+    "plugin_id",
+    "micro_version_id",
+    "micro_deployment_id",
+    "package_digest"
+  ],
+  "additionalProperties": false
+}

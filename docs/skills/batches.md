@@ -2,7 +2,7 @@
 
 [Skill目录](README.md) · [逐接口](../api/operations/batches/README.md) · [执行与恢复](../tasks/batches.md)
 
-> 规格版本：2.6.0；状态：待实现的规范。batch默认异步，不用长HTTP连接等待整批结果。
+> 规格版本：2.8.0；状态：待实现的规范。batch默认异步，不用长HTTP连接等待整批结果。
 
 ## 两种粒度
 

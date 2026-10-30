@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CreateExtensionDeployment",
+  "type": "object",
+  "description": "创建disabled扩展部署；锁图校验typed宿主/点/摘要/handler与完整DAG，固定精确链后生成候选Skill，不自动注册或启用",
+  "properties": {
+    "extension_version_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "host": {
+      "$ref": "../openapi.json#/components/schemas/ExtensionHostRef"
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "../openapi.json#/components/schemas/JsonValue"
+      },
+      "maxProperties": 128,
+      "description": "固定扩展配置<=64KiB/深度32，须满足宿主点config_schema；变更须新部署"
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000,
+      "description": "同一点按priority升序、UUID排序，顺序随Call冻结",
+      "default": 100
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 30000,
+      "description": "固定候选Skill总期限，不能超过点、物理根或调用剩余期限",
+      "default": 2000
+    }
+  },
+  "required": [
+    "extension_version_id",
+    "host",
+    "config"
+  ],
+  "additionalProperties": false
+}

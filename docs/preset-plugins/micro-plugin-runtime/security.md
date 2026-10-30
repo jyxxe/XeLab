@@ -2,7 +2,7 @@
 
 [MPR目录](README.md) · [身份权限](../../identity/README.md) · [容器隔离](../../runtime/isolation.md)
 
-> 规格版本：2.6.0；状态：待实现。运行任意宿主解释器子进程本身不是本规范所要求的隔离。
+> 规格版本：2.8.0；状态：待实现。运行任意宿主解释器子进程本身不是本规范所要求的隔离。
 
 ## 核心对象与来源
 
@@ -20,13 +20,15 @@ MicroDeployment创建时才生成候选Skill，初始disabled，不自动注册�
 
 MPR1.1.0另支持显式controlled-http-v1。它必须声明side_effect=non_repeatable与1..8个不可变endpoint，每项固定alias、origin、path、GET/POST方法、鉴权头模板和payload_schema；不得由业务JSON覆盖或临时拼接URL。新增endpoint/profile须新包摘要和显式部署审批，已有pure制品省略字段仍解释为pure，原摘要不变。
 
+MPR1.2.0增加微部署network_enabled手动开关，默认false，只有controlled-http-v1可设true。它只允许已声明HTTP桥，不授予真实网络或放宽endpoint/secret/egress规则。Prepare与Ready可以离线完成；关闭状态的HTTP业务Invoke在启动worker前以PERMISSION_DENIED拒绝，violations.field=network_enabled，不占HTTP序号，不伪装成NO_PROVIDER后fallback。
+
 ## 受控HTTP不是网络授权
 
 HTTP profile只接入host.httpBindings()、返回Promise的host.httpRequest(alias,payload,sequence)及受声明约束的host.fail(code,message)。监督器代调用HostService.ProxyHttp；VM没有RPC客户端、Call委托、secret ID/版本/值，不能传任意请求头。pure profile不能借MPR可选的micro.http.request代理审批调用这些桥。
 
 核心仅向VM投影本Call固定绑定快照中的alias、priority和timeout_ms。绑定priority变化只影响新Call，禁用/删除立即阻止新转发；secret或绑定实质内容变化不能让旧Call静默改用新凭证，需明确STATE_CONFLICT或当前授权错误。
 
-每次ProxyHttp从实际证书与RpcDelegation核对MPR实例、父调用、微对象/部署/版本，联合检查调用者micro.http.request、micro.invoke、micro.runtime.use、固定endpoint、已批准绑定限定的内部secret.use及当前状态、父MPR的micro.http.request/egress审批和完整来源链。终端/MPR不因此取得secret原值或LeaseSecret权。正文call_id/alias仅为待验证目标，不是身份凭据。
+每次ProxyHttp从实际证书与RpcDelegation核对MPR实例、父调用、微对象/部署/版本，联合检查当前network_enabled、微部署启用状态及原generation、调用者micro.http.request、micro.invoke、micro.runtime.use、固定endpoint、已批准绑定限定的内部secret.use及当前状态、父MPR的micro.http.request/egress审批和完整来源链。终端/MPR不因此取得secret原值或LeaseSecret权。正文call_id/alias仅为待验证目标，不是身份凭据。
 
 核心完成上述检查才注入鉴权凭证。请求仅允许固定Accept/Content-Type和版本声明的鉴权模板；VM不能提供Host、Cookie、代理认证或其他任意头。核心代理不把LeaseSecret返回给MPR，也不在审计、错误、HTTP台账或VM回调中保存原值。
 
@@ -40,11 +42,23 @@ host.fail仅接受MicroManifest.business_errors中声明的code；业务状态�
 
 ## VM与执行单元
 
-每次调用使用新VM，不保留跨请求可变状态。引擎限制heap、stack、编译/求值资源并支持中断；监督器独立执行硬wall期限。存在不能及时中断的native操作时，必须使用短命worker进程或等效可强制销毁的单元，不能让整个MPR控制线程被卡死。
+每次调用必须在独立短命worker进程内建立新VM，不保留跨请求可变状态。引擎限制heap、stack、编译/求值资源并支持中断；监督器独立执行硬wall期限，核心可按已验证进程身份终止worker，不能让native操作卡住整个MPR控制线程。
 
 worker不得读取监督器内存、其他用户VM、运行时凭证或制品存储。执行单元边界必须实际限制这些访问；仅在同一权限环境启动普通Python或Node子进程，不构成这一边界，也不能宣传为本版支持的engine。
 
-实例父cgroup硬限制总CPU、RSS、进程和临时空间。worker地址空间上限不是RSS，单微heap/stack是引擎预算；不需要向MPR委派cgroup，也不能声称每个worker或微插件已获得独立CPU/RSS cgroup或独立OCI容器。多个微调用仍共享同一个MPR故障和资源域。
+核心受审OCI适配器管理父MPR下control/workloads及每微部署子cgroup；MPR没有privileged、可写宿主cgroup或任意cgroup路径/PID的控制权。父域和workloads内部域不驻留进程，监督器/cache在control，worker在明确微部署叶子域，满足cgroup v2资源控制拓扑。
+
+worker只在核心验证实际PID属于该MPR实例/代次、正确挂入微部署子组并应用CPU/内存限制后才运行不可信JS。使用pidfd或等效稳定身份防PID复用；不能仅信任MPR报来的宿主PID、路径或已附加声明。缺少cpu/memory控制器、可靠入组、组终止或回收能力时拒绝Ready，不退回共享进程内VM冒充资源隔离。
+
+实际通道为监督器创建停等worker，经HostService.AttachMicroWorker提交当前Call委托、核心group不透明句柄、容器PID与启动时间；核心按namespace/start-time/pidfd核实，再迁入组并Ack。仅有当前微调用可使用对应句柄，worker在Ack前无用户代码；失败终止/回收，不接受业务JSON选择cgroup路径或宿主PID。启动阶段按control预算受限计量。
+
+resources默认250mCPU/256MiB，是该微部署全部活动worker共享的CPU带宽/计量内存上限。parent/control/workloads及微部署限制共同生效；内存计量包含RSS等，不等同JS heap，worker虚拟地址空间1GiB也不是RSS或预留。不同微部署有独立子组，同一微部署多个Call故意共享一份资源故障域。
+
+微部署cgroup OOM按组终止相关worker，核心依据memory.events等证据终结对应Call；已发HTTP仍按unknown处理。单Call取消只终止对应worker，同组OOM可影响该组其他Call；其他微部署不因这个子组OOM被直接组杀，父实例整体故障仍可能影响所有微部署。
+
+首个worker激活时计一次微部署资源；最后worker退出并确认空组/回收后释放。残余进程或计量内存未处理前继续计入父workloads，不能提前释放预算。脚本不能自行移动进程、创建资源组或逃出父限制。
+
+停用以enabled=false/generation++原子撤路由并进入draining，取消队列/Prepare/worker及句柄，组清理完成才为disabled。失败保持draining/failed，不允许修改settings；只有已排空disabled可手改资源/网络。组heap/stack/输入输出等可计量预算乘允许并发须不超过组memory，native开销仍以hardmax和实测核验。
 
 ## 每次转发重新验证
 
@@ -55,3 +69,5 @@ Prepare/Invoke/Release只接受核心可信mTLS调用。其他插件不能凭自
 归档微插件/微部署、停用微部署、撤销HTTP权限/绑定/secret或Runtime使新调用被拒绝/等待；在途按取消和排空规则收敛。已发请求的外部效果不能靠本地取消撤回，证据不足保留unknown。旧执行单元、旧缓存或迟到结果不能在撤权后继续创建调用或覆盖新状态。
 
 制品缓存只保存不可变代码和受审元数据；按摘要复用不共享用户输入、输出、VM全局变量或授权上下文。错误与日志按原调用权限隔离，不能通过缓存命中信息枚举其他用户的私有代码。
+
+MPR1.3另可申请skill.invoke代理批准，仅供ExtensionHost监督器执行固定闭包handler；VM没有InvokeSkill客户端。核心拒绝普通micro Call或不匹配闭包handler的请求，未批准可选代理时只禁用skill扩展模式；data扩展和原纯计算继续按各自权限运行。

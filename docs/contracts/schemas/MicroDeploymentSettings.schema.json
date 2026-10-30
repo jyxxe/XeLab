@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MicroDeploymentSettings",
+  "type": "object",
+  "description": "完整替换微部署资源与联网设置；仅已停用且排空时提交，不修改业务limits、版本、父绑定或候选Skill",
+  "properties": {
+    "resources": {
+      "$ref": "../openapi.json#/components/schemas/MicroResourceLimits"
+    },
+    "network_enabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "显式联网意图；true只允许已声明controlled-http-v1，仍须调用权限/HttpBinding/父egress；false拒绝HTTP profile Invoke与ProxyHttp"
+    }
+  },
+  "required": [
+    "resources",
+    "network_enabled"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionPluginPage",
+  "type": "object",
+  "description": "按created_at/id分页的可见对象",
+  "properties": {
+    "items": {
+      "type": "array",
+      "description": "本页",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/ExtensionPlugin"
+      },
+      "minItems": 0,
+      "maxItems": 200
+    },
+    "next_cursor": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "description": "绑定主体/过滤条件的15min游标"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "items",
+    "next_cursor"
+  ],
+  "additionalProperties": false
+}

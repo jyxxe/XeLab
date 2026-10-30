@@ -2,7 +2,7 @@
 
 [插件接口语义](../../interfaces.md) · [规划目录](../../../planned/README.md)
 
-> 规格版本：2.6.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
+> 规格版本：2.8.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
 
 能力 ID：`crypto.hash`；操作目录：`hash`。
 
@@ -54,4 +54,4 @@
 
 落地门槛：`sha256-library`；见[门槛说明](../../../planned/feature-gates.md)。
 
-四文件草案摘要：`sha256:2d3150e78e5a48a599985ae232d65b09e2ed0d95689c5e768980ce7c844e523e`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。
+四文件草案摘要：`sha256:bbc38420e36831c332ef0f2d7768b7004558a08014b2bdac4e8e3a8f355e4894`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。

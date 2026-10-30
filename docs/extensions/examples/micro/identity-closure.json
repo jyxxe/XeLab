@@ -1,0 +1,25 @@
+{
+  "extension_version_id": "00000000-0000-4000-8000-000000000311",
+  "package_digest": "sha256:d5aaae007477650974b4b7e866100013effdfa3b4fb8170518b86cbb71165d65",
+  "hosts": [
+    {
+      "host": {
+        "kind": "micro",
+        "micro_deployment_id": "00000000-0000-4000-8000-000000000302",
+        "micro_version_id": "00000000-0000-4000-8000-000000000301",
+        "package_digest": "sha256:b9b922f72ebfbbd5b7ae5d3527b3e7410f17c7e2f434e481e9ad65138444979a"
+      },
+      "point_id": "text.rules",
+      "contract": {
+        "name": "example.text.rules",
+        "version": "1.0.0",
+        "schema_digest": "sha256:5333c5650605360d6e89df129d5e0dbdaf4b0f7244e3d0c4a72560fe87edf3f2"
+      },
+      "config_digest": "sha256:26b3426b2593763c96d0890b4a77a0bbf66d13fc512b0c6b138a23c290f30a2a"
+    }
+  ],
+  "root_installation_id": "00000000-0000-4000-8000-000000000006",
+  "root_installation_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "handler": null,
+  "root_deployment_id": "00000000-0000-4000-8000-000000000006"
+}

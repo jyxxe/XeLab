@@ -20,12 +20,14 @@
 | `runtime_deployment_id` | string | 是 | format=`"uuid"`; minLength=`1`; maxLength=`36` | 资源唯一标识 |
 | `runtime_installation_id` | string | 是 | format=`"uuid"`; minLength=`1`; maxLength=`36` | 资源唯一标识 |
 | `package_digest` | string | 是 | minLength=`1`; maxLength=`71`; pattern=`"^sha256:[a-f0-9]{64}$"` | 制品或内容 SHA-256 摘要 |
-| `limits` | [MicroExecutionLimits](MicroExecutionLimits.md) | 是 | 见类型定义 | 获批执行预算，必须同时不超过版本声明和MPR上限 |
+| `limits` | [MicroExecutionLimits](MicroExecutionLimits.md) | 是 | 见类型定义 | 不可变微版本/微部署的业务执行子限额；heap/stack不等于总RSS，CPU与总内存另见MicroResourceLimits |
 | `enabled` | boolean | 是 | 见类型定义 |  |
-| `generation` | integer | 是 | minimum=`1`; maximum=`2147483647` | 每次期望启停变更递增 |
-| `phase` | string | 是 | enum=`["disabled", "preparing", "ready", "waiting_runtime", "failed", "archived"]` | 观察状态 |
+| `generation` | integer | 是 | minimum=`1`; maximum=`2147483647` | 期望启停或资源/联网设置发生实质变更时递增；旧Prepare句柄和迟到执行不得覆盖新代次 |
+| `phase` | string | 是 | enum=`["disabled", "preparing", "ready", "draining", "waiting_runtime", "failed", "archived"]` | 观察状态；停用先进入draining，队列/Prepare/worker/句柄与组回收完成才disabled |
 | `reason_codes` | array&lt;string&gt; | 是 | minItems=`0`; maxItems=`32` | 当前阻塞原因 |
 | `candidate_skill` | [SkillDefinition](SkillDefinition.md) | 是 | 见类型定义 | 不可变的核心转发声明，不是可执行脚本或 Codex SKILL.md |
+| `resources` | [MicroResourceLimits](MicroResourceLimits.md) | 是 | 见类型定义 | 同一微部署全部活动worker合计的cgroup CPU/内存硬限制，不是JS heap或每Call复制预算；由处理器在创建时补齐整对象缺省值 |
+| `network_enabled` | boolean | 是 | default=`false` | 显式联网意图；true只允许已声明controlled-http-v1，仍须调用权限/HttpBinding/父egress；false拒绝HTTP profile Invoke与ProxyHttp |
 
 ## 对象及跨字段约束
 
@@ -48,7 +50,9 @@
     "generation",
     "phase",
     "reason_codes",
-    "candidate_skill"
+    "candidate_skill",
+    "resources",
+    "network_enabled"
   ],
   "additionalProperties": false
 }

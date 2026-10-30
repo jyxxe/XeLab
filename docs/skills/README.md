@@ -2,6 +2,8 @@
 
 [文档总目录](../README.md)
 
+> 规格版本：2.8.0；状态：待实现的规范。
+
 Skill层是内核转发规范，不是Codex SKILL.md。
 
 - [新增32个插件、37个能力的Skill规划](planned/README.md)
@@ -26,3 +28,5 @@ Skill层是内核转发规范，不是Codex SKILL.md。
 
 - [网页搜索微Skill](web-search/README.md)
 - [对象存储6个Skill](object-storage/README.md)
+
+- [Extension Plugin固定Skill与宿主链](extensions/README.md)

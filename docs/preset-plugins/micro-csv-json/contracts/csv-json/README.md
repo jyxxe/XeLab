@@ -2,7 +2,7 @@
 
 [插件接口语义](../../interfaces.md) · [规划目录](../../../planned/README.md)
 
-> 规格版本：2.6.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
+> 规格版本：2.8.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
 
 能力 ID：`convert.csv-json`；操作目录：`csv-json`。
 
@@ -63,4 +63,4 @@
 
 落地门槛：`csv-rfc4180-library`；见[门槛说明](../../../planned/feature-gates.md)。
 
-四文件草案摘要：`sha256:ccc307556bd67f5499df874fd1137f09d7ed076ef66181ee9338d79d32b7c9b0`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。
+四文件草案摘要：`sha256:7fa5a1ba04ad1a1a51ea71326bc6a5195d820ff1d9d9a78f4cc3fa6291d8c723`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。

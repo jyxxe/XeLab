@@ -34,6 +34,8 @@ OCI 镜像内 /xelab/plugin.json；未知字段拒绝
 | `concurrency` | object | 否 | 见类型定义 | 实例业务共享并发池；探针和生命周期独立 |
 | `ui` | [PluginUiSpec](PluginUiSpec.md) | 否 | 见类型定义 | 可选UI贡献；独立于webui字段，允许仅窗口、仅组件、两者或均不提供 |
 | `micro_runtime` | [MicroRuntimeDescriptor](MicroRuntimeDescriptor.md) | 否 | 见类型定义 | 普通OCI插件可提供的受审微执行适配协议声明，不是业务能力 |
+| `extension_points` | array&lt;[ExtensionPoint](ExtensionPoint.md)&gt; | 否 | minItems=`0`; maxItems=`8` | 可选宿主点；省略=无扩展，不回写旧清单或重算镜像/包摘要 |
+| `extension_host` | [ExtensionHostDescriptor](ExtensionHostDescriptor.md) | 否 | 见类型定义 | 物理OCI根对ExtensionHostService的明确能力声明；缺省不支持，不因插件类型而自动推断 |
 
 ## 对象及跨字段约束
 
@@ -71,6 +73,34 @@ OCI 镜像内 /xelab/plugin.json；未知字段拒绝
         "properties": {
           "plugin_id": {
             "maxLength": 113
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "extension_points": {
+            "minItems": 1
+          }
+        },
+        "required": [
+          "extension_points"
+        ]
+      },
+      "then": {
+        "required": [
+          "extension_host"
+        ],
+        "properties": {
+          "extension_host": {
+            "properties": {
+              "host_kinds": {
+                "contains": {
+                  "const": "ordinary"
+                }
+              }
+            }
           }
         }
       }

@@ -2,7 +2,7 @@
 
 [对象存储目录](README.md) · [配置](configuration.md) · [接口](interfaces.md)
 
-> 规格版本：2.6.0；状态：设计契约，尚未实现。
+> 规格版本：2.8.0；状态：设计契约，尚未实现。
 
 插件使用独占single_writer卷`/data/objects`，SQLite WAL保存私有元数据、配额预留和幂等结果，内容保存在卷内不可变文件。逻辑结构见[storage.sql](storage.sql)，不在核心账户元数据表中复制密码、角色、凭证或原始委托。
 

@@ -1,5 +1,5 @@
 {
-  "version": "2.6.0",
+  "version": "2.8.0",
   "methods": [
     {
       "module": "Identity",
@@ -249,7 +249,7 @@
       "response": "DependencyPlan",
       "deadline_ms": 10000,
       "transaction": "读取版本一致的安装/部署/审批快照",
-      "rule": "无外部副作用；强依赖环拒绝，执行前重新核对计划 revision。",
+      "rule": "无外部副作用；强依赖环拒绝，执行前重新核对计划 revision。 扩展强宿主边及固定handler目标与普通强依赖、micro→MPR边共同参与同一锁图事务；新增边须DAG无环且深度<=16，执行前重验实际解析目标，不将附加扩展建立为宿主反向启动强依赖。",
       "errors": [
         "INVALID_ARGUMENT",
         "PERMISSION_DENIED",
@@ -411,7 +411,7 @@
       "response": "SkillCallResult",
       "deadline_ms": 300000,
       "transaction": "短事务锁定 Skill 版本/审批/调用记录；外部请求不持有长数据库事务",
-      "rule": "记录 Skill 摘要和 Call，实例级准入后通过 Broker 转发；取消、期限、流控和当前来源链持续生效。",
+      "rule": "记录 Skill 摘要和 Call，实例级准入后通过 Broker 转发；取消、期限、流控和当前来源链持续生效。 kind=extension交ExtensionExecutor，固定扩展版本/部署/package/host_chain_digest及物理root来源安装，不允许按业务JSON改宿主或handler。",
       "errors": [
         "INVALID_ARGUMENT",
         "PERMISSION_DENIED",
@@ -520,7 +520,7 @@
       "response": "MicroDeployment",
       "deadline_ms": 10000,
       "transaction": "短事务固定微/父依赖和授权；对象复制、Prepare/执行不持有长DB事务",
-      "rule": "固定runtime安装/部署、单副本、微generation和批准预算；Prepare后CAS绑定实际实例代次，迟到结果不覆盖，停用先撤路由/Cancel再Release，不创建独立OCI。",
+      "rule": "固定runtime安装/部署、单副本、微generation和批准预算；Prepare后CAS绑定实际实例代次，迟到结果不覆盖，停用先撤路由/Cancel再Release，不创建独立OCI。 设置只允许enabled=false、phase=disabled且worker/队列/Prepare/资源租约已全部排空时修改；generation递增使旧Prepare失效，候选Skill不变。启用前验证resources与network设置、真实资源隔离声明；Prepare/Ready不要求联网打开。 停用立即enabled=false/generation++并进入draining，先取消queued/活动执行，再Release准备句柄；无worker/queued/Prepare/资源租约且真实回收后才disabled，控制RPC超时不能单独当作排空证明。",
       "errors": [
         "INVALID_ARGUMENT",
         "PERMISSION_DENIED",
@@ -539,7 +539,7 @@
       "response": "SkillCallResult",
       "deadline_ms": 30000,
       "transaction": "短事务固定微/父依赖和授权；对象复制、Prepare/执行不持有长DB事务",
-      "rule": "skill.invoke、micro.invoke与micro.runtime.use联合检查；双层槽/预算准入，调用受控MicroRuntimeService并验证微输出Schema，持久结果附微制品来源；无任意source/path或通用执行旁路。 controlled-http-v1另检查micro.http.request并冻结绑定计划/Secret版本；non_repeatable禁止盲重放，返回前检查HTTP台账unknown/终止错误优先。",
+      "rule": "skill.invoke、micro.invoke与micro.runtime.use联合检查；双层槽/预算准入，调用受控MicroRuntimeService并验证微输出Schema，持久结果附微制品来源；无任意source/path或通用执行旁路。 controlled-http-v1另检查micro.http.request并冻结绑定计划/Secret版本；non_repeatable禁止盲重放，返回前检查HTTP台账unknown/终止错误优先。 受控HTTP且network_enabled=false时在worker/HTTP sequence之前PERMISSION_DENIED，violations.field=network_enabled，不fallback；pure不受此联网开关阻断。固定micro_deployment_generation/resources/network快照，父池/微组按部署聚合准入，获得每Call资源句柄；worker必须由HostService.AttachMicroWorker确认真实入组后才执行，结束后依据pidfd回收。",
       "errors": [
         "INVALID_ARGUMENT",
         "PERMISSION_DENIED",
@@ -558,13 +558,131 @@
       "response": "MicroProxyResult",
       "deadline_ms": 4000,
       "transaction": "发送前事务锁Call冻结计划/seq/alias并记录；网络不持有数据库长事务；结果短事务落账",
-      "rule": "从实际委托导出受控微Call，逐请求核查绑定/Secret/出口；固定HTTPS模板注入密钥，拒绝任意URL/headers；相同seq重放已有结果，unknown封锁Call并覆盖脚本成功结果。",
+      "rule": "从实际委托导出受控微Call，逐请求核查绑定/Secret/出口；固定HTTPS模板注入密钥，拒绝任意URL/headers；相同seq重放已有结果，unknown封锁Call并覆盖脚本成功结果。 每次真实发送前再次读取当前micro_deployment.enabled/network_enabled/generation，与原Call冻结代次相同才允许；false为PERMISSION_DENIED(violations.field=network_enabled)，不消耗sequence、不fallback；已发送但结果未知仍按sticky unknown，不虚构撤回。",
       "errors": [
         "INVALID_ARGUMENT",
         "PERMISSION_DENIED",
         "STATE_CONFLICT",
         "RESOURCE_EXHAUSTED",
         "UPSTREAM_OUTCOME_UNKNOWN",
+        "DEADLINE_EXCEEDED",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Runtime",
+      "method": "ensure_micro_pool",
+      "context": "AuthContext",
+      "request": "MicroPoolInput",
+      "response": "MicroPoolObservation",
+      "deadline_ms": 10000,
+      "transaction": "短事务锁定池/组/租约并记计划→受控宿主cgroup/pidfd操作→短事务提交观测；外部操作不持有长DB事务",
+      "rule": "仅核心host适配器验证MPR1.2 resource_isolation声明及真实cgroupv2可用性；建立父MPR/control与workloads子树并迁移控制进程，控制CPU500m/工作池3500m，内存总和不得超过父limits。默认工作池3584MiB、控制保留128MiB、缓存256MiB；父MPR默认4000mCPU/4GiB，三项内存合计3968MiB；CPU/memory控制器不可用则拒绝ready，不软降级，不委派cgroup写权给MPR。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "PROVIDER_UNAVAILABLE",
+        "RESOURCE_EXHAUSTED",
+        "DEADLINE_EXCEEDED",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Runtime",
+      "method": "configure_micro_group",
+      "context": "AuthContext",
+      "request": "MicroGroupInput",
+      "response": "MicroResourceLease",
+      "deadline_ms": 10000,
+      "transaction": "短事务锁定池/组/租约并记计划→受控宿主cgroup/pidfd操作→短事务提交观测；外部操作不持有长DB事务",
+      "rule": "当前授权Call固定真实微部署设置/代次，锁池与组预算按活跃微部署预留一次，首次执行建立真实微cgroup并设cpu.max、memory.max、memory.swap.max=0；默认250m/256MiB，全部同组worker共享此硬上限。相同execution_id幂等返回原租约，不重复扣额。新Call只加同组租约，CPU/内存预留总和不超池，活动worker/待执行租约合计不超父4与微固定并发。heap+stack+输入输出缓冲声明乘允许并发不得超组memory，native开销仍受memory.max。预留不足立即释放其他已取槽，不带无限等待。 此处Call可以是micro Skill或ExtensionExecutor已验证完整闭包后的micro根ExtensionCall；后者须查可信Call.micro_*快照、原微prepared registry及leaf/每层host权限，不能仅按target.kind=micro放行或拒绝，也不能凭扩展输入冒充微根。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "PROVIDER_UNAVAILABLE",
+        "RESOURCE_EXHAUSTED",
+        "DEADLINE_EXCEEDED",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Runtime",
+      "method": "attach_micro_worker",
+      "context": "AuthContext",
+      "request": "MicroWorkerAttachInput",
+      "response": "MicroResourceLease",
+      "deadline_ms": 10000,
+      "transaction": "短事务锁定池/组/租约并记计划→受控宿主cgroup/pidfd操作→短事务提交观测；外部操作不持有长DB事务",
+      "rule": "从实际MPR实例与当前Call委托核对资源租约；将container_pid在该实例namespace内映射为真实进程，核对启动时间、父监督器来源、未执行用户代码的阻塞启动状态并取得pidfd，拒绝监督器/其它实例PID。进程迁入本微部署cgroup且复核成功才返回attached；MPR收到Ack前不能加载/运行用户代码。失败由核心kill/reap待启动worker并回收租约；句柄不是宿主路径或可转移授权。不得消耗HTTPsequence。 kill/reap尚未证实退出时记录reaping并继续占预留，不得提前释放。 此处Call可以是micro Skill或ExtensionExecutor已验证完整闭包后的micro根ExtensionCall；后者须查可信Call.micro_*快照、原微prepared registry及leaf/每层host权限，不能仅按target.kind=micro放行或拒绝，也不能凭扩展输入冒充微根。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "PROVIDER_UNAVAILABLE",
+        "RESOURCE_EXHAUSTED",
+        "DEADLINE_EXCEEDED",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "Runtime",
+      "method": "release_micro_group",
+      "context": "AuthContext",
+      "request": "MicroGroupReleaseInput",
+      "response": "MicroGroupReleaseResult",
+      "deadline_ms": 10000,
+      "transaction": "短事务锁定池/组/租约并记计划→受控宿主cgroup/pidfd操作→短事务提交观测；外部操作不持有长DB事务",
+      "rule": "核心通过pidfd退出和cgroup.events populated=0核实，不信任MPR自报退出。释放本Call租约；同组还有reserved/attached/reaping租约时保留组及单份预算。最后租约/worker退出后删除空组并释放CPU/内存预留，旧代句柄不得影响新代。实例退出由对账核实并清理；回收未完成不得提前宣称disabled或允许settings修改。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "PROVIDER_UNAVAILABLE",
+        "RESOURCE_EXHAUSTED",
+        "DEADLINE_EXCEEDED",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "ExtensionController",
+      "method": "reconcile",
+      "context": "AuthContext",
+      "request": "ExtensionReconcileInput",
+      "response": "ExtensionDeployment",
+      "deadline_ms": 10000,
+      "transaction": "锁全局依赖图revision/固定身份闭包并写期望状态→不持长DB锁执行Prepare/Release→CAS实际宿主/root代次及部署revision提交观测",
+      "rule": "读取ExtensionDeployment固定版本、package、typed host、point、config、root安装与host_chain_digest；extension→ordinary/micro/extension宿主边、handler目标、普通强依赖与micro→MPR边在同一锁图事务复核DAG/最大深度16。宿主不会反向强依赖其已附加扩展，基础Ready独立。逐层检查extension.host.use及实际root兼容声明，按拓扑顺序Prepare于最终物理root OCI；host_chain_digest只含不可变身份，generation/根实例仅进运行快照，root重启不更改候选Skill定义。初始disabled，不自动注册或启用候选；enabled后父链未Ready则waiting_host，不换host/版本。停用/归档先generation++撤新路由，后代逆拓扑Cancel/Release；句柄和worker/handler实际排空后才disabled/archived，失败持续待清理。data与skill均有固定candidate_skill；原root资源、网络、micro profile与Schema限制不可被扩展放宽。 身份闭包按ExtensionIdentityClosure做JCS SHA-256，逻辑链终止于首个非extension宿主，物理micro→MPR单列root并参与DAG；每边config摘要来自对应不可变扩展部署，不把可变资源/启停纳入。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "DEPENDENCY_CONFLICT",
+        "CONTRACT_CONFLICT",
+        "PROVIDER_UNAVAILABLE",
+        "RESOURCE_EXHAUSTED",
+        "DEADLINE_EXCEEDED",
+        "INTERNAL"
+      ]
+    },
+    {
+      "module": "ExtensionExecutor",
+      "method": "invoke",
+      "context": "AuthContext",
+      "request": "SkillInvokeInput",
+      "response": "SkillCallResult",
+      "deadline_ms": 30000,
+      "transaction": "短事务固定Skill/扩展目标/身份闭包及每Call动态执行链、委托和副作用分类；外部宿主/handler执行不持有长数据库事务",
+      "rule": "验证固定extension Skill目标与核心发布来源；联合skill.invoke、extension.invoke、每层真实宿主extension.host.use、原root访问动作及handler当前Skill权限，始终使用原subject/来源链。冻结ExtensionHostSnapshot，每层当前generation和root实例代次均须可路由；每次出站及嵌套handler执行再验撤权、DAG与调用祖先无重入。调用ExtensionHostService.Invoke到实际物理root，data由point适配器解释已发布JSON；skill由监督器调用固定handler，不执行即时源码/任意URL/宿主模块。输入/输出与point/handler/root最小限制一致，micro数据点维持MicroManifest原Schema及side_effect，沿已有资源组/Attach和联网开关准入，默认250m/256MiB是宿主微部署聚合预算而非子扩展新预留。副作用/取消/unknown规则不得降级，复用核心Call/Capability Cancel/QueryResult及异步batch；后代或handler结果来源与当前Call权限隔离。 ordinary root按扩展点专用host.use与当前审批准入，不要求无关capability.invoke；micro root另查micro.invoke/runtime.use。只检查leaf extension.invoke，祖先仅提供宿主点时不隐式执行其全部Skill；实际执行祖先handler才另查其invoke/Skill授权。 micro根先从真实闭包读取根微对象并持久化Call.micro_*执行快照，经Runtime.configure_micro_group取得本ExtensionCall资源句柄，填ExtensionInvokeRequest.resource_group_handle；MPR从已Ready的微prepared registry读取原代码/point/limits，并由AttachMicroWorker确认入组后执行。不得从contribution自报源码/微版本，不复制调用MicroRuntimeService.Invoke；ordinary根handle为空。",
+      "errors": [
+        "INVALID_ARGUMENT",
+        "PERMISSION_DENIED",
+        "STATE_CONFLICT",
+        "DEPENDENCY_CONFLICT",
+        "CONTRACT_CONFLICT",
+        "PROVIDER_UNAVAILABLE",
+        "RESOURCE_EXHAUSTED",
         "DEADLINE_EXCEEDED",
         "INTERNAL"
       ]

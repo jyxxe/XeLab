@@ -1,4 +1,4 @@
--- Xelab specification 2.6.0: PostgreSQL logical baseline, not an applied migration.
+-- Xelab specification 2.8.0: PostgreSQL logical baseline, not an applied migration.
 -- UUID creation is performed by the application; timestamps are UTC timestamptz.
 BEGIN;
 CREATE TABLE schema_migrations (
@@ -308,19 +308,151 @@ CREATE TABLE micro_deployments (
   micro_plugin_id uuid NOT NULL REFERENCES micro_plugins(id), micro_version_id uuid NOT NULL REFERENCES micro_versions(id),
   runtime_deployment_id uuid NOT NULL REFERENCES deployments(id), runtime_installation_id uuid NOT NULL REFERENCES installations(id),
   package_digest text NOT NULL, limits jsonb NOT NULL, candidate_skill jsonb NOT NULL,
+  resources jsonb NOT NULL DEFAULT '{"cpu_millis":250,"memory_bytes":268435456}',
+  network_enabled boolean NOT NULL DEFAULT false,
   enabled boolean NOT NULL DEFAULT false, generation bigint NOT NULL DEFAULT 1,
-  phase text NOT NULL CHECK(phase IN ('disabled','preparing','ready','waiting_runtime','failed','archived')),
+  phase text NOT NULL CHECK(phase IN ('disabled','preparing','ready','waiting_runtime','draining','failed','archived')),
   reason_codes jsonb NOT NULL DEFAULT '[]', revision bigint NOT NULL DEFAULT 1,
-  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
+  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+  CHECK(jsonb_typeof(resources)='object'
+    AND resources ?& ARRAY['cpu_millis','memory_bytes']
+    AND resources-'cpu_millis'-'memory_bytes'='{}'::jsonb
+    AND jsonb_typeof(resources->'cpu_millis')='number'
+    AND jsonb_typeof(resources->'memory_bytes')='number'
+    AND (resources->>'cpu_millis')::numeric BETWEEN 10 AND 8000
+    AND (resources->>'cpu_millis')::numeric=trunc((resources->>'cpu_millis')::numeric)
+    AND (resources->>'memory_bytes')::numeric BETWEEN 67108864 AND 17179869184
+    AND (resources->>'memory_bytes')::numeric=trunc((resources->>'memory_bytes')::numeric))
 );
 CREATE TABLE micro_runtime_bindings (
   id uuid PRIMARY KEY, micro_deployment_id uuid NOT NULL REFERENCES micro_deployments(id),
   runtime_instance_id uuid NOT NULL REFERENCES instances(id), runtime_generation bigint NOT NULL,
-  micro_generation bigint NOT NULL, package_digest text NOT NULL, prepared_handle text NOT NULL,
-  expires_at timestamptz NOT NULL, status text NOT NULL CHECK(status IN ('ready','released','expired')),
-  UNIQUE(micro_deployment_id,runtime_instance_id,runtime_generation,micro_generation)
+  micro_generation bigint NOT NULL, package_digest text NOT NULL, prepared_handle text,
+  resources_digest text NOT NULL, network_enabled boolean NOT NULL DEFAULT false,
+  expires_at timestamptz, status text NOT NULL CHECK(status IN ('preparing','ready','releasing','released','expired')),
+  UNIQUE(micro_deployment_id,runtime_instance_id,runtime_generation,micro_generation),
+  CHECK(status<>'ready' OR (prepared_handle IS NOT NULL AND expires_at IS NOT NULL))
 );
-ALTER TABLE skills ADD COLUMN source_kind text NOT NULL DEFAULT 'oci' CHECK(source_kind IN ('oci','micro'));
+-- Persist preparing before the control RPC; settings cannot race an unrecorded Prepare.
+CREATE TABLE micro_resource_pools (
+  id uuid PRIMARY KEY, runtime_instance_id uuid NOT NULL UNIQUE REFERENCES instances(id),
+  runtime_generation bigint NOT NULL CHECK(runtime_generation>0),
+  workloads_cpu_millis bigint NOT NULL DEFAULT 3500 CHECK(workloads_cpu_millis>0),
+  workloads_memory_bytes bigint NOT NULL DEFAULT 3758096384 CHECK(workloads_memory_bytes>0),
+  control_cpu_millis bigint NOT NULL DEFAULT 500 CHECK(control_cpu_millis>0),
+  control_memory_reserve_bytes bigint NOT NULL DEFAULT 134217728 CHECK(control_memory_reserve_bytes>0),
+  artifact_cache_max_bytes bigint NOT NULL DEFAULT 268435456 CHECK(artifact_cache_max_bytes>=0),
+  reserved_cpu_millis bigint NOT NULL DEFAULT 0 CHECK(reserved_cpu_millis>=0),
+  reserved_memory_bytes bigint NOT NULL DEFAULT 0 CHECK(reserved_memory_bytes>=0),
+  state text NOT NULL CHECK(state IN ('ready','draining','released')),
+  revision bigint NOT NULL DEFAULT 1, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+  CHECK(reserved_cpu_millis<=workloads_cpu_millis),
+  CHECK(reserved_memory_bytes<=workloads_memory_bytes)
+);
+CREATE TABLE micro_resource_groups (
+  id uuid PRIMARY KEY, pool_id uuid NOT NULL REFERENCES micro_resource_pools(id),
+  micro_deployment_id uuid NOT NULL REFERENCES micro_deployments(id),
+  micro_generation bigint NOT NULL CHECK(micro_generation>0),
+  cpu_millis bigint NOT NULL CHECK(cpu_millis BETWEEN 10 AND 8000),
+  memory_bytes bigint NOT NULL CHECK(memory_bytes BETWEEN 67108864 AND 17179869184),
+  state text NOT NULL CHECK(state IN ('configuring','ready','draining','released','failed')),
+  revision bigint NOT NULL DEFAULT 1, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+  UNIQUE(pool_id,micro_deployment_id,micro_generation)
+);
+-- Resource handles map to core records, never arbitrary cgroup filesystem paths.
+-- Parent limits >= control/cache/pool and CPU pool sums are verified under parent locks.
+-- Extension artifacts are independent core records, never OCI installations or micro versions.
+CREATE TABLE extension_plugins (
+  id uuid PRIMARY KEY, owner_id uuid NOT NULL REFERENCES accounts(id), name text NOT NULL,
+  display_name text NOT NULL, status text NOT NULL CHECK(status IN ('active','archived')),
+  revision bigint NOT NULL DEFAULT 1, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+  UNIQUE(owner_id,name)
+);
+CREATE TABLE extension_versions (
+  id uuid PRIMARY KEY, extension_plugin_id uuid NOT NULL REFERENCES extension_plugins(id), version text NOT NULL,
+  manifest jsonb NOT NULL, source_digest text NOT NULL, package_digest text NOT NULL,
+  source_bytes bigint NOT NULL CHECK(source_bytes BETWEEN 1 AND 262144),
+  artifact_object_key text NOT NULL UNIQUE,
+  mode text NOT NULL CHECK(mode IN ('data','skill')),
+  handler_skill_id uuid REFERENCES skills(id), handler_definition_digest text,
+  created_at timestamptz NOT NULL, UNIQUE(extension_plugin_id,version),
+  CHECK(jsonb_typeof(manifest)='object' AND manifest ? 'mode' AND manifest->>'mode'=mode),
+  CHECK((mode='data' AND handler_skill_id IS NULL AND handler_definition_digest IS NULL
+      AND NOT (manifest ? 'handler_skill_id') AND NOT (manifest ? 'handler_definition_digest'))
+    OR (mode='skill' AND handler_skill_id IS NOT NULL AND handler_definition_digest IS NOT NULL
+      AND manifest ?& ARRAY['handler_skill_id','handler_definition_digest']
+      AND manifest->>'handler_skill_id'=handler_skill_id::text
+      AND manifest->>'handler_definition_digest'=handler_definition_digest))
+);
+CREATE INDEX extension_version_handler_idx ON extension_versions(handler_skill_id) WHERE handler_skill_id IS NOT NULL;
+CREATE TABLE extension_deployments (
+  id uuid PRIMARY KEY, owner_id uuid NOT NULL REFERENCES accounts(id),
+  extension_plugin_id uuid NOT NULL REFERENCES extension_plugins(id),
+  extension_version_id uuid NOT NULL REFERENCES extension_versions(id),
+  package_digest text NOT NULL, host_kind text NOT NULL CHECK(host_kind IN ('ordinary','micro','extension')),
+  host_ref jsonb NOT NULL,
+  host_deployment_id uuid REFERENCES deployments(id), host_installation_id uuid REFERENCES installations(id),
+  host_installation_digest text,
+  host_micro_deployment_id uuid REFERENCES micro_deployments(id), host_micro_version_id uuid REFERENCES micro_versions(id),
+  host_extension_deployment_id uuid REFERENCES extension_deployments(id), host_extension_version_id uuid REFERENCES extension_versions(id),
+  host_package_digest text,
+  point_id text NOT NULL, config jsonb NOT NULL,
+  priority integer NOT NULL DEFAULT 100 CHECK(priority BETWEEN 0 AND 1000),
+  timeout_ms integer NOT NULL DEFAULT 2000 CHECK(timeout_ms BETWEEN 100 AND 30000),
+  host_chain jsonb NOT NULL, identity_closure jsonb NOT NULL, host_chain_digest text NOT NULL,
+  root_installation_id uuid NOT NULL REFERENCES installations(id), root_deployment_id uuid NOT NULL REFERENCES deployments(id),
+  candidate_skill jsonb NOT NULL,
+  enabled boolean NOT NULL DEFAULT false, generation bigint NOT NULL DEFAULT 1 CHECK(generation>0),
+  phase text NOT NULL CHECK(phase IN ('disabled','preparing','ready','waiting_host','draining','failed','archived')),
+  reason_codes jsonb NOT NULL DEFAULT '[]', revision bigint NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+  CHECK(jsonb_typeof(host_ref)='object' AND host_ref ? 'kind' AND host_ref->>'kind'=host_kind),
+  CHECK(jsonb_typeof(host_chain)='array' AND jsonb_array_length(host_chain) BETWEEN 1 AND 16 AND host_chain->0=host_ref),
+  CHECK(jsonb_typeof(config)='object' AND jsonb_typeof(identity_closure)='object' AND jsonb_typeof(candidate_skill)='object'),
+  CHECK((host_kind<>'ordinary') OR (root_deployment_id=host_deployment_id AND root_installation_id=host_installation_id)),
+  CHECK(host_extension_deployment_id IS NULL OR host_extension_deployment_id<>id),
+  CHECK((host_kind='ordinary' AND host_deployment_id IS NOT NULL AND host_installation_id IS NOT NULL
+      AND host_installation_digest IS NOT NULL AND host_package_digest IS NULL
+      AND host_micro_deployment_id IS NULL AND host_micro_version_id IS NULL
+      AND host_extension_deployment_id IS NULL AND host_extension_version_id IS NULL
+      AND host_ref=jsonb_build_object('kind','ordinary','deployment_id',host_deployment_id,
+        'installation_id',host_installation_id,'installation_digest',host_installation_digest))
+    OR (host_kind='micro' AND host_micro_deployment_id IS NOT NULL AND host_micro_version_id IS NOT NULL
+      AND host_package_digest IS NOT NULL AND host_deployment_id IS NULL AND host_installation_id IS NULL
+      AND host_installation_digest IS NULL AND host_extension_deployment_id IS NULL AND host_extension_version_id IS NULL
+      AND host_ref=jsonb_build_object('kind','micro','micro_deployment_id',host_micro_deployment_id,
+        'micro_version_id',host_micro_version_id,'package_digest',host_package_digest))
+    OR (host_kind='extension' AND host_extension_deployment_id IS NOT NULL AND host_extension_version_id IS NOT NULL
+      AND host_package_digest IS NOT NULL AND host_deployment_id IS NULL AND host_installation_id IS NULL
+      AND host_installation_digest IS NULL AND host_micro_deployment_id IS NULL AND host_micro_version_id IS NULL
+      AND host_ref=jsonb_build_object('kind','extension','extension_deployment_id',host_extension_deployment_id,
+        'extension_version_id',host_extension_version_id,'package_digest',host_package_digest)))
+);
+CREATE INDEX extension_host_ordinary_idx ON extension_deployments(host_deployment_id) WHERE host_kind='ordinary';
+CREATE INDEX extension_host_micro_idx ON extension_deployments(host_micro_deployment_id) WHERE host_kind='micro';
+CREATE INDEX extension_host_extension_idx ON extension_deployments(host_extension_deployment_id) WHERE host_kind='extension';
+CREATE TABLE extension_runtime_bindings (
+  id uuid PRIMARY KEY, extension_deployment_id uuid NOT NULL REFERENCES extension_deployments(id),
+  extension_generation bigint NOT NULL CHECK(extension_generation>0),
+  root_instance_id uuid NOT NULL REFERENCES instances(id), root_generation bigint NOT NULL CHECK(root_generation>0),
+  package_digest text NOT NULL, host_chain_digest text NOT NULL, host_snapshot jsonb NOT NULL,
+  prepared_handle text, expires_at timestamptz,
+  status text NOT NULL CHECK(status IN ('preparing','ready','releasing','released','expired')),
+  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+  UNIQUE(extension_deployment_id,extension_generation,root_instance_id,root_generation),
+  CHECK(status<>'ready' OR (prepared_handle IS NOT NULL AND expires_at IS NOT NULL))
+);
+-- Persist preparing before the control RPC; late handles require CAS on all logical/root generations.
+-- Under one graph-revision lock, validate these fixed typed edges together with ordinary strong
+-- dependency_bindings, micro->MPR and the fixed handler Skill's resolved target edges. Reject
+-- all cycles and combined depth>16 before committing creation/enabling/rebinding; recheck after
+-- every actual handler target resolution and guard current Call ancestry against reentry.
+-- Attaching an extension never creates a reverse base-host->extension strong startup edge.
+-- Cross-row version/package/owner/root/point identity and host_ref typed-column equality are
+-- checked from authoritative rows in that transaction; JSON body IDs are not identity proofs.
+-- Identity closure SHA-256 covers canonical immutable identity only, never generations or handles.
+-- Deployment version/host/config/priority/timeout/candidate/closure are immutable: change => new deployment.
+ALTER TABLE skills ADD COLUMN source_kind text NOT NULL DEFAULT 'oci' CHECK(source_kind IN ('oci','micro','extension'));
 CREATE TABLE micro_http_bindings (
   id uuid PRIMARY KEY, owner_id uuid NOT NULL REFERENCES accounts(id), micro_plugin_id uuid NOT NULL REFERENCES micro_plugins(id),
   micro_deployment_id uuid NOT NULL REFERENCES micro_deployments(id), endpoint_alias text NOT NULL,
@@ -333,9 +465,16 @@ CREATE TABLE micro_http_bindings (
 CREATE UNIQUE INDEX micro_http_live_alias ON micro_http_bindings(micro_deployment_id,endpoint_alias) WHERE deleted_at IS NULL;
 ALTER TABLE skills ADD COLUMN micro_version_id uuid REFERENCES micro_versions(id);
 ALTER TABLE skills ADD COLUMN micro_deployment_id uuid REFERENCES micro_deployments(id);
+ALTER TABLE skills ADD COLUMN extension_version_id uuid REFERENCES extension_versions(id);
+ALTER TABLE skills ADD COLUMN extension_deployment_id uuid REFERENCES extension_deployments(id);
+ALTER TABLE skills ADD COLUMN extension_host_chain_digest text;
 ALTER TABLE skills ADD CONSTRAINT skill_source_binding CHECK(
-  (source_kind='oci' AND micro_version_id IS NULL AND micro_deployment_id IS NULL)
-  OR (source_kind='micro' AND micro_version_id IS NOT NULL AND micro_deployment_id IS NOT NULL)
+  (source_kind='oci' AND micro_version_id IS NULL AND micro_deployment_id IS NULL
+    AND extension_version_id IS NULL AND extension_deployment_id IS NULL AND extension_host_chain_digest IS NULL)
+  OR (source_kind='micro' AND micro_version_id IS NOT NULL AND micro_deployment_id IS NOT NULL
+    AND extension_version_id IS NULL AND extension_deployment_id IS NULL AND extension_host_chain_digest IS NULL)
+  OR (source_kind='extension' AND micro_version_id IS NULL AND micro_deployment_id IS NULL
+    AND extension_version_id IS NOT NULL AND extension_deployment_id IS NOT NULL AND extension_host_chain_digest IS NOT NULL)
 );
 CREATE TABLE calls (
   id uuid PRIMARY KEY, owner_id uuid NOT NULL REFERENCES accounts(id), credential_id uuid REFERENCES credentials(id),
@@ -343,15 +482,39 @@ CREATE TABLE calls (
   skill_id uuid REFERENCES skills(id), skill_definition_digest text,
   micro_plugin_id uuid REFERENCES micro_plugins(id), micro_version_id uuid REFERENCES micro_versions(id),
   micro_deployment_id uuid REFERENCES micro_deployments(id), package_digest text,
+  micro_deployment_generation bigint, micro_resources jsonb, micro_network_enabled boolean,
+  extension_plugin_id uuid REFERENCES extension_plugins(id), extension_version_id uuid REFERENCES extension_versions(id),
+  extension_deployment_id uuid REFERENCES extension_deployments(id), extension_deployment_generation bigint,
+  extension_package_digest text, extension_host_chain_digest text, extension_execution_chain jsonb,
+  extension_handler_skill_id uuid REFERENCES skills(id), extension_handler_definition_digest text,
   parent_call_id uuid REFERENCES calls(id), root_call_id uuid REFERENCES calls(id),
   contract jsonb NOT NULL, input_digest text NOT NULL, idempotency_key text,
   state text NOT NULL CHECK(state IN ('accepted','running','succeeded','failed','canceled','unknown')),
   result jsonb, error jsonb, deadline_at timestamptz NOT NULL,
   created_at timestamptz NOT NULL, completed_at timestamptz
 );
+-- Extension Calls with a micro execution root also populate authoritative calls.micro_*
+-- for original code/package/resources/network admission, while extension_* records the leaf.
+-- Both contexts may coexist; contribution/input data cannot select or overwrite either.
+CREATE TABLE micro_worker_slots (
+  execution_id uuid PRIMARY KEY, call_id uuid NOT NULL REFERENCES calls(id),
+  group_id uuid NOT NULL REFERENCES micro_resource_groups(id),
+  resource_group_handle text NOT NULL UNIQUE,
+  container_pid bigint CHECK(container_pid BETWEEN 1 AND 2147483647),
+  host_pid bigint CHECK(host_pid BETWEEN 1 AND 2147483647),
+  process_start_time_ticks bigint CHECK(process_start_time_ticks>0),
+  state text NOT NULL CHECK(state IN ('reserved','attached','reaping','released','failed')),
+  created_at timestamptz NOT NULL, attached_at timestamptz, released_at timestamptz,
+  CHECK(state<>'attached' OR (container_pid IS NOT NULL AND host_pid IS NOT NULL AND process_start_time_ticks IS NOT NULL))
+);
+CREATE UNIQUE INDEX micro_one_live_worker_per_call ON micro_worker_slots(call_id) WHERE state IN ('reserved','attached','reaping');
+-- pidfds are kernel-owned in-memory handles and must be reacquired/verified after core restart.
+-- Last verified worker/lease exit releases a group's single pool reservation.
 CREATE TABLE micro_http_plans (
   call_id uuid PRIMARY KEY REFERENCES calls(id), micro_deployment_id uuid NOT NULL REFERENCES micro_deployments(id),
   package_digest text NOT NULL, snapshot_digest text NOT NULL, binding_snapshot jsonb NOT NULL,
+  micro_deployment_generation bigint NOT NULL CHECK(micro_deployment_generation>0),
+  network_enabled boolean NOT NULL,
   state text NOT NULL CHECK(state IN ('active','blocked_unknown','blocked_error','finished')),
   terminal_error jsonb, created_at timestamptz NOT NULL, expires_at timestamptz NOT NULL
 );

@@ -5,6 +5,7 @@ import "xelab/v1/capability.proto";
 
 // 插件到内核的唯一宿主服务入口；所有方法校验实际工作负载和当前委托。
 service HostService {
+  rpc AttachMicroWorker(AttachMicroWorkerRequest) returns (Ack);
   rpc ProxyHttp(MicroProxyHttpRequest) returns (MicroProxyHttpResponse);
   rpc ListSkillCandidates(ListSkillCandidatesRequest) returns (ListSkillCandidatesResponse);
   rpc ResolveSkill(ResolveSkillRequest) returns (ResolveSkillResponse);
@@ -20,6 +21,15 @@ service HostService {
   rpc ReadBlob(ReadBlobRequest) returns (stream BlobChunk);
   rpc WriteBlob(stream WriteBlobRequest) returns (BlobReference);
   rpc LeaseSecret(LeaseSecretRequest) returns (SecretLease);
+}
+message AttachMicroWorkerRequest {
+  RpcContext context = 1; // 当前微根执行Call的监督器委托；可为micro目标或已核准micro根的extension目标，VM不获得此入口或句柄。
+  string call_id = 2;
+  string resource_group_handle = 3; // 绑定实际MPR实例/代次、微部署/代次及本Call准入。
+  uint32 container_pid = 4; // MPR PID namespace内待核验PID；不能直接指定宿主PID或cgroup路径。
+  uint64 process_start_time_ticks = 5; // /proc启动时间声明，核心需独立核对并取得pidfd防PID复用。
+  string micro_deployment_id = 6;
+  uint64 micro_deployment_generation = 7;
 }
 message MicroProxyHttpRequest {
   RpcContext context = 1; // 必须属于实际MPR实例正在执行的micro Call。

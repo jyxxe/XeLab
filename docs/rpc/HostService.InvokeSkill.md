@@ -14,7 +14,7 @@
 
 ## 前置条件、执行及失败语义
 
-核心锁定定义摘要及plugin_id/契约，验证input_json<=4MiB和输入Blob白名单，再执行实例级并发准入。不接受任意URL；返回InvokeResponse.output_json为业务输出，调用记录保留Skill元数据。
+核心锁定定义摘要及plugin_id/契约，验证input_json<=4MiB和输入Blob白名单，再执行实例级并发准入。不接受任意URL；返回InvokeResponse.output_json为业务输出，调用记录保留Skill元数据。 MPR1.3或其他ExtensionHost处理器路径必须另有当前宿主安装已批准的skill.invoke代理规则；可选申请未批准时skill模式拒绝，不能由extension.host.use替代。当前Call若为extension，只允许身份闭包中固定handler_skill_id/definition_digest，重查handler目标/输入Schema/副作用/权限且禁止路径重入；MPR的普通micro Call没有泛化InvokeSkill桥，即使父安装有可选代理规则也不得借用。
 
 ## 请求字段
 

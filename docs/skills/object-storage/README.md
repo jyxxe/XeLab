@@ -2,7 +2,7 @@
 
 [文档总目录](../../README.md) · [插件设计](../../preset-plugins/object-storage/README.md)
 
-> 规格版本：2.6.0；状态：设计契约，尚未实现。
+> 规格版本：2.8.0；状态：设计契约，尚未实现。
 
 所有Skill版本1.0.0，固定指向`org.xelab.object-storage`普通OCI插件的1.0.0能力契约；由核心转发，不向用户开放插件直连文件端口。
 

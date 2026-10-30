@@ -20,5 +20,13 @@
   "notes": [
     "Each rule reads original input; default only missing, not null; duplicate/overlap target rejected.",
     "Conversions strict scalar JSON syntax, no truthy/hex/NaN/truncation."
-  ]
+  ],
+  "deployment_defaults": {
+    "resources": {
+      "cpu_millis": 250,
+      "memory_bytes": 268435456
+    },
+    "network_enabled": false
+  },
+  "resource_scope": "aggregate_micro_deployment_cgroup"
 }

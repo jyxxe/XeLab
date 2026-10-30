@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionHostDescriptor",
+  "type": "object",
+  "description": "物理OCI根对ExtensionHostService的明确能力声明；缺省不支持，不因插件类型而自动推断",
+  "properties": {
+    "api_major": {
+      "const": 1
+    },
+    "host_kinds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "ordinary",
+          "micro",
+          "extension"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 3,
+      "uniqueItems": true
+    },
+    "modes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "data",
+          "skill"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 2,
+      "uniqueItems": true
+    },
+    "maximum_chain_depth": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16,
+      "description": "",
+      "default": 16
+    }
+  },
+  "required": [
+    "api_major",
+    "host_kinds",
+    "modes",
+    "maximum_chain_depth"
+  ],
+  "additionalProperties": false
+}

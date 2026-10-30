@@ -51,3 +51,7 @@ python3 docs/tools/render_planned.py
 ```
 
 修改草案契约后按四文件清单重算planned-catalog/planned-contracts中的摘要；引用的shared.schema.json/OpenAPI文件摘要同步写入reference_documents，不能以重生成页面掩盖原始契约漂移。
+
+2.7增加微部署250mCPU/256MiB默认资源与默认关闭的联网设置、停用排空后手动修改接口，以及MPR父4vCPU/4GiB和逐微部署资源组契约。静态检查验证字段正反例、默认值、父工作池/控制预算算术、模板联网关闭及接口前置条件；不声称已经运行真实cgroup限额或联网撤销实验。
+
+2.8新增Extension Plugin第一类资源、14个管理接口、三类typed宿主与四种Skill目标。validate_extensions.py校验3组扩展包/点契约/闭包的实际摘要、38个结构正反例及11个跨类型DAG/层深样例；它不启动加载器、宿主适配器或固定处理器。模型索引拆入api/models/index，每页最多100个条目，继续保持所有人工阅读页≤220行。

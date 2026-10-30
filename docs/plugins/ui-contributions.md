@@ -2,7 +2,7 @@
 
 [插件目录](README.md) · [WebUI预设](../preset-plugins/webui/README.md) · [清单](manifest.md)
 
-> 规格版本：2.6.0；状态：待实现的规范。
+> 规格版本：2.8.0；状态：待实现的规范。
 
 ## 与桌面壳分开
 
@@ -35,3 +35,9 @@ skill_bindings仅可引用本插件清单skills内精确name/version；alias唯�
 插件页面只通过[消息桥](../communication/ui-bridge.md)请求已声明Skill。桥允许列表是桌面壳必须实现的页面隔离规则，不能替代核心授权；内核每次仍检查完整业务权限。WebUI本身也是经用户授权的公共客户端，不能因为担任宿主就获得Owner凭证。
 
 示例：[知识库窗口与索引组件声明](../contracts/examples/plugin-ui.json)。它是可校验设计片段，当前预设镜像和对应HTML尚未实现；不会把示例当已部署页面。
+
+## 扩展不继承UI来源
+
+Extension Plugin扩展业务功能不自动取得宿主UI origin、Cookie、令牌或iframe贡献权限，也不能把JS注入桌面壳或宿主页面。逻辑宿主为微插件或另一扩展时仍无独立网络origin；没有明确支持的静态来源和UI贡献协议时，扩展仅以受授权Skill/宿主管理界面操作。
+
+如将来扩展需要独立UI贡献，必须另行声明不可变页面制品、来源隔离、Skill绑定和加载授权；不能以“属于同一宿主”复用其源或绕过当前消息桥。

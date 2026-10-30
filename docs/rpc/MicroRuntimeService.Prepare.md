@@ -14,7 +14,7 @@
 
 ## 前置条件、执行及失败语义
 
-验证所有UUID/微代次/包摘要/源码摘要、UTF8和MicroManifest Schema，limits不大于不可变版本及父预算。按micro_deployment_id/generation/package_digest幂等准备；生成绑定当前runtime实例/代次和微代次的prepared_handle，可LRU淘汰但不是授权票据。不得执行用户副作用；源码解析或沙箱自检失败不Ready。整个请求<=1MiB，控制调用无终端用户凭证转发。
+验证所有UUID/微代次/包摘要/源码摘要、UTF8和MicroManifest Schema，limits不大于不可变版本及父预算。按micro_deployment_id/generation/package_digest幂等准备；生成绑定当前runtime实例/代次和微代次的prepared_handle，可LRU淘汰但不是授权票据。不得执行用户副作用；源码解析或沙箱自检失败不Ready。整个请求<=1MiB，控制调用无终端用户凭证转发。 MPR1.2要求resources_json为MicroResourceLimits且network_enabled与当前核心微部署设置一致；复用既有micro_generation表示当前MicroDeployment.generation，必填非0，prepared_handle绑定该代次和设置。pure-json-v1不得network=true；network=false不阻止Prepare/Ready。不创建微执行资源组或执行用户代码，后续Invoke按活跃调用准入。
 
 ## 请求字段
 
@@ -31,6 +31,8 @@
 | 9 | `source_utf8` | `bytes` | 按业务校验必填/默认值 |
 | 10 | `limits_json` | `bytes` | 按业务校验必填/默认值 |
 | 11 | `owner_id` | `string` | 按业务校验必填/默认值 |
+| 12 | `resources_json` | `bytes` | 按业务校验必填/默认值 |
+| 13 | `network_enabled` | `bool` | 按业务校验必填/默认值 |
 
 ## 响应字段
 

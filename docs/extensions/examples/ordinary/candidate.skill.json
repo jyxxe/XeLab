@@ -1,0 +1,51 @@
+{
+  "name": "org.xelab.echo.extension.00000000-0000-4000-8000-000000000212.run",
+  "version": "1.0.0",
+  "description": "声明式前缀规则，并提供下一层处理器扩展点",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "minLength": 0,
+        "maxLength": 4096
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "minLength": 0,
+        "maxLength": 4096
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "additionalProperties": false
+  },
+  "stream_item_schema": null,
+  "target": {
+    "kind": "extension",
+    "plugin_id": "org.xelab.echo",
+    "extension_version_id": "00000000-0000-4000-8000-000000000211",
+    "extension_deployment_id": "00000000-0000-4000-8000-000000000212",
+    "package_digest": "sha256:d09453c7b55647f6f585a1c0f508051ff9b262047058e7b111256e094254d5bb",
+    "host_chain_digest": "sha256:4137bec1c169d6b23577e114b648e68b75043fca51970214e87ac29d81fd5aee"
+  },
+  "mapping": "identity",
+  "maximum_timeout_ms": 2000,
+  "input_blobs": false,
+  "tags": [
+    "extension",
+    "data"
+  ]
+}

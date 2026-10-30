@@ -22,5 +22,13 @@
     "overlap<size; offsets always Unicode scalar [start,end), original slices unchanged.",
     "Estimated tokens never guarantee actual Embedding tokenizer limit.",
     "Exact tokens mode independently re-encodes every final source slice with the pinned tokenizer; shrink on lossless source boundaries to <=size or fail, no implied guarantee from full-text token windows."
-  ]
+  ],
+  "deployment_defaults": {
+    "resources": {
+      "cpu_millis": 250,
+      "memory_bytes": 268435456
+    },
+    "network_enabled": false
+  },
+  "resource_scope": "aggregate_micro_deployment_cgroup"
 }

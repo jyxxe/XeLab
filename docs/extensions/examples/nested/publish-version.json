@@ -1,0 +1,19 @@
+{
+  "manifest": {
+    "format_version": "1",
+    "version": "1.0.0",
+    "description": "依附前缀扩展的固定echo Skill处理器",
+    "host_kind": "extension",
+    "point_id": "text.handler",
+    "contract": {
+      "name": "example.text.handler",
+      "version": "1.0.0",
+      "schema_digest": "sha256:50bc8b7cf1346d6c0e2a9eefb274a33a6756c84dc97eef9adb1a431278177119"
+    },
+    "mode": "skill",
+    "handler_skill_id": "00000000-0000-4000-8000-000000000600",
+    "handler_definition_digest": "sha256:8d5c647f883b2c4ffe51c365964c855def1d968955578994b4d42a5fa6f801c6"
+  },
+  "source_blob_id": "00000000-0000-4000-8000-000000000800",
+  "source_digest": "sha256:9cc7e974a9f2c56d3cf354f24aaab5f575e691bdca967eb1d2f2a10b7757bd68"
+}

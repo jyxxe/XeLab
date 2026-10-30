@@ -2,7 +2,7 @@
 
 [插件目录](README.md) · [预设目录](../README.md) · [Skill转发](../../skills/definition.md)
 
-> 规格版本：2.6.0；状态：`planned`；计划业务契约版本：0.1.0，尚无可调用服务。
+> 规格版本：2.8.0；状态：`planned`；计划业务契约版本：0.1.0，尚无可调用服务。
 
 业务通过核心Skill调用；下列名称是能力ID，不是新增HTTP或RPC路径。输入拒绝未知字段，权限、根deadline、取消和批处理复用核心协议。JSON输入≤4MiB、输出≤16MiB；文件字节只通过有权访问的核心Blob传递，每个Blob≤64MiB。
 

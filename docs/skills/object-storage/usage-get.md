@@ -2,7 +2,7 @@
 
 [对象存储Skill目录](README.md) · [插件配置](../../preset-plugins/object-storage/configuration.md)
 
-> 规格版本：2.6.0；状态：设计契约，尚未实现。
+> 规格版本：2.8.0；状态：设计契约，尚未实现。
 
 Skill `org.xelab.object-storage.usage-get@1.0.0`，[定义](usage-get.skill.json)；目标`data.object.usage.get@1.0.0`。响应位于`SkillCallResult.call.output`。
 

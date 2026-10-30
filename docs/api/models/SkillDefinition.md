@@ -13,10 +13,10 @@
 | `name` | string | 是 | minLength=`1`; maxLength=`160`; pattern=`"^[a-z][a-z0-9.-]+$"` | 插件命名空间内唯一名称，plugin_id 前缀 |
 | `version` | string | 是 | minLength=`1`; maxLength=`128`; pattern=`"^(0&#124;[1-9][0-9]*)\\.(0&#124;[1-9][0-9]*)\\.(0&#124;[1-9][0-9]*)(?:-((?:0&#124;[1-9][0-9]*&#124;[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0&#124;[1-9][0-9]*&#124;[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"` | SemVer 2.0.0；版本约束语法见插件版本文档 |
 | `description` | string | 是 | minLength=`1`; maxLength=`2048` | 业务用途 |
-| `input_schema` | [JsonValue](JsonValue.md) | 是 | 见类型定义 | 目标业务输入Schema；micro与MicroManifest精确相等，不等同运行时RPC控制封装 |
+| `input_schema` | [JsonValue](JsonValue.md) | 是 | 见类型定义 | 目标业务Schema；micro来自不可变微版本，extension来自固定宿主点契约，不来自RPC控制封装 |
 | `output_schema` | [JsonValue](JsonValue.md) | 是 | 见类型定义 | 必须与目标响应一致 |
 | `stream_item_schema` | [JsonValue](JsonValue.md) / null | 是 | 见类型定义 |  |
-| `target` | [SkillTarget](SkillTarget.md) | 是 | 见类型定义 | 普通capability/http目标或第一类micro目标；micro只固定核心微版本/微部署/制品，不接受即时源码或任意URL |
+| `target` | [SkillTarget](SkillTarget.md) | 是 | 见类型定义 | 四种互斥固定目标；extension通过核心验证全宿主链，不接受即时源码/任意URL或运行时代次替换 |
 | `mapping` | string | 是 | default=`"identity"`; enum=`["identity"]` | 首版仅支持原样传入传出 |
 | `maximum_timeout_ms` | integer | 是 | minimum=`100`; maximum=`300000`; default=`120000` | 含排队、转发、推理的总期限 |
 | `input_blobs` | boolean | 是 | default=`false` | 根据输入 Schema 的资源标记生成本次 blob.read 精确白名单 |
@@ -49,6 +49,44 @@
             "properties": {
               "kind": {
                 "const": "micro"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "target"
+        ]
+      },
+      "then": {
+        "properties": {
+          "stream_item_schema": {
+            "type": "null"
+          },
+          "input_blobs": {
+            "const": false
+          },
+          "maximum_timeout_ms": {
+            "maximum": 30000
+          },
+          "input_schema": {
+            "$ref": "#/components/schemas/MicroBusinessSchema"
+          },
+          "output_schema": {
+            "$ref": "#/components/schemas/MicroBusinessSchema"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "target": {
+            "properties": {
+              "kind": {
+                "const": "extension"
               }
             },
             "required": [

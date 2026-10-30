@@ -19,5 +19,13 @@
   "notes": [
     "Schema<=64KiB/256nodes/depth16; no remote refs/arbitrary regex.",
     "Errors never default-log source values."
-  ]
+  ],
+  "deployment_defaults": {
+    "resources": {
+      "cpu_millis": 250,
+      "memory_bytes": 268435456
+    },
+    "network_enabled": false
+  },
+  "resource_scope": "aggregate_micro_deployment_cgroup"
 }

@@ -40,6 +40,10 @@
       "default": [
         "pure-json-v1"
       ]
+    },
+    "resource_isolation": {
+      "const": "cgroup-v2-per-micro-deployment-v1",
+      "description": "新微部署的必要能力；缺省为不支持，旧runtime不得降级为仅heap/父cgroup软限额"
     }
   },
   "required": [

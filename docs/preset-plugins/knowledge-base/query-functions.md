@@ -2,7 +2,7 @@
 
 [知识库目录](README.md) · [查询语法](query-language.md) · [执行与完整性](query-execution.md)
 
-> 规格版本：2.6.0；状态：待实现的设计契约；rows-query@2.0.0。
+> 规格版本：2.8.0；状态：待实现的设计契约；rows-query@2.0.0。
 
 ## 列表操作
 

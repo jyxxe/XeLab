@@ -2,7 +2,7 @@
 
 [文档总目录](../../README.md)
 
-> 规格版本：2.6.0；状态：设计预设，尚未构建或实测运行。
+> 规格版本：2.8.0；状态：设计预设，尚未构建或实测运行。
 
 唯一业务入口为 Skill `org.xelab.embedding-gemma.text-8.embed`，版本1.0.0；注册后使用返回的UUID调用 `POST /api/platform/v1/skills/{skill_id}/calls`。
 

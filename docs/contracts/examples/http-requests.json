@@ -795,5 +795,79 @@
       "endpoint_alias": "brave",
       "secret_id": "00000000-0000-4000-8000-000000000001"
     }
+  },
+  "updateMicroDeploymentSettings": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/MicroDeploymentSettings"
+    },
+    "value": {
+      "resources": {
+        "cpu_millis": 250,
+        "memory_bytes": 268435456
+      },
+      "network_enabled": false
+    }
+  },
+  "createExtensionPlugin": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CreateExtensionPlugin"
+    },
+    "value": {
+      "name": "json-echo",
+      "display_name": "example"
+    }
+  },
+  "updateExtensionPlugin": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/ExtensionPluginPatch"
+    },
+    "value": {
+      "display_name": "example"
+    }
+  },
+  "publishExtensionVersion": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/PublishExtensionVersion"
+    },
+    "value": {
+      "manifest": {
+        "format_version": "1",
+        "version": "1.0.0",
+        "description": "example",
+        "host_kind": "ordinary",
+        "point_id": "example",
+        "contract": {
+          "name": "example",
+          "version": "1.0.0",
+          "schema_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "mode": "data"
+      },
+      "source_blob_id": "00000000-0000-4000-8000-000000000001",
+      "source_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "createExtensionDeployment": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/CreateExtensionDeployment"
+    },
+    "value": {
+      "extension_version_id": "00000000-0000-4000-8000-000000000001",
+      "host": {
+        "kind": "ordinary",
+        "deployment_id": "00000000-0000-4000-8000-000000000001",
+        "installation_id": "00000000-0000-4000-8000-000000000001",
+        "installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "config": {}
+    }
+  },
+  "setExtensionDeploymentEnabled": {
+    "schema": {
+      "$ref": "../openapi.json#/components/schemas/EnabledSpec"
+    },
+    "value": {
+      "enabled": false
+    }
   }
 }

@@ -1,0 +1,35 @@
+[
+  {
+    "directory": "ordinary",
+    "manifest": "extension-manifest.json",
+    "contribution": "contribution.json",
+    "artifact": "artifact.json",
+    "create": "create-deployment.json",
+    "skill": "candidate.skill.json",
+    "closure": "identity-closure.json",
+    "host_manifest": "host-manifest.json",
+    "host_schema": "Manifest"
+  },
+  {
+    "directory": "micro",
+    "manifest": "extension-manifest.json",
+    "contribution": "contribution.json",
+    "artifact": "artifact.json",
+    "create": "create-deployment.json",
+    "skill": "candidate.skill.json",
+    "closure": "identity-closure.json",
+    "host_manifest": "host-manifest.json",
+    "host_schema": "MicroManifest"
+  },
+  {
+    "directory": "nested",
+    "manifest": "extension-manifest.json",
+    "contribution": "contribution.json",
+    "artifact": "artifact.json",
+    "create": "create-deployment.json",
+    "skill": "candidate.skill.json",
+    "closure": "identity-closure.json",
+    "host_manifest": "host-manifest.json",
+    "host_schema": "ExtensionManifest"
+  }
+]

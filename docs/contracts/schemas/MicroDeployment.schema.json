@@ -92,15 +92,16 @@
       "type": "integer",
       "minimum": 1,
       "maximum": 2147483647,
-      "description": "每次期望启停变更递增"
+      "description": "期望启停或资源/联网设置发生实质变更时递增；旧Prepare句柄和迟到执行不得覆盖新代次"
     },
     "phase": {
       "type": "string",
-      "description": "观察状态",
+      "description": "观察状态；停用先进入draining，队列/Prepare/worker/句柄与组回收完成才disabled",
       "enum": [
         "disabled",
         "preparing",
         "ready",
+        "draining",
         "waiting_runtime",
         "failed",
         "archived"
@@ -120,6 +121,14 @@
     },
     "candidate_skill": {
       "$ref": "../openapi.json#/components/schemas/SkillDefinition"
+    },
+    "resources": {
+      "$ref": "../openapi.json#/components/schemas/MicroResourceLimits"
+    },
+    "network_enabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "显式联网意图；true只允许已声明controlled-http-v1，仍须调用权限/HttpBinding/父egress；false拒绝HTTP profile Invoke与ProxyHttp"
     }
   },
   "required": [
@@ -138,7 +147,9 @@
     "generation",
     "phase",
     "reason_codes",
-    "candidate_skill"
+    "candidate_skill",
+    "resources",
+    "network_enabled"
   ],
   "additionalProperties": false
 }

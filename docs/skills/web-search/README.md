@@ -2,9 +2,9 @@
 
 [Skill目录](../README.md) · [网页搜索预设](../../preset-plugins/web-search/README.md) · [执行与恢复](../../preset-plugins/web-search/execution.md)
 
-> 规格版本：2.6.0；状态：待实现的动态微Skill契约，不是已经注册的服务。
+> 规格版本：2.8.0；状态：待实现的动态微Skill契约，不是已经注册的服务。
 
-本Skill由`org.xelab.web-search@1.0.0`微制品提供，依赖支持controlled-http-v1的MPR。核心创建MicroDeployment后才生成其candidate_skill；发布微版本本身不会生成Skill，本目录不提供静态skill.json来假定一个已存在的微部署。
+本Skill由`org.xelab.web-search@1.0.0`微制品提供，依赖MPR 1.2.0及controlled-http-v1。核心创建MicroDeployment后才生成其candidate_skill；发布微版本本身不会生成Skill，本目录不提供静态skill.json来假定一个已存在的微部署。
 
 ## 绑定与入口
 
@@ -21,7 +21,13 @@
 
 使用现有核心Skill调用入口，指定已注册、已授权的不可变Skill UUID。调用者不能只传`org.xelab.web-search`就让核心自动选择另一个脚本或部署。
 
-创建后还需完成注册、审批、启用和HttpBinding配置。核心检查skill.invoke、micro.invoke、父部署micro.runtime.use以及所选绑定的当前权限和完整来源链；Skill可读不等于可执行。
+创建后还需完成注册、审批、启用和HttpBinding配置。微部署出厂network_enabled=false，必须先在停用、disabled且排空状态经[设置接口](../../preset-plugins/web-search/configuration.md#微部署资源与联网设置)手动打开，再启用搜索；绑定启用不会替代联网开关。核心检查skill.invoke、micro.invoke、父部署micro.runtime.use、HTTP权限及所选绑定的当前权限和完整来源链；Skill可读不等于可执行。
+
+开关关闭时Prepare/Ready仍允许，搜索Invoke在创建worker/发送前返回PERMISSION_DENIED（violations.field=network_enabled），不占sequence、不fallback，也不返回SEARCH_NO_PROVIDER。开关true仍只允许固定profile及绑定/平台策略批准的API代理，不提供任意fetch/socket。
+
+默认resources为250mCPU/256MiB，所有该微部署worker共享逐微cgroup合计硬上限；默认活动并发1、硬上限4，JS heap默认16MiB为每VM子上限。资源由核心适配器实施，MPR无宿主cgroup权限，无每微OCI；父MPR默认4000mCPU/4294967296字节（4vCPU/4GiB），工作池3500mCPU/3758096384字节（3584MiB），控制CPU500m、控制内存128MiB及缓存256MiB，内存合计3968MiB。先受4个硬活动槽限制，默认最多4个不同微部署活跃，不借内核4C/16GiB。
+
+手动修改resources或联网开关须先停用并排空，PUT settings携If-Match及Idempotency-Key；其余运行状态返回STATE_CONFLICT。更新generation/revision、旧句柄失效，原limits、微版本、父绑定与Skill定义不变，重新启用后按新设置准入。
 
 ## 输入
 

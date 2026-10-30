@@ -4,7 +4,7 @@
 
 > 状态：规范性设计；由 OpenAPI 生成。
 
-获批执行预算，必须同时不超过版本声明和MPR上限
+不可变微版本/微部署的业务执行子限额；heap/stack不等于总RSS，CPU与总内存另见MicroResourceLimits
 
 ## 字段
 

@@ -2,7 +2,7 @@
 
 [知识库目录](README.md) · [默认JSON](defaults.json) · [清单Schema](manifest.json) · [缓存语义](query-cache.md)
 
-> 规格版本：2.6.0；状态：待实现的配置契约。
+> 规格版本：2.8.0；状态：待实现的配置契约。
 
 配置通过已有核心updateDeployment管理，最终传入插件Initialize；只持有读表/查询权限不能改实例设置。当前生命周期按新部署代次重建实例应用配置，旧缓存随旧进程清空，新实例先使用新上限，不额外假设存在未定义的热重载RPC。
 

@@ -19,5 +19,13 @@
   "notes": [
     "No DTD/XXE/PI/XInclude/network; attributes/namespaces/text/duplicate children explicit.",
     "Semantic tree round trip, not original XML byte preservation."
-  ]
+  ],
+  "deployment_defaults": {
+    "resources": {
+      "cpu_millis": 250,
+      "memory_bytes": 268435456
+    },
+    "network_enabled": false
+  },
+  "resource_scope": "aggregate_micro_deployment_cgroup"
 }

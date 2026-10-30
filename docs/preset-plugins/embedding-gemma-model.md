@@ -2,7 +2,7 @@
 
 [文档总目录](../README.md)
 
-> 规格版本：2.6.0；状态：设计预设，尚未构建或实测运行。
+> 规格版本：2.8.0；状态：设计预设，尚未构建或实测运行。
 
 本方案的 embedding-gemma 统一使用 `google/embeddinggemma-2`，不是旧 EmbeddingGemma 1、Gemma 2 生成模型或 Gemini Embedding 云接口。
 

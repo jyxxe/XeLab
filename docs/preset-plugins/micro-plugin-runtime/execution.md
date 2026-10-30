@@ -2,15 +2,21 @@
 
 [MPR目录](README.md) · [安全边界](security.md) · [接口](interfaces.md)
 
-> 规格版本：2.6.0；状态：待实现。engine固定为javascript；stdin/stdout/stderr是虚拟缓冲，不是宿主文件描述符授权。
+> 规格版本：2.8.0；状态：待实现。engine固定为javascript；stdin/stdout/stderr是虚拟缓冲，不是宿主文件描述符授权。
 
 ## 一次请求，一份新状态
 
-核心按固定微版本和package_digest向已绑定MPR准备制品，再发起调用。MPR核对当前可信请求、输入Schema和限额，创建新的VM及可强制销毁的执行单元；不得复用上一次请求的可变全局状态。
+核心按固定微版本和package_digest向已绑定MPR准备制品，再发起调用。MPR核对可信请求、输入Schema和限额；核心完成父/微部署资源准入、验证worker进程并应用子cgroup后，才允许短命worker创建新VM执行JS。不得复用上一次请求的可变全局状态。
+
+监督器先创建停等且无用户代码的worker，经HostService.AttachMicroWorker提交当前Call委托、核心group句柄、容器PID/启动时间。核心验证namespace/start-time/pidfd、Call和父实例代次，迁入准确子组并Ack后才允许运行；失败终止回收，启动内存/CPU仍受control预算约束。
 
 代码只从已批准不可变制品加载。请求不接受即时source、宿主路径、命令、argv、env或任意解释器选择。Prepare只准备/核验制品，业务代码在受限Invoke执行阶段求值，不能在无调用额度的缓存准备阶段提前运行。
 
 MicroManifest.execution_profile缺省为pure-json-v1，必须side_effect=none且http_endpoints缺省/空，默认2s。controlled-http-v1必须side_effect=non_repeatable并声明1..8个固定endpoint，整次wall最多15s。省略新字段的旧pure制品按原字节与摘要解释，不能为补默认值重算包/源码摘要。
+
+MicroDeployment.network_enabled默认false。Prepare/Ready可以完成，pure照常调用；controlled-http业务Invoke在关闭状态于创建worker前返回PERMISSION_DENIED，violations.field=network_enabled，不消耗HTTP序号也不走服务商fallback。手动启用仍不免除固定endpoint、当前权限、binding/secret和出口检查。
+
+微部署resources默认memory_bytes=268435456、cpu_millis=250，同组所有活动worker共享，不按每Call复制。CPU节流和HTTP等待均计wall期限；单次heap/stack/JSON等原limits继续生效。进程地址空间1GiB仅是虚拟空间保护，不是内存配额或可用RSS保证。
 
 ## 虚拟I/O
 
@@ -43,7 +49,7 @@ stdout.write(JSON.stringify({text: value.text}));
 
 ## 取消、结果核实与batch
 
-核心取消传播到当前VM/worker，先停止新工作，再中断或强杀本次执行单元。迟到输出不能覆盖已取消/已终结Call。取消只影响该请求，不杀掉整个MPR实例中的其他微调用。
+核心取消传播到当前VM/worker，先停止新工作，再中断或按稳定PID身份终止本次执行单元。迟到输出不能覆盖已取消/已终结Call。单Call取消只影响该请求；微部署cgroup OOM会按组结束该部署相关worker，核心逐Call区分失败与已发HTTP的unknown，不把同组资源故障误报为其他用户代码都成功。
 
 pure-json-v1为无外部副作用的JSON计算。核心保存权威Call状态与结果，Cancel/QueryResult复用现有能力控制协议；MPR重启丢失内存不等于核心已保存结果消失。pure结果证据缺失时按原固定版本、原幂等关联及side_effect=none规则处理；controlled-http-v1按下述持久代理台账处理，不自动改脚本或改Runtime安装。
 
@@ -67,7 +73,7 @@ endpoint的origin/path/method/auth_header/auth_scheme/payload_schema均来自固
 
 MicroProxyResult包含operation_id、outcome(completed/not_sent/unknown)、status_code、body_json、error_code、retry_after_ms与duration_ms。status_code/body_json/error_code/retry_after_ms可空，duration_ms为0..4000；不返回headers。仅2xx返回有界body_json，非2xx原文丢弃；凭证直接回显为UPSTREAM_RESPONSE_INVALID，不把原响应交给脚本。
 
-请求发出前由核心再次验证当前微权限、绑定/secret有效性和egress；绑定快照不冻结撤权。配置内容变化不能让旧Call换key，priority更新只影响后续Call。核心从真实RpcDelegation推导调用身份，不信任VM自报call_id或主体。
+请求发出前由核心再次验证network_enabled、微部署enabled/原generation、当前微权限、绑定/secret有效性和egress；绑定快照不冻结撤权。配置内容变化不能让旧Call换key，priority更新只影响后续Call。核心从真实RpcDelegation推导调用身份，不信任VM自报call_id或主体。
 
 ## 单Call去重、fallback与unknown
 
@@ -84,3 +90,9 @@ MicroProxyResult包含operation_id、outcome(completed/not_sent/unknown)、statu
 MicroManifest.business_errors可省略为空；每项固定code、http_status和retryable。http_status只允许400/409/413/429/502/503/504，禁止平台保留码和401/403；脚本不能任意选择HTTP状态或借业务错误冒充认证失败。
 
 controlled VM的host.fail(code,message)只能使用该清单，监督器记录失败并产生MicroInvokeResponse.error，不能把失败对象塞进正常stdout伪装成成功调用。消息和诊断仍受隐私/长度约束；未知外部结果由核心台账优先处理，不受声明业务码覆盖。
+
+## 手动设置与重新启用
+
+联网开关和CPU/内存通过核心settings接口修改，必须先停用，等phase=disabled且无worker、Prepare或queued请求后用If-Match提交；原limits、源码/版本和父绑定保持不变。变更推进generation使旧句柄失效，再启用/Prepare；调用输入不能临时提高resources或打开网络。
+
+停用立即写enabled=false/generation++撤路由并进入draining，完成取消与组回收才转disabled；清理失败保持draining/failed，不能热改settings。HTTP已发结果不明仍保留unknown，不以worker退出或新设置覆盖原Call证据。

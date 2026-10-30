@@ -1,0 +1,7 @@
+{
+  "resources": {
+    "cpu_millis": 500,
+    "memory_bytes": 268435456
+  },
+  "network_enabled": false
+}

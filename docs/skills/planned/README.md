@@ -2,7 +2,7 @@
 
 [Skill目录](../README.md) · [32个插件规划](../../preset-plugins/planned/README.md)
 
-> 规格版本：2.6.0；状态：planned。37个能力入口是待发布的业务契约，当前没有自动注册的Skill。
+> 规格版本：2.8.0；状态：planned。37个能力入口是待发布的业务契约，当前没有自动注册的Skill。
 
 ## 转发关系
 
@@ -17,9 +17,15 @@
 
 能力ID是发现标签，不是允许调用者输入的路由。Skill名称、调用源、目标和资源规则在正式发布时选择并冻结；不能把输入中的模型别名、URL、JSON表达式、数据路径当作任意Skill名或插件地址执行。
 
+MPR 1.2.0的微部署默认resources为250mCPU/256MiB，所有worker共享核心适配器配置的逐微cgroup硬上限，默认并发1/硬上限4；每VM的16MiB JS heap仍为子上限。父MPR默认4000mCPU/4294967296字节（4vCPU/4GiB），其中工作池3500mCPU/3758096384字节（3584MiB）、控制CPU500m及控制内存128MiB、缓存256MiB，默认最多4个不同微部署活跃；总活动槽4不代表四份独立资源，不借用内核4C/16GiB。
+
+资源及network_enabled由[微部署settings接口](../../preset-plugins/planned/interface-rules.md#微部署资源与联网设置)手动配置：仅停用、disabled且排空后，携If-Match和Idempotency-Key写入；更新generation/revision、失效旧句柄，原limits、微版本、父绑定与Skill定义不漂移。UI遵循停用、配置、启用流程，不在执行中热改。
+
 ## 调用、授权与批量
 
 沿用[Skill双层授权](../authorization.md)与[微插件动态Skill](../micro-plugin-runtime/README.md)。普通插件检查Skill及capability授权；微插件还检查独立微对象与MPR使用权；调用者当前祖先链及派生API Key的权限上限始终生效。平台不因安装预设给Guest、子账户或微脚本添加默认权限。
+
+微部署network_enabled默认false，pure计算及Prepare/Ready照常；controlled-http-v1业务Invoke在worker创建/发送前拒绝为PERMISSION_DENIED（violations.field=network_enabled），不消耗sequence或fallback。手动开启还需profile、当前权限、固定HttpBinding和平台策略共同允许；不授予任意fetch/socket，不使pure脚本取得HTTP桥，也不开放宿主cgroup管理。
 
 所有多项调用优先通过[核心异步batch](../batches.md)，提交后查询状态与逐项结果。batch输入≤1000项/4MiB，单项还受各能力自己的JSON/CPU/文件限额；需要更多数据时分批提交，不隐藏在一个无限循环微脚本里。
 
@@ -31,4 +37,4 @@
 
 发布后的Skill才可被发现或启用；未满足[gate](../../preset-plugins/planned/feature-gates.md)的模式应拒绝调用。需要新增宿主接口、可信文件桥或运行时库时先修订核心契约及兼容协商，不能靠业务输入或插件配置开启宿主能力。
 
-已有24个静态业务Skill、网页搜索动态微候选机制及核心管理接口保持各自契约。本规划不新增核心HTTP/RPC路径；未来真实发布按[实施顺序](../../preset-plugins/planned/delivery.md)与版本化变更规则执行。
+已有24个静态业务Skill及网页搜索动态微候选机制保持各自业务契约。37个规划能力不增加业务HTTP/RPC路径；2.8.0另为微部署管理新增PUT settings。未来真实发布按[实施顺序](../../preset-plugins/planned/delivery.md)与版本化变更规则执行。

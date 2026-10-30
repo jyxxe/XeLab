@@ -2,13 +2,34 @@
 
 [网页搜索目录](README.md) · [服务商适配器](providers.md) · [执行协议](execution.md) · [密钥托管](../../runtime/secrets.md)
 
-> 规格版本：2.6.0；状态：待实现的规范性配置设计。
+> 规格版本：2.8.0；状态：待实现的规范性配置设计。
 
 ## 微版本配置
 
 本预设除HttpBinding外不定义额外普通配置；`defaults.json`为`{}`，由`defaults.schema.json`约束为空对象，不向MicroManifest添加未声明的config_schema字段。API Key、服务商列表、目标URL和认证头不能放进微版本配置、Skill业务输入、源码常量或普通部署环境变量。
 
+资源和联网开关由核心MicroDeployment.settings管理，独立于上述空普通配置和不可变MicroManifest。
+
 不可变MicroManifest声明`execution_profile=controlled-http-v1`及`brave`、`tavily`两项`http_endpoints`。修改方法、origin、path、认证位置或payload_schema必须发布新微版本，并按原流程创建新的微部署和候选Skill；HttpBinding不能修改这些制品内容。
+
+## 微部署资源与联网设置
+
+MPR 1.2.0下默认resources为`{cpu_millis:250,memory_bytes:268435456}`（256MiB），network_enabled=false。资源硬上限合计覆盖该微部署所有worker；默认活动并发1/硬上限4共享预算，JS heap默认16MiB仍是每VM子上限。核心适配器配置逐微cgroup，无每微OCI，无MPR宿主cgroup管理权。
+
+| 操作 | 定义 |
+|---|---|
+| 方法 / 路径 | `PUT /api/platform/v1/micro-deployments/{id}/settings` |
+| 正文 | `{resources:{cpu_millis,memory_bytes},network_enabled}`，完整提交该组设置 |
+| 请求条件 | 当前If-Match、Idempotency-Key、部署管理权限及来源链 |
+| 可写状态 | enabled=false、phase=disabled且执行已排空；其余运行状态返回STATE_CONFLICT |
+| 生效 | 更新generation/revision、旧准备句柄失效，返回更新后的部署及ETag |
+| 不可变定义 | 原limits、微版本、父绑定及已有Skill定义不变 |
+
+出厂关闭联网，必须经“停用 → 等待disabled且排空 → 手动设置network_enabled=true → 重新启用”后才能搜索。HttpBinding.enabled、微部署enabled与network_enabled分别控制，不互相代开。
+
+Prepare/Ready允许network_enabled=false；搜索Invoke若开关为false，在worker创建及任何发送前返回PERMISSION_DENIED（violations.field=network_enabled），不消耗sequence、不fallback，不返回SEARCH_NO_PROVIDER。true仍须controlled-http-v1、当前HTTP权限、获批固定绑定和平台egress共同允许；不提供任意fetch/socket。
+
+每次ProxyHttp重新检查network_enabled、enabled及generation。停用或配置不能把已发送的未知结果改成未发送；历史Call和计费证据仍按原状态核实。
 
 ## 每个用户的服务商绑定
 
@@ -53,6 +74,8 @@ HttpBinding由核心CRUD接口管理，绑定到具体MicroDeployment，并从�
 | 总调用期限 | 15000ms，包含Prepare、排队、所有HTTP和结果校验 |
 | HTTP总attempt数 | 最多3，串行；同alias最多1次 |
 | 微部署活动并发 | 模板默认1，硬上限4，同时受父MPR总4限制 |
+| resources.cpu_millis / memory_bytes | 默认250 / 268435456，全部该微部署worker合计共享硬上限 |
+| network_enabled | 默认false，须在停用、disabled且排空后手动打开 |
 | heap / stack | 16MiB / 1MiB |
 | 输入 / 输出 / stderr | 各1MiB / 1MiB / 64KiB |
 | 单attempt请求 / 响应 | 64KiB / 解压后512KiB |
@@ -60,6 +83,8 @@ HttpBinding由核心CRUD接口管理，绑定到具体MicroDeployment，并从�
 | 搜索结果缓存 | 本预设v1不定义独立结果缓存；不复用MPR制品缓存 |
 
 第三方价格、配额和速率限制由服务商账户决定，不能把本地attempt上限当作人民币或其他货币的精确费用上限。返回的usage统计外部请求数量和可能计费数量，不作账单承诺。
+
+父MPR4000mCPU/4294967296字节（4vCPU/4GiB）的工作池为3500mCPU/3758096384字节（3584MiB），另有控制CPU500m、控制内存128MiB及缓存256MiB。默认最多4个不同微部署活跃；总活动槽4只是上限，资源不足须等待或拒绝，不借用内核4C/16GiB预留。
 
 ## 日志与可见性
 

@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "plugin_id": "org.xelab.micro-plugin-runtime",
-  "version": "1.1.0",
+  "version": "1.3.0",
   "publisher_id": "00000000-0000-4000-8000-000000000001",
   "host_api_major": 1,
   "platforms": [
@@ -19,6 +19,16 @@
         "action": "micro.http.request",
         "resource": {
           "kind": "micro_plugin",
+          "match": "all"
+        }
+      },
+      "required": false
+    },
+    {
+      "rule": {
+        "action": "skill.invoke",
+        "resource": {
+          "kind": "skill",
           "match": "all"
         }
       },
@@ -73,13 +83,39 @@
         "const": 300
       },
       "worker_address_space_bytes": {
-        "const": 134217728
+        "type": "integer",
+        "minimum": 268435456,
+        "maximum": 34359738368,
+        "default": 1073741824,
+        "description": "单worker虚拟地址空间额外界限，不是RSS或CPU隔离"
       },
       "maximum_sandbox_bytes": {
-        "const": 536870912
+        "type": "integer",
+        "minimum": 67108864,
+        "maximum": 17179869184,
+        "default": 3758096384,
+        "description": "所有活跃微部署资源组的内存准入池/父工作负载memory.max"
       },
       "control_memory_reserve_bytes": {
-        "const": 134217728
+        "type": "integer",
+        "minimum": 67108864,
+        "maximum": 4294967296,
+        "default": 134217728,
+        "description": "监督器开销预留，另加artifact_cache_max_bytes，二者进入control子组"
+      },
+      "maximum_sandbox_cpu_millis": {
+        "type": "integer",
+        "minimum": 10,
+        "maximum": 64000,
+        "default": 3500,
+        "description": "所有活跃微部署CPU准入池及workloads父cpu.max"
+      },
+      "control_cpu_reserve_millis": {
+        "type": "integer",
+        "minimum": 100,
+        "maximum": 8000,
+        "default": 500,
+        "description": "监督器control子组CPU预留/硬限额；与工作池合计不得超过MPR父限额"
       }
     },
     "required": [
@@ -93,7 +129,9 @@
       "artifact_cache_ttl_seconds",
       "worker_address_space_bytes",
       "maximum_sandbox_bytes",
-      "control_memory_reserve_bytes"
+      "control_memory_reserve_bytes",
+      "maximum_sandbox_cpu_millis",
+      "control_cpu_reserve_millis"
     ],
     "additionalProperties": false
   },
@@ -117,6 +155,19 @@
     "execution_profiles": [
       "pure-json-v1",
       "controlled-http-v1"
-    ]
+    ],
+    "resource_isolation": "cgroup-v2-per-micro-deployment-v1"
+  },
+  "extension_host": {
+    "api_major": 1,
+    "host_kinds": [
+      "micro",
+      "extension"
+    ],
+    "modes": [
+      "data",
+      "skill"
+    ],
+    "maximum_chain_depth": 16
   }
 }

@@ -1,0 +1,72 @@
+syntax = "proto3";
+package xelab.v1;
+import "xelab/v1/common.proto";
+import "xelab/v1/capability.proto";
+
+// Logical hosts may be ordinary, micro, or extension deployments. These RPCs
+// always terminate at the currently bound physical root OCI instance, never
+// an invented network address for a logical micro/extension object.
+service ExtensionHostService {
+  rpc Prepare(ExtensionPrepareRequest) returns (ExtensionPrepareResponse);
+  rpc Invoke(ExtensionInvokeRequest) returns (ExtensionInvokeResponse);
+  rpc Release(ExtensionReleaseRequest) returns (Ack);
+}
+
+message ExtensionPrepareRequest {
+  RpcContext context = 1; // Kernel mTLS control; no caller-provided workload identity.
+  string extension_plugin_id = 2;
+  string extension_version_id = 3;
+  string extension_deployment_id = 4;
+  uint64 extension_generation = 5;
+  string package_digest = 6;
+  string source_digest = 7;
+  bytes manifest_json = 8; // ExtensionManifest JCS, <=256KiB.
+  bytes contribution_json = 9; // Strict UTF-8 JSON contribution.json, <=256KiB; raw bytes match source_digest.
+  bytes logical_host_json = 10; // Canonical ExtensionHostRef, <=4KiB; checked against the actual core binding.
+  bytes identity_chain_json = 11; // ExtensionIdentityClosure, <=64KiB; logical hosts end at first ordinary/micro host, <=16.
+  string host_chain_digest = 12; // Identity closure only; excludes generations, runtime handles, health and wall time.
+  bytes config_json = 13; // Fixed deployment configuration, <=64KiB and matches the published point config schema.
+  string root_instance_id = 14;
+  uint64 root_generation = 15;
+  bytes host_snapshot_json = 16; // Current typed host generations/prepared ancestor observations, <=64KiB.
+}
+
+message ExtensionPrepareResponse {
+  string prepared_handle = 1; // 256-bit opaque random handle, not an authorization capability.
+  string package_digest = 2;
+  string host_chain_digest = 3;
+  uint64 observed_extension_generation = 4;
+  uint64 observed_root_generation = 5;
+  int64 expires_unix_ms = 6; // May be evicted earlier; core must re-Prepare the exact identity closure.
+}
+
+message ExtensionInvokeRequest {
+  RpcContext context = 1; // Bound current Call and original subject; never exposed to extension data/VM.
+  string call_id = 2;
+  string prepared_handle = 3;
+  string extension_deployment_id = 4;
+  uint64 extension_generation = 5;
+  string package_digest = 6;
+  string host_chain_digest = 7;
+  bytes input_json = 8; // Point/handler input schema, <=1MiB; stricter point/root limits still apply.
+  string input_digest = 9;
+  bytes execution_chain_json = 10; // Frozen current host/extension/root generations and handler definition digest, <=64KiB.
+  string resource_group_handle = 11; // Empty for ordinary roots; micro roots require this Call's core-issued MicroDeployment resource admission handle.
+}
+
+message ExtensionInvokeResponse {
+  oneof outcome {
+    InvokeResponse result = 1; // Point output schema, <=1MiB; stricter point/root limits still apply.
+    ErrorDetail error = 2; // Identified Call failure; successful gRPC transport is not business success.
+  }
+}
+
+message ExtensionReleaseRequest {
+  RpcContext context = 1;
+  string prepared_handle = 2;
+  string extension_deployment_id = 3;
+  uint64 extension_generation = 4;
+  string host_chain_digest = 5;
+  string root_instance_id = 6;
+  uint64 root_generation = 7;
+}

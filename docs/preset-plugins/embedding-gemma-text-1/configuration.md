@@ -2,7 +2,7 @@
 
 [文档总目录](../../README.md)
 
-> 规格版本：2.6.0；状态：设计预设，尚未构建或实测运行。
+> 规格版本：2.8.0；状态：设计预设，尚未构建或实测运行。
 
 [defaults.json](defaults.json) 是固定profile配置，Manifest.config_schema逐项锁定。改变并发、模态或预处理策略需要新profile并重新压测；提高获批CPU/内存不自动改变并发。
 

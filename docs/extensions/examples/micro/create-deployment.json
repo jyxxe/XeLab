@@ -1,0 +1,14 @@
+{
+  "extension_version_id": "00000000-0000-4000-8000-000000000311",
+  "host": {
+    "kind": "micro",
+    "micro_deployment_id": "00000000-0000-4000-8000-000000000302",
+    "micro_version_id": "00000000-0000-4000-8000-000000000301",
+    "package_digest": "sha256:b9b922f72ebfbbd5b7ae5d3527b3e7410f17c7e2f434e481e9ad65138444979a"
+  },
+  "config": {
+    "enabled": true
+  },
+  "priority": 100,
+  "timeout_ms": 2000
+}

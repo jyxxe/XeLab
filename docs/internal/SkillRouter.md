@@ -27,7 +27,7 @@
 
 期限上限：300000ms。事务：短事务锁定 Skill 版本/审批/调用记录；外部请求不持有长数据库事务。
 
-记录 Skill 摘要和 Call，实例级准入后通过 Broker 转发；取消、期限、流控和当前来源链持续生效。
+记录 Skill 摘要和 Call，实例级准入后通过 Broker 转发；取消、期限、流控和当前来源链持续生效。 kind=extension交ExtensionExecutor，固定扩展版本/部署/package/host_chain_digest及物理root来源安装，不允许按业务JSON改宿主或handler。
 
 | 输入字段 | 类型 | 语义 |
 |---|---|---|

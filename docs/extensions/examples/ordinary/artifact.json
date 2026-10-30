@@ -1,0 +1,6 @@
+{
+  "source_file": "contribution.json",
+  "manifest_file": "extension-manifest.json",
+  "source_digest": "sha256:f2a14eaf00c489ad1ec7fe0f2f7ae515b80bf2c7ea60821b415494b7452636e9",
+  "package_digest": "sha256:d09453c7b55647f6f585a1c0f508051ff9b262047058e7b111256e094254d5bb"
+}

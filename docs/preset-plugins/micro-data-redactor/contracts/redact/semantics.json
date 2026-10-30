@@ -20,5 +20,13 @@
   "notes": [
     "Sequential rules, missing target skipped; logs do not include original values.",
     "Regex replacements literal, not callbacks/backrefs; not absolute anonymization."
-  ]
+  ],
+  "deployment_defaults": {
+    "resources": {
+      "cpu_millis": 250,
+      "memory_bytes": 268435456
+    },
+    "network_enabled": false
+  },
+  "resource_scope": "aggregate_micro_deployment_cgroup"
 }

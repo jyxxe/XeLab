@@ -28,7 +28,7 @@
     },
     "input_schema": {
       "$ref": "../openapi.json#/components/schemas/JsonValue",
-      "description": "目标业务输入Schema；micro与MicroManifest精确相等，不等同运行时RPC控制封装"
+      "description": "目标业务Schema；micro来自不可变微版本，extension来自固定宿主点契约，不来自RPC控制封装"
     },
     "output_schema": {
       "$ref": "../openapi.json#/components/schemas/JsonValue",
@@ -101,6 +101,44 @@
             "properties": {
               "kind": {
                 "const": "micro"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "target"
+        ]
+      },
+      "then": {
+        "properties": {
+          "stream_item_schema": {
+            "type": "null"
+          },
+          "input_blobs": {
+            "const": false
+          },
+          "maximum_timeout_ms": {
+            "maximum": 30000
+          },
+          "input_schema": {
+            "$ref": "../openapi.json#/components/schemas/MicroBusinessSchema"
+          },
+          "output_schema": {
+            "$ref": "../openapi.json#/components/schemas/MicroBusinessSchema"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "target": {
+            "properties": {
+              "kind": {
+                "const": "extension"
               }
             },
             "required": [

@@ -2,7 +2,7 @@
 
 [文档总目录](../../README.md) · [完整ID查询](rows-query.md)
 
-> 规格版本：2.6.0；状态：待实现的设计契约，尚未运行读取实现。
+> 规格版本：2.8.0；状态：待实现的设计契约，尚未运行读取实现。
 
 Skill `org.xelab.knowledge-base.rows-get@1.0.0`，[定义](rows-get.skill.json)；目标`data.kb.rows.get@1.0.0`，固定插件org.xelab.knowledge-base。核心按注册的固定Skill UUID转发，业务响应位于SkillCallResult.call.output。
 

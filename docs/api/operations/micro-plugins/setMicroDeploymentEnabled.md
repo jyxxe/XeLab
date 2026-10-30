@@ -6,7 +6,7 @@
 
 `PUT /api/platform/v1/micro-deployments/{micro_deployment_id}/enabled`
 
-检查ETag、micro.enable及父micro.runtime.use。启用后控制器Prepare，停用先撤新路由并取消在途，再Release；Skill.enabled独立，运行时父enabled不能被此动作暗中开启。
+检查ETag、micro.enable及父micro.runtime.use。启用后控制器Prepare，停用先撤新路由并取消在途，再Release；Skill.enabled独立，运行时父enabled不能被此动作暗中开启。 停用先在同事务撤新Invoke/ProxyHttp准入并取消在途；只有worker/队列/Prepare和资源组均释放后phase=disabled才允许修改settings。HTTP profile网络开关关闭时可Prepare/Ready，但业务Invoke在worker创建前以PERMISSION_DENIED拒绝，不计HTTPsequence。
 
 | 项目 | 定义 |
 |---|---|

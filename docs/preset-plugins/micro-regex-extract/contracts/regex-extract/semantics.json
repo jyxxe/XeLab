@@ -19,5 +19,13 @@
   "notes": [
     "Offsets Unicode scalars; zero-length must progress; no backrefs/lookbehind/recursive catastrophic engine.",
     "Validate UTF8 field byte lengths independently of JSON Schema codepoint maxLength: text<=262144 bytes and pattern<=4096 bytes; flags only unique i/m/s, capture groups<=128."
-  ]
+  ],
+  "deployment_defaults": {
+    "resources": {
+      "cpu_millis": 250,
+      "memory_bytes": 268435456
+    },
+    "network_enabled": false
+  },
+  "resource_scope": "aggregate_micro_deployment_cgroup"
 }

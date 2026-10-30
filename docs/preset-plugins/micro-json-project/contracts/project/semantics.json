@@ -18,5 +18,13 @@
   ],
   "notes": [
     "Targets object-only, duplicate/ancestor overlaps rejected; reject target segments __proto__/constructor/prototype; source own JSON members allowed, never prototype access/mutation/eval."
-  ]
+  ],
+  "deployment_defaults": {
+    "resources": {
+      "cpu_millis": 250,
+      "memory_bytes": 268435456
+    },
+    "network_enabled": false
+  },
+  "resource_scope": "aggregate_micro_deployment_cgroup"
 }

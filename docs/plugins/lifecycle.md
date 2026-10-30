@@ -2,7 +2,7 @@
 
 [文档总目录](../README.md)
 
-> 规格版本：2.6.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
+> 规格版本：2.8.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
 
 ## 安装与部署分开
 
@@ -27,3 +27,9 @@ enabled=false 先撤销新路由，再 Drain，处理长期任务，停止容器
 uninstallPlugin 要求没有部署引用该安装。deleteDeployment 只归档部署；deleteVolume 才是显式业务数据销毁，不能联动默认删除。
 
 RPC 定义见 [RPC 目录](../rpc/README.md)；状态见 [状态机](../architecture/state-machines.md)。
+
+## 扩展的附属生命周期
+
+ExtensionPlugin独立发布版本和创建固定扩展部署，初始disabled，注册候选和启用分别授权。加载顺序为宿主基础Ready后拓扑Prepare扩展，卸载/停用按后代到祖先逆序撤路由、取消和Release；父依赖失效时进入waiting_host，不能让中间扩展伪装成健康物理实例。
+
+ExtensionHostService只由核心调用链实际根OCI，逻辑普通/微/扩展宿主按固定链解析。扩展本身不创建容器；支持扩展需要宿主明确声明协议，不能以非受审脚本加载器代替。运行时重启后旧句柄无效，恢复原链并重新Prepare，不把缓存命中当作永久授权。

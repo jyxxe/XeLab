@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CapabilitySkillTarget",
+  "type": "object",
+  "description": "capability固定目标；其他种类字段拒绝，不改变既有wire结构",
+  "properties": {
+    "kind": {
+      "const": "capability"
+    },
+    "plugin_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "插件稳定 ID；不含版本",
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+      "example": "org.xelab.echo"
+    },
+    "contract": {
+      "$ref": "../openapi.json#/components/schemas/ContractRef"
+    }
+  },
+  "required": [
+    "kind",
+    "plugin_id",
+    "contract"
+  ],
+  "additionalProperties": false
+}

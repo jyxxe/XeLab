@@ -2,7 +2,7 @@
 
 [网页搜索目录](README.md) · [执行协议](execution.md) · [Skill定义](../../skills/web-search/README.md)
 
-> 规格版本：2.6.0；状态：待实现的验收规范。以下条目是未来实现必须证明的行为，不是已经通过的测试报告。
+> 规格版本：2.8.0；状态：待实现的验收规范。以下条目是未来实现必须证明的行为，不是已经通过的测试报告。
 
 ## 制品与核心对象
 
@@ -12,6 +12,7 @@
 - 发布版本不产生Skill；创建MicroDeployment后核心才生成绑定该部署的candidate_skill，初始不自动启用或注册。
 - 候选Skill固定微版本、摘要、微部署和真实Runtime安装；不能用同名latest或其他Runtime静默替换。
 - 父MPR不支持该profile或未获批时，不得把微部署报告为可执行；不降级成纯计算执行成功。
+- MPR版本及协议要求1.2.0；settings更新不修改原limits、微版本、父绑定或候选/注册Skill定义，generation/revision更新使旧句柄失效。
 
 ## 用户与绑定
 
@@ -25,6 +26,9 @@
 
 ## 网络与输入
 
+- 微部署出厂network_enabled=false；Prepare/Ready仍允许，但搜索Invoke须在worker创建和发送前返回PERMISSION_DENIED，violations.field=network_enabled，不消耗sequence、不fallback、不混为SEARCH_NO_PROVIDER。
+- 手动开启须先停用、phase=disabled且完全排空，PUT settings携If-Match及Idempotency-Key；其余运行状态返回STATE_CONFLICT，配置后重新启用。
+- 开关true仍需controlled-http-v1、当前HTTP权限、固定HttpBinding和平台策略；每次ProxyHttp复核开关、enabled及generation，旧快照不能绕过撤销。
 - query按Unicode code point计量1..600，按空白分隔的词最多75；空串、全空白和超限拒绝，limit只接受1..20整数。
 - 不允许附加provider、owner、headers、url、credential等输入字段；缺省limit的实际值为10。
 - 任意URL、别名越界、非法payload、未声明端点均在发送前被拒绝，拒绝不会触发fallback。
@@ -60,7 +64,8 @@
 
 ## 资源、日志与异步调用
 
-- 单微部署模板并发1、硬上限4；父MPR各微部署合计活动不超过4，不重复宣称独立容器CPU/RSS隔离。
+- 单微部署默认resources.cpu_millis=250、resources.memory_bytes=268435456；核心适配器为其逐微cgroup配置合计CPU/内存硬上限，全部worker共享，默认并发1/硬上限4；不创建每微OCI，不向MPR授予宿主cgroup权限。
+- 父MPR默认4000mCPU/4294967296字节（4vCPU/4GiB）：工作池3500mCPU/3758096384字节（3584MiB），控制CPU500m及控制内存128MiB，缓存256MiB。默认最多4个不同微部署同时活跃，总活动槽4只是上限；不足时等待/拒绝，不借内核4C/16GiB预留。
 - 输入/输出各1MiB、heap16MiB、stack1MiB和stderr64KiB限制真实生效；日志截断带标记。
 - 搜索输出和查询不得进入MPR代码制品缓存，跨用户不能读到其他Call结果或推测其Secret。
 - 默认日志不含query、上游正文、Secret或认证头；微诊断和Call结果读取沿用当前权限。

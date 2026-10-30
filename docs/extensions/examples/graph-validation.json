@@ -1,0 +1,516 @@
+[
+  {
+    "name": "ordinary-root",
+    "nodes": {
+      "E": "extension",
+      "O": "ordinary"
+    },
+    "edges": [
+      {
+        "from": "E",
+        "to": "O",
+        "kind": "extension_host"
+      }
+    ],
+    "valid": true
+  },
+  {
+    "name": "micro-root-and-runtime",
+    "nodes": {
+      "E": "extension",
+      "M": "micro",
+      "R": "ordinary"
+    },
+    "edges": [
+      {
+        "from": "E",
+        "to": "M",
+        "kind": "extension_host"
+      },
+      {
+        "from": "M",
+        "to": "R",
+        "kind": "micro_runtime"
+      }
+    ],
+    "valid": true
+  },
+  {
+    "name": "nested-and-handler",
+    "nodes": {
+      "B": "extension",
+      "A": "extension",
+      "O": "ordinary",
+      "H": "micro",
+      "R": "ordinary"
+    },
+    "edges": [
+      {
+        "from": "B",
+        "to": "A",
+        "kind": "extension_host"
+      },
+      {
+        "from": "A",
+        "to": "O",
+        "kind": "extension_host"
+      },
+      {
+        "from": "B",
+        "to": "H",
+        "kind": "handler"
+      },
+      {
+        "from": "H",
+        "to": "R",
+        "kind": "micro_runtime"
+      }
+    ],
+    "valid": true
+  },
+  {
+    "name": "self-cycle",
+    "nodes": {
+      "E": "extension"
+    },
+    "edges": [
+      {
+        "from": "E",
+        "to": "E",
+        "kind": "extension_host"
+      }
+    ],
+    "valid": false
+  },
+  {
+    "name": "nested-cycle",
+    "nodes": {
+      "A": "extension",
+      "B": "extension"
+    },
+    "edges": [
+      {
+        "from": "A",
+        "to": "B",
+        "kind": "extension_host"
+      },
+      {
+        "from": "B",
+        "to": "A",
+        "kind": "extension_host"
+      }
+    ],
+    "valid": false
+  },
+  {
+    "name": "ordinary-requires-own-extension",
+    "nodes": {
+      "E": "extension",
+      "O": "ordinary"
+    },
+    "edges": [
+      {
+        "from": "E",
+        "to": "O",
+        "kind": "extension_host"
+      },
+      {
+        "from": "O",
+        "to": "E",
+        "kind": "required"
+      }
+    ],
+    "valid": false
+  },
+  {
+    "name": "runtime-cross-kind-cycle",
+    "nodes": {
+      "E": "extension",
+      "M": "micro",
+      "R": "ordinary"
+    },
+    "edges": [
+      {
+        "from": "E",
+        "to": "M",
+        "kind": "extension_host"
+      },
+      {
+        "from": "M",
+        "to": "R",
+        "kind": "micro_runtime"
+      },
+      {
+        "from": "R",
+        "to": "E",
+        "kind": "required"
+      }
+    ],
+    "valid": false
+  },
+  {
+    "name": "handler-target-cycle",
+    "nodes": {
+      "E": "extension",
+      "O": "ordinary",
+      "H": "extension"
+    },
+    "edges": [
+      {
+        "from": "E",
+        "to": "O",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E",
+        "to": "H",
+        "kind": "handler"
+      },
+      {
+        "from": "H",
+        "to": "E",
+        "kind": "extension_host"
+      }
+    ],
+    "valid": false
+  },
+  {
+    "name": "host-depth-16",
+    "nodes": {
+      "E0": "extension",
+      "E1": "extension",
+      "E2": "extension",
+      "E3": "extension",
+      "E4": "extension",
+      "E5": "extension",
+      "E6": "extension",
+      "E7": "extension",
+      "E8": "extension",
+      "E9": "extension",
+      "E10": "extension",
+      "E11": "extension",
+      "E12": "extension",
+      "E13": "extension",
+      "E14": "extension",
+      "E15": "extension",
+      "O": "ordinary"
+    },
+    "edges": [
+      {
+        "from": "E0",
+        "to": "E1",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E1",
+        "to": "E2",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E2",
+        "to": "E3",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E3",
+        "to": "E4",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E4",
+        "to": "E5",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E5",
+        "to": "E6",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E6",
+        "to": "E7",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E7",
+        "to": "E8",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E8",
+        "to": "E9",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E9",
+        "to": "E10",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E10",
+        "to": "E11",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E11",
+        "to": "E12",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E12",
+        "to": "E13",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E13",
+        "to": "E14",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E14",
+        "to": "E15",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E15",
+        "to": "O",
+        "kind": "extension_host"
+      }
+    ],
+    "valid": true
+  },
+  {
+    "name": "host-depth-17",
+    "nodes": {
+      "E0": "extension",
+      "E1": "extension",
+      "E2": "extension",
+      "E3": "extension",
+      "E4": "extension",
+      "E5": "extension",
+      "E6": "extension",
+      "E7": "extension",
+      "E8": "extension",
+      "E9": "extension",
+      "E10": "extension",
+      "E11": "extension",
+      "E12": "extension",
+      "E13": "extension",
+      "E14": "extension",
+      "E15": "extension",
+      "E16": "extension",
+      "O": "ordinary"
+    },
+    "edges": [
+      {
+        "from": "E0",
+        "to": "E1",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E1",
+        "to": "E2",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E2",
+        "to": "E3",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E3",
+        "to": "E4",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E4",
+        "to": "E5",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E5",
+        "to": "E6",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E6",
+        "to": "E7",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E7",
+        "to": "E8",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E8",
+        "to": "E9",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E9",
+        "to": "E10",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E10",
+        "to": "E11",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E11",
+        "to": "E12",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E12",
+        "to": "E13",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E13",
+        "to": "E14",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E14",
+        "to": "E15",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E15",
+        "to": "E16",
+        "kind": "extension_host"
+      },
+      {
+        "from": "E16",
+        "to": "O",
+        "kind": "extension_host"
+      }
+    ],
+    "valid": false
+  },
+  {
+    "name": "ordinary-depth-unrelated-to-extension-limit",
+    "nodes": {
+      "O0": "ordinary",
+      "O1": "ordinary",
+      "O2": "ordinary",
+      "O3": "ordinary",
+      "O4": "ordinary",
+      "O5": "ordinary",
+      "O6": "ordinary",
+      "O7": "ordinary",
+      "O8": "ordinary",
+      "O9": "ordinary",
+      "O10": "ordinary",
+      "O11": "ordinary",
+      "O12": "ordinary",
+      "O13": "ordinary",
+      "O14": "ordinary",
+      "O15": "ordinary",
+      "O16": "ordinary",
+      "O17": "ordinary",
+      "O18": "ordinary",
+      "O19": "ordinary"
+    },
+    "edges": [
+      {
+        "from": "O0",
+        "to": "O1",
+        "kind": "required"
+      },
+      {
+        "from": "O1",
+        "to": "O2",
+        "kind": "required"
+      },
+      {
+        "from": "O2",
+        "to": "O3",
+        "kind": "required"
+      },
+      {
+        "from": "O3",
+        "to": "O4",
+        "kind": "required"
+      },
+      {
+        "from": "O4",
+        "to": "O5",
+        "kind": "required"
+      },
+      {
+        "from": "O5",
+        "to": "O6",
+        "kind": "required"
+      },
+      {
+        "from": "O6",
+        "to": "O7",
+        "kind": "required"
+      },
+      {
+        "from": "O7",
+        "to": "O8",
+        "kind": "required"
+      },
+      {
+        "from": "O8",
+        "to": "O9",
+        "kind": "required"
+      },
+      {
+        "from": "O9",
+        "to": "O10",
+        "kind": "required"
+      },
+      {
+        "from": "O10",
+        "to": "O11",
+        "kind": "required"
+      },
+      {
+        "from": "O11",
+        "to": "O12",
+        "kind": "required"
+      },
+      {
+        "from": "O12",
+        "to": "O13",
+        "kind": "required"
+      },
+      {
+        "from": "O13",
+        "to": "O14",
+        "kind": "required"
+      },
+      {
+        "from": "O14",
+        "to": "O15",
+        "kind": "required"
+      },
+      {
+        "from": "O15",
+        "to": "O16",
+        "kind": "required"
+      },
+      {
+        "from": "O16",
+        "to": "O17",
+        "kind": "required"
+      },
+      {
+        "from": "O17",
+        "to": "O18",
+        "kind": "required"
+      },
+      {
+        "from": "O18",
+        "to": "O19",
+        "kind": "required"
+      }
+    ],
+    "valid": true
+  }
+]

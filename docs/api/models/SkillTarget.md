@@ -4,136 +4,28 @@
 
 > 状态：规范性设计；由 OpenAPI 生成。
 
-普通capability/http目标或第一类micro目标；micro只固定核心微版本/微部署/制品，不接受即时源码或任意URL
+四种互斥固定目标；extension通过核心验证全宿主链，不接受即时源码/任意URL或运行时代次替换
 
 ## 字段
 
-| 字段 | 类型 | 必填 | 约束 / 默认值 | 含义 |
-|---|---|---|---|---|
-| `kind` | string | 是 | enum=`["capability", "http", "micro"]` | 调用类型 |
-| `plugin_id` | string | 是 | minLength=`1`; maxLength=`128`; pattern=`"^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$"` | 插件稳定 ID；不含版本 |
-| `contract` | [ContractRef](ContractRef.md) | 否 | 见类型定义 | 不可变能力契约引用 |
-| `http_operation_id` | string | 否 | minLength=`1`; maxLength=`128` | 插件 OpenAPI 中的精确 operationId |
-| `http_contract_digest` | string | 否 | minLength=`1`; maxLength=`71`; pattern=`"^sha256:[a-f0-9]{64}$"` | 制品或内容 SHA-256 摘要 |
-| `micro_version_id` | string | 否 | format=`"uuid"`; minLength=`1`; maxLength=`36` | 资源唯一标识 |
-| `micro_deployment_id` | string | 否 | format=`"uuid"`; minLength=`1`; maxLength=`36` | 资源唯一标识 |
-| `package_digest` | string | 否 | minLength=`1`; maxLength=`71`; pattern=`"^sha256:[a-f0-9]{64}$"` | 制品或内容 SHA-256 摘要 |
+类型：[CapabilitySkillTarget](CapabilitySkillTarget.md) / [HttpSkillTarget](HttpSkillTarget.md) / [MicroSkillTarget](MicroSkillTarget.md) / [ExtensionSkillTarget](ExtensionSkillTarget.md)。四种互斥固定目标；extension通过核心验证全宿主链，不接受即时源码/任意URL或运行时代次替换
 
 ## 对象及跨字段约束
 
 ```json
 {
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "kind",
-    "plugin_id"
-  ],
   "oneOf": [
     {
-      "properties": {
-        "kind": {
-          "const": "capability"
-        }
-      },
-      "required": [
-        "contract"
-      ],
-      "not": {
-        "anyOf": [
-          {
-            "required": [
-              "http_operation_id"
-            ]
-          },
-          {
-            "required": [
-              "http_contract_digest"
-            ]
-          },
-          {
-            "required": [
-              "micro_version_id"
-            ]
-          },
-          {
-            "required": [
-              "micro_deployment_id"
-            ]
-          },
-          {
-            "required": [
-              "package_digest"
-            ]
-          }
-        ]
-      }
+      "$ref": "#/components/schemas/CapabilitySkillTarget"
     },
     {
-      "properties": {
-        "kind": {
-          "const": "http"
-        }
-      },
-      "required": [
-        "http_operation_id",
-        "http_contract_digest"
-      ],
-      "not": {
-        "anyOf": [
-          {
-            "required": [
-              "contract"
-            ]
-          },
-          {
-            "required": [
-              "micro_version_id"
-            ]
-          },
-          {
-            "required": [
-              "micro_deployment_id"
-            ]
-          },
-          {
-            "required": [
-              "package_digest"
-            ]
-          }
-        ]
-      }
+      "$ref": "#/components/schemas/HttpSkillTarget"
     },
     {
-      "properties": {
-        "kind": {
-          "const": "micro"
-        }
-      },
-      "required": [
-        "micro_version_id",
-        "micro_deployment_id",
-        "package_digest"
-      ],
-      "not": {
-        "anyOf": [
-          {
-            "required": [
-              "contract"
-            ]
-          },
-          {
-            "required": [
-              "http_operation_id"
-            ]
-          },
-          {
-            "required": [
-              "http_contract_digest"
-            ]
-          }
-        ]
-      }
+      "$ref": "#/components/schemas/MicroSkillTarget"
+    },
+    {
+      "$ref": "#/components/schemas/ExtensionSkillTarget"
     }
   ]
 }

@@ -33,7 +33,7 @@ Content-Type：`application/json`；请求体必需。
 |---|---|---|---|---|
 | `definition` | [SkillDefinition](../../models/SkillDefinition.md) | 是 | 见类型定义 | 不可变的核心转发声明，不是可执行脚本或 Codex SKILL.md |
 | `enabled` | boolean | 否 | default=`false` | 安装不等于启用 |
-| `installation_id` | string | 是 | format=`"uuid"` | 普通Skill声明来源安装；micro Skill必须等于固定微版本的runtime_installation_id |
+| `installation_id` | string | 是 | format=`"uuid"` | 实际物理rootOCI来源安装；micro为runtime安装，extension必须与固定宿主闭包root_installation_id相同，候选/包来源另核验 |
 
 结构示例（标识和业务数据需替换为当前部署实际获准对象）：
 

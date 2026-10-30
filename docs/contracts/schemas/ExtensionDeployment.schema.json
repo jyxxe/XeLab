@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionDeployment",
+  "type": "object",
+  "description": "固定扩展版本/宿主/配置/契约及候选Skill；不创建OCI，host链由核心解析，不接受调用方改写物理地址",
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "乐观锁版本，每次持久化变更加一"
+    },
+    "created_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "创建时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "updated_at": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40,
+      "description": "最近变更时间，UTC",
+      "format": "date-time",
+      "example": "2026-10-28T12:00:00Z"
+    },
+    "owner_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647,
+      "description": "期望启停或资源/联网设置发生实质变更时递增；旧Prepare句柄和迟到执行不得覆盖新代次"
+    },
+    "reason_codes": {
+      "type": "array",
+      "description": "当前阻塞原因",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80,
+        "description": "原因"
+      },
+      "minItems": 0,
+      "maxItems": 32
+    },
+    "candidate_skill": {
+      "$ref": "../openapi.json#/components/schemas/SkillDefinition"
+    },
+    "extension_plugin_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "extension_version_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "package_digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 71,
+      "description": "制品或内容 SHA-256 摘要",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "host": {
+      "$ref": "../openapi.json#/components/schemas/ExtensionHostRef"
+    },
+    "host_chain": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/ExtensionHostRef"
+      },
+      "minItems": 1,
+      "maxItems": 16
+    },
+    "host_chain_digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 71,
+      "description": "核心规范ExtensionIdentityClosure的稳定SHA，逻辑宿主链不含实例/部署运行generation或可变微资源；不等同prepared_handle",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "root_installation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "root_deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "../openapi.json#/components/schemas/JsonValue"
+      },
+      "maxProperties": 128,
+      "description": "固定扩展配置<=64KiB/深度32，须满足宿主点config_schema；变更须新部署"
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000,
+      "description": "同一点按priority升序、UUID排序，顺序随Call冻结",
+      "default": 100
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 30000,
+      "description": "固定候选Skill总期限，不能超过点、物理根或调用剩余期限",
+      "default": 2000
+    },
+    "phase": {
+      "type": "string",
+      "enum": [
+        "disabled",
+        "preparing",
+        "ready",
+        "waiting_host",
+        "draining",
+        "failed",
+        "archived"
+      ],
+      "description": "宿主先就绪；失效撤路由，停用逆序排空，真实卸载后disabled/archived"
+    }
+  },
+  "required": [
+    "id",
+    "revision",
+    "created_at",
+    "updated_at",
+    "owner_id",
+    "enabled",
+    "generation",
+    "reason_codes",
+    "candidate_skill",
+    "extension_plugin_id",
+    "extension_version_id",
+    "package_digest",
+    "host",
+    "host_chain",
+    "host_chain_digest",
+    "root_installation_id",
+    "root_deployment_id",
+    "config",
+    "priority",
+    "timeout_ms",
+    "phase"
+  ],
+  "additionalProperties": false
+}

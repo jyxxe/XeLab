@@ -2,7 +2,7 @@
 
 [知识库目录](README.md) · [链式语言](query-language.md) · [查询执行](query-execution.md) · [索引一致性](index-consistency.md)
 
-> 规格版本：2.6.0；状态：设计契约，尚未实现。
+> 规格版本：2.8.0；状态：设计契约，尚未实现。
 
 ## 三类缓存对象
 

@@ -19,5 +19,13 @@
   "notes": [
     "Only JSON Pointer placeholders/text,json,html filters; no include/loop/eval.",
     "At most4096 substitutions; JSON result strict parse."
-  ]
+  ],
+  "deployment_defaults": {
+    "resources": {
+      "cpu_millis": 250,
+      "memory_bytes": 268435456
+    },
+    "network_enabled": false
+  },
+  "resource_scope": "aggregate_micro_deployment_cgroup"
 }

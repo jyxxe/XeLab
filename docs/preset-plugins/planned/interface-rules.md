@@ -2,7 +2,7 @@
 
 [规划总览](README.md) · [Skill规划](../../skills/planned/README.md) · [错误协议](../../communication/errors.md)
 
-> 规格版本：2.6.0；状态：planned；业务契约草案：0.1.0。
+> 规格版本：2.8.0；状态：planned；业务契约草案：0.1.0。
 
 ## 输入与输出
 
@@ -23,6 +23,27 @@ JSON Pointer采用RFC6901字符串形式：空串为根，`~0/~1`分别转义`~/
 `connection_alias/transport_alias/route_alias/model_alias/policy_alias/repository_alias/browser_alias` 等只是经管理员或具备对应管理权限的主体批准的配置索引。执行前校验别名ACL与当前撤权；不能把“知道别名”当作使用许可。平台密钥管理、网络策略、Blob、事件接口是依赖，不自动授予插件；缺少必要批准即禁用对应功能。
 
 依赖中的库必须锁定版本、来源、许可证及制品摘要并纳入资源预算；“纯JSON支持”不表示可以加载宿主模块。普通插件间复用HTTP、邮件或文件服务时必须声明固定能力依赖及委托，不得使用任意插件ID或转发调用者全部权限。
+
+## 微部署资源与联网设置
+
+MPR 1.2.0中，每微部署默认`resources.cpu_millis=250`、`resources.memory_bytes=268435456`（256MiB），可在获批范围内手动配置。核心适配器配置逐微cgroup，对该微部署全部worker实施合计CPU/内存硬限制；并发默认1、硬上限4，共享同一资源预算。JS heap默认16MiB仍是每VM子上限，不替代部署的合计内存限制；无需每微OCI或MPR管理宿主cgroup。
+
+父MPR默认为4000mCPU/4294967296字节（4vCPU/4GiB）：微工作池3500mCPU/3758096384字节（3584MiB）、控制CPU500m及控制内存128MiB、制品缓存256MiB，内存合计3968MiB。工作池按默认250mCPU/256MiB算术容量为14个微部署，但先受4个硬活动槽限制，默认最多4个不同微部署同时活跃；同一微部署增加worker也不复制资源。资源先从父工作池准入，不能借用内核至少4C/16GiB预留。
+
+| 设置接口 | 约束 |
+|---|---|
+| 方法 / 路径 | `PUT /api/platform/v1/micro-deployments/{id}/settings` |
+| 请求正文 | `{resources:{cpu_millis,memory_bytes},network_enabled}`，完整替换这组设置；字段类型及获批范围以核心模型为准 |
+| 并发与幂等 | 必须提供当前`If-Match`和`Idempotency-Key`，并通过当前部署管理权限及来源链校验 |
+| 可写状态 | 仅`enabled=false && phase=disabled`且活动执行已排空；状态不满足返回`STATE_CONFLICT` |
+| 生效 | 返回更新后的部署及ETag，更新generation/revision、使旧准备句柄失效 |
+| 固定定义 | 原limits、微版本和父绑定不变，已有候选及注册Skill不漂移 |
+
+管理流程为“停用 → 等待disabled及排空 → PUT settings → 重新启用”；UI使用相同流程，不提供执行中热改。历史Call及unknown证据不因设置变更或代次更新而重写。
+
+`network_enabled`默认false。Prepare/Ready允许false，pure-json-v1仍可正常执行；controlled-http-v1业务Invoke若为false，在创建worker及任何发送前返回`PERMISSION_DENIED`，`violations.field=network_enabled`，不占sequence、不fallback，也不伪装成无服务商。
+
+true仅打开受控HTTP的必要前提，仍须固定controlled-http-v1、当前权限、获批HttpBinding及父egress/平台策略；不提供任意fetch/socket，不使pure脚本取得HTTP桥。每次ProxyHttp重新检查开关、enabled及generation，不能用旧句柄或旧快照绕过当前设置。
 
 ## 调用、批量与副作用
 

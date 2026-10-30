@@ -4,7 +4,7 @@
 
 > 状态：规范性设计；由 OpenAPI 生成。
 
-独立绑定版本与MPR父部署；初始关闭，绑定/预算修改需新建
+绑定不可变微版本、业务limits与父MPR；资源/联网设置可在停用排空后通过settings接口手动修改；缺省资源250m/256MiB，联网关闭
 
 ## 字段
 
@@ -12,7 +12,9 @@
 |---|---|---|---|---|
 | `micro_version_id` | string | 是 | format=`"uuid"`; minLength=`1`; maxLength=`36` | 资源唯一标识 |
 | `runtime_deployment_id` | string | 是 | format=`"uuid"`; minLength=`1`; maxLength=`36` | 资源唯一标识 |
-| `limits` | [MicroExecutionLimits](MicroExecutionLimits.md) | 是 | 见类型定义 | 获批执行预算，必须同时不超过版本声明和MPR上限 |
+| `limits` | [MicroExecutionLimits](MicroExecutionLimits.md) | 是 | 见类型定义 | 不可变微版本/微部署的业务执行子限额；heap/stack不等于总RSS，CPU与总内存另见MicroResourceLimits |
+| `resources` | [MicroResourceLimits](MicroResourceLimits.md) | 否 | default=`{"cpu_millis": 250, "memory_bytes": 268435456}` | 省略整对象由核心填入默认值；显式对象必须同时给出CPU和内存 |
+| `network_enabled` | boolean | 否 | default=`false` | 显式联网意图；true只允许已声明controlled-http-v1，仍须调用权限/HttpBinding/父egress；false拒绝HTTP profile Invoke与ProxyHttp |
 
 ## 对象及跨字段约束
 

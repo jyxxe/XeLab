@@ -2,7 +2,7 @@
 
 [预设目录](../README.md) · [文档总目录](../../README.md)
 
-> 规格版本：2.6.0；状态：`planned`，尚未实现、构建或实测；计划业务契约版本：0.1.0。
+> 规格版本：2.8.0；状态：`planned`，尚未实现、构建或实测；计划业务契约版本：0.1.0。
 
 插件目录：`ai-chat-openai-compatible/`；拟定插件ID：`org.xelab.ai-chat-openai-compatible`。转发配置的外部文本模型 API，向平台提供普通文本响应和流式文本响应。
 

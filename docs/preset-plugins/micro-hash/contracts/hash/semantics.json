@@ -19,5 +19,13 @@
   "notes": [
     "Strict base64/UTF8; no Blob stream or host crypto module implicitly granted.",
     "Known-vector conformance required, not a signature/authentication operation."
-  ]
+  ],
+  "deployment_defaults": {
+    "resources": {
+      "cpu_millis": 250,
+      "memory_bytes": 268435456
+    },
+    "network_enabled": false
+  },
+  "resource_scope": "aggregate_micro_deployment_cgroup"
 }

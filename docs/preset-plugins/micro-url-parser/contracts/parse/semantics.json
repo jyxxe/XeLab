@@ -19,5 +19,13 @@
   "notes": [
     "No HTTP call, no userinfo return, parsing success is not egress permission.",
     "Preserve query parameter order and duplicates."
-  ]
+  ],
+  "deployment_defaults": {
+    "resources": {
+      "cpu_millis": 250,
+      "memory_bytes": 268435456
+    },
+    "network_enabled": false
+  },
+  "resource_scope": "aggregate_micro_deployment_cgroup"
 }

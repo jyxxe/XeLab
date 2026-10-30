@@ -2,7 +2,7 @@
 
 [插件接口语义](../../interfaces.md) · [规划目录](../../../planned/README.md)
 
-> 规格版本：2.6.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
+> 规格版本：2.8.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
 
 能力 ID：`flow.map`；操作目录：`map`。
 
@@ -57,4 +57,4 @@
 
 落地门槛：`json-pointer-library`、`bounded-type-conversion`；见[门槛说明](../../../planned/feature-gates.md)。
 
-四文件草案摘要：`sha256:12ad7eb4cf8e07c68c7a3504aa62863632cf9946ab469277e019e3c04dce4ce0`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。
+四文件草案摘要：`sha256:90455f231917958eb7c0d38d16bd33a1e5d2be44cbaa41e2de5c6799f12f733c`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。

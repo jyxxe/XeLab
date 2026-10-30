@@ -2,7 +2,7 @@
 
 [WebUI目录](README.md) · [偏好接口](../../api/operations/ui/README.md)
 
-> 规格版本：2.6.0；状态：待实现的规范。
+> 规格版本：2.8.0；状态：待实现的规范。
 
 主题有system、light、dark、custom四种模式。system跟随浏览器prefers-color-scheme；light/dark固定模式；custom必须提供完整UiThemeTokens，其他模式禁止带custom_tokens。用户可以即时预览，确认后用ETag保存，取消则恢复已存偏好。
 

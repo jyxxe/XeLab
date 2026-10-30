@@ -1,0 +1,79 @@
+{
+  "identity": {
+    "extension_version_id": "00000000-0000-4000-8000-000000000411",
+    "package_digest": "sha256:4fcaf069e9c7fb87544feb9db3d937b24f7e98bfb6bb4bbd56a154551204ec13",
+    "hosts": [
+      {
+        "host": {
+          "kind": "extension",
+          "extension_deployment_id": "00000000-0000-4000-8000-000000000212",
+          "extension_version_id": "00000000-0000-4000-8000-000000000211",
+          "package_digest": "sha256:d09453c7b55647f6f585a1c0f508051ff9b262047058e7b111256e094254d5bb"
+        },
+        "point_id": "text.handler",
+        "contract": {
+          "name": "example.text.handler",
+          "version": "1.0.0",
+          "schema_digest": "sha256:50bc8b7cf1346d6c0e2a9eefb274a33a6756c84dc97eef9adb1a431278177119"
+        },
+        "config_digest": "sha256:26b3426b2593763c96d0890b4a77a0bbf66d13fc512b0c6b138a23c290f30a2a"
+      },
+      {
+        "host": {
+          "kind": "ordinary",
+          "deployment_id": "00000000-0000-4000-8000-000000000202",
+          "installation_id": "00000000-0000-4000-8000-000000000201",
+          "installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "point_id": "text.rules",
+        "contract": {
+          "name": "example.text.rules",
+          "version": "1.0.0",
+          "schema_digest": "sha256:5333c5650605360d6e89df129d5e0dbdaf4b0f7244e3d0c4a72560fe87edf3f2"
+        },
+        "config_digest": "sha256:26b3426b2593763c96d0890b4a77a0bbf66d13fc512b0c6b138a23c290f30a2a"
+      }
+    ],
+    "root_installation_id": "00000000-0000-4000-8000-000000000201",
+    "root_installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "handler": {
+      "skill_id": "00000000-0000-4000-8000-000000000600",
+      "definition_digest": "sha256:8d5c647f883b2c4ffe51c365964c855def1d968955578994b4d42a5fa6f801c6",
+      "installation_id": "00000000-0000-4000-8000-000000000006",
+      "target": {
+        "kind": "micro",
+        "plugin_id": "org.xelab.micro-plugin-runtime",
+        "micro_version_id": "00000000-0000-4000-8000-000000000002",
+        "micro_deployment_id": "00000000-0000-4000-8000-000000000003",
+        "package_digest": "sha256:4491816529f381b8e0fda0bb518180b1070fd36d106e7cf7286cc378a3fd3d2c"
+      }
+    },
+    "root_deployment_id": "00000000-0000-4000-8000-000000000202"
+  },
+  "host_chain_digest": "sha256:36ba8f2dbdc5066ed9bd7226571a70bd2458b78a99e8c8e21fe66c0aa36efeab",
+  "extension_deployment_id": "00000000-0000-4000-8000-000000000412",
+  "extension_generation": 1,
+  "hosts": [
+    {
+      "host": {
+        "kind": "extension",
+        "extension_deployment_id": "00000000-0000-4000-8000-000000000212",
+        "extension_version_id": "00000000-0000-4000-8000-000000000211",
+        "package_digest": "sha256:d09453c7b55647f6f585a1c0f508051ff9b262047058e7b111256e094254d5bb"
+      },
+      "generation": 1
+    },
+    {
+      "host": {
+        "kind": "ordinary",
+        "deployment_id": "00000000-0000-4000-8000-000000000202",
+        "installation_id": "00000000-0000-4000-8000-000000000201",
+        "installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "generation": 1
+    }
+  ],
+  "root_instance_id": "00000000-0000-4000-8000-000000000900",
+  "root_generation": 1,
+  "handler_definition_digest": "sha256:8d5c647f883b2c4ffe51c365964c855def1d968955578994b4d42a5fa6f801c6"
+}

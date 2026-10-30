@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionHostRef",
+  "description": "且仅一个typed宿主；客户端ID仅是待验证目标，服务端锁图读取并核对真实安装、版本、包和当前权限",
+  "oneOf": [
+    {
+      "$ref": "../openapi.json#/components/schemas/OrdinaryExtensionHostRef"
+    },
+    {
+      "$ref": "../openapi.json#/components/schemas/MicroExtensionHostRef"
+    },
+    {
+      "$ref": "../openapi.json#/components/schemas/NestedExtensionHostRef"
+    }
+  ]
+}

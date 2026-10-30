@@ -2,7 +2,7 @@
 
 [文档总目录](../README.md)
 
-> 规格版本：2.6.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
+> 规格版本：2.8.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
 
 ## 固定前提
 
@@ -35,7 +35,7 @@
 
 新增现有契约的实现不得修改内核。新增能力契约需发布 Schema、契约摘要及测试；新增外部协议适配器属于新的受审模块，不能假设任意业务协议可自动转换。
 
-微插件是本版明确增加的核心对象和执行目标，不是普通Plugin/Installation的别名。MPR本身仍为受管OCI预设`org.xelab.micro-plugin-runtime@1.1.0`；一个实例可承载多个微插件，节点只为MPR父部署预留资源。边界与状态见[微插件架构](micro-plugins.md)。
+微插件是本版明确增加的核心对象和执行目标，不是普通Plugin/Installation的别名。MPR本身仍为受管OCI预设`org.xelab.micro-plugin-runtime@1.3.0`，父容器默认4vCPU/4GiB；一个实例可承载多个微插件，每微部署默认250mCPU/256MiB并共享父预算，联网默认关闭，可在停用排空后手动配置。节点只为MPR父部署预留资源；核心适配器提供逐微部署cgroup硬限制，不为每微插件建立OCI。边界与状态见[微插件架构](micro-plugins.md)。
 
 首版微插件只支持受限JavaScript纯计算，`side_effect=none`，无文件、网络、secret或HostService绑定。它不允许任意Python/Node宿主裸进程、shell命令或嵌套容器；其他引擎需新定义执行与隔离契约。
 
@@ -46,3 +46,9 @@
 ## API转发与文件存储预设
 
 网页搜索以controlled-http-v1微预设存在，只经核心固定API模板代理；默认纯微插件仍无网络。对象存储为普通OCI插件，以可信subject命名空间持久存文件，和核心临时Blob分工，见[预设目录](../preset-plugins/README.md)。
+
+## Extension Plugin范围
+
+ExtensionPlugin是与普通插件、MicroPlugin并列的第三类核心对象，通过宿主显式声明的版本化extension_points扩展功能。宿主可为普通部署、微部署或另一扩展部署，绑定必须精确到版本、摘要和运行部署；存在插件不表示支持任意扩展点。详见[扩展插件](extension-plugins.md)。
+
+扩展只支持有界JSON数据贡献或固定已注册Skill处理器，不把原生模块、任意JavaScript、shell或可变URL装入宿主。ExtensionHostService的控制请求只发送到该链实际根OCI实例；逻辑宿主没有独立网络实例，不因此产生一个新容器或复制一份资源。

@@ -2,7 +2,7 @@
 
 [任务目录](README.md) · [HTTP协议](../skills/batches.md) · [BatchEngine内部方法](../internal/BatchEngine.md)
 
-> 规格版本：2.6.0；状态：待实现的规范。
+> 规格版本：2.8.0；状态：待实现的规范。
 
 ## 存储与执行器
 

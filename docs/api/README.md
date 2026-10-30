@@ -19,5 +19,6 @@
 - [skills：7 个操作](operations/skills/README.md)
 - [batches：8 个操作](operations/batches/README.md)
 - [ui：4 个操作](operations/ui/README.md)
-- [micro-plugins：15 个操作](operations/micro-plugins/README.md)
+- [micro-plugins：16 个操作](operations/micro-plugins/README.md)
 - [micro-http：5 个操作](operations/micro-http/README.md)
+- [extension-plugins：14 个操作](operations/extension-plugins/README.md)

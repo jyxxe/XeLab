@@ -2,7 +2,7 @@
 
 [文档总目录](../README.md)
 
-> 规格版本：2.6.0；状态：设计预设，尚未构建或实测运行。
+> 规格版本：2.8.0；状态：设计预设，尚未构建或实测运行。
 
 ## 请求路径
 
@@ -26,10 +26,12 @@ Skill 是核心持有的版本化业务入口声明，将业务名称、输入�
 
 | 对象 | 职责 |
 |---|---|
-| Plugin | 独立制品、容器、生命周期与资源 |
+| Plugin（普通） | 独立OCI制品、容器、生命周期与资源 |
+| MicroPlugin | 固定微制品及MPR父绑定，无独立OCI |
+| ExtensionPlugin | 依赖显式扩展点的独立功能贡献，宿主可为普通/微/扩展 |
 | Capability | 插件实现的版本化业务协议 |
 | Skill | 核心对业务协议的固定入口、验证及转发规则 |
-| Deployment/Instance | Skill 最终绑定的已批准运行实例 |
+| Deployment/Instance | 普通运行实例；微/扩展另有typed部署，最终解析到获批准的实际根 |
 
 首版 mapping=identity，不做未定义的参数变换。HTTP 目标只接受已签名插件 OpenAPI 中 POST/JSON→200/JSON 的固定 operationId，不接受调用方 URL。其他协议通过显式新契约扩展。
 
@@ -38,3 +40,9 @@ Skill 是核心持有的版本化业务入口声明，将业务名称、输入�
 业务预设声明 business_entry=skill_required，核心拒绝其裸 /calls 和无 Skill 绑定的 HostService.Invoke；客户端不能借旧入口绕过 Skill。旧插件默认 direct，现有兼容调用继续有效。
 
 micro目标是新增的受控分支：核心仅管理微制品和固定路由，受限脚本由独立MPR执行；它不把代码装入SkillRouter。普通Plugin表中的OCI职责不适用于MicroPlugin，见[核心微类型](../architecture/micro-plugins.md)。
+
+## 扩展业务目标
+
+extension是独立的固定Skill目标：核心验证扩展版本、部署、package_digest及host_chain_digest，再通过实际根OCI的ExtensionHostService转发；SkillRouter不执行扩展代码。data贡献由明确宿主扩展点解释，skill模式由固定处理器经核心再次授权，不把目标名或URL留给用户输入。
+
+扩展没有独立OCI实例，业务资源归实际根或独立handler服务；宿主类型可以是普通、微或扩展，不改变来源与权限检查。详见[扩展Skill](extensions/README.md)。

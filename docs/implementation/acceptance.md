@@ -2,7 +2,7 @@
 
 [文档总目录](../README.md)
 
-> 规格版本：2.6.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
+> 规格版本：2.8.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
 
 ## 接口结构验收
 
@@ -48,10 +48,27 @@ BACKUP-01：从宿主外备份和独立密钥恢复，验证元数据、卷、�
 
 ## 预设与Skill
 
-预设默认资源、并发、17个业务定义与机器契约必须一致。专门验收见 [Skill](../skills/acceptance.md)、[知识库](../preset-plugins/knowledge-base/acceptance.md)及各embedding预设deployment.md。结构校验不等于推理/检索压测。
+预设默认资源、并发、24个静态业务Skill与机器契约必须一致。专门验收见 [Skill](../skills/acceptance.md)、[知识库](../preset-plugins/knowledge-base/acceptance.md)及各embedding预设deployment.md。结构校验不等于推理/检索压测。
 
 ## 微插件
 
 验证无独立OCI容器、核心微类型/源代码/Skill授权分离、固定父运行时依赖、JSON输入输出和预算取消；MPR离线不阻塞核心Ready。详见[微插件运行时验收](../preset-plugins/micro-plugin-runtime/acceptance.md)。
 
 网页搜索按[受控HTTP验收](../preset-plugins/web-search/acceptance.md)检查优先级/fallback/未知计费及凭证隔离；对象存储按[文件验收](../preset-plugins/object-storage/acceptance.md)检查用户隔离、CAS、防ABA、流复制、容量和故障恢复。
+
+## Extension Plugin验收
+
+| 编号 | 触发 | 期望 |
+|---|---|---|
+| EXT-01 | ordinary/micro/extension宿主选择混用或无扩展点 | 拒绝；恰一个精确typed宿主，旧无声明清单不自动支持 |
+| EXT-02 | 扩展自引用、跨类型handler回指或超过16层 | 完整图检查失败，不提交半份绑定 |
+| EXT-03 | data含重复键、非有限数、超256KiB或可执行入口 | 拒绝，不能注入JS/native/shell |
+| EXT-04 | 缺extension.invoke、任一宿主use或handler权限 | 调用拒绝，不能借宿主/所有者权限执行 |
+| EXT-05 | 微宿主扩展尝试改变原Schema、联网或副作用 | 拒绝；保持原profile/开关/250mCPU/256MiB聚合边界 |
+| EXT-06 | 宿主重启、停用、撤权或链摘要变化 | 后代waiting_host/取消，旧句柄失效；仅原链恢复后重Prepare |
+| EXT-07 | 宿主基础Ready等待自身扩展 | 拒绝反向初始化依赖；先宿主基础Ready再拓扑加载 |
+| EXT-08 | 多层扩展与独立handler并发 | 实际根资源计一次，handler按自身服务准入；不复制根调用额度 |
+| EXT-09 | 换配置/宿主/版本后继续使用旧候选 | 拒绝漂移，需新部署和固定候选；已有batch保持原链 |
+| EXT-10 | 扩展尝试借宿主UI源或令牌 | 不授予origin/凭证，不动态注入桌面脚本 |
+
+上述为实现验收要求；静态Schema/图样例通过不代表已加载真实扩展或运行MPR1.3。

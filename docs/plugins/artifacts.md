@@ -2,7 +2,7 @@
 
 [文档总目录](../README.md)
 
-> 规格版本：2.6.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
+> 规格版本：2.8.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
 
 ## 镜像引用
 
@@ -32,3 +32,9 @@ xelab-artifact-v1
 镜像 GC 只移除未被安装、操作、回滚保留点引用的内容。下载凭证由宿主配置，不能下发到普通插件。仓库实现更换不改变插件 ID、契约或签名语义。
 
 接口见 [发布者及安装目录](../api/operations/plugins/README.md)。
+
+## 扩展制品来源
+
+扩展使用独立ExtensionManifest与包/内容摘要登记所有者和发布来源，不是宿主OCI签名或MPR镜像签名自动覆盖的内容。mode=data的contribution.json为严格UTF-8 JSON，最多256KiB；拒绝重复键、非有限数、越界深度与额外文件执行入口。mode=skill固定已注册handler_skill_id及definition_digest，不装入任意JS、原生库、shell或可变URL。
+
+改变贡献、扩展点、处理器定义或制品内容须发布新扩展版本；宿主支持扩展须本身发布显式新清单。旧清单没有extension_points时不回写或重算包摘要。跨宿主类型的完整验证和样例见[扩展制品](../extensions/README.md)。

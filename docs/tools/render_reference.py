@@ -24,6 +24,8 @@ def typename(schema, prefix=''):
         return f'[{name}]({prefix}{name}.md)'
     if 'anyOf' in schema:
         return ' / '.join(typename(s, prefix) for s in schema['anyOf'])
+    if 'oneOf' in schema:
+        return ' / '.join(typename(s, prefix) for s in schema['oneOf'])
     if schema.get('type') == 'array':
         return 'array&lt;' + typename(schema['items'], prefix) + '&gt;'
     kind = schema.get('type', 'JSON')
@@ -55,6 +57,8 @@ def example(schema, depth=0):
         return example(SCHEMAS[name], depth+1)
     if 'example' in schema: return schema['example']
     if 'default' in schema: return schema['default']
+    if 'oneOf' in schema and schema.get('type') != 'object':
+        return example(schema['oneOf'][0],depth+1)
     if 'anyOf' in schema:
         if any(s.get('type') == 'null' for s in schema['anyOf']): return None
         return example(schema['anyOf'][0],depth+1)
@@ -162,7 +166,19 @@ def main():
         lines=[f'# {name}','','[模型目录](README.md) · [完整机器 Schema](../../contracts/schemas/'+name+'.schema.json)','','> 状态：规范性设计；由 OpenAPI 生成。','',''+schema.get('description',''),'','## 字段','',fields(schema),'## 对象及跨字段约束','','```json',json.dumps(constraints,ensure_ascii=False,indent=2),'```','','完整字段结构和嵌套引用见本页顶部机器 Schema。`additionalProperties=false` 的对象拒绝未知字段；可选与 nullable 是独立概念。跨字段条件、oneOf / allOf 均须执行。Schema 中的引用位于 [OpenAPI](../../contracts/openapi.json) 的 components.schemas。']
         write('api/models/'+name+'.md','\n'.join(lines))
         model_index.append(f'- [{name}]({name}.md)：{schema.get("description", "")}')
-    write('api/models/README.md','# 数据模型目录\n\n[HTTP 目录](../README.md) · [机器契约目录](../../contracts/README.md)\n\n'+ '\n'.join(model_index))
+    # Keep the complete model inventory readable as the specification grows.
+    index_dir=DOCS/'api/models/index'
+    index_dir.mkdir(exist_ok=True)
+    for old in index_dir.glob('*.md'): old.unlink()
+    pages=[]
+    for start in range(0,len(model_index),100):
+        chunk=model_index[start:start+100]
+        filename=f'{start+1:03d}-{start+len(chunk):03d}.md'
+        lines=[f'# 数据模型 {start+1}–{start+len(chunk)}','','[模型总目录](../README.md)','','']
+        lines += [line.replace('](','](../',1) for line in chunk]
+        write('api/models/index/'+filename,'\n'.join(lines))
+        pages.append(f'- [模型 {start+1}–{start+len(chunk)}](index/{filename})')
+    write('api/models/README.md','# 数据模型目录\n\n[HTTP 目录](../README.md) · [机器契约目录](../../contracts/README.md)\n\n共'+str(len(SCHEMAS))+'个模型，按名称排序分组；每个模型独立定义字段与跨字段约束。\n\n'+'\n'.join(pages))
     write('contracts/examples/http-requests.json',json.dumps(EXAMPLES,ensure_ascii=False,indent=2))
     print(f'Rendered {sum(map(len,grouped.values()))} operations, {len(SCHEMAS)} models, {len(EXAMPLES)} request examples')
 

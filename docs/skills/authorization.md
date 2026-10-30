@@ -2,7 +2,7 @@
 
 [文档总目录](../README.md)
 
-> 规格版本：2.6.0；状态：设计预设，尚未构建或实测运行。
+> 规格版本：2.8.0；状态：设计预设，尚未构建或实测运行。
 
 普通目标允许执行必须同时满足skill.invoke、目标原有能力/HTTP动作、插件代理上限、当前主体与全部源约束，以及本次资源白名单。micro目标另按下述独立资源规则核对。注册/启用Skill不自动给任何用户授予执行权。
 
@@ -41,3 +41,11 @@ HttpBinding读取需micro.http.read，写入需micro.http.bind；创建/换secre
 业务Call只冻结有序绑定的身份/版本/secret引用，VM只见alias/priority/timeout_ms。冻结不保留被撤销的权限，绑定禁用/删除、secret失效和源链变化逐请求生效；旧Call不能随配置更新静默换key。监督器持有的委托不进入VM，脚本不能自报call_id或访问任意HostService。
 
 同Call的预发送失败或已确认上游429/5xx/认证拒绝可按批准备用alias明确fallback；平台鉴权/绑定状态错误不能被当作上游失败绕过。实际已发但响应不确定时Call保持unknown，禁止后续seq、自动换attempt或重跑non_repeatable脚本，即使VM自行catch或输出JSON也不改变此状态。
+
+## 扩展授权交集
+
+扩展调用同时要求skill.invoke、leaf扩展对象上的extension.invoke，以及逐级真实宿主上的extension.host.use：ordinary匹配实际deployment，micro匹配真实micro_plugin，extension匹配真实extension_plugin。普通根检查当前安装/扩展点审批，不要求无关capability.invoke；微根还需micro.invoke及父micro.runtime.use。
+
+只有实际执行祖先扩展的业务处理器时才检查它的invoke/Skill，宿主边不等于调用父业务Skill。mode=skill另检查固定handler原skill.invoke和目标动作；若发起其他业务capability/Skill调用，仍逐次检查其原动作。完整账户祖先、API Key/源凭证、客户端和根执行委托上限在每个转发处求交，不能用扩展owner、宿主服务账户或MPR本身权限替换调用者。
+
+任一宿主、扩展或handler被停用/撤权时阻止后续执行并传播取消；链摘要和准备句柄都不是授权票据。pure微宿主没有因扩展获得网络或HostService，联网开关与原profile约束始终生效。详见[扩展调用](extensions/README.md)。

@@ -4,8 +4,8 @@
   "enabled": false,
   "replicas": 1,
   "limits": {
-    "cpu_millis": 1000,
-    "memory_bytes": 1073741824,
+    "cpu_millis": 4000,
+    "memory_bytes": 4294967296,
     "ephemeral_bytes": 268435456,
     "pids": 128
   },
@@ -18,9 +18,11 @@
     "artifact_cache_max_bytes": 268435456,
     "artifact_cache_max_entries": 128,
     "artifact_cache_ttl_seconds": 300,
-    "worker_address_space_bytes": 134217728,
-    "maximum_sandbox_bytes": 536870912,
-    "control_memory_reserve_bytes": 134217728
+    "worker_address_space_bytes": 1073741824,
+    "maximum_sandbox_bytes": 3758096384,
+    "control_memory_reserve_bytes": 134217728,
+    "maximum_sandbox_cpu_millis": 3500,
+    "control_cpu_reserve_millis": 500
   },
   "volume_ids": []
 }

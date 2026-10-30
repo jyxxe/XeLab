@@ -10,7 +10,7 @@
 
 期限上限：10000ms。事务：短事务固定微/父依赖和授权；对象复制、Prepare/执行不持有长DB事务。
 
-固定runtime安装/部署、单副本、微generation和批准预算；Prepare后CAS绑定实际实例代次，迟到结果不覆盖，停用先撤路由/Cancel再Release，不创建独立OCI。
+固定runtime安装/部署、单副本、微generation和批准预算；Prepare后CAS绑定实际实例代次，迟到结果不覆盖，停用先撤路由/Cancel再Release，不创建独立OCI。 设置只允许enabled=false、phase=disabled且worker/队列/Prepare/资源租约已全部排空时修改；generation递增使旧Prepare失效，候选Skill不变。启用前验证resources与network设置、真实资源隔离声明；Prepare/Ready不要求联网打开。 停用立即enabled=false/generation++并进入draining，先取消queued/活动执行，再Release准备句柄；无worker/queued/Prepare/资源租约且真实回收后才disabled，控制RPC超时不能单独当作排空证明。
 
 | 输入字段 | 类型 | 语义 |
 |---|---|---|

@@ -1,0 +1,14 @@
+{
+  "extension_version_id": "00000000-0000-4000-8000-000000000211",
+  "host": {
+    "kind": "ordinary",
+    "deployment_id": "00000000-0000-4000-8000-000000000202",
+    "installation_id": "00000000-0000-4000-8000-000000000201",
+    "installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "config": {
+    "enabled": true
+  },
+  "priority": 100,
+  "timeout_ms": 2000
+}

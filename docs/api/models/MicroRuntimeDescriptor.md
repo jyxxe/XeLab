@@ -14,6 +14,7 @@
 | `engines` | array&lt;JSON&gt; | 是 | minItems=`1`; maxItems=`1` |  |
 | `protocols` | array&lt;JSON&gt; | 是 | minItems=`1`; maxItems=`1` |  |
 | `execution_profiles` | array&lt;string&gt; | 否 | minItems=`1`; maxItems=`2`; default=`["pure-json-v1"]` |  |
+| `resource_isolation` | JSON | 否 | 见类型定义 | 新微部署的必要能力；缺省为不支持，旧runtime不得降级为仅heap/父cgroup软限额 |
 
 ## 对象及跨字段约束
 

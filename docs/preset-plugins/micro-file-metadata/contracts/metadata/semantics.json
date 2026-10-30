@@ -20,5 +20,13 @@
   "notes": [
     "No filesystem/Blob read or magic-byte sniffing in pure MPR.",
     "Future verified mode requires controlled core provenance; caller cannot assert verified."
-  ]
+  ],
+  "deployment_defaults": {
+    "resources": {
+      "cpu_millis": 250,
+      "memory_bytes": 268435456
+    },
+    "network_enabled": false
+  },
+  "resource_scope": "aggregate_micro_deployment_cgroup"
 }

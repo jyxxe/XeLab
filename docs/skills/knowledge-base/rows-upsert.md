@@ -2,7 +2,7 @@
 
 [文档总目录](../../README.md)
 
-> 规格版本：2.6.0；状态：设计预设，尚未构建或实测运行。
+> 规格版本：2.8.0；状态：设计预设，尚未构建或实测运行。
 
 Skill `org.xelab.knowledge-base.rows-upsert@2.0.0`，[定义](rows-upsert.skill.json)；目标 `data.kb.rows.upsert@1.0.0`。由核心以固定UUID转发到org.xelab.knowledge-base，响应在SkillCallResult.call.output。
 

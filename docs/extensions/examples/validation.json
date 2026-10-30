@@ -1,0 +1,1706 @@
+[
+  {
+    "name": "ordinary-host",
+    "schema": "ExtensionHostRef",
+    "value": {
+      "kind": "ordinary",
+      "deployment_id": "00000000-0000-4000-8000-000000000202",
+      "installation_id": "00000000-0000-4000-8000-000000000201",
+      "installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "valid": true
+  },
+  {
+    "name": "ordinary-create",
+    "schema": "CreateExtensionDeployment",
+    "value": {
+      "extension_version_id": "00000000-0000-4000-8000-000000000211",
+      "host": {
+        "kind": "ordinary",
+        "deployment_id": "00000000-0000-4000-8000-000000000202",
+        "installation_id": "00000000-0000-4000-8000-000000000201",
+        "installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "config": {
+        "enabled": true
+      },
+      "priority": 100,
+      "timeout_ms": 2000
+    },
+    "valid": true
+  },
+  {
+    "name": "ordinary-candidate",
+    "schema": "SkillDefinition",
+    "value": {
+      "name": "org.xelab.echo.extension.00000000-0000-4000-8000-000000000212.run",
+      "version": "1.0.0",
+      "description": "声明式前缀规则，并提供下一层处理器扩展点",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "stream_item_schema": null,
+      "target": {
+        "kind": "extension",
+        "plugin_id": "org.xelab.echo",
+        "extension_version_id": "00000000-0000-4000-8000-000000000211",
+        "extension_deployment_id": "00000000-0000-4000-8000-000000000212",
+        "package_digest": "sha256:d09453c7b55647f6f585a1c0f508051ff9b262047058e7b111256e094254d5bb",
+        "host_chain_digest": "sha256:4137bec1c169d6b23577e114b648e68b75043fca51970214e87ac29d81fd5aee"
+      },
+      "mapping": "identity",
+      "maximum_timeout_ms": 2000,
+      "input_blobs": false,
+      "tags": [
+        "extension",
+        "data"
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "micro-host",
+    "schema": "ExtensionHostRef",
+    "value": {
+      "kind": "micro",
+      "micro_deployment_id": "00000000-0000-4000-8000-000000000302",
+      "micro_version_id": "00000000-0000-4000-8000-000000000301",
+      "package_digest": "sha256:b9b922f72ebfbbd5b7ae5d3527b3e7410f17c7e2f434e481e9ad65138444979a"
+    },
+    "valid": true
+  },
+  {
+    "name": "micro-create",
+    "schema": "CreateExtensionDeployment",
+    "value": {
+      "extension_version_id": "00000000-0000-4000-8000-000000000311",
+      "host": {
+        "kind": "micro",
+        "micro_deployment_id": "00000000-0000-4000-8000-000000000302",
+        "micro_version_id": "00000000-0000-4000-8000-000000000301",
+        "package_digest": "sha256:b9b922f72ebfbbd5b7ae5d3527b3e7410f17c7e2f434e481e9ad65138444979a"
+      },
+      "config": {
+        "enabled": true
+      },
+      "priority": 100,
+      "timeout_ms": 2000
+    },
+    "valid": true
+  },
+  {
+    "name": "micro-candidate",
+    "schema": "SkillDefinition",
+    "value": {
+      "name": "org.xelab.micro-plugin-runtime.extension.00000000-0000-4000-8000-000000000312.run",
+      "version": "1.0.0",
+      "description": "给纯微宿主提供ASCII大写规则",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "stream_item_schema": null,
+      "target": {
+        "kind": "extension",
+        "plugin_id": "org.xelab.micro-plugin-runtime",
+        "extension_version_id": "00000000-0000-4000-8000-000000000311",
+        "extension_deployment_id": "00000000-0000-4000-8000-000000000312",
+        "package_digest": "sha256:d5aaae007477650974b4b7e866100013effdfa3b4fb8170518b86cbb71165d65",
+        "host_chain_digest": "sha256:a22800b8094839f3f206dace9a1d9d648062c1a092f258287be86bfdd03bada7"
+      },
+      "mapping": "identity",
+      "maximum_timeout_ms": 2000,
+      "input_blobs": false,
+      "tags": [
+        "extension",
+        "data"
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "nested-host",
+    "schema": "ExtensionHostRef",
+    "value": {
+      "kind": "extension",
+      "extension_deployment_id": "00000000-0000-4000-8000-000000000212",
+      "extension_version_id": "00000000-0000-4000-8000-000000000211",
+      "package_digest": "sha256:d09453c7b55647f6f585a1c0f508051ff9b262047058e7b111256e094254d5bb"
+    },
+    "valid": true
+  },
+  {
+    "name": "nested-create",
+    "schema": "CreateExtensionDeployment",
+    "value": {
+      "extension_version_id": "00000000-0000-4000-8000-000000000411",
+      "host": {
+        "kind": "extension",
+        "extension_deployment_id": "00000000-0000-4000-8000-000000000212",
+        "extension_version_id": "00000000-0000-4000-8000-000000000211",
+        "package_digest": "sha256:d09453c7b55647f6f585a1c0f508051ff9b262047058e7b111256e094254d5bb"
+      },
+      "config": {
+        "enabled": true
+      },
+      "priority": 100,
+      "timeout_ms": 2000
+    },
+    "valid": true
+  },
+  {
+    "name": "nested-candidate",
+    "schema": "SkillDefinition",
+    "value": {
+      "name": "org.xelab.echo.extension.00000000-0000-4000-8000-000000000412.run",
+      "version": "1.0.0",
+      "description": "依附前缀扩展的固定echo Skill处理器",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "stream_item_schema": null,
+      "target": {
+        "kind": "extension",
+        "plugin_id": "org.xelab.echo",
+        "extension_version_id": "00000000-0000-4000-8000-000000000411",
+        "extension_deployment_id": "00000000-0000-4000-8000-000000000412",
+        "package_digest": "sha256:4fcaf069e9c7fb87544feb9db3d937b24f7e98bfb6bb4bbd56a154551204ec13",
+        "host_chain_digest": "sha256:36ba8f2dbdc5066ed9bd7226571a70bd2458b78a99e8c8e21fe66c0aa36efeab"
+      },
+      "mapping": "identity",
+      "maximum_timeout_ms": 2000,
+      "input_blobs": false,
+      "tags": [
+        "extension",
+        "skill"
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "host-no-digest",
+    "schema": "ExtensionHostRef",
+    "value": {
+      "kind": "ordinary",
+      "deployment_id": "00000000-0000-4000-8000-000000000001",
+      "installation_id": "00000000-0000-4000-8000-000000000002"
+    },
+    "valid": false
+  },
+  {
+    "name": "host-no-url",
+    "schema": "ExtensionHostRef",
+    "value": {
+      "kind": "ordinary",
+      "deployment_id": "00000000-0000-4000-8000-000000000202",
+      "installation_id": "00000000-0000-4000-8000-000000000201",
+      "installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "url": "https://example.com"
+    },
+    "valid": false
+  },
+  {
+    "name": "host-typed-fields-mutually-exclusive",
+    "schema": "ExtensionHostRef",
+    "value": {
+      "kind": "ordinary",
+      "deployment_id": "00000000-0000-4000-8000-000000000202",
+      "installation_id": "00000000-0000-4000-8000-000000000201",
+      "installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "micro_deployment_id": "00000000-0000-4000-8000-000000000003"
+    },
+    "valid": false
+  },
+  {
+    "name": "host-unknown-kind",
+    "schema": "ExtensionHostRef",
+    "value": {
+      "kind": "any",
+      "deployment_id": "00000000-0000-4000-8000-000000000001"
+    },
+    "valid": false
+  },
+  {
+    "name": "host-micro-no-package",
+    "schema": "ExtensionHostRef",
+    "value": {
+      "kind": "micro",
+      "micro_deployment_id": "00000000-0000-4000-8000-000000000001",
+      "micro_version_id": "00000000-0000-4000-8000-000000000002"
+    },
+    "valid": false
+  },
+  {
+    "name": "host-nested-no-parent-version",
+    "schema": "ExtensionHostRef",
+    "value": {
+      "kind": "extension",
+      "extension_deployment_id": "00000000-0000-4000-8000-000000000001",
+      "package_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "valid": false
+  },
+  {
+    "name": "manifest-data-no-handler",
+    "schema": "ExtensionManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "声明式前缀规则，并提供下一层处理器扩展点",
+      "host_kind": "ordinary",
+      "point_id": "text.rules",
+      "contract": {
+        "name": "example.text.rules",
+        "version": "1.0.0",
+        "schema_digest": "sha256:5333c5650605360d6e89df129d5e0dbdaf4b0f7244e3d0c4a72560fe87edf3f2"
+      },
+      "mode": "data",
+      "extension_points": [
+        {
+          "point_id": "text.handler",
+          "contract": {
+            "name": "example.text.handler",
+            "version": "1.0.0",
+            "schema_digest": "sha256:50bc8b7cf1346d6c0e2a9eefb274a33a6756c84dc97eef9adb1a431278177119"
+          },
+          "mode": "skill",
+          "input_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "output_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "contribution_schema": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "maxLength": 128
+              }
+            },
+            "required": [
+              "label"
+            ],
+            "additionalProperties": false
+          },
+          "config_schema": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "enabled"
+            ],
+            "additionalProperties": false
+          },
+          "side_effect": "none",
+          "maximum_timeout_ms": 2000,
+          "maximum_input_bytes": 1048576,
+          "maximum_output_bytes": 1048576,
+          "maximum_contributions": 16
+        }
+      ],
+      "handler_skill_id": "00000000-0000-4000-8000-000000000004",
+      "handler_definition_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "valid": false
+  },
+  {
+    "name": "manifest-skill-needs-handler",
+    "schema": "ExtensionManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "依附前缀扩展的固定echo Skill处理器",
+      "host_kind": "extension",
+      "point_id": "text.handler",
+      "contract": {
+        "name": "example.text.handler",
+        "version": "1.0.0",
+        "schema_digest": "sha256:50bc8b7cf1346d6c0e2a9eefb274a33a6756c84dc97eef9adb1a431278177119"
+      },
+      "mode": "skill",
+      "handler_skill_id": null,
+      "handler_definition_digest": "sha256:8d5c647f883b2c4ffe51c365964c855def1d968955578994b4d42a5fa6f801c6"
+    },
+    "valid": false
+  },
+  {
+    "name": "manifest-no-native-loader",
+    "schema": "ExtensionManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "声明式前缀规则，并提供下一层处理器扩展点",
+      "host_kind": "ordinary",
+      "point_id": "text.rules",
+      "contract": {
+        "name": "example.text.rules",
+        "version": "1.0.0",
+        "schema_digest": "sha256:5333c5650605360d6e89df129d5e0dbdaf4b0f7244e3d0c4a72560fe87edf3f2"
+      },
+      "mode": "data",
+      "extension_points": [
+        {
+          "point_id": "text.handler",
+          "contract": {
+            "name": "example.text.handler",
+            "version": "1.0.0",
+            "schema_digest": "sha256:50bc8b7cf1346d6c0e2a9eefb274a33a6756c84dc97eef9adb1a431278177119"
+          },
+          "mode": "skill",
+          "input_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "output_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "contribution_schema": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "maxLength": 128
+              }
+            },
+            "required": [
+              "label"
+            ],
+            "additionalProperties": false
+          },
+          "config_schema": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "enabled"
+            ],
+            "additionalProperties": false
+          },
+          "side_effect": "none",
+          "maximum_timeout_ms": 2000,
+          "maximum_input_bytes": 1048576,
+          "maximum_output_bytes": 1048576,
+          "maximum_contributions": 16
+        }
+      ],
+      "entrypoint": "extension.so"
+    },
+    "valid": false
+  },
+  {
+    "name": "manifest-no-js-mode",
+    "schema": "ExtensionManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "声明式前缀规则，并提供下一层处理器扩展点",
+      "host_kind": "ordinary",
+      "point_id": "text.rules",
+      "contract": {
+        "name": "example.text.rules",
+        "version": "1.0.0",
+        "schema_digest": "sha256:5333c5650605360d6e89df129d5e0dbdaf4b0f7244e3d0c4a72560fe87edf3f2"
+      },
+      "mode": "javascript",
+      "extension_points": [
+        {
+          "point_id": "text.handler",
+          "contract": {
+            "name": "example.text.handler",
+            "version": "1.0.0",
+            "schema_digest": "sha256:50bc8b7cf1346d6c0e2a9eefb274a33a6756c84dc97eef9adb1a431278177119"
+          },
+          "mode": "skill",
+          "input_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "output_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "contribution_schema": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "maxLength": 128
+              }
+            },
+            "required": [
+              "label"
+            ],
+            "additionalProperties": false
+          },
+          "config_schema": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "enabled"
+            ],
+            "additionalProperties": false
+          },
+          "side_effect": "none",
+          "maximum_timeout_ms": 2000,
+          "maximum_input_bytes": 1048576,
+          "maximum_output_bytes": 1048576,
+          "maximum_contributions": 16
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "manifest-points-no-schema-ref",
+    "schema": "ExtensionManifest",
+    "value": {
+      "format_version": "1",
+      "version": "1.0.0",
+      "description": "声明式前缀规则，并提供下一层处理器扩展点",
+      "host_kind": "ordinary",
+      "point_id": "text.rules",
+      "contract": {
+        "name": "example.text.rules",
+        "version": "1.0.0",
+        "schema_digest": "sha256:5333c5650605360d6e89df129d5e0dbdaf4b0f7244e3d0c4a72560fe87edf3f2"
+      },
+      "mode": "data",
+      "extension_points": [
+        {
+          "point_id": "text.handler",
+          "contract": {
+            "name": "example.text.handler",
+            "version": "1.0.0",
+            "schema_digest": "sha256:50bc8b7cf1346d6c0e2a9eefb274a33a6756c84dc97eef9adb1a431278177119"
+          },
+          "mode": "skill",
+          "input_schema": {
+            "$ref": "https://example.com/schema"
+          },
+          "output_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "contribution_schema": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "maxLength": 128
+              }
+            },
+            "required": [
+              "label"
+            ],
+            "additionalProperties": false
+          },
+          "config_schema": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "enabled"
+            ],
+            "additionalProperties": false
+          },
+          "side_effect": "none",
+          "maximum_timeout_ms": 2000,
+          "maximum_input_bytes": 1048576,
+          "maximum_output_bytes": 1048576,
+          "maximum_contributions": 16
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "new-identity-owner-from-subject",
+    "schema": "CreateExtensionPlugin",
+    "value": {
+      "name": "rules",
+      "display_name": "Rules"
+    },
+    "valid": true
+  },
+  {
+    "name": "identity-owner-not-input",
+    "schema": "CreateExtensionPlugin",
+    "value": {
+      "name": "rules",
+      "display_name": "Rules",
+      "owner_id": "00000000-0000-4000-8000-000000000001"
+    },
+    "valid": false
+  },
+  {
+    "name": "create-no-derived-chain",
+    "schema": "CreateExtensionDeployment",
+    "value": {
+      "extension_version_id": "00000000-0000-4000-8000-000000000211",
+      "host": {
+        "kind": "ordinary",
+        "deployment_id": "00000000-0000-4000-8000-000000000202",
+        "installation_id": "00000000-0000-4000-8000-000000000201",
+        "installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "config": {
+        "enabled": true
+      },
+      "priority": 100,
+      "timeout_ms": 2000,
+      "host_chain_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "valid": false
+  },
+  {
+    "name": "create-no-inline-source",
+    "schema": "CreateExtensionDeployment",
+    "value": {
+      "extension_version_id": "00000000-0000-4000-8000-000000000211",
+      "host": {
+        "kind": "ordinary",
+        "deployment_id": "00000000-0000-4000-8000-000000000202",
+        "installation_id": "00000000-0000-4000-8000-000000000201",
+        "installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "config": {
+        "enabled": true
+      },
+      "priority": 100,
+      "timeout_ms": 2000,
+      "source": "process.exit()"
+    },
+    "valid": false
+  },
+  {
+    "name": "create-no-enable-side-effect",
+    "schema": "CreateExtensionDeployment",
+    "value": {
+      "extension_version_id": "00000000-0000-4000-8000-000000000211",
+      "host": {
+        "kind": "ordinary",
+        "deployment_id": "00000000-0000-4000-8000-000000000202",
+        "installation_id": "00000000-0000-4000-8000-000000000201",
+        "installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "config": {
+        "enabled": true
+      },
+      "priority": 100,
+      "timeout_ms": 2000,
+      "enabled": true
+    },
+    "valid": false
+  },
+  {
+    "name": "create-config-object",
+    "schema": "CreateExtensionDeployment",
+    "value": {
+      "extension_version_id": "00000000-0000-4000-8000-000000000211",
+      "host": {
+        "kind": "ordinary",
+        "deployment_id": "00000000-0000-4000-8000-000000000202",
+        "installation_id": "00000000-0000-4000-8000-000000000201",
+        "installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "config": [],
+      "priority": 100,
+      "timeout_ms": 2000
+    },
+    "valid": false
+  },
+  {
+    "name": "create-timeout-bound",
+    "schema": "CreateExtensionDeployment",
+    "value": {
+      "extension_version_id": "00000000-0000-4000-8000-000000000211",
+      "host": {
+        "kind": "ordinary",
+        "deployment_id": "00000000-0000-4000-8000-000000000202",
+        "installation_id": "00000000-0000-4000-8000-000000000201",
+        "installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "config": {
+        "enabled": true
+      },
+      "priority": 100,
+      "timeout_ms": 30001
+    },
+    "valid": false
+  },
+  {
+    "name": "create-priority-bound",
+    "schema": "CreateExtensionDeployment",
+    "value": {
+      "extension_version_id": "00000000-0000-4000-8000-000000000211",
+      "host": {
+        "kind": "ordinary",
+        "deployment_id": "00000000-0000-4000-8000-000000000202",
+        "installation_id": "00000000-0000-4000-8000-000000000201",
+        "installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "config": {
+        "enabled": true
+      },
+      "priority": 1001,
+      "timeout_ms": 2000
+    },
+    "valid": false
+  },
+  {
+    "name": "target-not-mixed-micro",
+    "schema": "SkillDefinition",
+    "value": {
+      "name": "org.xelab.echo.extension.00000000-0000-4000-8000-000000000212.run",
+      "version": "1.0.0",
+      "description": "声明式前缀规则，并提供下一层处理器扩展点",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "stream_item_schema": null,
+      "target": {
+        "kind": "extension",
+        "plugin_id": "org.xelab.echo",
+        "extension_version_id": "00000000-0000-4000-8000-000000000211",
+        "extension_deployment_id": "00000000-0000-4000-8000-000000000212",
+        "package_digest": "sha256:d09453c7b55647f6f585a1c0f508051ff9b262047058e7b111256e094254d5bb",
+        "host_chain_digest": "sha256:4137bec1c169d6b23577e114b648e68b75043fca51970214e87ac29d81fd5aee",
+        "micro_deployment_id": "00000000-0000-4000-8000-000000000001"
+      },
+      "mapping": "identity",
+      "maximum_timeout_ms": 2000,
+      "input_blobs": false,
+      "tags": [
+        "extension",
+        "data"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "target-closure-required",
+    "schema": "SkillDefinition",
+    "value": {
+      "name": "org.xelab.echo.extension.00000000-0000-4000-8000-000000000212.run",
+      "version": "1.0.0",
+      "description": "声明式前缀规则，并提供下一层处理器扩展点",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "stream_item_schema": null,
+      "target": {
+        "kind": "extension",
+        "plugin_id": "org.xelab.echo",
+        "extension_version_id": "00000000-0000-4000-8000-000000000211",
+        "extension_deployment_id": "00000000-0000-4000-8000-000000000212",
+        "package_digest": "sha256:d09453c7b55647f6f585a1c0f508051ff9b262047058e7b111256e094254d5bb"
+      },
+      "mapping": "identity",
+      "maximum_timeout_ms": 2000,
+      "input_blobs": false,
+      "tags": [
+        "extension",
+        "data"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "extension-no-raw-blob",
+    "schema": "SkillDefinition",
+    "value": {
+      "name": "org.xelab.echo.extension.00000000-0000-4000-8000-000000000212.run",
+      "version": "1.0.0",
+      "description": "声明式前缀规则，并提供下一层处理器扩展点",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "stream_item_schema": null,
+      "target": {
+        "kind": "extension",
+        "plugin_id": "org.xelab.echo",
+        "extension_version_id": "00000000-0000-4000-8000-000000000211",
+        "extension_deployment_id": "00000000-0000-4000-8000-000000000212",
+        "package_digest": "sha256:d09453c7b55647f6f585a1c0f508051ff9b262047058e7b111256e094254d5bb",
+        "host_chain_digest": "sha256:4137bec1c169d6b23577e114b648e68b75043fca51970214e87ac29d81fd5aee"
+      },
+      "mapping": "identity",
+      "maximum_timeout_ms": 2000,
+      "input_blobs": true,
+      "tags": [
+        "extension",
+        "data"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "extension-no-business-stream",
+    "schema": "SkillDefinition",
+    "value": {
+      "name": "org.xelab.echo.extension.00000000-0000-4000-8000-000000000212.run",
+      "version": "1.0.0",
+      "description": "声明式前缀规则，并提供下一层处理器扩展点",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "stream_item_schema": {},
+      "target": {
+        "kind": "extension",
+        "plugin_id": "org.xelab.echo",
+        "extension_version_id": "00000000-0000-4000-8000-000000000211",
+        "extension_deployment_id": "00000000-0000-4000-8000-000000000212",
+        "package_digest": "sha256:d09453c7b55647f6f585a1c0f508051ff9b262047058e7b111256e094254d5bb",
+        "host_chain_digest": "sha256:4137bec1c169d6b23577e114b648e68b75043fca51970214e87ac29d81fd5aee"
+      },
+      "mapping": "identity",
+      "maximum_timeout_ms": 2000,
+      "input_blobs": false,
+      "tags": [
+        "extension",
+        "data"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "extension-bounded-schema",
+    "schema": "SkillDefinition",
+    "value": {
+      "name": "org.xelab.echo.extension.00000000-0000-4000-8000-000000000212.run",
+      "version": "1.0.0",
+      "description": "声明式前缀规则，并提供下一层处理器扩展点",
+      "input_schema": {
+        "$ref": "https://example.com/input"
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "stream_item_schema": null,
+      "target": {
+        "kind": "extension",
+        "plugin_id": "org.xelab.echo",
+        "extension_version_id": "00000000-0000-4000-8000-000000000211",
+        "extension_deployment_id": "00000000-0000-4000-8000-000000000212",
+        "package_digest": "sha256:d09453c7b55647f6f585a1c0f508051ff9b262047058e7b111256e094254d5bb",
+        "host_chain_digest": "sha256:4137bec1c169d6b23577e114b648e68b75043fca51970214e87ac29d81fd5aee"
+      },
+      "mapping": "identity",
+      "maximum_timeout_ms": 2000,
+      "input_blobs": false,
+      "tags": [
+        "extension",
+        "data"
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "not-static-signed-host-skill",
+    "schema": "Manifest",
+    "value": {
+      "manifest_version": "1",
+      "plugin_id": "org.xelab.echo",
+      "version": "1.1.0",
+      "publisher_id": "00000000-0000-4000-8000-000000000001",
+      "host_api_major": 1,
+      "platforms": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "entrypoint": [
+        "/usr/local/bin/echo-plugin"
+      ],
+      "capabilities": [
+        {
+          "contract": {
+            "name": "tool.echo",
+            "version": "1.0.0",
+            "schema_digest": "sha256:30039c0229db5e7589c1b4c58d44712f431145b4377bc2b249b607844508b19d"
+          },
+          "input_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            }
+          },
+          "output_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            }
+          },
+          "stream_item_schema": null,
+          "side_effect": "none",
+          "maximum_input_bytes": 65536,
+          "maximum_output_bytes": 65536
+        }
+      ],
+      "dependencies": [],
+      "requested_rules": [],
+      "minimum_resources": {
+        "cpu_millis": 100,
+        "memory_bytes": 67108864,
+        "ephemeral_bytes": 16777216,
+        "pids": 32
+      },
+      "health": {
+        "startup_timeout_ms": 60000,
+        "interval_ms": 5000,
+        "timeout_ms": 2000,
+        "failure_threshold": 3
+      },
+      "volumes": [],
+      "routes": [],
+      "config_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "data_schema_version": "none",
+      "upgrade_strategy": "recreate",
+      "extension_points": [
+        {
+          "point_id": "text.rules",
+          "contract": {
+            "name": "example.text.rules",
+            "version": "1.0.0",
+            "schema_digest": "sha256:5333c5650605360d6e89df129d5e0dbdaf4b0f7244e3d0c4a72560fe87edf3f2"
+          },
+          "mode": "data",
+          "input_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "output_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "contribution_schema": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "prefix",
+                  "uppercase-ascii"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "maxLength": 128
+              }
+            },
+            "required": [
+              "operation"
+            ],
+            "additionalProperties": false
+          },
+          "config_schema": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "enabled"
+            ],
+            "additionalProperties": false
+          },
+          "side_effect": "none",
+          "maximum_timeout_ms": 2000,
+          "maximum_input_bytes": 1048576,
+          "maximum_output_bytes": 1048576,
+          "maximum_contributions": 16
+        }
+      ],
+      "extension_host": {
+        "api_major": 1,
+        "host_kinds": [
+          "ordinary",
+          "extension"
+        ],
+        "modes": [
+          "data",
+          "skill"
+        ],
+        "maximum_chain_depth": 16
+      },
+      "skills": [
+        {
+          "name": "org.xelab.echo.extension.00000000-0000-4000-8000-000000000212.run",
+          "version": "1.0.0",
+          "description": "声明式前缀规则，并提供下一层处理器扩展点",
+          "input_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "output_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "stream_item_schema": null,
+          "target": {
+            "kind": "extension",
+            "plugin_id": "org.xelab.echo",
+            "extension_version_id": "00000000-0000-4000-8000-000000000211",
+            "extension_deployment_id": "00000000-0000-4000-8000-000000000212",
+            "package_digest": "sha256:d09453c7b55647f6f585a1c0f508051ff9b262047058e7b111256e094254d5bb",
+            "host_chain_digest": "sha256:4137bec1c169d6b23577e114b648e68b75043fca51970214e87ac29d81fd5aee"
+          },
+          "mapping": "identity",
+          "maximum_timeout_ms": 2000,
+          "input_blobs": false,
+          "tags": [
+            "extension",
+            "data"
+          ]
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "host-descriptor-all-kinds",
+    "schema": "ExtensionHostDescriptor",
+    "value": {
+      "api_major": 1,
+      "host_kinds": [
+        "ordinary",
+        "micro",
+        "extension"
+      ],
+      "modes": [
+        "data",
+        "skill"
+      ],
+      "maximum_chain_depth": 16
+    },
+    "valid": true
+  },
+  {
+    "name": "host-descriptor-no-native",
+    "schema": "ExtensionHostDescriptor",
+    "value": {
+      "api_major": 1,
+      "host_kinds": [
+        "ordinary"
+      ],
+      "modes": [
+        "native"
+      ],
+      "maximum_chain_depth": 16
+    },
+    "valid": false
+  },
+  {
+    "name": "ordinary-points-require-dispatcher",
+    "schema": "Manifest",
+    "value": {
+      "manifest_version": "1",
+      "plugin_id": "org.xelab.echo",
+      "version": "1.1.0",
+      "publisher_id": "00000000-0000-4000-8000-000000000001",
+      "host_api_major": 1,
+      "platforms": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "entrypoint": [
+        "/usr/local/bin/echo-plugin"
+      ],
+      "capabilities": [
+        {
+          "contract": {
+            "name": "tool.echo",
+            "version": "1.0.0",
+            "schema_digest": "sha256:30039c0229db5e7589c1b4c58d44712f431145b4377bc2b249b607844508b19d"
+          },
+          "input_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            }
+          },
+          "output_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            }
+          },
+          "stream_item_schema": null,
+          "side_effect": "none",
+          "maximum_input_bytes": 65536,
+          "maximum_output_bytes": 65536
+        }
+      ],
+      "dependencies": [],
+      "requested_rules": [
+        {
+          "rule": {
+            "action": "skill.invoke",
+            "resource": {
+              "kind": "skill",
+              "match": "all"
+            }
+          },
+          "required": false
+        }
+      ],
+      "minimum_resources": {
+        "cpu_millis": 100,
+        "memory_bytes": 67108864,
+        "ephemeral_bytes": 16777216,
+        "pids": 32
+      },
+      "health": {
+        "startup_timeout_ms": 60000,
+        "interval_ms": 5000,
+        "timeout_ms": 2000,
+        "failure_threshold": 3
+      },
+      "volumes": [],
+      "routes": [],
+      "config_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "data_schema_version": "none",
+      "upgrade_strategy": "recreate",
+      "extension_points": [
+        {
+          "point_id": "text.rules",
+          "contract": {
+            "name": "example.text.rules",
+            "version": "1.0.0",
+            "schema_digest": "sha256:5333c5650605360d6e89df129d5e0dbdaf4b0f7244e3d0c4a72560fe87edf3f2"
+          },
+          "mode": "data",
+          "input_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "output_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "contribution_schema": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "prefix",
+                  "uppercase-ascii"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "maxLength": 128
+              }
+            },
+            "required": [
+              "operation"
+            ],
+            "additionalProperties": false
+          },
+          "config_schema": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "enabled"
+            ],
+            "additionalProperties": false
+          },
+          "side_effect": "none",
+          "maximum_timeout_ms": 2000,
+          "maximum_input_bytes": 1048576,
+          "maximum_output_bytes": 1048576,
+          "maximum_contributions": 16
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "ordinary-points-require-ordinary-kind",
+    "schema": "Manifest",
+    "value": {
+      "manifest_version": "1",
+      "plugin_id": "org.xelab.echo",
+      "version": "1.1.0",
+      "publisher_id": "00000000-0000-4000-8000-000000000001",
+      "host_api_major": 1,
+      "platforms": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "entrypoint": [
+        "/usr/local/bin/echo-plugin"
+      ],
+      "capabilities": [
+        {
+          "contract": {
+            "name": "tool.echo",
+            "version": "1.0.0",
+            "schema_digest": "sha256:30039c0229db5e7589c1b4c58d44712f431145b4377bc2b249b607844508b19d"
+          },
+          "input_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            }
+          },
+          "output_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            }
+          },
+          "stream_item_schema": null,
+          "side_effect": "none",
+          "maximum_input_bytes": 65536,
+          "maximum_output_bytes": 65536
+        }
+      ],
+      "dependencies": [],
+      "requested_rules": [
+        {
+          "rule": {
+            "action": "skill.invoke",
+            "resource": {
+              "kind": "skill",
+              "match": "all"
+            }
+          },
+          "required": false
+        }
+      ],
+      "minimum_resources": {
+        "cpu_millis": 100,
+        "memory_bytes": 67108864,
+        "ephemeral_bytes": 16777216,
+        "pids": 32
+      },
+      "health": {
+        "startup_timeout_ms": 60000,
+        "interval_ms": 5000,
+        "timeout_ms": 2000,
+        "failure_threshold": 3
+      },
+      "volumes": [],
+      "routes": [],
+      "config_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "data_schema_version": "none",
+      "upgrade_strategy": "recreate",
+      "extension_points": [
+        {
+          "point_id": "text.rules",
+          "contract": {
+            "name": "example.text.rules",
+            "version": "1.0.0",
+            "schema_digest": "sha256:5333c5650605360d6e89df129d5e0dbdaf4b0f7244e3d0c4a72560fe87edf3f2"
+          },
+          "mode": "data",
+          "input_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "output_schema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 4096
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "contribution_schema": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "prefix",
+                  "uppercase-ascii"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "maxLength": 128
+              }
+            },
+            "required": [
+              "operation"
+            ],
+            "additionalProperties": false
+          },
+          "config_schema": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "enabled"
+            ],
+            "additionalProperties": false
+          },
+          "side_effect": "none",
+          "maximum_timeout_ms": 2000,
+          "maximum_input_bytes": 1048576,
+          "maximum_output_bytes": 1048576,
+          "maximum_contributions": 16
+        }
+      ],
+      "extension_host": {
+        "api_major": 1,
+        "host_kinds": [
+          "micro"
+        ],
+        "modes": [
+          "data",
+          "skill"
+        ],
+        "maximum_chain_depth": 16
+      }
+    },
+    "valid": false
+  }
+]

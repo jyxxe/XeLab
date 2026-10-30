@@ -2,7 +2,7 @@
 
 [预设目录](../README.md) · [文档总目录](../../README.md)
 
-> 规格版本：2.6.0；状态：`planned`，尚未实现、构建或实测；计划业务契约版本：0.1.0。
+> 规格版本：2.8.0；状态：`planned`，尚未实现、构建或实测；计划业务契约版本：0.1.0。
 
 插件目录：`automation-webhook-trigger/`；拟定插件ID：`org.xelab.automation-webhook-trigger`。把经过认证与防重放检查的入站Webhook映射为平台事件或持久任务触发。
 

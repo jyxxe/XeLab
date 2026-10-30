@@ -12,6 +12,7 @@ import tempfile
 import tomllib
 import sqlite3
 from validate_planned import validate_planned
+from validate_extensions import validate_extensions
 from functools import lru_cache
 from urllib.parse import urlparse, unquote
 
@@ -351,9 +352,30 @@ def strict(spec,operations):
     runtime=read(micro/'manifest.json');cfg=read(micro/'defaults.json');deployment=read(micro/'deployment.template.json')
     check(runtime.get('micro_runtime',{}).get('api_major')==1,'MPR descriptor missing')
     check(not runtime['skills'] and not runtime['capabilities'],'MPR must not expose a generic execute Skill/capability bypass')
-    check(runtime['requested_rules']==[{'rule':{'action':'micro.http.request','resource':{'kind':'micro_plugin','match':'all'}},'required':False}] and runtime['volumes']==[],'MPR must only request optional brokered HTTP, never raw Secret/volume permissions')
+    check(runtime['requested_rules']==[{'rule':{'action':'micro.http.request','resource':{'kind':'micro_plugin','match':'all'}},'required':False},{'rule':{'action':'skill.invoke','resource':{'kind':'skill','match':'all'}},'required':False}] and runtime['volumes']==[],'MPR must only request optional brokered HTTP and fixed extension-handler proxy, never raw Secret/volume permissions')
     check(cfg['artifact_cache_max_bytes']+cfg['maximum_sandbox_bytes']+cfg['control_memory_reserve_bytes']<=deployment['limits']['memory_bytes'],'MPR memory budget exceeds parent cgroup limit')
-    check(cfg['maximum_active_requests']*cfg['worker_address_space_bytes']<=cfg['maximum_sandbox_bytes'],'MPR worker admission exceeds sandbox budget')
+    check(cfg['maximum_sandbox_cpu_millis']+cfg['control_cpu_reserve_millis']<=deployment['limits']['cpu_millis'],'MPR CPU pool plus control exceeds parent CPU budget')
+    check(runtime['micro_runtime'].get('resource_isolation')=='cgroup-v2-per-micro-deployment-v1','MPR must declare hard per-micro-deployment resource isolation')
+    resources=spec['components']['schemas']['MicroResourceLimits']['properties']
+    check(resources['cpu_millis']['default']==250 and resources['memory_bytes']['default']==268435456,'micro deployment defaults must be 250mCPU / 256MiB')
+    create_schema=spec['components']['schemas']['CreateMicroDeployment']
+    check(create_schema['properties']['network_enabled']['default'] is False,'micro networking must default disabled')
+    check(create_schema['properties']['resources']['default']=={'cpu_millis':250,'memory_bytes':268435456},'omitted micro resources must materialize the same defaults')
+    settings_path='/api/platform/v1/micro-deployments/{micro_deployment_id}/settings'
+    settings=spec['paths'][settings_path]['put']
+    check(settings['operationId']=='updateMicroDeploymentSettings' and settings['x-permission']=='micro.deploy','micro settings must have explicit scoped management authorization')
+    check({p['name'] for p in settings['parameters'] if p.get('required') and p['in']=='header'}=={'If-Match','Idempotency-Key'},'micro settings require ETag and idempotency key')
+    check(settings['requestBody']['content']['application/json']['schema']['$ref']=='#/components/schemas/MicroDeploymentSettings','micro settings request drift')
+    check(all(code in settings['responses'] for code in ['200','400','403','409','412','428']),'micro settings response/status coverage incomplete')
+    # Capacity is charged once per active deployment, independently of VM virtual address space.
+    check(deployment['limits']['cpu_millis']==4000 and deployment['limits']['memory_bytes']==4294967296,'MPR parent defaults must be 4vCPU / 4GiB')
+    check(cfg['maximum_sandbox_cpu_millis']==3500 and cfg['control_cpu_reserve_millis']==500 and cfg['maximum_sandbox_bytes']==3758096384,'MPR default pool/control allocation drift')
+    check(min(cfg['maximum_active_requests'],cfg['maximum_sandbox_bytes']//268435456,cfg['maximum_sandbox_cpu_millis']//250)==4,'default MPR must admit four default micro groups subject to four active slots')
+    for file in [micro/'examples/create-micro-deployment.json',DOCS/'preset-plugins/web-search/micro-deployment.template.json']:
+        value=read(file)
+        check(value['resources']=={'cpu_millis':250,'memory_bytes':268435456} and value['network_enabled'] is False,'micro templates must explicitly default 250m/256MiB/offline: '+str(file))
+    for file in [micro/'examples/settings.json',DOCS/'preset-plugins/web-search/settings.example.json']:
+        validate_case({'$ref':base+'#/components/schemas/MicroDeploymentSettings'},read(file),str(file.relative_to(DOCS)))
     # Micro presets are separate source artifacts, not OCI install/volume templates.
     for preset in read(DOCS/'preset-plugins/catalog.json').get('micro_presets',[]):
         folder=DOCS/'preset-plugins'/preset['directory'];manifest=read(folder/preset['manifest'])
@@ -405,6 +427,7 @@ def main():
     parser=argparse.ArgumentParser();parser.add_argument('--strict',action='store_true');args=parser.parse_args()
     spec,operations,internal,pages=baseline()
     planned=validate_planned(DOCS,check,read,strict=args.strict)
+    extensions=validate_extensions(DOCS,check,read,strict=args.strict)
     import render_planned
     def compare_planned(path,content):
         check(path.exists() and path.read_text()==content.rstrip()+'\n','generated planned page drift: '+str(path.relative_to(DOCS)))
@@ -414,6 +437,6 @@ def main():
     if ERRORS:
         print('\n'.join('ERROR '+e for e in ERRORS));print(f'FAILED: {len(ERRORS)} issues');return 1
     rpc=len(read(DOCS/'contracts/rpc-semantics.json')['methods'])
-    print(f'PASS: {pages} Markdown pages; {len(operations)} HTTP operations; {len(spec["components"]["schemas"])} models; {rpc} RPCs; {len(internal)} internal methods; {planned["directories"]} planned plugins / {planned["capabilities"]} draft capabilities / {planned["fixtures"]} fixtures; strict={args.strict}')
+    print(f'PASS: {pages} Markdown pages; {len(operations)} HTTP operations; {len(spec["components"]["schemas"])} models; {rpc} RPCs; {len(internal)} internal methods; {planned["directories"]} planned plugins / {planned["capabilities"]} draft capabilities / {planned["fixtures"]} fixtures; extensions: {extensions["examples"]} examples / {extensions["fixtures"]} schema fixtures / {extensions["graphs"]} graphs; strict={args.strict}')
     return 0
 if __name__=='__main__':sys.exit(main())

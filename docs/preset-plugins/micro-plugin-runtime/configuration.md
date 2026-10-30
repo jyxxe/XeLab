@@ -2,19 +2,37 @@
 
 [MPR目录](README.md) · [执行协议](execution.md) · [节点预算](../../runtime/budgets.md)
 
-> 规格版本：2.6.0；状态：待实现的配置契约。机器字段以预设清单、默认配置和核心模型为准。
+> 规格版本：2.8.0；状态：待实现的配置契约。机器字段以预设清单、默认配置和核心模型为准。
 
 ## 实例预算
 
-MPR建议1000mCPU、1073741824字节内存、268435456字节临时盘、pids128，单副本。活动请求上限4，队列上限32，排队上限5000ms；控制RPC使用独立有界处理通道，不排到脚本业务队列尾。
+MPR默认4000mCPU、4294967296字节内存、268435456字节临时盘、pids128，单副本。活动请求上限4，队列上限32，排队上限5000ms；控制RPC使用独立有界处理通道，不排到脚本业务队列尾。
 
-微部署默认活动并发1、硬上限4，可以采用更低的执行额度，不能复制实例预算。有效并发取微部署上限、MPR实例剩余槽、用户/账户树额度和当前核心调度准入的共同约束；不是按MicroPlugin名称跨所有父实例自动合计为4。
+MicroDeployment.resources默认cpu_millis=250、memory_bytes=268435456；这里用户的256M按256MiB解释，0.25vCPU按250mCPU时间带宽解释。资源是该微部署所有活动worker的合计上限，不是每Call各复制一份；单微部署默认活动并发1、硬上限4，同组worker共享该上限。
 
-所有worker、VM、制品缓存、缓冲区和监督器都计入MPR父cgroup。JS heap限制只约束引擎堆，不等于worker全部RSS；栈、引擎元数据、代码和JSON缓冲仍占父实例内存。
+所有worker、VM、制品缓存、缓冲区和监督器都计入MPR父cgroup。每微部署子cgroup实施真实CPU带宽与计量内存限制；memory_bytes涵盖内核计量的RSS、页缓存等，不等同JS heap或单一RSS计数。引擎heap/stack限制继续执行，不因增大resources而自动放宽。
 
-采用受控worker实现时，每个worker地址空间上限128MiB，全部sandbox工作区总预算512MiB，控制端保留128MiB，同一时刻活动worker最多4。地址空间限额不是RSS，也不是独立cgroup；MPR不要求宿主cgroup委派，不能声称每个worker有独立CPU/RSS硬隔离。
+父MPR下由核心受审OCI适配器建立control和workloads资源树，所有JS位于独立短命worker进程。control预算为制品缓存加128MiB控制内存、500mCPU；workloads总上限为maximum_sandbox_bytes=3758096384（3584MiB）、maximum_sandbox_cpu_millis=3500。每个活跃微部署位于workloads下单独子cgroup，首个worker激活时计一次资源、最后worker退出且清理确认后释放。
 
-Initialize在分配前必须验证`artifact_cache_max_bytes + maximum_sandbox_bytes + control_memory_reserve_bytes <= 父memory_bytes`，并核对最多4个worker的工作区准入。默认256+512+128=896MiB，小于1GiB；缓存可配置上限不能单独绕过这一合计校验，不满足时拒绝Ready。
+Initialize验证`artifact_cache_max_bytes + maximum_sandbox_bytes + control_memory_reserve_bytes <= 父memory_bytes`和`maximum_sandbox_cpu_millis + control_cpu_reserve_millis <= 父cpu_millis`。默认内存256+3584+128=3968MiB<4GiB，CPU3500+500=4000m；任一越限或缺失可靠子cgroup/worker隔离能力都拒绝Ready，不降级为共享进程VM。
+
+manifest.minimum_resources保留1vCPU/1GiB作为调整配置后的启动下限，不是默认部署资源。默认模板仍为4vCPU/4GiB；若手动降低父limits，必须同时缩小工作池、控制及缓存预算并重新验证，不能只改父limits而沿用4C/4GiB配置。
+
+默认3584MiB/3500m工作池可容纳4个默认资源、各1个活动Call的不同微部署，仍受全实例4活动槽限制；扩大父池不放宽该并发上限。同一活跃微部署也可在其256MiB/250m总限额内使用多个允许槽。提高微部署资源会减少其他部署容量，不自动扩容父实例。
+
+worker_address_space_bytes改为1GiB，仅是每个worker虚拟地址空间保护，不是RSS预留；它不复制父内存，也不替代微部署子cgroup。核心管理资源树及已验证PID，MPR没有privileged、可写宿主cgroup或运行时socket。
+
+## 手动调整微部署设置
+
+`PUT /api/platform/v1/micro-deployments/{id}/settings`完整提交`{resources:{cpu_millis,memory_bytes},network_enabled}`，携微部署If-Match和Idempotency-Key；具体动作和模型以核心接口定义为准。
+
+只有enabled=false、phase=disabled，且已排空所有queued请求、Prepare和worker时可修改。同值请求是无副作用确认；其他状态返回STATE_CONFLICT，不在线修改正运行资源组。变更检查父资源池/审批上限，更新revision/generation并使旧准备句柄失效，之后重新启用/Prepare。
+
+resources/network_enabled是独立运行设置；原limits、微版本和父Runtime绑定仍不可变。设置更新不改包/源码摘要、业务Schema或candidate_skill定义，不以更改CPU/内存为由换代码。修改原limits或父绑定仍需新建微部署。
+
+停用先原子写enabled=false、generation递增并撤新路由，phase进入draining；队列、Prepare、worker、句柄和资源组全部取消/回收后才为disabled。清理失败保持draining/failed，禁止趁未排空提交settings。
+
+network_enabled默认false；true只允许controlled-http-v1。开启仅允许版本已声明endpoint的受控HTTP，仍须当前micro.http.request、原微权限、HttpBinding/secret及父出口审批；不开放真实fetch/socket。Prepare/Ready可离线完成，controlled-http业务Invoke在关闭状态于创建worker前返回PERMISSION_DENIED，violations.field=network_enabled，不消耗HTTP序号或触发服务商fallback。
 
 ## 单次执行
 
@@ -27,10 +45,16 @@ Initialize在分配前必须验证`artifact_cache_max_bytes + maximum_sandbox_by
 | 输出JSON | 1MiB | 全部stdout字节计量、深度最多64；不能截断后伪造合法JSON |
 | 日志 | 64KiB | stderr独立有界，超过后截断并标记，不单因日志截断判业务失败 |
 | 单微部署并发 | 1 | 硬上限4；同父MPR的多个微部署合计不能突破实例总4 |
+| 微部署合计CPU | 250m | 同组所有活动worker共享0.25vCPU时间带宽，受父workloads池限制 |
+| 微部署合计内存 | 256MiB | 同组所有活动worker共享268435456字节cgroup计量内存上限 |
 
 用户传入的timeout不能延长微版本/微部署声明的总期限或根调用deadline。单次期限覆盖其Prepare、排队、编译、转发和执行；各步骤只能使用原期限剩余时间，重Prepare不能重新获得完整2000ms。
 
 达到引擎内存、栈或执行期限时必须释放VM和活动槽。引擎中断无法覆盖的native操作需置于可强杀worker中，监督器按硬wall期限结束整个执行单元；不能只设置一个脚本可忽略的计时器。
+
+CPU被节流的时间和HTTP等待仍计整体wall期限；250m是带宽上限而非独占物理核或最低性能保证。微部署cgroup OOM会终止该组相关worker，同组Call按实际证据失败或unknown；已经发送的HTTP不能因OOM被假称撤回。
+
+组配置验证`max_active_requests × (heap_bytes + stack_bytes + maximum_input_bytes + maximum_output_bytes + maximum_stderr_bytes) <= resources.memory_bytes`。引擎native、编译数据和共享页还受cgroup计量/hardmax及压力实测约束，公式通过不等于保证所有最坏输入稳定运行；不按worker虚拟地址空间乘并发预留RSS。
 
 ## 制品缓存
 

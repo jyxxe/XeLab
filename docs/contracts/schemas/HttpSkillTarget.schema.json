@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HttpSkillTarget",
+  "type": "object",
+  "description": "http固定目标；其他种类字段拒绝，不改变既有wire结构",
+  "properties": {
+    "kind": {
+      "const": "http"
+    },
+    "plugin_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "插件稳定 ID；不含版本",
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$",
+      "example": "org.xelab.echo"
+    },
+    "http_operation_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "插件 OpenAPI 中的精确 operationId"
+    },
+    "http_contract_digest": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 71,
+      "description": "制品或内容 SHA-256 摘要",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  "required": [
+    "kind",
+    "plugin_id",
+    "http_operation_id",
+    "http_contract_digest"
+  ],
+  "additionalProperties": false
+}

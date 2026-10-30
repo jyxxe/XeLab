@@ -18,11 +18,12 @@
 | `entrypoint` | JSON | 是 | 见类型定义 |  |
 | `input_schema` | [MicroBusinessSchema](MicroBusinessSchema.md) | 是 | 见类型定义 | 有界纯数据Schema；节点/深度/字节/求值预算由核心及运行时再次检查 |
 | `output_schema` | [MicroBusinessSchema](MicroBusinessSchema.md) | 是 | 见类型定义 | 有界纯数据Schema；节点/深度/字节/求值预算由核心及运行时再次检查 |
-| `limits` | [MicroExecutionLimits](MicroExecutionLimits.md) | 是 | 见类型定义 | 获批执行预算，必须同时不超过版本声明和MPR上限 |
+| `limits` | [MicroExecutionLimits](MicroExecutionLimits.md) | 是 | 见类型定义 | 不可变微版本/微部署的业务执行子限额；heap/stack不等于总RSS，CPU与总内存另见MicroResourceLimits |
 | `side_effect` | string | 是 | enum=`["none", "non_repeatable"]` | 纯计算为none；HTTP转发可能计费，必须non_repeatable |
 | `execution_profile` | string | 否 | default=`"pure-json-v1"`; enum=`["pure-json-v1", "controlled-http-v1"]` | 省略保留纯计算；HTTP需新制品和显式绑定/审批 |
 | `http_endpoints` | array&lt;[MicroHttpEndpoint](MicroHttpEndpoint.md)&gt; | 否 | minItems=`0`; maxItems=`8` | 别名唯一；仅声明可经核心代理使用的固定模板 |
 | `business_errors` | array&lt;[MicroBusinessError](MicroBusinessError.md)&gt; | 否 | minItems=`0`; maxItems=`32` | host.fail只允许报告已声明码，不得伪造平台认证/授权失败 |
+| `extension_points` | array&lt;[ExtensionPoint](ExtensionPoint.md)&gt; | 否 | minItems=`0`; maxItems=`8` | 可选宿主点；实际MPR须明确支持扩展宿主协议。data点业务Schema/副作用须与本微版本一致；不得扩大原profile或权限 |
 
 ## 对象及跨字段约束
 

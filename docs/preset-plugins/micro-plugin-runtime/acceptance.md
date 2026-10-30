@@ -2,7 +2,7 @@
 
 [MPR目录](README.md) · [JSON执行协议](execution.md) · [安全边界](security.md)
 
-> 规格版本：2.6.0；以下为待实现验收条件，不表示已经执行脚本、浏览器或隔离压测。
+> 规格版本：2.8.0；以下为待实现验收条件，不表示已经执行脚本、浏览器或隔离压测。
 
 | 场景 | 必须成立 |
 |---|---|
@@ -16,18 +16,30 @@
 | 对象权限 | 仅有某微版本执行权不能注册代码、改部署或运行另一版本；父子账户和Key固定上限继续生效 |
 | 伪造调用 | 非核心mTLS、错误Runtime安装/代次、过期来源链或自报subject均不能执行 |
 | VM隔离 | 前次调用全局变量、输入、输出、凭证和授权上下文不出现在后续或其他用户VM |
-| 宿主访问 | filesystem/network/process、普通模块、HostService、secret及Runtime私钥对脚本不可用 |
+| 宿主访问 | filesystem/真实socket/process、普通模块、直接HostService、secret原值及Runtime私钥不可用；HTTP只能用受控桥 |
 | 循环与递归 | 无限循环/深递归受独立硬wall与stack限制，能强制销毁执行单元并释放槽 |
-| native不可中断 | 模拟引擎native长操作时监督器能强杀worker，不让控制线程与整个实例无限挂起 |
+| native不可中断 | 短命worker可按已验证PID终止，不让控制线程与整个实例无限挂起；JS不得在Attach成功前执行 |
 | 内存与输出 | heap16MiB默认/64MiB硬上限、stack1MiB、输入/输出1MiB及深度64得到执行；严格UTF-8、重复key/非有限数被拒绝，输出不截断为伪成功 |
 | 日志洪泛 | stderr有界64KiB，超过截断并标stderr_truncated而非业务失败；与stdout分离且按调用权限读取，不吃满内存或阻塞取消 |
-| 并发与排队 | 单微部署默认1、硬4；整个实例最多4活动worker、队列32/5s；创建更多微部署不复制父额度 |
+| 并发与排队 | 单微部署默认1、硬4；resources是组内合计上限。实例4活动槽、队列32/5s，默认资源下4个不同微部署各1个Call可准入，第5个等待/明确拒绝，不因父4C4GiB放宽4槽 |
 | 缓存与淘汰 | 缓存256MiB/128制品/TTL300s先触边界即过期或LRU淘汰；新VM不共享可变状态；淘汰不删除核心版本/结果 |
-| 取消与迟到 | Cancel只命中准确执行单元，迟到stdout不覆盖终态；其他并发微调用不被误杀 |
+| 取消与迟到 | 单Call Cancel只命中准确worker；微部署组OOM可终止同组多个Call，其他微部署不被该子组直接组杀。迟到stdout不覆盖终态 |
 | Runtime故障 | 相关微部署waiting_runtime，不自动切换安装；核心管理API、CLI及其他插件仍可用 |
 | 重启与查询 | MPR缓存可丢弃，核心Call仍可查询；未确认执行按原固定版本核实/恢复，不假称已成功 |
 | 异步batch | 每item遵守同样权限与执行上限；202仅表示接受，逐项状态/结果与核心batch协议一致 |
-| 资源边界 | worker地址空间128MiB不是RSS；sandbox512MiB+控制128MiB+缓存256MiB合计896MiB，Initialize验证不超过父1GiB；无cgroup委派或逐worker独立CPU/RSS隔离声明 |
+| 资源默认与单位 | 每微部署memory_bytes=268435456（256M按256MiB）/cpu_millis=250，同组所有活动worker共享；不是每Call重复分配，也不是独占物理核 |
+| 父资源合计 | sandbox3584MiB+控制128MiB+缓存256MiB=3968MiB<父4GiB；sandbox3500m+control500m=父4000m，任何配置越界拒绝Ready |
+| 真实执行限制 | 核心管理control/workloads及微部署子cgroup，CPU带宽和计量内存hardmax实际有效；heap/stack另限，worker虚拟地址空间1GiB不等同RSS |
+| 入组身份与顺序 | AttachMicroWorker验证实际namespace/start-time/pidfd及当前group/Call，入组Ack前worker停等无用户代码；伪造PID/句柄/代次或失败均终止回收 |
+| 无执行能力降级 | 缺失cpu/memory控制器、可靠迁入、组终止或回收时不报告Ready；MPR仍非privileged，无宿主cgroup写权或运行时socket |
+| 资源准入与释放 | 首个worker激活时记一次资源，同组后续worker不重复扣整份；最后退出且确认清理后释放，残留PID/内存仍计父池；OOM与Call证据可查 |
+| 手动settings | 仅disabled且已排空worker/Prepare/queued时可按ETag提交resources/network_enabled；运行态拒绝STATE_CONFLICT，同值无副作用，变化更新revision/generation、旧句柄失效 |
+| 停用收敛 | 停用原子enabled=false/generation++并phase=draining，撤路由；取消队列/Prepare/workers/handle及组回收后才disabled，清理失败不得开放settings |
+| 组内预算校验 | 原limits的heap/stack/输入输出/日志预算乘允许并发不超过组memory，不能按worker VA乘并发当RSS；native开销仍需hardmax/压力验收 |
+| 候选不漂移 | settings不改源码/包摘要、业务Schema、原limits、父绑定或candidate_skill；修改原limits/父绑定仍需新微部署 |
+| 联网默认关闭 | network_enabled=false；pure照常调用，HTTP可Prepare/Ready但Invoke在worker前PERMISSION_DENIED且field=network_enabled，不消耗seq、不伪装上游fallback |
+| 手动联网开启 | true仅controlled-http-v1；固定endpoint/权限/HttpBinding/secret/egress仍逐次检查，ProxyHttp复核开关、启用和原generation，无真实fetch/socket |
+| HTTP取消与OOM | 已发请求结果不明保留unknown，不因关闭设置流程、worker死亡或脚本catch重跑；non_repeatable恢复不自动出网 |
 | 总期限 | 默认2000ms/硬30000ms覆盖调用所需Prepare、排队、编译和执行，各阶段不能重置原deadline |
 
 文档工具可验证清单、Schema、样例与接口一致性；真实JS引擎限制、跨VM隔离、worker强杀、内存峰值与恢复必须在运行时实现后单独验证。

@@ -1,5 +1,5 @@
 {
-  "version": "2.6.0",
+  "version": "2.8.0",
   "status": "planned",
   "ordinary_count": 12,
   "micro_count": 20,
@@ -370,9 +370,16 @@
         {
           "capability_id": "json.validate",
           "operation": "validate",
-          "schema_digest": "sha256:82cd6bcd7abca076e5d615a962250219d7f133cb03af2cb1470d812ae30866ba"
+          "schema_digest": "sha256:e0dbfa3ca0dd1d86c3306c1d88fd097d2f254a8be13be9fd38b88c020f69cc16"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-json-project",
@@ -396,9 +403,16 @@
         {
           "capability_id": "json.project",
           "operation": "project",
-          "schema_digest": "sha256:3b2e4264ac459a1a09f6add1a3af1bf73a92ca1a23c829f4005ddbac8f71dc2d"
+          "schema_digest": "sha256:7fd8fd7ca9fe2e0c2cc967b320df21369ab2fbd9620a6a641a5dc50d84f3cee2"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-json-merge",
@@ -422,9 +436,16 @@
         {
           "capability_id": "json.merge",
           "operation": "merge",
-          "schema_digest": "sha256:3f0b2cd39a66f40eff6df1257c20dbaf8f14e0845866aaa6ff24c708c98b0950"
+          "schema_digest": "sha256:2c153a92bf32d34941df2be3bdcc10df4b64c1fc69277c0e1fd4b1ad800f27bb"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-csv-json",
@@ -449,14 +470,21 @@
         {
           "capability_id": "convert.csv-json",
           "operation": "csv-json",
-          "schema_digest": "sha256:ccc307556bd67f5499df874fd1137f09d7ed076ef66181ee9338d79d32b7c9b0"
+          "schema_digest": "sha256:7fa5a1ba04ad1a1a51ea71326bc6a5195d820ff1d9d9a78f4cc3fa6291d8c723"
         },
         {
           "capability_id": "convert.json-csv",
           "operation": "json-csv",
-          "schema_digest": "sha256:14326ff1a2bb8bd96cb69a29988913d4a19b5dadd5212916a76ddc0aeaf746ca"
+          "schema_digest": "sha256:429329d261e9010151c984b3adefc004ac99791197f40c5e20d29d2aa12982be"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-markdown-html",
@@ -482,9 +510,16 @@
         {
           "capability_id": "convert.markdown-html",
           "operation": "markdown-html",
-          "schema_digest": "sha256:a8e5ea48b5ec32d45c8e946a13c711df1adf5bcc31304e64416c499e7d37f572"
+          "schema_digest": "sha256:bf44995c2bfe7de6cb38ba93d14b9e72545584f22584a8b70814c726a6aa38fe"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-text-normalizer",
@@ -508,9 +543,16 @@
         {
           "capability_id": "text.normalize",
           "operation": "normalize",
-          "schema_digest": "sha256:a056a53837938e2105e0cd5240cdc120360a4cf9eb1d4342d0044e3d41385bb1"
+          "schema_digest": "sha256:1a2ac9785a056cc77b4ad9513c2b504700b8e5333eab89eb055562889983a220"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-regex-extract",
@@ -534,9 +576,16 @@
         {
           "capability_id": "text.regex-extract",
           "operation": "regex-extract",
-          "schema_digest": "sha256:2584c11abd3e2e21814914c79535e9481acd5493c5c28ee4f083dffc32de5953"
+          "schema_digest": "sha256:b3f65344d9f24fa12baeb300d4d45d1fc7d136094c8d7eede638268564930193"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-datetime-convert",
@@ -562,9 +611,16 @@
         {
           "capability_id": "datetime.convert",
           "operation": "convert",
-          "schema_digest": "sha256:f3a09e4f4fee7de15fe6142cc14dab93b7d1061b1d9e34f6d92cc71ff24623ab"
+          "schema_digest": "sha256:c842cb07e9e477af2c9352956a394d7e3a3f65dc3d070bd953f34ae476ec2571"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-flow-condition",
@@ -588,9 +644,16 @@
         {
           "capability_id": "flow.condition",
           "operation": "condition",
-          "schema_digest": "sha256:5010ea60d8abbfee8558d65c178c8737a80327289600ca9dbdebc1a047426b00"
+          "schema_digest": "sha256:96298ad62262fc19f736b974ce8b9c74f102f2b41e1f43b979173f54ba556519"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-flow-map",
@@ -615,9 +678,16 @@
         {
           "capability_id": "flow.map",
           "operation": "map",
-          "schema_digest": "sha256:12ad7eb4cf8e07c68c7a3504aa62863632cf9946ab469277e019e3c04dce4ce0"
+          "schema_digest": "sha256:90455f231917958eb7c0d38d16bd33a1e5d2be44cbaa41e2de5c6799f12f733c"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-flow-filter",
@@ -641,9 +711,16 @@
         {
           "capability_id": "flow.filter",
           "operation": "filter",
-          "schema_digest": "sha256:8ef456383c9342c4d2b99f44697dadbba40bc4012eb5ddd58fa964145728db85"
+          "schema_digest": "sha256:54911fa673bcab487b36f2142b1ec1ff7e3e200459f750fcf904cfde4a291f7c"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-flow-template",
@@ -667,9 +744,16 @@
         {
           "capability_id": "flow.template",
           "operation": "template",
-          "schema_digest": "sha256:9cdaf1a4847edb17cdcbfe425cc9116b6ce294071f354f1559df874b630ea190"
+          "schema_digest": "sha256:010f888762682b7c29e24474b007414d6ceaf6a196ea629137348f5d7130e160"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-data-redactor",
@@ -695,9 +779,16 @@
         {
           "capability_id": "data.redact",
           "operation": "redact",
-          "schema_digest": "sha256:c794a9a19f8d75a24e3d986f955718fe2705b952f9beaa8c507192c912654580"
+          "schema_digest": "sha256:ebe6011ba53b28abd9fbf0ec4cb116ba89a9786222cf54247956265097fa85e0"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-url-parser",
@@ -721,9 +812,16 @@
         {
           "capability_id": "url.parse",
           "operation": "parse",
-          "schema_digest": "sha256:0d88d41233e5866a13a384b07638bc598260b586292a53691c08948f411e42e0"
+          "schema_digest": "sha256:298a99d0c2c21f3335ea6e8af2bc392f8176f3c2c59b81e138c38d19711838a4"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-file-metadata",
@@ -749,9 +847,16 @@
         {
           "capability_id": "file.metadata",
           "operation": "metadata",
-          "schema_digest": "sha256:2699c813743f72b1487fab365108b6eea2623d49ca70058fd2bb73aa9183938e"
+          "schema_digest": "sha256:08048ca94ddc865c3a7af48a7a9b79eb503bd6077b3bb47ad66b787a712ed25c"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-hash",
@@ -775,9 +880,16 @@
         {
           "capability_id": "crypto.hash",
           "operation": "hash",
-          "schema_digest": "sha256:2d3150e78e5a48a599985ae232d65b09e2ed0d95689c5e768980ce7c844e523e"
+          "schema_digest": "sha256:bbc38420e36831c332ef0f2d7768b7004558a08014b2bdac4e8e3a8f355e4894"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-text-chunk",
@@ -804,9 +916,16 @@
         {
           "capability_id": "text.chunk",
           "operation": "chunk",
-          "schema_digest": "sha256:4c8f16d9a7717000af007cbac0708722b37245ee2df6ae630ff683b7f0c18a1a"
+          "schema_digest": "sha256:72f1d2dea6c926d2f3da2ad9d9cad479fce4d747810a8fb3230e438dfe499651"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-text-encoding",
@@ -830,9 +949,16 @@
         {
           "capability_id": "text.encoding-convert",
           "operation": "encoding-convert",
-          "schema_digest": "sha256:3e9686463a7589267170cfcc3cb5a4ea558a3a55d3ec76b1d7e4b65c31941f7f"
+          "schema_digest": "sha256:bca55d012ce33a7c3b07937fa7c089a62194a2ea07b31bbb51d219591d4c309f"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-xml-json",
@@ -857,9 +983,16 @@
         {
           "capability_id": "convert.xml-json",
           "operation": "xml-json",
-          "schema_digest": "sha256:4501beeb863092195b39f1c7e7e673a33359cdbd2cb1602632457d2dad6ef4b5"
+          "schema_digest": "sha256:479fa2d5be13f17076daa6f5c3857bd86d290832d6fa1915581b4b838a91faf0"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     },
     {
       "directory": "micro-data-sort-group",
@@ -885,14 +1018,21 @@
         {
           "capability_id": "data.sort",
           "operation": "sort",
-          "schema_digest": "sha256:02aab5568d3609323cc1f8f72b889ced9bd3676cc6d22f63dd8bca71d75a5b4d"
+          "schema_digest": "sha256:d60c85f423e594703ad0ea7cbfd9418273fb5f3d0b90325fabdee07ff10033f4"
         },
         {
           "capability_id": "data.group",
           "operation": "group",
-          "schema_digest": "sha256:117c632bc5ca54187c8921b131d2eaae61ec6167128679f5c08cfddefe70b1d3"
+          "schema_digest": "sha256:f17954e0d93cf7368dbaa79748dc4fdb33a807a5286ae991b66a66822d323b64"
         }
-      ]
+      ],
+      "deployment_defaults": {
+        "resources": {
+          "cpu_millis": 250,
+          "memory_bytes": 268435456
+        },
+        "network_enabled": false
+      }
     }
   ]
 }

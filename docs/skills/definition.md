@@ -2,7 +2,7 @@
 
 [文档总目录](../README.md)
 
-> 规格版本：2.6.0；状态：设计预设，尚未构建或实测运行。
+> 规格版本：2.8.0；状态：设计预设，尚未构建或实测运行。
 
 完整字段：[SkillDefinition](../api/models/SkillDefinition.md)、[SkillTarget](../api/models/SkillTarget.md)。
 
@@ -38,4 +38,14 @@ SkillTarget.kind=micro时，plugin_id固定为org.xelab.micro-plugin-runtime，�
 
 微源码、包、Schema或运行时安装变化须发布新微版本；微部署limits或父运行时绑定变化须新建微部署。候选名为org.xelab.micro-plugin-runtime.micro.<micro_deployment_uuid>.run，版本为MicroManifest.version；不能原地改写已注册Skill或把旧batch迁到同名新版。微部署可在固定版本和limits下启停，准备句柄重建属于运行状态变化，不修改定义。
 
+微部署的`resources`和`network_enabled`是运行配置，与上述不可变业务limits分开：默认250mCPU/256MiB总内存、联网关闭，可在停用排空后调用[settings接口](../api/operations/micro-plugins/updateMicroDeploymentSettings.md)手动修改。更新部署generation/revision并重新Prepare；候选及已注册Skill的目标、Schema与超时不变，不把网络开关当作额外授权。
+
 首版受限JS的stream_item_schema=null、input_blobs=false、side_effect=none；业务JSON中即使出现blob_id也不授予脚本读取资源的能力。完整关系见[微插件架构](../architecture/micro-plugins.md)。
+
+## extension固定目标
+
+SkillTarget.kind=extension固定扩展版本、扩展部署、package_digest和host_chain_digest，来源installation_id是解析后的物理根OCI安装。候选由核心根据扩展点和固定部署生成，初始不自动注册或授权；不能以宿主安装存在代替扩展独立来源核验。
+
+扩展部署的host/version/config/limits不可变，更换需要新部署、候选和注册；旧batch/工作流不能迁往同名新链。mode=skill还固定handler_skill_id及definition_digest，handler升级必须重新建立明确版本关系。
+
+host_chain_digest只固定逻辑宿主版本/部署/契约链，不含运行实例generation或微资源设置；动态代次由RPC runtime_snapshot另行验证。父实例重启或微资源settings变化需要重新准备，但不能因此重写已注册Skill的稳定摘要。详见[扩展Skill](extensions/README.md)。

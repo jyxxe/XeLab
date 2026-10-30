@@ -75,6 +75,15 @@
       },
       "minItems": 0,
       "maxItems": 32
+    },
+    "extension_points": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/ExtensionPoint"
+      },
+      "minItems": 0,
+      "maxItems": 8,
+      "description": "可选宿主点；实际MPR须明确支持扩展宿主协议。data点业务Schema/副作用须与本微版本一致；不得扩大原profile或权限"
     }
   },
   "required": [

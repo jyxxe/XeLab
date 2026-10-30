@@ -1,0 +1,44 @@
+{
+  "identity": {
+    "extension_version_id": "00000000-0000-4000-8000-000000000211",
+    "package_digest": "sha256:d09453c7b55647f6f585a1c0f508051ff9b262047058e7b111256e094254d5bb",
+    "hosts": [
+      {
+        "host": {
+          "kind": "ordinary",
+          "deployment_id": "00000000-0000-4000-8000-000000000202",
+          "installation_id": "00000000-0000-4000-8000-000000000201",
+          "installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "point_id": "text.rules",
+        "contract": {
+          "name": "example.text.rules",
+          "version": "1.0.0",
+          "schema_digest": "sha256:5333c5650605360d6e89df129d5e0dbdaf4b0f7244e3d0c4a72560fe87edf3f2"
+        },
+        "config_digest": "sha256:26b3426b2593763c96d0890b4a77a0bbf66d13fc512b0c6b138a23c290f30a2a"
+      }
+    ],
+    "root_installation_id": "00000000-0000-4000-8000-000000000201",
+    "root_installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "handler": null,
+    "root_deployment_id": "00000000-0000-4000-8000-000000000202"
+  },
+  "host_chain_digest": "sha256:4137bec1c169d6b23577e114b648e68b75043fca51970214e87ac29d81fd5aee",
+  "extension_deployment_id": "00000000-0000-4000-8000-000000000212",
+  "extension_generation": 1,
+  "hosts": [
+    {
+      "host": {
+        "kind": "ordinary",
+        "deployment_id": "00000000-0000-4000-8000-000000000202",
+        "installation_id": "00000000-0000-4000-8000-000000000201",
+        "installation_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "generation": 1
+    }
+  ],
+  "root_instance_id": "00000000-0000-4000-8000-000000000900",
+  "root_generation": 1,
+  "handler_definition_digest": null
+}

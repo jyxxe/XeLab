@@ -2,7 +2,7 @@
 
 [文档总目录](../README.md)
 
-> 规格版本：2.6.0；状态：设计预设，尚未构建或实测运行。
+> 规格版本：2.8.0；状态：设计预设，尚未构建或实测运行。
 
 ## 调用步骤
 
@@ -54,3 +54,9 @@ Prepare句柄绑定MPR instance/generation及微版本/部署/制品，可丢弃
 微停用/归档、来源撤权和父实例停止均取消在途纯计算并释放预算；运行时停用撤销新路由，Release幂等清理句柄。batch依赖不可用等待固定运行时，结果未知/重试继续遵守原任务规则，不让安全重算变成换版本重跑。
 
 裸CapabilityService.Invoke、HostService.Invoke、工作流裸contract或用户直连MPR不得绕过micro Skill绑定。调用方只给业务input，普通核心转发身份头和其他JSON字段不能冒充内核微调用上下文。详见[微插件架构](../architecture/micro-plugins.md)。
+
+## 扩展转发
+
+extension目标经核心解析固定宿主链及物理根当前代次；ExtensionHostService.Prepare/Invoke/Release只发送至真实根OCI，不为逻辑扩展建立内网地址。输入、输出与副作用受固定扩展点及候选Schema约束，返回前仍校验当前授权和结果证据。
+
+data只加载有界只读贡献；skill处理器固定已注册Skill与定义摘要，经核心转发并继承剩余deadline、取消、根调用计数和幂等上下文。handler独立服务按自己原资源准入，不能在宿主内隐式执行；handler目标也参与统一DAG。根重启或宿主链失效时等待同一精确链重新Prepare，不转向latest、不借裸能力接口绕过extension授权。详见[扩展Skill](extensions/README.md)。

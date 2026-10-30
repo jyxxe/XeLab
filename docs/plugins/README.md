@@ -2,6 +2,8 @@
 
 [文档总目录](../README.md)
 
+> 规格版本：2.8.0；状态：待实现的规范。
+
 - [独立预设插件目录](../preset-plugins/README.md)
 - [核心Skill层与业务入口](../skills/README.md)
 
@@ -17,3 +19,7 @@
 - [插件可选iframe窗口与桌面组件](ui-contributions.md)
 
 - [Micro Plugin Runtime与微插件](../preset-plugins/micro-plugin-runtime/README.md)
+
+## 扩展插件开发
+
+[Extension Plugin目录](../extensions/README.md)定义第三类插件的制品、宿主扩展点、绑定和调用。扩展可依赖普通插件、微插件或扩展插件；它不是把任意代码注入现有容器的通道。宿主须发布明确扩展点及兼容契约，再由核心建立固定扩展部署。

@@ -1,5 +1,5 @@
 {
-  "version": "2.6.0",
+  "version": "2.8.0",
   "presets": [
     {
       "directory": "webui",
@@ -111,8 +111,8 @@
       "defaults": "defaults.json",
       "deployment_template": "deployment.template.json",
       "default_limits": {
-        "cpu_millis": 1000,
-        "memory_bytes": 1073741824,
+        "cpu_millis": 4000,
+        "memory_bytes": 4294967296,
         "ephemeral_bytes": 268435456,
         "pids": 128
       },

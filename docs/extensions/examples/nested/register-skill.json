@@ -1,0 +1,55 @@
+{
+  "installation_id": "00000000-0000-4000-8000-000000000201",
+  "definition": {
+    "name": "org.xelab.echo.extension.00000000-0000-4000-8000-000000000412.run",
+    "version": "1.0.0",
+    "description": "依附前缀扩展的固定echo Skill处理器",
+    "input_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "output_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "stream_item_schema": null,
+    "target": {
+      "kind": "extension",
+      "plugin_id": "org.xelab.echo",
+      "extension_version_id": "00000000-0000-4000-8000-000000000411",
+      "extension_deployment_id": "00000000-0000-4000-8000-000000000412",
+      "package_digest": "sha256:4fcaf069e9c7fb87544feb9db3d937b24f7e98bfb6bb4bbd56a154551204ec13",
+      "host_chain_digest": "sha256:36ba8f2dbdc5066ed9bd7226571a70bd2458b78a99e8c8e21fe66c0aa36efeab"
+    },
+    "mapping": "identity",
+    "maximum_timeout_ms": 2000,
+    "input_blobs": false,
+    "tags": [
+      "extension",
+      "skill"
+    ]
+  },
+  "enabled": false
+}

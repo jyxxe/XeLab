@@ -1530,6 +1530,624 @@
         "payload_digest"
       ],
       "additionalProperties": false
+    },
+    "MicroPoolInput": {
+      "type": "object",
+      "description": "仅核心运行时适配器初始化父MPR资源子树，不接受脚本或MPR指定宿主路径",
+      "properties": {
+        "runtime_instance_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心验证的资源UUID"
+        },
+        "runtime_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "固定代次"
+        },
+        "workloads_cpu_millis": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8000,
+          "description": "工作池CPU；默认3500m"
+        },
+        "workloads_memory_bytes": {
+          "type": "integer",
+          "minimum": 67108864,
+          "maximum": 17179869184,
+          "description": "工作池内存；默认3584MiB"
+        },
+        "control_cpu_millis": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8000,
+          "description": "控制端CPU；默认500m"
+        },
+        "control_memory_reserve_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 17179869184,
+          "description": "控制端内存保留；默认128MiB"
+        },
+        "artifact_cache_max_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 17179869184,
+          "description": "已批准制品缓存上限；默认256MiB"
+        }
+      },
+      "required": [
+        "runtime_instance_id",
+        "runtime_generation",
+        "workloads_cpu_millis",
+        "workloads_memory_bytes",
+        "control_cpu_millis",
+        "control_memory_reserve_bytes",
+        "artifact_cache_max_bytes"
+      ],
+      "additionalProperties": false
+    },
+    "MicroPoolObservation": {
+      "type": "object",
+      "description": "真实宿主cgroup观测；不返回宿主路径或开放cgroup写权",
+      "properties": {
+        "runtime_instance_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心验证的资源UUID"
+        },
+        "runtime_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "固定代次"
+        },
+        "pool_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心验证的资源UUID"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "draining",
+            "released"
+          ],
+          "description": "池状态"
+        },
+        "workloads_cpu_millis": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8000,
+          "description": "池CPU上限"
+        },
+        "workloads_memory_bytes": {
+          "type": "integer",
+          "minimum": 67108864,
+          "maximum": 17179869184,
+          "description": "池内存硬上限"
+        },
+        "reserved_cpu_millis": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8000,
+          "description": "活跃微组CPU预留总和"
+        },
+        "reserved_memory_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 17179869184,
+          "description": "活跃微组内存预留总和"
+        }
+      },
+      "required": [
+        "runtime_instance_id",
+        "runtime_generation",
+        "pool_id",
+        "state",
+        "workloads_cpu_millis",
+        "workloads_memory_bytes",
+        "reserved_cpu_millis",
+        "reserved_memory_bytes"
+      ],
+      "additionalProperties": false
+    },
+    "MicroGroupInput": {
+      "type": "object",
+      "description": "当前Call一次微根物理执行准入，允许micro Skill或已授权闭包确定micro根的ExtensionCall；resources与真实微部署设置一致，不从扩展input复制",
+      "properties": {
+        "runtime_instance_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心验证的资源UUID"
+        },
+        "runtime_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "固定代次"
+        },
+        "micro_deployment_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心验证的资源UUID"
+        },
+        "micro_deployment_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "固定代次"
+        },
+        "call_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心验证的资源UUID"
+        },
+        "execution_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心生成的物理执行UUID；传输重试保持不变"
+        },
+        "resources": {
+          "$ref": "openapi.json#/components/schemas/MicroResourceLimits"
+        },
+        "max_active_requests": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4,
+          "description": "微部署固定并发，再与父总4求交"
+        }
+      },
+      "required": [
+        "runtime_instance_id",
+        "runtime_generation",
+        "micro_deployment_id",
+        "micro_deployment_generation",
+        "call_id",
+        "execution_id",
+        "resources",
+        "max_active_requests"
+      ],
+      "additionalProperties": false
+    },
+    "MicroResourceLease": {
+      "type": "object",
+      "description": "每Call微根物理执行的不透明准入句柄（micro或已授权micro根ExtensionCall）；多个租约映射同微cgroup但不复制预留",
+      "properties": {
+        "resource_group_handle": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 128,
+          "description": "绑定实例/运行代次/微部署代次/Call/物理执行，不能独立授权"
+        },
+        "resource_group_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心验证的资源UUID"
+        },
+        "runtime_instance_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心验证的资源UUID"
+        },
+        "runtime_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "固定代次"
+        },
+        "micro_deployment_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心验证的资源UUID"
+        },
+        "micro_deployment_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "固定代次"
+        },
+        "call_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心验证的资源UUID"
+        },
+        "execution_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心验证的资源UUID"
+        },
+        "resources": {
+          "$ref": "openapi.json#/components/schemas/MicroResourceLimits"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "reserved",
+            "attached",
+            "released"
+          ],
+          "description": "租约状态"
+        }
+      },
+      "required": [
+        "resource_group_handle",
+        "resource_group_id",
+        "runtime_instance_id",
+        "runtime_generation",
+        "micro_deployment_id",
+        "micro_deployment_generation",
+        "call_id",
+        "execution_id",
+        "resources",
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    "MicroWorkerAttachInput": {
+      "type": "object",
+      "description": "仅监督器受控请求；可承载已授权micro根ExtensionCall，核心核对真实Call.micro_*快照及扩展闭包，PID独立核验，未入组禁止加载代码",
+      "properties": {
+        "runtime_instance_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心验证的资源UUID"
+        },
+        "runtime_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "固定代次"
+        },
+        "micro_deployment_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心验证的资源UUID"
+        },
+        "micro_deployment_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "固定代次"
+        },
+        "call_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心验证的资源UUID"
+        },
+        "resource_group_handle": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 128,
+          "description": "本Call资源准入句柄"
+        },
+        "container_pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647,
+          "description": "实例PID namespace内PID，拒绝0/监督器/其他实例"
+        },
+        "process_start_time_ticks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "待验证启动时间；核心取pidfd防PID复用"
+        }
+      },
+      "required": [
+        "runtime_instance_id",
+        "runtime_generation",
+        "micro_deployment_id",
+        "micro_deployment_generation",
+        "call_id",
+        "resource_group_handle",
+        "container_pid",
+        "process_start_time_ticks"
+      ],
+      "additionalProperties": false
+    },
+    "MicroGroupReleaseInput": {
+      "type": "object",
+      "description": "只有核心能回收；实际无worker和未开始租约后才能释放组资源",
+      "properties": {
+        "runtime_instance_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心验证的资源UUID"
+        },
+        "runtime_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "固定代次"
+        },
+        "micro_deployment_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心验证的资源UUID"
+        },
+        "micro_deployment_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "固定代次"
+        },
+        "resource_group_handle": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 128,
+          "description": "准确定位旧Call租约，不影响新代次资源组"
+        }
+      },
+      "required": [
+        "runtime_instance_id",
+        "runtime_generation",
+        "micro_deployment_id",
+        "micro_deployment_generation",
+        "resource_group_handle"
+      ],
+      "additionalProperties": false
+    },
+    "MicroGroupReleaseResult": {
+      "type": "object",
+      "description": "回收结果以真实pidfd/cgroup.events为依据",
+      "properties": {
+        "lease_released": {
+          "type": "boolean"
+        },
+        "group_released": {
+          "type": "boolean"
+        },
+        "resource_group_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心验证的资源UUID"
+        },
+        "remaining_worker_leases": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4,
+          "description": "同组仍有效的保留/已入组租约数"
+        }
+      },
+      "required": [
+        "lease_released",
+        "group_released",
+        "resource_group_id",
+        "remaining_worker_leases"
+      ],
+      "additionalProperties": false
+    },
+    "ExtensionReconcileInput": {
+      "type": "object",
+      "description": "仅控制器使用的扩展收敛输入",
+      "properties": {
+        "extension_deployment_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心读取并核验的UUID"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "需CAS匹配的部署revision"
+        }
+      },
+      "required": [
+        "extension_deployment_id",
+        "expected_revision"
+      ],
+      "additionalProperties": false
+    },
+    "ExtensionHostIdentity": {
+      "type": "object",
+      "description": "按直接宿主到首个非extension逻辑宿主排列；每项是一条真实扩展点绑定，物理MPR跳转单列root，不伪造MPR扩展点",
+      "properties": {
+        "host": {
+          "$ref": "./openapi.json#/components/schemas/ExtensionHostRef"
+        },
+        "point_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "该层已发布的精确扩展点ID"
+        },
+        "contract": {
+          "$ref": "./openapi.json#/components/schemas/ContractRef"
+        },
+        "config_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "description": "该边所属ExtensionDeployment创建时固定config的JCS SHA-256；首项leaf配置，再往上为祖先扩展配置，不含宿主可变资源/启停"
+        }
+      },
+      "required": [
+        "host",
+        "point_id",
+        "contract",
+        "config_digest"
+      ],
+      "additionalProperties": false
+    },
+    "ExtensionHandlerRef": {
+      "type": "object",
+      "description": "只从已注册Skill读取；客户端提供同名数据不能覆盖",
+      "properties": {
+        "skill_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心读取并核验的UUID"
+        },
+        "definition_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "description": "已注册不可变handler Skill定义摘要"
+        },
+        "installation_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "handler声明来源安装，不是用户可替换身份"
+        },
+        "target": {
+          "$ref": "./openapi.json#/components/schemas/SkillTarget"
+        }
+      },
+      "required": [
+        "skill_id",
+        "definition_digest",
+        "installation_id",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "ExtensionIdentityClosure": {
+      "type": "object",
+      "description": "host_chain_digest=SHA256(JCS(本对象))；宿主链仅直接宿主到首个非extension逻辑宿主，物理root单列。叶版本/包、每边point契约/固定config及handler定义均纳入，generation/健康/地址/准备句柄不纳入。完整JSON<=64KiB，联合依赖图含micro→MPR且深度<=16。data.handler=null，skill.handler为固定已注册目标。",
+      "properties": {
+        "extension_version_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "leaf不可变扩展版本"
+        },
+        "package_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "description": "leaf不可变manifest/source包摘要"
+        },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExtensionHostIdentity"
+          },
+          "minItems": 1,
+          "maxItems": 16
+        },
+        "root_installation_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "最终物理root OCI安装"
+        },
+        "root_installation_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "description": "核验过的root制品摘要"
+        },
+        "handler": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExtensionHandlerRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "root_deployment_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "最终物理root普通OCI部署；micro逻辑宿主从固定MPR绑定解析"
+        }
+      },
+      "required": [
+        "extension_version_id",
+        "package_digest",
+        "hosts",
+        "root_installation_id",
+        "root_installation_digest",
+        "handler",
+        "root_deployment_id"
+      ],
+      "additionalProperties": false
+    },
+    "ExtensionHostObservation": {
+      "type": "object",
+      "description": "按身份闭包同顺序排列，逐层核对当前启用/审批状态，不能充当授权票据",
+      "properties": {
+        "host": {
+          "$ref": "./openapi.json#/components/schemas/ExtensionHostRef"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "该真实宿主当前部署generation"
+        }
+      },
+      "required": [
+        "host",
+        "generation"
+      ],
+      "additionalProperties": false
+    },
+    "ExtensionHostSnapshot": {
+      "type": "object",
+      "description": "每Call的动态执行链快照，<=64KiB；保留generation/root实例且与固定身份闭包相符，撤权仍逐次检查",
+      "properties": {
+        "identity": {
+          "$ref": "#/$defs/ExtensionIdentityClosure"
+        },
+        "host_chain_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "description": ""
+        },
+        "extension_deployment_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心读取并核验的UUID"
+        },
+        "extension_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "当前运行代次"
+        },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExtensionHostObservation"
+          },
+          "minItems": 1,
+          "maxItems": 16
+        },
+        "root_instance_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "核心读取并核验的UUID"
+        },
+        "root_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "当前运行代次"
+        },
+        "handler_definition_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$",
+              "description": ""
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "identity",
+        "host_chain_digest",
+        "extension_deployment_id",
+        "extension_generation",
+        "hosts",
+        "root_instance_id",
+        "root_generation",
+        "handler_definition_digest"
+      ],
+      "additionalProperties": false
     }
   }
 }

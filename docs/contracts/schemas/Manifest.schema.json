@@ -153,20 +153,46 @@
       "items": {
         "allOf": [
           {
-            "$ref": "../openapi.json#/components/schemas/SkillDefinition"
-          },
-          {
-            "properties": {
-              "target": {
+            "allOf": [
+              {
+                "$ref": "../openapi.json#/components/schemas/SkillDefinition"
+              },
+              {
                 "properties": {
-                  "kind": {
-                    "enum": [
-                      "capability",
-                      "http"
-                    ]
+                  "target": {
+                    "properties": {
+                      "kind": {
+                        "enum": [
+                          "capability",
+                          "http"
+                        ]
+                      }
+                    }
                   }
                 }
               }
+            ]
+          },
+          {
+            "not": {
+              "properties": {
+                "target": {
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "micro",
+                        "extension"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                }
+              },
+              "required": [
+                "target"
+              ]
             }
           }
         ]
@@ -219,6 +245,18 @@
     },
     "micro_runtime": {
       "$ref": "../openapi.json#/components/schemas/MicroRuntimeDescriptor"
+    },
+    "extension_points": {
+      "type": "array",
+      "items": {
+        "$ref": "../openapi.json#/components/schemas/ExtensionPoint"
+      },
+      "minItems": 0,
+      "maxItems": 8,
+      "description": "可选宿主点；省略=无扩展，不回写旧清单或重算镜像/包摘要"
+    },
+    "extension_host": {
+      "$ref": "../openapi.json#/components/schemas/ExtensionHostDescriptor"
     }
   },
   "required": [
@@ -251,6 +289,34 @@
         "properties": {
           "plugin_id": {
             "maxLength": 113
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "extension_points": {
+            "minItems": 1
+          }
+        },
+        "required": [
+          "extension_points"
+        ]
+      },
+      "then": {
+        "required": [
+          "extension_host"
+        ],
+        "properties": {
+          "extension_host": {
+            "properties": {
+              "host_kinds": {
+                "contains": {
+                  "const": "ordinary"
+                }
+              }
+            }
           }
         }
       }

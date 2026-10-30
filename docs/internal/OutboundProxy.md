@@ -10,7 +10,7 @@
 
 期限上限：4000ms。事务：发送前事务锁Call冻结计划/seq/alias并记录；网络不持有数据库长事务；结果短事务落账。
 
-从实际委托导出受控微Call，逐请求核查绑定/Secret/出口；固定HTTPS模板注入密钥，拒绝任意URL/headers；相同seq重放已有结果，unknown封锁Call并覆盖脚本成功结果。
+从实际委托导出受控微Call，逐请求核查绑定/Secret/出口；固定HTTPS模板注入密钥，拒绝任意URL/headers；相同seq重放已有结果，unknown封锁Call并覆盖脚本成功结果。 每次真实发送前再次读取当前micro_deployment.enabled/network_enabled/generation，与原Call冻结代次相同才允许；false为PERMISSION_DENIED(violations.field=network_enabled)，不消耗sequence、不fallback；已发送但结果未知仍按sticky unknown，不虚构撤回。
 
 | 输入字段 | 类型 | 语义 |
 |---|---|---|

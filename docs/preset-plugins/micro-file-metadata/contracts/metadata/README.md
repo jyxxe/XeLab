@@ -2,7 +2,7 @@
 
 [插件接口语义](../../interfaces.md) · [规划目录](../../../planned/README.md)
 
-> 规格版本：2.6.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
+> 规格版本：2.8.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
 
 能力 ID：`file.metadata`；操作目录：`metadata`。
 
@@ -59,4 +59,4 @@
 
 落地门槛：`declared-descriptor-library`、`verified-file-metadata-profile`；见[门槛说明](../../../planned/feature-gates.md)。
 
-四文件草案摘要：`sha256:2699c813743f72b1487fab365108b6eea2623d49ca70058fd2bb73aa9183938e`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。
+四文件草案摘要：`sha256:08048ca94ddc865c3a7af48a7a9b79eb503bd6077b3bb47ad66b787a712ed25c`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。

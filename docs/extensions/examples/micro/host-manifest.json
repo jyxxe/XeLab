@@ -1,0 +1,126 @@
+{
+  "format_version": "1",
+  "version": "1.1.0",
+  "description": "显式读取固定扩展数据的纯文本微宿主样例",
+  "engine": "javascript",
+  "protocol": "json-stdio-v1",
+  "entrypoint": "main.js",
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "minLength": 0,
+        "maxLength": 4096
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "additionalProperties": false
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "minLength": 0,
+        "maxLength": 4096
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "additionalProperties": false
+  },
+  "limits": {
+    "timeout_ms": 2000,
+    "heap_bytes": 16777216,
+    "stack_bytes": 1048576,
+    "maximum_input_bytes": 1048576,
+    "maximum_output_bytes": 1048576,
+    "maximum_stderr_bytes": 65536,
+    "max_active_requests": 1
+  },
+  "side_effect": "none",
+  "extension_points": [
+    {
+      "point_id": "text.rules",
+      "contract": {
+        "name": "example.text.rules",
+        "version": "1.0.0",
+        "schema_digest": "sha256:5333c5650605360d6e89df129d5e0dbdaf4b0f7244e3d0c4a72560fe87edf3f2"
+      },
+      "mode": "data",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "contribution_schema": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "prefix",
+              "uppercase-ascii"
+            ]
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "additionalProperties": false
+      },
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "additionalProperties": false
+      },
+      "side_effect": "none",
+      "maximum_timeout_ms": 2000,
+      "maximum_input_bytes": 1048576,
+      "maximum_output_bytes": 1048576,
+      "maximum_contributions": 16
+    }
+  ]
+}

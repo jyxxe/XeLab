@@ -11,10 +11,19 @@
 - [CapabilityService.Cancel](CapabilityService.Cancel.md)
 - [CapabilityService.QueryResult](CapabilityService.QueryResult.md)
 
+## ExtensionHostService
+
+[机器协议源文件](../contracts/proto/xelab/v1/extension.proto)
+
+- [ExtensionHostService.Prepare](ExtensionHostService.Prepare.md)
+- [ExtensionHostService.Invoke](ExtensionHostService.Invoke.md)
+- [ExtensionHostService.Release](ExtensionHostService.Release.md)
+
 ## HostService
 
 [机器协议源文件](../contracts/proto/xelab/v1/host.proto)
 
+- [HostService.AttachMicroWorker](HostService.AttachMicroWorker.md)
 - [HostService.ProxyHttp](HostService.ProxyHttp.md)
 - [HostService.ListSkillCandidates](HostService.ListSkillCandidates.md)
 - [HostService.ResolveSkill](HostService.ResolveSkill.md)

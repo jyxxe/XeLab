@@ -2,7 +2,7 @@
 
 [WebUI目录](README.md) · [开发者规范](../../plugins/ui-contributions.md) · [消息桥](../../communication/ui-bridge.md)
 
-> 规格版本：2.6.0；状态：待实现的规范。
+> 规格版本：2.8.0；状态：待实现的规范。
 
 插件开发者可以只实现业务Skill；需要图形界面时，在签名Manifest.ui添加window/widget贡献与静态路由。窗口的iframe模拟应用内容区，组件的iframe显示在桌面网格，两者使用同一协议。
 

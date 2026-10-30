@@ -2,7 +2,7 @@
 
 [文档总目录](../README.md)
 
-> 规格版本：2.6.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
+> 规格版本：2.8.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
 
 ## 输入与结果
 
@@ -29,3 +29,11 @@ HostService.Resolve 返回不透明 binding_id，不返回实例内网地址。�
 ## 微插件依赖边
 
 微版本固定runtime_installation_id，MicroDeployment固定普通runtime_deployment_id；内核检查Manifest.micro_runtime及engine/protocol，不将它混入普通capability依赖。runtime离线使微部署waiting_runtime，不阻塞核心就绪；升级不能把旧微版本自动改绑新OCI安装，详见[微插件控制器](../architecture/micro-plugins.md)。
+
+## 扩展宿主与统一依赖图
+
+ExtensionDeployment必须依赖一个精确宿主，类型ordinary/micro/extension恰选一项；宿主版本必须声明兼容的extension_point。扩展可再接受扩展，不隐含“依赖某类就兼容该类所有实例”。版本、部署、契约和摘要都由核心保存，不在业务输入中选择宿主。
+
+强依赖、micro→MPR、extension→宿主及固定handler Skill目标必须放入同一图检测自引用和跨类型环，完整链最多16层。宿主的基础Ready不反向依赖它已加载的扩展；不能用这种隐含反向边制造初始化死锁。宿主失效使扩展waiting_host，恢复仅重新绑定原精确链，不随机fallback到另一宿主。
+
+共享宿主资源计一次；扩展不会复制父CPU/内存、源凭证或数据权限。详见[扩展依赖和生命周期](../architecture/extension-plugins.md)。

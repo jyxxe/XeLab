@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "CreateMicroDeployment",
   "type": "object",
-  "description": "独立绑定版本与MPR父部署；初始关闭，绑定/预算修改需新建",
+  "description": "绑定不可变微版本、业务limits与父MPR；资源/联网设置可在停用排空后通过settings接口手动修改；缺省资源250m/256MiB，联网关闭",
   "properties": {
     "micro_version_id": {
       "type": "string",
@@ -22,6 +22,19 @@
     },
     "limits": {
       "$ref": "../openapi.json#/components/schemas/MicroExecutionLimits"
+    },
+    "resources": {
+      "$ref": "../openapi.json#/components/schemas/MicroResourceLimits",
+      "default": {
+        "cpu_millis": 250,
+        "memory_bytes": 268435456
+      },
+      "description": "省略整对象由核心填入默认值；显式对象必须同时给出CPU和内存"
+    },
+    "network_enabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "显式联网意图；true只允许已声明controlled-http-v1，仍须调用权限/HttpBinding/父egress；false拒绝HTTP profile Invoke与ProxyHttp"
     }
   },
   "required": [

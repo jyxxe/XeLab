@@ -9,7 +9,7 @@ HTTP handler 复用对应 operationId 的结构；下列为稳定模块协作边
 - [Delegator](Delegator.md)：1个方法
 - [Quota](Quota.md)：2个方法
 - [Admission](Admission.md)：2个方法
-- [Runtime](Runtime.md)：3个方法
+- [Runtime](Runtime.md)：7个方法
 - [Registry](Registry.md)：3个方法
 - [DependencyResolver](DependencyResolver.md)：1个方法
 - [Lifecycle](Lifecycle.md)：1个方法
@@ -23,3 +23,5 @@ HTTP handler 复用对应 operationId 的结构；下列为稳定模块协作边
 - [MicroController](MicroController.md)：1个方法
 - [MicroExecutor](MicroExecutor.md)：1个方法
 - [OutboundProxy](OutboundProxy.md)：1个方法
+- [ExtensionController](ExtensionController.md)：1个方法
+- [ExtensionExecutor](ExtensionExecutor.md)：1个方法

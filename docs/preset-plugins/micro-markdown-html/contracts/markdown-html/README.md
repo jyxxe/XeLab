@@ -2,7 +2,7 @@
 
 [插件接口语义](../../interfaces.md) · [规划目录](../../../planned/README.md)
 
-> 规格版本：2.6.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
+> 规格版本：2.8.0；状态：planned；业务契约版本：0.1.0。尚未发布为运行时能力或 Skill。
 
 能力 ID：`convert.markdown-html`；操作目录：`markdown-html`。
 
@@ -50,4 +50,4 @@
 
 落地门槛：`markdown-parser-library`、`html-sanitizer-library`；见[门槛说明](../../../planned/feature-gates.md)。
 
-四文件草案摘要：`sha256:a8e5ea48b5ec32d45c8e946a13c711df1adf5bcc31304e64416c499e7d37f572`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。
+四文件草案摘要：`sha256:bf44995c2bfe7de6cb38ba93d14b9e72545584f22584a8b70814c726a6aa38fe`。引用文件另在[规划契约目录](../../../planned-contracts.json)锁定；发布时必须打包引用闭包并重新计算正式摘要。

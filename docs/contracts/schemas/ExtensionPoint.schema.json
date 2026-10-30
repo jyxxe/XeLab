@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExtensionPoint",
+  "type": "object",
+  "description": "版本化宿主扩展点；data有声明式JSON适配器，skill仅调用固定获准处理器；点内Schema与契约包摘要必须匹配",
+  "properties": {
+    "point_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "宿主不可变清单内唯一扩展点ID",
+      "pattern": "^[a-z][a-z0-9.-]+$"
+    },
+    "contract": {
+      "$ref": "../openapi.json#/components/schemas/ContractRef"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "data",
+        "skill"
+      ]
+    },
+    "input_schema": {
+      "$ref": "../openapi.json#/components/schemas/MicroBusinessSchema"
+    },
+    "output_schema": {
+      "$ref": "../openapi.json#/components/schemas/MicroBusinessSchema"
+    },
+    "contribution_schema": {
+      "$ref": "../openapi.json#/components/schemas/MicroBusinessSchema"
+    },
+    "config_schema": {
+      "$ref": "../openapi.json#/components/schemas/MicroBusinessSchema"
+    },
+    "side_effect": {
+      "type": "string",
+      "enum": [
+        "none",
+        "idempotent",
+        "non_repeatable"
+      ],
+      "description": "宿主点及原业务契约允许的副作用分类；处理器不得比宿主点/根profile更宽，idempotent须有可靠结果账本"
+    },
+    "maximum_timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 30000,
+      "description": "包含宿主、处理器、排队及完整扩展链的总期限上限",
+      "default": 2000
+    },
+    "maximum_input_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576,
+      "description": "",
+      "default": 1048576
+    },
+    "maximum_output_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576,
+      "description": "",
+      "default": 1048576
+    },
+    "maximum_contributions": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 128,
+      "description": "同一点最大活跃贡献数量，按priority/UUID稳定排序",
+      "default": 16
+    }
+  },
+  "required": [
+    "point_id",
+    "contract",
+    "mode",
+    "input_schema",
+    "output_schema",
+    "contribution_schema",
+    "config_schema",
+    "side_effect",
+    "maximum_timeout_ms",
+    "maximum_input_bytes",
+    "maximum_output_bytes",
+    "maximum_contributions"
+  ],
+  "additionalProperties": false
+}

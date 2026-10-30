@@ -2,7 +2,7 @@
 
 [网页搜索目录](README.md) · [绑定配置](configuration.md) · [输出契约](../../skills/web-search/README.md)
 
-> 规格版本：2.6.0；状态：待实现的适配器设计。官方接口核对日期：2026-10-29。
+> 规格版本：2.8.0；状态：待实现的适配器设计。官方接口核对日期：2026-10-29。
 
 `http_endpoints`随不可变微版本发布。绑定只能从声明中选择端点；不能指定通配host、自定义base_url、路径后缀或认证模板。业务输入只接受`query`和`limit`，不得透传未知provider参数。
 
@@ -66,8 +66,10 @@ payload_schema是禁止附加字段的对象，包含以下字段；常量字段
 
 ## 网络与凭证边界
 
+MPR 1.2.0下微部署network_enabled出厂为false。必须在停用、disabled且排空后手动打开；开关true还须controlled-http-v1、当前权限、固定HttpBinding和平台策略共同允许。Invoke在false时于worker创建/发送前返回PERMISSION_DENIED（violations.field=network_enabled），不以无服务商或fallback继续请求。
+
 代理逐连接校验HTTPS证书、DNS解析结果和实际目标IP。拒绝回环、链路本地、宿主、元数据和未授权内部网络地址，不允许重定向；即使上游返回新的Location或callback URL也不跟随。
 
-脚本只能提交匹配相应payload_schema的值，不能添加请求头或覆盖代理编码。代理根据冻结绑定找Secret，发送前重新检查当前撤销状态；原始凭证仅在受信代理内短暂使用，不交给MPR监督器或VM。
+脚本只能提交匹配相应payload_schema的值，不能添加请求头或覆盖代理编码。代理根据冻结绑定找Secret，每次发送前重新检查network_enabled、enabled/generation及当前撤销状态；原始凭证仅在受信代理内短暂使用，不交给MPR监督器或VM。开关不提供任意fetch/socket。
 
 认证头不会转发到任何结果URL；插件诊断和幂等缓存不得记录注入后的请求。上游返回的HTML或摘要在WebUI中按文本显示，不能作为可信脚本执行。

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MicroResourceLimits",
+  "type": "object",
+  "description": "同一微部署全部活动worker合计的cgroup CPU/内存硬限制，不是JS heap或每Call复制预算；由处理器在创建时补齐整对象缺省值",
+  "properties": {
+    "cpu_millis": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 8000,
+      "default": 250,
+      "description": "1000m=1vCPU；cpu.max周期100000us、quota=cpu_millis×100us，聚合同部署所有worker"
+    },
+    "memory_bytes": {
+      "type": "integer",
+      "minimum": 67108864,
+      "maximum": 17179869184,
+      "default": 268435456,
+      "description": "总memory.max，默认256MiB；含worker引擎/堆/栈/代码/I/O/内核计费，不含父共享制品缓存与监督器"
+    }
+  },
+  "required": [
+    "cpu_millis",
+    "memory_bytes"
+  ],
+  "additionalProperties": false
+}

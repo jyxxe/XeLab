@@ -2,7 +2,7 @@
 
 [对象存储目录](README.md) · [Skill目录](../../skills/object-storage/README.md) · [存储与一致性](storage.md)
 
-> 规格版本：2.6.0；状态：设计契约，尚未实现。
+> 规格版本：2.8.0；状态：设计契约，尚未实现。
 
 所有业务使用`POST /api/platform/v1/skills/{skill_id}/calls`；skill_id为固定版本注册所得UUID，结果位于`SkillCallResult.call.output`。以下接口不表示另开未认证的文件HTTP路径。
 

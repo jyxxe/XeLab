@@ -2,7 +2,7 @@
 
 [WebUI目录](README.md) · [核心batch协议](../../skills/batches.md)
 
-> 规格版本：2.6.0；状态：待实现的规范。
+> 规格版本：2.8.0；状态：待实现的规范。
 
 批量embedding、行导入/删除、多个表达式查询和有界索引更新默认提交异步batch。表单展示项目数、每项粒度、目标固定Skill、并行度、失败策略及执行身份；默认max_parallel=1，failure_policy=continue。
 

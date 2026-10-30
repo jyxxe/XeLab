@@ -1,0 +1,84 @@
+{
+  "format_version": "1",
+  "version": "1.0.0",
+  "description": "声明式前缀规则，并提供下一层处理器扩展点",
+  "host_kind": "ordinary",
+  "point_id": "text.rules",
+  "contract": {
+    "name": "example.text.rules",
+    "version": "1.0.0",
+    "schema_digest": "sha256:5333c5650605360d6e89df129d5e0dbdaf4b0f7244e3d0c4a72560fe87edf3f2"
+  },
+  "mode": "data",
+  "extension_points": [
+    {
+      "point_id": "text.handler",
+      "contract": {
+        "name": "example.text.handler",
+        "version": "1.0.0",
+        "schema_digest": "sha256:50bc8b7cf1346d6c0e2a9eefb274a33a6756c84dc97eef9adb1a431278177119"
+      },
+      "mode": "skill",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "contribution_schema": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "additionalProperties": false
+      },
+      "config_schema": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "additionalProperties": false
+      },
+      "side_effect": "none",
+      "maximum_timeout_ms": 2000,
+      "maximum_input_bytes": 1048576,
+      "maximum_output_bytes": 1048576,
+      "maximum_contributions": 16
+    }
+  ]
+}

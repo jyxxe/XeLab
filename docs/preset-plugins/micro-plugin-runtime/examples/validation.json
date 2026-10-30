@@ -720,5 +720,233 @@
       ]
     },
     "valid": false
+  },
+  {
+    "name": "micro-resource-default",
+    "schema": "MicroResourceLimits",
+    "value": {
+      "cpu_millis": 250,
+      "memory_bytes": 268435456
+    },
+    "valid": true
+  },
+  {
+    "name": "micro-resource-manual",
+    "schema": "MicroResourceLimits",
+    "value": {
+      "cpu_millis": 500,
+      "memory_bytes": 536870912
+    },
+    "valid": true
+  },
+  {
+    "name": "micro-resource-cpu-zero",
+    "schema": "MicroResourceLimits",
+    "value": {
+      "cpu_millis": 0,
+      "memory_bytes": 268435456
+    },
+    "valid": false
+  },
+  {
+    "name": "micro-resource-fractional-mcpu",
+    "schema": "MicroResourceLimits",
+    "value": {
+      "cpu_millis": 0.25,
+      "memory_bytes": 268435456
+    },
+    "valid": false
+  },
+  {
+    "name": "micro-resource-missing-memory",
+    "schema": "MicroResourceLimits",
+    "value": {
+      "cpu_millis": 250
+    },
+    "valid": false
+  },
+  {
+    "name": "micro-resource-memory-too-small",
+    "schema": "MicroResourceLimits",
+    "value": {
+      "cpu_millis": 250,
+      "memory_bytes": 67108863
+    },
+    "valid": false
+  },
+  {
+    "name": "micro-resource-memory-too-large",
+    "schema": "MicroResourceLimits",
+    "value": {
+      "cpu_millis": 250,
+      "memory_bytes": 17179869185
+    },
+    "valid": false
+  },
+  {
+    "name": "micro-resource-cpu-too-large",
+    "schema": "MicroResourceLimits",
+    "value": {
+      "cpu_millis": 8001,
+      "memory_bytes": 268435456
+    },
+    "valid": false
+  },
+  {
+    "name": "micro-resource-heap-confusion",
+    "schema": "MicroResourceLimits",
+    "value": {
+      "cpu_millis": 250,
+      "memory_bytes": 268435456,
+      "heap_bytes": 268435456
+    },
+    "valid": false
+  },
+  {
+    "name": "micro-settings-offline",
+    "schema": "MicroDeploymentSettings",
+    "value": {
+      "resources": {
+        "cpu_millis": 250,
+        "memory_bytes": 268435456
+      },
+      "network_enabled": false
+    },
+    "valid": true
+  },
+  {
+    "name": "micro-settings-online-request",
+    "schema": "MicroDeploymentSettings",
+    "value": {
+      "resources": {
+        "cpu_millis": 250,
+        "memory_bytes": 268435456
+      },
+      "network_enabled": true
+    },
+    "valid": true
+  },
+  {
+    "name": "micro-settings-complete-required",
+    "schema": "MicroDeploymentSettings",
+    "value": {
+      "network_enabled": true
+    },
+    "valid": false
+  },
+  {
+    "name": "micro-settings-no-string-boolean",
+    "schema": "MicroDeploymentSettings",
+    "value": {
+      "resources": {
+        "cpu_millis": 250,
+        "memory_bytes": 268435456
+      },
+      "network_enabled": "true"
+    },
+    "valid": false
+  },
+  {
+    "name": "micro-settings-no-bind-change",
+    "schema": "MicroDeploymentSettings",
+    "value": {
+      "resources": {
+        "cpu_millis": 250,
+        "memory_bytes": 268435456
+      },
+      "network_enabled": false,
+      "micro_version_id": "00000000-0000-4000-8000-000000000001"
+    },
+    "valid": false
+  },
+  {
+    "name": "micro-settings-no-script",
+    "schema": "MicroDeploymentSettings",
+    "value": {
+      "resources": {
+        "cpu_millis": 250,
+        "memory_bytes": 268435456
+      },
+      "network_enabled": false,
+      "source": "fetch()"
+    },
+    "valid": false
+  },
+  {
+    "name": "micro-settings-no-limit-change",
+    "schema": "MicroDeploymentSettings",
+    "value": {
+      "resources": {
+        "cpu_millis": 250,
+        "memory_bytes": 268435456
+      },
+      "network_enabled": false,
+      "limits": {}
+    },
+    "valid": false
+  },
+  {
+    "name": "micro-create-explicit-resource-offline",
+    "schema": "CreateMicroDeployment",
+    "value": {
+      "micro_version_id": "00000000-0000-4000-8000-000000000002",
+      "runtime_deployment_id": "00000000-0000-4000-8000-000000000006",
+      "limits": {
+        "timeout_ms": 2000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 1
+      },
+      "resources": {
+        "cpu_millis": 250,
+        "memory_bytes": 268435456
+      },
+      "network_enabled": false
+    },
+    "valid": true
+  },
+  {
+    "name": "micro-create-omitted-server-defaults",
+    "schema": "CreateMicroDeployment",
+    "value": {
+      "micro_version_id": "00000000-0000-4000-8000-000000000002",
+      "runtime_deployment_id": "00000000-0000-4000-8000-000000000006",
+      "limits": {
+        "timeout_ms": 2000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 1
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "micro-create-network-bool-only",
+    "schema": "CreateMicroDeployment",
+    "value": {
+      "micro_version_id": "00000000-0000-4000-8000-000000000002",
+      "runtime_deployment_id": "00000000-0000-4000-8000-000000000006",
+      "limits": {
+        "timeout_ms": 2000,
+        "heap_bytes": 16777216,
+        "stack_bytes": 1048576,
+        "maximum_input_bytes": 1048576,
+        "maximum_output_bytes": 1048576,
+        "maximum_stderr_bytes": 65536,
+        "max_active_requests": 1
+      },
+      "resources": {
+        "cpu_millis": 250,
+        "memory_bytes": 268435456
+      },
+      "network_enabled": "yes"
+    },
+    "valid": false
   }
 ]
