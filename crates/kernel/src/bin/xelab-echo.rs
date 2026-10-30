@@ -1,3 +1,4 @@
+#![allow(clippy::result_large_err)] // Tonic service trait signatures.
 use std::{sync::{Arc,atomic::{AtomicBool,Ordering}},path::PathBuf};
 use tokio::sync::RwLock;
 use tonic::{Request,Response,Status};
@@ -20,10 +21,11 @@ use xelab_kernel::{contracts::{digest,strict_json},rpc::{self,plugin_lifecycle_s
 }
 
 #[tokio::main]async fn main()->Result<(),Box<dyn std::error::Error>>{
+    xelab_kernel::init_crypto();
     let echo=Echo{manifest:Arc::new(std::fs::read("/xelab/plugin.json")?),generation:std::env::var("XELAB_GENERATION")?.parse()?,initialized:Arc::new(AtomicBool::new(false)),draining:Arc::new(AtomicBool::new(false)),results:Default::default()};
     loop{
         let cert=std::fs::read(PathBuf::from(std::env::var("XELAB_TLS_CERT_PATH")?))?;let key=std::fs::read(std::env::var("XELAB_TLS_KEY_PATH")?)?;let ca=std::fs::read(std::env::var("XELAB_TLS_CA_PATH")?)?;
         let tls=tonic::transport::ServerTlsConfig::new().identity(tonic::transport::Identity::from_pem(cert,key)).client_ca_root(tonic::transport::Certificate::from_pem(ca));
-        tonic::transport::Server::builder().tls_config(tls)?.add_service(PluginLifecycleServer::with_interceptor(echo.clone(),require_kernel)).add_service(CapabilityServiceServer::with_interceptor(echo.clone(),require_kernel)).serve_with_shutdown("0.0.0.0:7000".parse()?,async{tokio::time::sleep(std::time::Duration::from_secs(1800)).await;}).await?;
+        tonic::transport::Server::builder().tls_config(tls)?.add_service(PluginLifecycleServer::with_interceptor(echo.clone(),require_kernel)).add_service(CapabilityServiceServer::with_interceptor(echo.clone(),require_kernel)).serve_with_shutdown("0.0.0.0:7000".parse()?,async{tokio::time::sleep(std::time::Duration::from_secs(300)).await;}).await?;
     }
 }

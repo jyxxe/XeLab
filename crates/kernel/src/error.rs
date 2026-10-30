@@ -13,6 +13,7 @@ pub struct Error {
     pub code: &'static str,
     pub message: &'static str,
     pub status: StatusCode,
+    pub resource_id: Option<String>,
 }
 
 impl Error {
@@ -21,6 +22,7 @@ impl Error {
             code,
             message,
             status,
+            resource_id: None,
         }
     }
     pub fn invalid(message: &'static str) -> Self {
@@ -60,8 +62,9 @@ impl Error {
             StatusCode::SERVICE_UNAVAILABLE,
         )
     }
+    pub fn with_resource(mut self, id: impl ToString) -> Self { self.resource_id=Some(id.to_string()); self }
     pub fn detail(&self) -> Value {
-        json!({"code":self.code,"message":self.message,"retryable":false,"violations":[],"retry_after_ms":null})
+        json!({"code":self.code,"message":self.message,"retryable":false,"violations":[],"retry_after_ms":null,"resource_id":self.resource_id})
     }
 }
 impl std::fmt::Display for Error {

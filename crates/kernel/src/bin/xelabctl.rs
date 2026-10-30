@@ -10,7 +10,7 @@ use xelab_kernel::{auth,config::{Config,read_private,require_host_admin},contrac
     Bootstrap{#[arg(long)]config:PathBuf,#[arg(long)]owner_name:String},
     Api{operation_id:String,#[arg(long)]endpoint:String,#[arg(long)]token_file:Option<PathBuf>,#[arg(long)]ca_file:Option<PathBuf>,#[arg(long)]body_file:Option<String>,#[arg(long="path")]path:Vec<String>,#[arg(long="query")]query:Vec<String>,#[arg(long)]if_match:Option<String>,#[arg(long)]idempotency_key:Option<String>,#[arg(long,default_value_t=60000)]timeout_ms:u64},
 }
-#[tokio::main]async fn main(){if let Err(e)=run(Args::parse()).await{eprintln!("{e}");std::process::exit(match e.status.as_u16(){400|413|415=>2,401=>3,403=>4,409|412|428=>5,504=>6,429|503=>7,_=>8});}}
+#[tokio::main]async fn main(){xelab_kernel::init_crypto();if let Err(e)=run(Args::parse()).await{eprintln!("{e}");std::process::exit(match e.status.as_u16(){400|413|415=>2,401=>3,403=>4,409|412|428=>5,504=>6,429|503=>7,_=>8});}}
 fn read_body(path:&str,limit:usize)->Result<Vec<u8>>{let mut bytes=Vec::new();if path=="-"{io::stdin().take(limit as u64+1).read_to_end(&mut bytes)?;}else{std::fs::File::open(path)?.take(limit as u64+1).read_to_end(&mut bytes)?;}if bytes.len()>limit{return Err(Error::invalid("Input exceeds its limit"));}Ok(bytes)}
 async fn run(args:Args)->Result<()> {
     match args.command{
@@ -28,7 +28,7 @@ async fn run(args:Args)->Result<()> {
             if let Some(path)=body_file{let bytes=read_body(&path,4194304)?;strict_json(&bytes,4194304)?;request=request.header("content-type","application/json").body(bytes);}
             if let Some(value)=if_match{request=request.header("if-match",value);}
             if op["parameters"].as_array().unwrap().iter().any(|p|p["name"]=="Idempotency-Key"){request=request.header("idempotency-key",idempotency_key.unwrap_or_else(||uuid::Uuid::new_v4().to_string()));}
-            let response=request.send().await.map_err(|_|Error::unavailable("HTTP request failed; operation outcome may need inspection"))?;let status=response.status();if response.content_length().is_some_and(|n|n>16777216){return Err(Error::invalid("HTTP response exceeds its limit"));}let body=response.bytes().await.map_err(|_|Error::unavailable("HTTP response was interrupted"))?;if body.len()>16777216{return Err(Error::invalid("HTTP response exceeds its limit"));}
+            let mut response=request.send().await.map_err(|_|Error::unavailable("HTTP request failed; operation outcome may need inspection"))?;let status=response.status();if response.content_length().is_some_and(|n|n>16777216){return Err(Error::invalid("HTTP response exceeds its limit"));}let mut body=Vec::new();while let Some(chunk)=response.chunk().await.map_err(|_|Error::unavailable("HTTP response was interrupted"))?{if body.len()+chunk.len()>16777216{return Err(Error::invalid("HTTP response exceeds its limit"));}body.extend_from_slice(&chunk);}
             if !body.is_empty(){let value:Value=serde_json::from_slice(&body)?;println!("{}",serde_json::to_string_pretty(&value)?);}
             if !status.is_success(){return Err(Error::new("HTTP_ERROR","Server rejected the operation",axum::http::StatusCode::from_u16(status.as_u16()).unwrap()));}
         },

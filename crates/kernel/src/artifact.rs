@@ -162,7 +162,7 @@ pub fn validate_profile(manifest: &Value) -> Result<()> {
             "Artifact does not support this host platform",
         ));
     }
-    crate::contracts::reject_refs(&manifest["config_schema"])?;
+    crate::contracts::compile_business(&manifest["config_schema"])?;
     for cap in manifest["capabilities"].as_array().unwrap() {
         if cap["side_effect"] != "none" || !cap["stream_item_schema"].is_null() {
             return Err(Error::invalid(
@@ -170,7 +170,7 @@ pub fn validate_profile(manifest: &Value) -> Result<()> {
             ));
         }
         for key in ["input_schema", "output_schema"] {
-            crate::contracts::reject_refs(&cap[key])?;
+            crate::contracts::compile_business(&cap[key])?;
         }
     }
     Ok(())

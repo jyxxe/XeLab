@@ -95,8 +95,11 @@ impl Auth {
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.key).unwrap();
         mac.update(token.as_bytes());
         mac.verify_slice(&stored).map_err(|_| Error::credential())?;
+        self.resume(c, r.get("id"), peer, request).await
+    }
+    pub(crate) async fn resume(&self, c: &impl GenericClient, credential: Uuid, peer: IpAddr, request: Uuid) -> Result<Context> {
+        let r = c.query_opt("SELECT owner_id FROM credentials WHERE id=$1 FOR SHARE", &[&credential]).await?.ok_or_else(Error::credential)?;
         let subject: Uuid = r.get("owner_id");
-        let credential: Uuid = r.get("id");
         let mut chain = Vec::new();
         let mut cursor = Some(credential);
         let mut seen = HashSet::new();
@@ -152,6 +155,23 @@ impl Auth {
         }
         Ok(())
     }
+    fn login_succeeded(&self, account: Uuid, peer: IpAddr) -> Result<()> {
+        let mut state = self.failures.lock().map_err(|_| Error::unavailable("Login limiter unavailable"))?;
+        for key in [format!("account:{account}"), format!("peer:{peer}")] {
+            if let Some((_, n)) = state.get_mut(&key) { *n = n.saturating_sub(1); }
+        }
+        Ok(())
+    }
+    #[allow(clippy::too_many_arguments)] // The delegation binds all of these independently checked identities.
+    pub(crate) async fn issue_rpc(&self, c: &impl GenericClient, ctx: &Context, call: Uuid, instance: Uuid, generation: i64, deadline: DateTime<Utc>) -> Result<String> {
+        let execution = Uuid::new_v4();
+        // The supported pure profile grants no HostService authority.
+        c.execute("INSERT INTO execution_delegations(id,subject_id,issuer_credential_id,maximum_rules,run_as,expires_at,status,created_at) VALUES($1,$2,$3,'[]','user',$4,'active',now())", &[&execution,&ctx.subject,&ctx.credential,&deadline]).await?;
+        c.execute("UPDATE calls SET delegation_id=$2 WHERE id=$1", &[&call,&execution]).await?;
+        let (token, hash) = self.random_token();
+        c.execute("INSERT INTO rpc_delegations(id,execution_delegation_id,subject_id,instance_id,generation,call_id,issuer_credential_id,hmac_key_id,verification_digest,expires_at,status,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active',now())", &[&Uuid::new_v4(),&execution,&ctx.subject,&instance,&generation,&call,&ctx.credential,&self.key_id.as_str(),&hash,&deadline]).await?;
+        Ok(token)
+    }
     pub async fn login(
         &self,
         c: &impl GenericClient,
@@ -189,6 +209,7 @@ impl Auth {
             c.execute("INSERT INTO audit_events(id,subject_id,request_id,action,resource,outcome,policy_revision,reason_code,created_at,updated_at) VALUES($1,$2,$3,'login',$4,'denied',1,'INVALID_CREDENTIAL',now(),now())",&[&Uuid::new_v4(),&subject,&request,&json!({"kind":"account","match":"ids","ids":[account]})]).await?;
             return Err(Error::credential());
         }
+        self.login_succeeded(account, peer)?;
         let (token, hash) = self.random_token();
         let id = Uuid::new_v4();
         let now = Utc::now();
@@ -223,7 +244,7 @@ pub fn password_hash(password: &str) -> Result<String> {
         .map_err(|_| Error::unavailable("Password hashing failed"))
 }
 
-async fn account_chain(c: &impl GenericClient, subject: Uuid) -> Result<Vec<Uuid>> {
+pub(crate) async fn account_chain(c: &impl GenericClient, subject: Uuid) -> Result<Vec<Uuid>> {
     let mut ids = Vec::new();
     let mut next = Some(subject);
     while let Some(id) = next {

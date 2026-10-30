@@ -301,6 +301,11 @@ async fn dispatch(
         return Err(error);
     }
     let result = match name {
+        "getCall" => {
+            let call = path_id(&params,"call_id")?;
+            let r=tx.query_one("SELECT state,result,error FROM calls WHERE id=$1", &[&call]).await?;
+            (json!({"call_id":call,"state":r.get::<_,String>(0),"result":r.get::<_,Option<Value>>(1),"error":r.get::<_,Option<Value>>(2)}),200)
+        }
         "getNode" => (admission::status(&tx).await?, 200),
         "getOperation" => (
             db::operation_value(&tx, path_id(&params, "operation_id")?).await?,
@@ -330,7 +335,7 @@ async fn dispatch(
                 &tx,
                 "kernel.install",
                 id,
-                &json!({"request":body,"credential_id":ctx.credential,"subject_id":ctx.subject}),
+                &json!({"request":body,"credential_id":ctx.credential,"subject_id":ctx.subject,"peer":peer.ip().to_string()}),
             )
             .await?;
             (db::operation_value(&tx, id).await?, 202)
@@ -396,6 +401,7 @@ async fn dispatch(
                 .query_one("SELECT * FROM deployments WHERE id=$1 FOR UPDATE", &[&id])
                 .await?;
             etag(&headers, row.get("revision"))?;
+            tx.execute("UPDATE operations SET state='failed',error=$2,revision=revision+1,updated_at=now() WHERE resource_id=$1 AND kind='setDeploymentEnabled' AND state IN ('pending','running')", &[&id.to_string(),&Error::conflict("Superseded by a newer deployment intent").detail()]).await?;
             let enabled = body["enabled"].as_bool().unwrap();
             let mut spec: Value = row.get("spec");
             if enabled && row.get::<_, Value>("approval") != json!({"rules":[],"egress":[]}) {
@@ -464,7 +470,9 @@ async fn dispatch(
                     &[&path_id(&params, "deployment_id")?],
                 )
                 .await?;
-            (row.get(0), 200)
+            let approval: Value = row.get(0);
+            if approval == json!({}) { return Err(Error::unavailable("Deployment has not been approved")); }
+            (approval, 200)
         }
         "revokePublisher" => {
             let id = path_id(&params, "publisher_id")?;
@@ -519,6 +527,7 @@ async fn dispatch(
     {
         validate(model, &result.0)?;
     }
+    if app.leader.is_closed() { return Err(Error::unavailable("Controller leadership is lost")); }
     tx.commit().await?;
     Ok(result)
 }
@@ -531,6 +540,11 @@ async fn authorize_operation(
     body: &Value,
 ) -> Result<()> {
     let (action, resource) = match name {
+        "getCall" => {
+            let id=path_id(params,"call_id")?;
+            let r=c.query_opt("SELECT owner_id FROM calls WHERE id=$1", &[&id]).await?.ok_or_else(Error::not_found)?;
+            ("capability.call.read",Resource::new("call",id,Some(r.get(0))))
+        }
         "getNode" => ("platform.read", Resource::new("platform", "node", None)),
         "trustPublisher" => (
             "publisher.trust",

@@ -25,6 +25,7 @@ struct Args {
 }
 #[tokio::main]
 async fn main() {
+    xelab_kernel::init_crypto();
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -36,17 +37,18 @@ async fn main() {
 }
 async fn start(args: Args) -> Result<()> {
     require_host_admin()?;
-    let config = Config::load(&args.config)?;
+    let mut config = Config::load(&args.config)?;
     let (dsn, key) = config.secrets()?;
     let db = Db::new(dsn)?;
     db.check().await?;
     let leader = Arc::new(db.leader().await?);
-    let runtime = Runtime::new(config.clone());
     let (cpu, memory) = admission::host_capacity()?;
     let mut c = db.connect().await?;
     let tx = c.transaction().await?;
     admission::initialize(&tx, &config.value["resources"], cpu, memory).await?;
     tx.commit().await?;
+    config.value["resources"] = c.query_one("SELECT config FROM node_budget", &[]).await?.get(0);
+    let runtime = Runtime::new(config.clone());
     runtime.preflight(cpu, memory).await?;
     tls::issue(&config, None, &config.root().join("kernel-identity"))?;
     let auth = Auth::new(key)?;

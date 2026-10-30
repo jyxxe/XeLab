@@ -52,13 +52,18 @@ pub fn validate(name: &str, input: &Value) -> Result<()> {
     }
 }
 
-pub fn validate_business(schema: &Value, input: &Value) -> Result<()> {
+pub fn compile_business(schema: &Value) -> Result<jsonschema::JSONSchema> {
     reject_refs(schema)?;
     let compiled = jsonschema::JSONSchema::options()
         .with_draft(jsonschema::Draft::Draft202012)
         .should_validate_formats(true)
         .compile(schema)
         .map_err(|_| Error::invalid("Invalid business schema"))?;
+    Ok(compiled)
+}
+
+pub fn validate_business(schema: &Value, input: &Value) -> Result<()> {
+    let compiled = compile_business(schema)?;
     if compiled.is_valid(input) {
         Ok(())
     } else {

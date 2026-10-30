@@ -25,7 +25,6 @@ impl Db {
                     if h.parse::<std::net::IpAddr>()
                         .is_ok_and(|ip| ip.is_loopback()) =>
                 {
-                    ()
                 }
                 tokio_postgres::config::Host::Unix(_) => (),
                 _ => {
@@ -124,6 +123,7 @@ pub fn project(row: &Row, fields: &[&str]) -> Result<Value> {
     Ok(out)
 }
 
+#[allow(clippy::too_many_arguments)] // Audit fields mirror the immutable event envelope.
 pub async fn audit(
     c: &impl GenericClient,
     subject: Uuid,

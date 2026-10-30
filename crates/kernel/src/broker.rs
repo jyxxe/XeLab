@@ -1,6 +1,6 @@
 use crate::{
     api::App,
-    auth::{authorize, Resource},
+    auth::{account_chain, authorize, Resource},
     contracts::{digest, id, strict_json, string, validate, validate_business},
     controller, db,
     error::{Error, Result},
@@ -27,13 +27,17 @@ pub async fn invoke(
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
     let ctx = app.auth.authenticate(&tx, token, peer, request_id).await?;
-    authorize(
+    let authorization = authorize(
         &tx,
         &ctx,
         "capability.invoke",
         &Resource::new("capability", format!("{name}@{version}"), None),
     )
-    .await?;
+    .await;
+    if let Err(e) = authorization {
+        db::audit(&tx,ctx.subject,Some(ctx.credential),request_id,"capability.invoke",&Resource::new("capability",format!("{name}@{version}"),None).json(),"denied",e.code).await?;
+        tx.commit().await?; return Err(e);
+    }
     let fingerprint = digest(&serde_json::to_vec(input)?);
     let lock = format!("call:{}:{}:{key}", ctx.subject, ctx.credential);
     tx.query_one(
@@ -46,7 +50,7 @@ pub async fn invoke(
         let call_id=r.get::<_,Option<String>>("resource_id").and_then(|s|s.parse::<Uuid>().ok()).ok_or_else(||Error::conflict("Missing prior call"))?;
         let row=tx.query_one("SELECT state,result FROM calls WHERE id=$1",&[&call_id]).await?;
         if row.get::<_,String>("state")=="succeeded"{return row.get::<_,Option<Value>>("result").ok_or_else(||Error::conflict("Call result is unavailable"));}
-        return Err(Error::new("OUTCOME_UNKNOWN","Prior call is not a confirmed success; query its call ID",axum::http::StatusCode::CONFLICT));
+        return Err(Error::new("OUTCOME_UNKNOWN","Prior call is not a confirmed success; query its call ID",axum::http::StatusCode::CONFLICT).with_resource(call_id));
     }
     let cap = tx
         .query_opt(
@@ -90,30 +94,20 @@ pub async fn invoke(
     if active >= max {
         return Err(Error::exhausted());
     }
-    let quota = tx
-        .query_one(
-            "SELECT * FROM quotas WHERE account_id=$1 FOR UPDATE",
-            &[&ctx.subject],
-        )
-        .await?;
-    let q: Value = quota.get("spec");
+    let accounts = account_chain(&tx, ctx.subject).await?;
     let today = chrono::Utc::now().date_naive();
-    let daily = if quota.get::<_, chrono::NaiveDate>("daily_bucket") == today {
-        quota.get::<_, i64>("daily_calls_used")
-    } else {
-        0
-    };
-    if quota.get::<_, i64>("concurrent_calls_used")
-        >= q["maximum_concurrent_calls"].as_i64().unwrap()
-        || daily >= q["daily_calls"].as_i64().unwrap()
-    {
-        return Err(Error::exhausted());
+    for account in &accounts {
+        let quota = tx.query_one("SELECT * FROM quotas WHERE account_id=$1 FOR UPDATE", &[account]).await?;
+        let q: Value = quota.get("spec");
+        let daily = if quota.get::<_,chrono::NaiveDate>("daily_bucket")==today { quota.get::<_,i64>("daily_calls_used") } else { 0 };
+        if quota.get::<_,i64>("concurrent_calls_used") >= q["maximum_concurrent_calls"].as_i64().unwrap() || daily >= q["daily_calls"].as_i64().unwrap() { return Err(Error::exhausted()); }
+        tx.execute("UPDATE quotas SET concurrent_calls_used=concurrent_calls_used+1,daily_calls_used=$2+1,daily_bucket=$3 WHERE account_id=$1", &[account,&daily,&today]).await?;
     }
     let call = Uuid::new_v4();
     let timeout = input["timeout_ms"].as_u64().unwrap_or(30000);
     let deadline = chrono::Utc::now() + chrono::Duration::milliseconds(timeout as i64);
     tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,idempotency_key,state,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,'running',$8,now())",&[&call,&ctx.subject,&ctx.credential,&instance,&contract,&digest(&bytes),&key,&deadline]).await?;
-    tx.execute("UPDATE quotas SET concurrent_calls_used=concurrent_calls_used+1,daily_calls_used=$2+1,daily_bucket=$3 WHERE account_id=$1",&[&ctx.subject,&daily,&today]).await?;
+    let delegation = app.auth.issue_rpc(&tx,&ctx,call,instance,generation,deadline).await?;
     tx.execute("DELETE FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method='POST' AND path='/api/platform/v1/calls' AND key=$3 AND expires_at<=now()",&[&ctx.subject,&ctx.credential,&key]).await?;
     tx.execute("INSERT INTO idempotency_records(subject_id,credential_id,method,path,key,fingerprint,resource_id,expires_at,created_at) VALUES($1,$2,'POST','/api/platform/v1/calls',$3,$4,$5,now()+interval '24 hours',now())",&[&ctx.subject,&ctx.credential,&key,&fingerprint,&call.to_string()]).await?;
     tx.commit().await?;
@@ -122,6 +116,8 @@ pub async fn invoke(
         let channel = tls::channel(&app.config, instance, generation, &address).await?;
         let mut client = CapabilityServiceClient::new(channel).max_decoding_message_size(16778240);
         let mut context = controller::context(Some(ctx.subject));
+        context.request_id = ctx.request.to_string();
+        context.delegation_token = delegation;
         context.deadline_unix_ms = deadline.timestamp_millis();
         context.idempotency_key = key.to_owned();
         let mut request = tonic::Request::new(rpc::InvokeRequest {
@@ -163,6 +159,7 @@ pub async fn invoke(
                 axum::http::StatusCode::GATEWAY_TIMEOUT,
             ))
         });
+    if app.leader.is_closed() { return Err(Error::unavailable("Controller leadership is lost").with_resource(call)); }
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
     let check = async {
@@ -182,8 +179,13 @@ pub async fn invoke(
         Ok(v) => ("succeeded", Some(v.clone()), None),
         Err(e) => ("unknown", None, Some(e.detail())),
     };
-    tx.execute("UPDATE calls SET state=$2,result=$3,error=$4,completed_at=CASE WHEN $2='succeeded' THEN now() ELSE NULL END WHERE id=$1 AND state='running'",&[&call,&state,&value,&error]).await?;
-    tx.execute("UPDATE quotas SET concurrent_calls_used=greatest(0,concurrent_calls_used-1) WHERE account_id=$1",&[&ctx.subject]).await?;
+    let changed = tx.execute("UPDATE calls SET state=$2,result=$3,error=$4,completed_at=CASE WHEN $2='succeeded' THEN now() ELSE NULL END WHERE id=$1 AND state='running'",&[&call,&state,&value,&error]).await?;
+    if changed != 1 { return Err(Error::new("OUTCOME_UNKNOWN","Call was fenced by recovery",axum::http::StatusCode::CONFLICT).with_resource(call)); }
+    for account in &accounts {
+        tx.execute("UPDATE quotas SET concurrent_calls_used=greatest(0,concurrent_calls_used-1) WHERE account_id=$1", &[account]).await?;
+    }
+    tx.execute("UPDATE rpc_delegations SET status='revoked' WHERE call_id=$1", &[&call]).await?;
+    tx.execute("UPDATE execution_delegations SET status='revoked' WHERE id IN(SELECT delegation_id FROM calls WHERE id=$1)", &[&call]).await?;
     db::audit(
         &tx,
         ctx.subject,
@@ -204,5 +206,5 @@ pub async fn invoke(
     )
     .await?;
     tx.commit().await?;
-    result
+    result.map_err(|e|e.with_resource(call))
 }

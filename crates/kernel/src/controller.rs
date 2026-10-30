@@ -1,6 +1,7 @@
 use crate::{
     admission,
     api::App,
+    auth::{authorize, Resource},
     artifact::Artifact,
     contracts::{digest, strict_json},
     db,
@@ -38,17 +39,9 @@ pub async fn run(app: Arc<App>) {
             tracing::error!(reason_code = "LEADER_CONNECTION_LOST");
             break;
         }
-        if rotate.elapsed() > Duration::from_secs(1800) {
-            if tls::issue(
-                &app.config,
-                None,
-                &app.config.root().join("kernel-identity"),
-            )
-            .is_ok()
-            {
-                rotate = tokio::time::Instant::now();
-            }
-        }
+        if rotate.elapsed() > Duration::from_secs(1800)
+            && tls::issue(&app.config, None, &app.config.root().join("kernel-identity")).is_ok()
+        { rotate = tokio::time::Instant::now(); }
         match tick(&app, first).await {
             Ok(()) => {
                 first = false;
@@ -67,35 +60,18 @@ pub async fn run(app: Arc<App>) {
 async fn tick(app: &App, first: bool) -> Result<()> {
     let mut c = app.db.connect().await?;
     if first {
+        c.execute("UPDATE node_budget SET admission_enabled=false", &[]).await?;
+        c.execute("UPDATE provider_records SET availability='unavailable'", &[]).await?;
+        // A new controller must fence every old process before returning call slots.
+        // Stable instance IDs and their resource reservations survive this restart.
+        for id in app.runtime.inventory().await? { app.runtime.stop(id).await?; }
         let tx = c.transaction().await?;
-        tx.execute(
-            "UPDATE calls SET state='unknown',error=$1 WHERE state IN ('accepted','running')",
-            &[&Error::new(
-                "OUTCOME_UNKNOWN",
-                "Kernel restarted before the result was committed",
-                axum::http::StatusCode::CONFLICT,
-            )
-            .detail()],
-        )
-        .await?;
-        tx.execute("DELETE FROM reservations WHERE kind='call'", &[])
-            .await?;
-        tx.execute("UPDATE quotas SET concurrent_calls_used=0", &[])
-            .await?;
-        tx.execute(
-            "UPDATE provider_records SET availability='unavailable'",
-            &[],
-        )
-        .await?;
+        tx.execute("UPDATE calls SET state='unknown',error=$1 WHERE state IN ('accepted','running')", &[&Error::new("OUTCOME_UNKNOWN","Kernel restarted before the result was committed",axum::http::StatusCode::CONFLICT).detail()]).await?;
+        tx.execute("UPDATE rpc_delegations SET status='revoked' WHERE status='active'", &[]).await?;
+        tx.execute("UPDATE execution_delegations SET status='revoked' WHERE status='active'", &[]).await?;
+        tx.execute("UPDATE quotas SET concurrent_calls_used=0", &[]).await?;
+        tx.execute("UPDATE instances SET phase='pending',health='unknown',restart_count=0,revision=revision+1,updated_at=now() WHERE phase<>'stopped'", &[]).await?;
         tx.commit().await?;
-        for id in app.runtime.inventory().await? {
-            if c.query_opt("SELECT id FROM instances WHERE id=$1", &[&id])
-                .await?
-                .is_none()
-            {
-                app.runtime.stop(id).await?;
-            }
-        }
         c.execute(
             "UPDATE node_budget SET admission_enabled=true,revision=revision+1,updated_at=now()",
             &[],
@@ -108,6 +84,7 @@ async fn tick(app: &App, first: bool) -> Result<()> {
         let id: Uuid = r.get(0);
         if let Err(e) = reconcile(app, id).await {
             tracing::warn!(deployment_id=%id,reason_code=e.code,"Deployment is not ready");
+            c.execute("UPDATE provider_records SET availability='unavailable' WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)", &[&id]).await?;
             let phase = if e.code == "RESOURCE_EXHAUSTED" {
                 "waiting_resources"
             } else {
@@ -131,7 +108,7 @@ async fn process_installations(app: &App) -> Result<()> {
         let operation: Uuid = row.get(1);
         let payload: Value = row.get(2);
         let request = &payload["request"];
-        let result = install(app, request, operation).await;
+        let result = install(app, request, operation, &payload).await;
         let mut c = app.db.connect().await?;
         let tx = c.transaction().await?;
         db::complete(&tx, operation, result).await?;
@@ -145,7 +122,12 @@ async fn process_installations(app: &App) -> Result<()> {
     Ok(())
 }
 
-async fn install(app: &App, request: &Value, operation: Uuid) -> Result<Value> {
+async fn install(app: &App, request: &Value, operation: Uuid, payload: &Value) -> Result<Value> {
+    let credential = crate::contracts::id(payload, "credential_id")?;
+    let peer = payload["peer"].as_str().and_then(|x|x.parse().ok()).ok_or_else(Error::credential)?;
+    if app.leader.is_closed() { return Err(Error::unavailable("Controller leadership is lost")); }
+    let c = app.db.connect().await?;
+    app.auth.resume(&c, credential, peer, operation).await?;
     let publisher = crate::contracts::id(request, "publisher_id")?;
     let c = app.db.connect().await?;
     let row = c
@@ -168,7 +150,9 @@ async fn install(app: &App, request: &Value, operation: Uuid) -> Result<Value> {
     {
         return Err(Error::denied());
     }
+    let ctx = app.auth.resume(&tx, credential, peer, operation).await?;
     let plugin = artifact.manifest["plugin_id"].as_str().unwrap();
+    authorize(&tx, &ctx, "plugin.install", &Resource::new("plugin", plugin, Some(ctx.subject))).await?;
     let version = artifact.manifest["version"].as_str().unwrap();
     let existing=tx.query_opt("SELECT id,image_digest,manifest_digest FROM installations WHERE plugin_id=$1 AND version=$2 FOR UPDATE",&[&plugin,&version]).await?;
     let id = if let Some(r) = existing {
@@ -196,6 +180,8 @@ async fn install(app: &App, request: &Value, operation: Uuid) -> Result<Value> {
                 ));
             }
         }
+        id
+    };
         // The immutable full reference is retained in the operation result and a private, root-owned image index.
         tls::atomic_file(
             &app.config
@@ -206,14 +192,13 @@ async fn install(app: &App, request: &Value, operation: Uuid) -> Result<Value> {
             artifact.image.as_bytes(),
             0o600,
         )?;
-        id
-    };
     tx.execute(
         "UPDATE operations SET resource_id=$2 WHERE id=$1",
         &[&operation, &id.to_string()],
     )
     .await?;
     db::outbox(&tx, "installation.installed", id, &json!({})).await?;
+    if app.leader.is_closed() { return Err(Error::unavailable("Controller leadership is lost")); }
     tx.commit().await?;
     Ok(json!({"installation_id":id}))
 }
@@ -253,7 +238,7 @@ async fn reconcile(app: &App, deployment: Uuid) -> Result<()> {
             &[&deployment],
         )
         .await?;
-        finish_deployment_operations(&c, deployment).await?;
+        finish_deployment_operations(&c, deployment, false).await?;
         return Ok(());
     }
     if d.get::<_, Value>("approval") != json!({"rules":[],"egress":[]}) {
@@ -266,13 +251,11 @@ async fn reconcile(app: &App, deployment: Uuid) -> Result<()> {
     let generation: i64 = i.get("generation");
     let limits: Value = i.get("limits");
     let running = app.runtime.running(id).await?;
-    if !running && i.get::<_, String>("phase") == "ready" {
-        if i.get::<_, i32>("restart_count") >= 5 {
-            return Err(Error::unavailable("Instance exhausted its restart budget"));
-        }
-        let count = i.get::<_, i32>("restart_count") + 1;
-        c.execute("UPDATE instances SET restart_count=$2,phase='pending',health='unhealthy',updated_at=now(),revision=revision+1 WHERE id=$1",&[&id,&count]).await?;
-        tokio::time::sleep(Duration::from_secs(1u64 << ((count - 1) as u32))).await;
+    if !running {
+        let count = i.get::<_,i32>("restart_count");
+        if count >= 5 { return Err(Error::unavailable("Instance exhausted its restart budget; disable and enable to retry")); }
+        let since = (chrono::Utc::now()-i.get::<_,chrono::DateTime<chrono::Utc>>("updated_at")).num_seconds();
+        if count > 0 && since < (1i64 << count.min(5)) { return Err(Error::unavailable("Instance restart backoff is active")); }
     }
     let mut dbc = app.db.connect().await?;
     let tx = dbc.transaction().await?;
@@ -286,6 +269,9 @@ async fn reconcile(app: &App, deployment: Uuid) -> Result<()> {
             .join(&sha[7..])
             .with_extension("reference"),
     )?;
+    if !running {
+        c.execute("UPDATE instances SET restart_count=restart_count+1,phase='starting',health='unknown',updated_at=now(),revision=revision+1 WHERE id=$1", &[&id]).await?;
+    }
     let obs = app
         .runtime
         .ensure(id, deployment, generation, &manifest, &image, &sha, &limits)
@@ -295,6 +281,7 @@ async fn reconcile(app: &App, deployment: Uuid) -> Result<()> {
     }
     let channel = tls::channel(&app.config, id, generation, &obs.address).await?;
     let mut client = PluginLifecycleClient::new(channel);
+    if !running || i.get::<_,String>("phase") != "ready" {
     let description = client
         .describe(rpc::DescribeRequest {
             context: Some(context(None)),
@@ -323,6 +310,7 @@ async fn reconcile(app: &App, deployment: Uuid) -> Result<()> {
         .into_inner();
     if !initialized.initialized || initialized.observed_generation != generation as u64 {
         return Err(Error::conflict("Plugin initialization generation differs"));
+    }
     }
     let health = client
         .get_health(rpc::HealthRequest {
@@ -366,8 +354,9 @@ async fn reconcile(app: &App, deployment: Uuid) -> Result<()> {
     let phase = if all_ready { "ready" } else { "degraded" };
     tx.execute("UPDATE instances SET phase=$2,health='alive',runtime_id=$3,last_heartbeat_at=now(),updated_at=now() WHERE id=$1",&[&id,&phase,&id.to_string()]).await?;
     tx.execute("UPDATE deployments SET phase=$2,observed_generation=$3,conditions='[]',updated_at=now() WHERE id=$1",&[&deployment,&phase,&generation]).await?;
+    if app.leader.is_closed() { return Err(Error::unavailable("Controller leadership is lost")); }
     if all_ready {
-        finish_deployment_operations(&tx, deployment).await?;
+        finish_deployment_operations(&tx, deployment, true).await?;
     }
     tx.commit().await?;
     Ok(())
@@ -376,7 +365,8 @@ async fn reconcile(app: &App, deployment: Uuid) -> Result<()> {
 async fn finish_deployment_operations(
     c: &impl tokio_postgres::GenericClient,
     id: Uuid,
+    enabled: bool,
 ) -> Result<()> {
-    c.execute("UPDATE operations SET state='succeeded',progress_percent=100,result=$2,updated_at=now(),revision=revision+1 WHERE resource_id=$1 AND kind IN ('createDeployment','setDeploymentEnabled') AND state IN ('pending','running')",&[&id.to_string(),&json!({"deployment_id":id})]).await?;
+    c.execute("UPDATE operations SET state='succeeded',progress_percent=100,result=$2,updated_at=now(),revision=revision+1 WHERE resource_id=$1 AND kind IN ('createDeployment','setDeploymentEnabled') AND state IN ('pending','running') AND EXISTS(SELECT 1 FROM deployments WHERE id=$3 AND (spec->>'enabled')::boolean=$4)",&[&id.to_string(),&json!({"deployment_id":id}),&id,&enabled]).await?;
     Ok(())
 }
