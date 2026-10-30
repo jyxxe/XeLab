@@ -21,6 +21,7 @@
 | 实现运行/恢复 | [资源](runtime/README.md)、[对账](architecture/reconciliation.md)、[任务](tasks/README.md) |
 | 部署或排障 | [配置](operations/configuration.md)、[CLI](operations/cli.md)、[运维](operations/README.md) |
 | 开始开发/验收 | [里程碑](implementation/roadmap.md)、[验收](implementation/acceptance.md)、[变更规则](implementation/change-policy.md) |
+| 制定3.0实施范围 | [3.0产品架构与演进规划](roadmap/xelab-3.0-plan.md)（规划建议，非实现状态） |
 
 ## 目录结构
 
