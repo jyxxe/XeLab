@@ -27,11 +27,37 @@ impl Runtime{
     pub async fn ctr(&self,args:&[String])->Result<Vec<u8>>{
         let mut all=strs(&["--address",self.config.text("runtime","socket"),"--namespace",self.config.text("runtime","namespace")]);all.extend_from_slice(args);command("ctr",&all,Duration::from_secs(60)).await
     }
+    pub fn host_lease(&self) -> Result<fs::File> {
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::fd::AsRawFd;
+        require_host_admin()?;
+        let directory=Path::new("/run/xelab");
+        fs::create_dir_all(directory)?;
+        let meta=directory.symlink_metadata()?;
+        if meta.file_type().is_symlink() || meta.uid()!=0 || meta.mode()&0o022!=0 {return Err(Error::invalid("Unsafe host lease directory"));}
+        let file=fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).custom_flags(libc::O_NOFOLLOW|libc::O_CLOEXEC).open(directory.join("kernel.lock"))?;
+        let meta=file.metadata()?;
+        if !meta.is_file() || meta.uid()!=0 || meta.nlink()!=1 || meta.mode()&0o077!=0 {return Err(Error::invalid("Unsafe host lease file"));}
+        // The descriptor remains alive until all runtime work has been canceled.
+        if unsafe {libc::flock(file.as_raw_fd(),libc::LOCK_EX|libc::LOCK_NB)} != 0 {return Err(Error::conflict("Another kernel owns this host"));}
+        Ok(file)
+    }
     pub async fn preflight(&self,cpu:i64,memory:i64)->Result<()> {
         require_host_admin()?;admission::pool(&self.config.value["resources"],cpu,memory)?;
         for name in ["ctr","ip","nft"]{binary(name)?;}
         if !fs::read_to_string("/sys/fs/cgroup/cgroup.controllers")?.split_whitespace().any(|x|x=="memory"){return Err(Error::unavailable("cgroups v2 memory controller is unavailable"));}
         self.ctr(&strs(&["version"])).await?;
+        let network: ipnet::Ipv4Net = self.config.text("runtime","network_cidr").parse().map_err(|_|Error::invalid("Invalid network"))?;
+        let routes = strict_json(&command("ip",&strs(&["-j","-4","route","show","table","all"]),Duration::from_secs(10)).await?,2097152)?;
+        for route in routes.as_array().ok_or_else(||Error::unavailable("Invalid host routes"))? {
+            if route["dev"].as_str().is_some_and(|d|d.starts_with("xh")) {continue;}
+            if let Some(destination)=route["dst"].as_str().filter(|d|*d!="default") {
+                let value=if destination.contains('/') {destination.to_owned()} else {format!("{destination}/32")};
+                if let Ok(other)=value.parse::<ipnet::Ipv4Net>() {
+                    if network.contains(&other.network()) || other.contains(&network.network()) {return Err(Error::conflict("Plugin CIDR overlaps a host route"));}
+                }
+            }
+        }
         fs::create_dir_all(self.config.root())?;fs::set_permissions(self.config.root(),fs::Permissions::from_mode(0o700))?;
         let root=Path::new("/sys/fs/cgroup/xelab");fs::create_dir_all(root)?;
         fs::write("/sys/fs/cgroup/cgroup.subtree_control","+cpu +memory +pids")?;
@@ -85,7 +111,7 @@ impl Runtime{
         let h=v["host"].as_str().ok_or_else(||Error::invalid("Invalid network state"))?;let p=v["peer"].as_str().ok_or_else(||Error::invalid("Invalid network state"))?;
         h.parse::<Ipv4Addr>().map_err(|_|Error::invalid("Invalid network state"))?;p.parse::<Ipv4Addr>().map_err(|_|Error::invalid("Invalid network state"))?;
         let rpc:std::net::SocketAddr=self.config.text("server","host_rpc_listen").parse().unwrap();
-        let nft=format!("table inet xl_{} {{\n chain ingress {{ type filter hook input priority -20; policy accept; iifname \"{host}\" ct state established,related accept; iifname \"{host}\" ip daddr {} tcp dport {} accept; iifname \"{host}\" drop; }}\n chain transit {{ type filter hook forward priority -20; policy accept; iifname \"{host}\" drop; oifname \"{host}\" drop; }}\n}}\n",&short[..16],rpc.ip(),rpc.port());
+        let nft=format!("table inet xl_{} {{\n chain ingress {{ type filter hook input priority -20; policy accept; iifname \"{host}\" ct state established,related accept; iifname \"{host}\" drop; }}\n chain transit {{ type filter hook forward priority -20; policy accept; iifname \"{host}\" drop; oifname \"{host}\" drop; }}\n}}\n",&short[..16]);
         let nftfile=dir.join("network.nft");tls::atomic_file(&nftfile,nft.as_bytes(),0o600)?;
         command("nft",&["-f".into(),nftfile.display().to_string()],Duration::from_secs(10)).await?;
         command("ip",&strs(&["netns","add",&ns]),Duration::from_secs(10)).await?;

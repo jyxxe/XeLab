@@ -134,7 +134,7 @@ pub async fn audit(
     outcome: &str,
     reason: &str,
 ) -> Result<()> {
-    c.execute("INSERT INTO audit_events(id,subject_id,credential_id,request_id,action,resource,outcome,policy_revision,reason_code,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,1,$8,now(),now())",&[&Uuid::new_v4(),&subject,&credential,&request,&action,&resource,&outcome,&reason]).await?;
+    c.execute("INSERT INTO audit_events(id,subject_id,credential_id,request_id,action,resource,outcome,policy_revision,reason_code,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,(SELECT authz_revision FROM accounts WHERE id=$2),$8,now(),now())",&[&Uuid::new_v4(),&subject,&credential,&request,&action,&resource,&outcome,&reason]).await?;
     Ok(())
 }
 pub async fn outbox(c: &impl GenericClient, topic: &str, id: Uuid, payload: &Value) -> Result<()> {

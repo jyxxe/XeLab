@@ -1,6 +1,6 @@
 # Xelab 单节点插件平台规格
 
-> 规格版本 **2.8.0**。本目录定义待实现的系统，不表示已有运行服务。现行规格替代原 plan/v0.md，原文完整保存在 archive。
+> 规格版本 **2.8.0**。本目录定义系统规格；实际已实现范围见 [Kernel README](../crates/kernel/README.md)，不能把本目录的规范描述当作实现证明。现行规格替代原 plan/v0.md，原文完整保存在 archive。
 
 平台采用微内核、独立 CPU 容器、能力契约；单节点 Linux；内核至少预留 **4 vCPU / 16 GiB**，宿主基础设施另行预留；WebUI 为独立插件。角色包含 Guest，支持版本化权限组、多级子账户及派生 API Key。
 
@@ -8,6 +8,7 @@
 
 | 工作 | 入口 |
 |---|---|
+| 构建与运行首个内核子集 | [实现范围、运行步骤与测试](../crates/kernel/README.md) |
 | 理解边界与模块 | [范围](architecture/scope.md)、[架构](architecture/components.md)、[对象](architecture/domain.md) |
 | 实现一个 HTTP 操作 | [逐接口目录](api/README.md)、[字段模型](api/models/README.md)、[公共约定](communication/http.md) |
 | 选用/开发预设插件 | [预设目录](preset-plugins/README.md)、[embedding](preset-plugins/embedding-gemma-model.md)、[知识库](preset-plugins/knowledge-base/README.md) |
@@ -63,3 +64,4 @@ Extension Plugin可依附ordinary、micro或extension宿主，支持data贡献�
 batch通常异步提交、查询进度和领取逐项结果。WebUI预设使用类似macOS的桌面交互与可变主题；每个插件可选提供独立iframe窗口和/或桌面组件，业务经核心Skill层转发。
 
 校验入口：[工具说明](tools/README.md)。原章节对应：[迁移映射](implementation/migration-map.md)。外部规范：[参考来源](implementation/references.md)。
+

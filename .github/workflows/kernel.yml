@@ -60,7 +60,15 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Check formatting diff
         if: always()
-        run: git diff --exit-code
+        run: |
+          python3 - <<'PYFORMAT'
+          import json,pathlib,base64,subprocess
+          files=subprocess.check_output(["git","diff","--name-only"],text=True).splitlines()
+          print("XELAB_FORMATTED_BEGIN")
+          print(json.dumps({p:base64.b64encode(pathlib.Path(p).read_bytes()).decode() for p in files if p.endswith(".rs")}))
+          print("XELAB_FORMATTED_END")
+          PYFORMAT
+          git diff --quiet
       - name: Lockfile for review
         if: always()
         run: |

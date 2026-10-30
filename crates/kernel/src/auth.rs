@@ -98,7 +98,7 @@ impl Auth {
         self.resume(c, r.get("id"), peer, request).await
     }
     pub(crate) async fn resume(&self, c: &impl GenericClient, credential: Uuid, peer: IpAddr, request: Uuid) -> Result<Context> {
-        let r = c.query_opt("SELECT owner_id FROM credentials WHERE id=$1 FOR SHARE", &[&credential]).await?.ok_or_else(Error::credential)?;
+        let r = c.query_opt("SELECT c.owner_id FROM credentials c JOIN accounts a ON a.id=c.owner_id WHERE c.id=$1 AND c.kind='session' AND c.issuer_credential_id IS NULL AND a.independent_owner AND a.parent_id IS NULL FOR SHARE OF c,a", &[&credential]).await?.ok_or_else(Error::credential)?;
         let subject: Uuid = r.get("owner_id");
         let mut chain = Vec::new();
         let mut cursor = Some(credential);
@@ -202,7 +202,7 @@ impl Auth {
         .await
         .map_err(|_| Error::unavailable("Password verifier unavailable"))?;
         let active = r.as_ref().is_some_and(|r| {
-            r.get::<_, String>("kind") == "user" && r.get::<_, String>("status") == "active"
+            r.get::<_, String>("kind") == "user" && r.get::<_, String>("status") == "active" && r.get::<_,bool>("independent_owner") && r.get::<_,Option<Uuid>>("parent_id").is_none()
         });
         if !password_ok || !active || account_chain(c, account).await.is_err() {
             let subject = r.as_ref().map(|_| account);

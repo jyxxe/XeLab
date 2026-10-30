@@ -29,6 +29,7 @@ pub fn context(subject: Option<Uuid>) -> rpc::RpcContext {
 
 pub async fn run(app: Arc<App>) {
     let mut first = true;
+    let mut probes = std::collections::HashMap::new();
     let mut rotate = tokio::time::Instant::now();
     loop {
         if app.shutdown.load(Ordering::SeqCst) {
@@ -42,7 +43,7 @@ pub async fn run(app: Arc<App>) {
         if rotate.elapsed() > Duration::from_secs(1800)
             && tls::issue(&app.config, None, &app.config.root().join("kernel-identity")).is_ok()
         { rotate = tokio::time::Instant::now(); }
-        match tick(&app, first).await {
+        match tick(&app, first, &mut probes).await {
             Ok(()) => {
                 first = false;
                 app.ready.store(true, Ordering::SeqCst);
@@ -57,7 +58,9 @@ pub async fn run(app: Arc<App>) {
     app.ready.store(false, Ordering::SeqCst);
 }
 
-async fn tick(app: &App, first: bool) -> Result<()> {
+#[derive(Default)]
+struct Probe { next: Option<tokio::time::Instant>, started: Option<tokio::time::Instant>, failures: u64 }
+async fn tick(app: &App, first: bool, probes: &mut std::collections::HashMap<Uuid,Probe>) -> Result<()> {
     let mut c = app.db.connect().await?;
     if first {
         c.execute("UPDATE node_budget SET admission_enabled=false", &[]).await?;
@@ -82,16 +85,18 @@ async fn tick(app: &App, first: bool) -> Result<()> {
     let rows=c.query("SELECT id FROM deployments WHERE archived_at IS NULL ORDER BY created_at,id LIMIT 1000",&[]).await?;
     for r in rows {
         let id: Uuid = r.get(0);
-        if let Err(e) = reconcile(app, id).await {
+        if let Err(e) = reconcile(app, id, probes.entry(id).or_default()).await {
             tracing::warn!(deployment_id=%id,reason_code=e.code,"Deployment is not ready");
             c.execute("UPDATE provider_records SET availability='unavailable' WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)", &[&id]).await?;
-            let phase = if e.code == "RESOURCE_EXHAUSTED" {
+            let failed:bool=c.query_one("SELECT EXISTS(SELECT 1 FROM instances WHERE deployment_id=$1 AND phase='failed')", &[&id]).await?.get(0);
+            let phase = if failed { "failed" } else if e.code == "RESOURCE_EXHAUSTED" {
                 "waiting_resources"
             } else {
                 "degraded"
             };
+            if failed { c.execute("UPDATE operations SET state='failed',error=$2,revision=revision+1,updated_at=now() WHERE resource_id=$1 AND state IN ('pending','running')", &[&id.to_string(),&e.detail()]).await?; }
             c.execute(
-                "UPDATE deployments SET phase=$2,conditions=$3,updated_at=now() WHERE id=$1",
+                "UPDATE deployments SET revision=revision+CASE WHEN phase<>$2 OR conditions<>$3 THEN 1 ELSE 0 END,phase=$2,conditions=$3,updated_at=now() WHERE id=$1",
                 &[&id, &phase, &json!([e.code])],
             )
             .await?;
@@ -203,7 +208,7 @@ async fn install(app: &App, request: &Value, operation: Uuid, payload: &Value) -
     Ok(json!({"installation_id":id}))
 }
 
-async fn reconcile(app: &App, deployment: Uuid) -> Result<()> {
+async fn reconcile(app: &App, deployment: Uuid, probe: &mut Probe) -> Result<()> {
     let c = app.db.connect().await?;
     let d=c.query_one("SELECT d.*,i.manifest,i.manifest_digest,i.image_digest FROM deployments d JOIN installations i ON i.id=d.installation_id WHERE d.id=$1",&[&deployment]).await?;
     let spec: Value = d.get("spec");
@@ -229,6 +234,7 @@ async fn reconcile(app: &App, deployment: Uuid) -> Result<()> {
             app.runtime.stop(id).await?;
             let mut c = app.db.connect().await?;
             let tx = c.transaction().await?;
+            tx.query_one("SELECT id FROM node_budget FOR UPDATE", &[]).await?;
             tx.execute("UPDATE instances SET phase='stopped',health='unknown',updated_at=now(),revision=revision+1 WHERE id=$1",&[&id]).await?;
             admission::release_stopped(&tx, id).await?;
             tx.commit().await?;
@@ -251,9 +257,11 @@ async fn reconcile(app: &App, deployment: Uuid) -> Result<()> {
     let generation: i64 = i.get("generation");
     let limits: Value = i.get("limits");
     let running = app.runtime.running(id).await?;
+    if running && probe.next.is_some_and(|at|tokio::time::Instant::now()<at) { return Ok(()); }
+    probe.next=Some(tokio::time::Instant::now()+Duration::from_millis(manifest["health"]["interval_ms"].as_u64().unwrap()));
     if !running {
         let count = i.get::<_,i32>("restart_count");
-        if count >= 5 { return Err(Error::unavailable("Instance exhausted its restart budget; disable and enable to retry")); }
+        if count >= 5 { c.execute("UPDATE instances SET phase='failed',health='unhealthy',revision=revision+1,updated_at=now() WHERE id=$1 AND phase<>'failed'", &[&id]).await?; return Err(Error::unavailable("Instance exhausted its restart budget; disable and enable to retry")); }
         let since = (chrono::Utc::now()-i.get::<_,chrono::DateTime<chrono::Utc>>("updated_at")).num_seconds();
         if count > 0 && since < (1i64 << count.min(5)) { return Err(Error::unavailable("Instance restart backoff is active")); }
     }
@@ -270,6 +278,7 @@ async fn reconcile(app: &App, deployment: Uuid) -> Result<()> {
             .with_extension("reference"),
     )?;
     if !running {
+        probe.started=Some(tokio::time::Instant::now());
         c.execute("UPDATE instances SET restart_count=restart_count+1,phase='starting',health='unknown',updated_at=now(),revision=revision+1 WHERE id=$1", &[&id]).await?;
     }
     let obs = app
@@ -279,6 +288,7 @@ async fn reconcile(app: &App, deployment: Uuid) -> Result<()> {
     if !obs.running {
         return Err(Error::unavailable("OCI task is not running"));
     }
+    let checked: Result<rpc::HealthResponse> = async {
     let channel = tls::channel(&app.config, id, generation, &obs.address).await?;
     let mut client = PluginLifecycleClient::new(channel);
     if !running || i.get::<_,String>("phase") != "ready" {
@@ -312,15 +322,29 @@ async fn reconcile(app: &App, deployment: Uuid) -> Result<()> {
         return Err(Error::conflict("Plugin initialization generation differs"));
     }
     }
+    let mut health_request=tonic::Request::new(rpc::HealthRequest { context:Some(context(None)) });
+    health_request.set_timeout(Duration::from_millis(manifest["health"]["timeout_ms"].as_u64().unwrap()));
     let health = client
-        .get_health(rpc::HealthRequest {
-            context: Some(context(None)),
-        })
+        .get_health(health_request)
         .await?
         .into_inner();
     if !health.alive || health.observed_generation != generation as u64 {
         return Err(Error::unavailable("Plugin health generation differs"));
     }
+        Ok(health)
+    }.await;
+    let health = match checked {
+        Ok(health) => { probe.failures=0; health },
+        Err(error) => {
+            probe.failures+=1;
+            c.execute("UPDATE instances SET health='unhealthy',revision=revision+1,updated_at=now() WHERE id=$1 AND health<>'unhealthy'", &[&id]).await?;
+            let failed = if i.get::<_,String>("phase")=="ready" {
+                probe.failures >= manifest["health"]["failure_threshold"].as_u64().unwrap()
+            } else { probe.started.is_some_and(|at|at.elapsed()>=Duration::from_millis(manifest["health"]["startup_timeout_ms"].as_u64().unwrap())) };
+            if failed { app.runtime.stop(id).await?; probe.failures=0; }
+            return Err(error);
+        }
+    };
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
     let current = tx
@@ -352,8 +376,8 @@ async fn reconcile(app: &App, deployment: Uuid) -> Result<()> {
         tx.execute("INSERT INTO provider_records(instance_id,name,version,availability,features,observed_generation,observed_at) VALUES($1,$2,$3,$4,'[]',$5,now()) ON CONFLICT(instance_id,name,version) DO UPDATE SET availability=excluded.availability,observed_generation=excluded.observed_generation,observed_at=now()",&[&id,&name,&version,&state,&generation]).await?;
     }
     let phase = if all_ready { "ready" } else { "degraded" };
-    tx.execute("UPDATE instances SET phase=$2,health='alive',runtime_id=$3,last_heartbeat_at=now(),updated_at=now() WHERE id=$1",&[&id,&phase,&id.to_string()]).await?;
-    tx.execute("UPDATE deployments SET phase=$2,observed_generation=$3,conditions='[]',updated_at=now() WHERE id=$1",&[&deployment,&phase,&generation]).await?;
+    tx.execute("UPDATE instances SET phase=$2,health='alive',runtime_id=$3,last_heartbeat_at=now(),updated_at=now(),revision=revision+1 WHERE id=$1",&[&id,&phase,&id.to_string()]).await?;
+    tx.execute("UPDATE deployments SET revision=revision+CASE WHEN phase<>$2 OR observed_generation<>$3 OR conditions<>'[]'::jsonb THEN 1 ELSE 0 END,phase=$2,observed_generation=$3,conditions='[]',updated_at=now() WHERE id=$1",&[&deployment,&phase,&generation]).await?;
     if app.leader.is_closed() { return Err(Error::unavailable("Controller leadership is lost")); }
     if all_ready {
         finish_deployment_operations(&tx, deployment, true).await?;

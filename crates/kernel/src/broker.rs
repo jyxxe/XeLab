@@ -77,7 +77,7 @@ pub async fn invoke(
         .get("provider_deployment_id")
         .map(|_| id(input, "provider_deployment_id"))
         .transpose()?;
-    let providers=tx.query("SELECT i.id,i.generation,d.id AS deployment_id,d.owner_id,n.manifest FROM provider_records p JOIN instances i ON i.id=p.instance_id JOIN deployments d ON d.id=i.deployment_id JOIN installations n ON n.id=d.installation_id WHERE p.name=$1 AND p.version=$2 AND p.availability='ready' AND p.observed_at>now()-interval '15 seconds' AND i.phase='ready' AND d.spec->>'enabled'='true' AND d.archived_at IS NULL AND ($3::uuid IS NULL OR d.id=$3) ORDER BY i.id FOR UPDATE OF i",&[&name,&version,&fixed]).await?;
+    let providers=tx.query("SELECT i.id,i.generation,d.id AS deployment_id,d.owner_id,n.manifest FROM provider_records p JOIN instances i ON i.id=p.instance_id JOIN deployments d ON d.id=i.deployment_id JOIN installations n ON n.id=d.installation_id WHERE p.name=$1 AND p.version=$2 AND p.availability='ready' AND p.observed_at>now()-interval '1 millisecond'*((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint+(n.manifest->'health'->>'timeout_ms')::bigint) AND i.phase='ready' AND d.spec->>'enabled'='true' AND d.archived_at IS NULL AND ($3::uuid IS NULL OR d.id=$3) ORDER BY i.id FOR UPDATE OF i",&[&name,&version,&fixed]).await?;
     let row = providers
         .first()
         .ok_or_else(|| Error::unavailable("No healthy fixed provider is available"))?;

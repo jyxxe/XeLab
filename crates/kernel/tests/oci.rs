@@ -9,6 +9,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 use xelab_kernel::{admission, api::{router, App}, artifact, auth::{self, Auth}, config::Config, contracts, controller, db::Db, runtime::Runtime, tls};
 
+#[allow(clippy::too_many_arguments)] // Test request envelope.
 async fn api(router: &Router, operation: &str, params: &[(&str, String)], token: Option<&str>, body: Value, key: &str, revision: Option<i64>) -> (u16, Value) {
     let mut selected = None;
     for (path, methods) in contracts::openapi()["paths"].as_object().unwrap() {
@@ -20,7 +21,7 @@ async fn api(router: &Router, operation: &str, params: &[(&str, String)], token:
     for (name,value) in params { path = path.replace(&format!("{{{name}}}"),value); }
     let mut req = Request::builder().method(method.as_str()).uri(path).header("idempotency-key",key);
     if let Some(token) = token { req=req.header("authorization",format!("Bearer {token}")); }
-    if let Some(revision)=revision { req=req.header("if-match",format!("\"{revision}\"")); }
+    if let Some(revision)=revision { req=req.header("if-match",format!("\"rev-{revision}\"")); }
     let bytes = if body.is_null() { Vec::new() } else { req=req.header("content-type","application/json"); serde_json::to_vec(&body).unwrap() };
     let mut req=req.body(Body::from(bytes)).unwrap();
     req.extensions_mut().insert(ConnectInfo("127.0.0.1:50000".parse::<SocketAddr>().unwrap()));

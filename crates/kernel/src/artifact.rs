@@ -162,6 +162,7 @@ pub fn validate_profile(manifest: &Value) -> Result<()> {
             "Artifact does not support this host platform",
         ));
     }
+    if manifest.get("concurrency").is_some_and(|c|c["max_queue_requests"]!=0) {return Err(Error::invalid("This profile requires max_queue_requests=0"));}
     crate::contracts::compile_business(&manifest["config_schema"])?;
     for cap in manifest["capabilities"].as_array().unwrap() {
         if cap["side_effect"] != "none" || !cap["stream_item_schema"].is_null() {
