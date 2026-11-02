@@ -508,18 +508,31 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         .await
         .unwrap();
     assert!(app.runtime.running(python_instance).await.unwrap());
-    let mut described=false;
+    let mut described = false;
     for _ in 0..30 {
-        if let Ok(channel)=tls::channel(&config,python_instance,python_generation,&app.runtime.address(python_instance).unwrap()).await {
-            let mut client=xelab_kernel::rpc::plugin_lifecycle_client::PluginLifecycleClient::new(channel);
-            let description=client.describe(xelab_kernel::rpc::DescribeRequest{context:Some(controller::context(None))}).await;
-            assert!(description.is_ok(),"independent Describe: {description:?}");
-            assert_eq!(description.unwrap().into_inner().manifest_json,python_raw);
-            described=true;break;
+        if let Ok(channel) = tls::channel(
+            &config,
+            python_instance,
+            python_generation,
+            &app.runtime.address(python_instance).unwrap(),
+        )
+        .await
+        {
+            let mut client =
+                xelab_kernel::rpc::plugin_lifecycle_client::PluginLifecycleClient::new(channel);
+            let description = client
+                .describe(xelab_kernel::rpc::DescribeRequest {
+                    context: Some(controller::context(None)),
+                })
+                .await;
+            assert!(description.is_ok(), "independent Describe: {description:?}");
+            assert_eq!(description.unwrap().into_inner().manifest_json, python_raw);
+            described = true;
+            break;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    assert!(described,"independent plugin TLS listener did not start");
+    assert!(described, "independent plugin TLS listener did not start");
     assert!(c
         .query_one(
             "SELECT runtime_id FROM instances WHERE id=$1",
@@ -673,6 +686,24 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         "{}",
         String::from_utf8_lossy(&isolation.stderr)
     );
+    // A dropped HTTP task can leave a durable running call without a finalizer.
+    // Recovery must fence the old process before returning its slot, then restart.
+    let abandoned = Uuid::new_v4();
+    let prior:Uuid=called.1["call_id"].as_str().unwrap().parse().unwrap();
+    let tx=c.transaction().await.unwrap();
+    xelab_kernel::db::call_lock(&tx).await.unwrap();
+    tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,idempotency_key,state,deadline_at,created_at) SELECT $1,owner_id,credential_id,$2,contract,input_digest,'abandoned-fixture','running',now()-interval '10 seconds',now() FROM calls WHERE id=$3", &[&abandoned,&python_instance,&prior]).await.unwrap();
+    tx.execute("INSERT INTO reservations(id,account_id,kind,expires_at,status,created_at) VALUES($1,$2,'call',now()-interval '10 seconds','active',now())", &[&abandoned,&owner]).await.unwrap();
+    tx.execute("UPDATE quotas SET concurrent_calls_used=concurrent_calls_used+1 WHERE account_id=$1", &[&owner]).await.unwrap();
+    tx.commit().await.unwrap();
+    let mut recovered=false;
+    for _ in 0..120 {
+        let state=c.query_one("SELECT c.state,r.status,q.concurrent_calls_used FROM calls c JOIN reservations r ON r.id=c.id JOIN quotas q ON q.account_id=c.owner_id WHERE c.id=$1", &[&abandoned]).await.unwrap();
+        let ready:bool=c.query_one("SELECT EXISTS(SELECT 1 FROM provider_records WHERE instance_id=$1 AND availability='ready')", &[&python_instance]).await.unwrap().get(0);
+        if state.get::<_,String>(0)=="unknown" && state.get::<_,String>(1)=="released" && state.get::<_,i64>(2)==0 && ready {recovered=true;break;}
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(recovered,"abandoned call slot is reclaimed and stable provider recovers");
     // RUN-07: execute the shipped CLI over HTTPS against the same API, without WebUI.
     let leaf = KeyPair::generate().unwrap();
     let server_cert = CertificateParams::new(vec!["127.0.0.1".into()])

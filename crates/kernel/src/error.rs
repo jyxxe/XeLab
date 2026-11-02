@@ -118,4 +118,3 @@ impl From<tonic::Status> for Error {
         Self::unavailable("Plugin RPC failed")
     }
 }
-

@@ -193,3 +193,11 @@ pub async fn auth_lock(c: &impl GenericClient, write: bool) -> Result<()> {
     c.query_one(sql, &[&0x58454c4142415554_i64]).await?;
     Ok(())
 }
+
+/// Order: authorization fence, call ledger, provider, root-to-leaf quota rows.
+/// Never hold this short transaction lock across an OCI or RPC operation.
+pub async fn call_lock(c: &impl GenericClient) -> Result<()> {
+    auth_lock(c,false).await?;
+    c.query_one("SELECT pg_advisory_xact_lock($1)", &[&0x58454c414243414c_i64]).await?;
+    Ok(())
+}

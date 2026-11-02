@@ -26,12 +26,7 @@ pub async fn invoke(
     let schema_digest = string(contract, "schema_digest")?;
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
-    db::auth_lock(&tx, false).await?;
-    tx.query_one(
-        "SELECT pg_advisory_xact_lock($1)",
-        &[&0x58454c414243414c_i64],
-    )
-    .await?;
+    db::call_lock(&tx).await?;
     let ctx = app.auth.authenticate(&tx, token, peer, request_id).await?;
     let authorization = authorize(
         &tx,
@@ -214,6 +209,7 @@ pub async fn invoke(
     }
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
+    db::call_lock(&tx).await?;
     let check = async {
         let current = app.auth.authenticate(&tx, token, peer, request_id).await?;
         authorize(
@@ -240,13 +236,17 @@ pub async fn invoke(
         )
         .with_resource(call));
     }
-    tx.execute(
-        "UPDATE reservations SET status='released' WHERE id=$1 AND kind='call'",
-        &[&call],
-    )
-    .await?;
-    for account in &accounts {
-        tx.execute("UPDATE quotas SET concurrent_calls_used=greatest(0,concurrent_calls_used-1) WHERE account_id=$1", &[account]).await?;
+    // An error/timeout does not prove that the provider stopped executing.
+    // Recovery fences its process before returning the reserved call slot.
+    if result.is_ok() {
+        tx.execute(
+            "UPDATE reservations SET status='released' WHERE id=$1 AND kind='call'",
+            &[&call],
+        )
+        .await?;
+        for account in &accounts {
+            tx.execute("UPDATE quotas SET concurrent_calls_used=greatest(0,concurrent_calls_used-1) WHERE account_id=$1", &[account]).await?;
+        }
     }
     tx.execute(
         "UPDATE rpc_delegations SET status='revoked' WHERE call_id=$1",

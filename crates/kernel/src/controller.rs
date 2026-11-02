@@ -91,6 +91,7 @@ async fn tick(
             app.runtime.stop(id).await?;
         }
         let tx = c.transaction().await?;
+        db::call_lock(&tx).await?;
         tx.execute(
             "UPDATE calls SET state='unknown',error=$1 WHERE state IN ('accepted','running')",
             &[&Error::new(
@@ -127,6 +128,7 @@ async fn tick(
         .await?;
     }
     process_installations(app).await?;
+    recover_expired_calls(app).await?;
     let rows=c.query("SELECT id FROM deployments WHERE archived_at IS NULL ORDER BY created_at,id LIMIT 1000",&[]).await?;
     for r in rows {
         let id: Uuid = r.get(0);
@@ -150,6 +152,39 @@ async fn tick(
             )
             .await?;
         }
+    }
+    Ok(())
+}
+
+async fn recover_expired_calls(app:&App)->Result<()> {
+    let mut c=app.db.connect().await?;
+    let rows=c.query("SELECT DISTINCT provider_instance_id FROM calls c JOIN reservations r ON r.id=c.id AND r.kind='call' AND r.status<>'released' WHERE (c.state='unknown' OR (c.state IN ('accepted','running') AND deadline_at<now()-interval '1 second')) AND provider_instance_id IS NOT NULL", &[]).await?;
+    for row in rows {
+        let instance:Uuid=row.get(0);
+        let tx=c.transaction().await?;db::call_lock(&tx).await?;
+        // A running provider cannot receive another call after this fence commits.
+        tx.query_one("SELECT id FROM instances WHERE id=$1 FOR UPDATE", &[&instance]).await?;
+        tx.execute("UPDATE provider_records SET availability='unavailable' WHERE instance_id=$1", &[&instance]).await?;
+        tx.commit().await?;
+        app.runtime.stop(instance).await?;
+        // Only confirmed process termination permits slot reuse. Concurrent late
+        // responses are fenced by the same call-state conditional update.
+        let tx=c.transaction().await?;db::call_lock(&tx).await?;
+        let error=Error::new("OUTCOME_UNKNOWN","Call lease expired before its result was committed",axum::http::StatusCode::CONFLICT).detail();
+        let calls=tx.query("UPDATE calls SET state='unknown',error=$2 WHERE provider_instance_id=$1 AND (state IN ('accepted','running') OR (state='unknown' AND EXISTS(SELECT 1 FROM reservations WHERE id=calls.id AND kind='call' AND status<>'released'))) RETURNING id,owner_id", &[&instance,&error]).await?;
+        for call in calls {
+            let id:Uuid=call.get(0);let owner:Uuid=call.get(1);
+            let released=tx.execute("UPDATE reservations SET status='released' WHERE id=$1 AND kind='call' AND status<>'released'", &[&id]).await?;
+            if released==1 {
+                for ancestor in tx.query("SELECT ancestor_id FROM account_closure WHERE descendant_id=$1 ORDER BY depth DESC", &[&owner]).await? {
+                    tx.execute("UPDATE quotas SET concurrent_calls_used=greatest(0,concurrent_calls_used-1) WHERE account_id=$1", &[&ancestor.get::<_,Uuid>(0)]).await?;
+                }
+            }
+            tx.execute("UPDATE rpc_delegations SET status='revoked' WHERE call_id=$1", &[&id]).await?;
+            tx.execute("UPDATE execution_delegations SET status='revoked' WHERE id IN(SELECT delegation_id FROM calls WHERE id=$1)", &[&id]).await?;
+            db::audit(&tx,owner,None,Uuid::new_v4(),"capability.invoke",&Resource::new("call",id,Some(owner)).json(),"failed","CALL_LEASE_EXPIRED").await?;
+        }
+        tx.commit().await?;
     }
     Ok(())
 }

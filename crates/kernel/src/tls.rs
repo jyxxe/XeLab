@@ -2,7 +2,7 @@ use crate::{
     config::{read_private, Config},
     error::{Error, Result},
 };
-use rcgen::{CertificateParams, ExtendedKeyUsagePurpose, KeyPair, SanType};
+use rcgen::{CertificateParams, DnType, ExtendedKeyUsagePurpose, KeyPair, SanType};
 use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 use uuid::Uuid;
 
@@ -38,8 +38,11 @@ pub fn issue(config: &Config, instance: Option<(Uuid, i64)>, directory: &Path) -
         KeyPair::from_pem(&fs::read_to_string(&key_path)?)
     }
     .map_err(|_| Error::unavailable("Workload private key is unavailable"))?;
-    let mut params = CertificateParams::new(vec![name])
+    let mut params = CertificateParams::new(vec![name.clone()])
         .map_err(|_| Error::invalid("Invalid workload identity"))?;
+    // A leaf must not inherit rcgen's default CA subject: OpenSSL/BoringSSL
+    // can otherwise treat it as self-issued and reject the client chain.
+    params.distinguished_name.push(DnType::CommonName, name);
     params.subject_alt_names.push(SanType::URI(
         uri.try_into()
             .map_err(|_| Error::invalid("Invalid identity URI"))?,
@@ -149,3 +152,4 @@ pub fn require_kernel<T>(
     }
     Ok(request)
 }
+
