@@ -203,6 +203,10 @@ fn trusted_root(path: &Path) -> Result<File> {
 #[derive(Debug, Serialize)]
 pub struct BackendStatus {
     pub backend: &'static str,
+    pub scope: &'static str,
+    pub filesystem_uuid: Uuid,
+    pub project_namespace_exclusivity_verified: bool,
+    pub volume_service_ready: bool,
     pub block_size: u64,
     pub project_accounting: bool,
     pub hard_limits_enforced: bool,
@@ -216,6 +220,16 @@ fn check_fd(fd: &File) -> Result<BackendStatus> {
     }
     if stat.f_type != libc::XFS_SUPER_MAGIC || stat.f_bsize < 512 {
         return Err(Error::unavailable("Storage requires XFS project quota"));
+    }
+    // statvfs reports this mount's flags, including a read-only bind mount of
+    // an otherwise writable filesystem. Quota capability alone is insufficient.
+    let mut vfs: libc::statvfs = unsafe { mem::zeroed() };
+    // SAFETY: fstatvfs writes one correctly sized libc statvfs into live storage.
+    if unsafe { libc::fstatvfs(fd.as_raw_fd(), &mut vfs) } < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    if vfs.f_flag & libc::ST_RDONLY != 0 {
+        return Err(Error::unavailable("Storage mount is read-only"));
     }
     let mut geometry = Geometry::default();
     // SAFETY: FSGEOMETRY_V1 writes the fixed repr(C) V1 layout.
@@ -250,12 +264,19 @@ fn check_fd(fd: &File) -> Result<BackendStatus> {
     }
     Ok(BackendStatus {
         backend: "xfs_project",
+        scope: "quota_capability_only",
+        filesystem_uuid: Uuid::from_bytes(geometry.uuid),
+        project_namespace_exclusivity_verified: false,
+        volume_service_ready: false,
         block_size: stat.f_bsize as u64,
         project_accounting: true,
         hard_limits_enforced: true,
     })
 }
-/// Read-only host preflight; never enables quotas, formats or mounts a filesystem.
+/// Read-only quota capability check; never enables, formats or mounts storage.
+/// Success does NOT verify a dedicated filesystem / exclusive project namespace.
+/// A protected subdirectory on shared XFS can pass; inspect the explicit false
+/// exclusivity/service-readiness fields before using this host-only primitive.
 pub fn check(path: &Path) -> Result<BackendStatus> {
     check_fd(&trusted_root(path)?)
 }
@@ -287,7 +308,9 @@ pub struct ProjectStatus {
     pub used_inodes: u64,
 }
 
-/// Exclusive host-side backend handle. IDs must come from a future durable
+/// Exclusively locks this root, not the filesystem-wide project namespace.
+/// The operator must dedicate the filesystem; other managers are not detected.
+/// Host-side backend handle. IDs must come from a future durable
 /// allocator; this adapter never recycles an ID or exposes a directory to OCI.
 /// Partial creation is quarantined (root-only directory / reserved quota).
 /// The caller must persist intent BEFORE create and recover it before publishing.

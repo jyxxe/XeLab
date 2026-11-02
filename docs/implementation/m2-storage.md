@@ -38,7 +38,13 @@ cargo build --workspace --bins --locked
 sudo target/debug/xelabctl storage-check --config /etc/xelab/kernel.toml
 ```
 
-成功输出包括 `backend=xfs_project`、真实块大小、记账和强制执行状态。
+成功输出包括 `backend=xfs_project`、文件系统 UUID、块大小与记账/强制执行状态。
+只读挂载（包括只读 bind mount）被拒绝。输出 `scope=quota_capability_only`、
+`project_namespace_exclusivity_verified=false`、`volume_service_ready=false`；
+成功不代表可创建服务已就绪，也不证明文件系统专用或 project-ID 独占。
+受保护的共享 XFS 子目录仍可能通过能力检查；操作员必须独占底层文件系统，
+不能与其他 XeLab 根/配额工具共用命名空间。根目录 flock 只协调同一根目录。
+后续授权卷服务接入前必须增加文件系统 UUID 绑定和持久化 ID 分配/恢复。
 失败返回非零退出码；不会将节点或任何 Volume 标记为 available。
 此预检不证明磁盘预算、完整挂载隔离、备份或 M2 验收已经满足。
 
@@ -60,7 +66,7 @@ sudo env XELAB_XFS_TEST=1 bash tools/test-xfs.sh \
 后者不能通过预检。测试实际写入及 fsync 到 EDQUOT/ENOSPC，验证嵌套目录
 继承、第二卷仍可写、跨 project 硬链接失败、扩容后可继续写、拒绝缩容、
 重开后限额保留、删除内容释放用量、inode 耗尽、ID 不复用、路径和权限
-检查，以及运行期间关闭 enforcement 后已有 handle 立即拒绝后续操作。
+检查、只读 bind mount 拒绝、共享子目录不宣称独占，以及运行期间关闭 enforcement 后已有 handle 立即拒绝后续操作。
 
 Kernel CI 保留原有 PostgreSQL 和 OCI 用例，并独立执行此真实 XFS 步骤。
 默认 `cargo test` 的 ignored 输出不能算该项通过；必须核实 Actions 中

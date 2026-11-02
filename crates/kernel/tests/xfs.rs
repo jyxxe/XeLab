@@ -20,7 +20,23 @@ fn enforced_projects_survive_reopen_isolate_usage_and_fail_closed() {
         "accounting without enforcement is unsafe"
     );
     assert!(ProjectStore::open(&accounting).is_err());
+    let readonly = PathBuf::from(std::env::var_os("XELAB_XFS_READONLY_ROOT").unwrap());
+    assert!(
+        check(&readonly).is_err(),
+        "read-only bind mount is not usable"
+    );
+    assert!(ProjectStore::open(&readonly).is_err());
     let status = check(&root).unwrap();
+    assert!(!status.filesystem_uuid.is_nil());
+    assert_eq!(status.scope, "quota_capability_only");
+    assert!(!status.project_namespace_exclusivity_verified && !status.volume_service_ready);
+    let shared = root.join("protected-subdirectory");
+    fs::create_dir(&shared).unwrap();
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o700)).unwrap();
+    let partial = check(&shared).unwrap();
+    assert_eq!(partial.filesystem_uuid, status.filesystem_uuid);
+    assert!(!partial.project_namespace_exclusivity_verified && !partial.volume_service_ready);
+    fs::remove_dir(shared).unwrap();
     assert!(status.hard_limits_enforced && status.project_accounting);
     let mut store = ProjectStore::open(&root).unwrap();
     assert!(
