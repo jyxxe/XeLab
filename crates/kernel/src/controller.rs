@@ -30,7 +30,6 @@ pub fn context(subject: Option<Uuid>) -> rpc::RpcContext {
 }
 
 pub async fn run(app: Arc<App>) {
-    let mut first = true;
     let mut state = ControllerState::default();
     let mut rotate = tokio::time::Instant::now();
     loop {
@@ -52,11 +51,8 @@ pub async fn run(app: Arc<App>) {
         {
             rotate = tokio::time::Instant::now();
         }
-        match tick(&app, first, &mut state).await {
-            Ok(()) => {
-                first = false;
-                app.ready.store(true, Ordering::SeqCst);
-            }
+        match reconcile_tick(&app, &mut state).await {
+            Ok(()) => {}
             Err(e) => {
                 app.ready.store(false, Ordering::SeqCst);
                 tracing::error!(
@@ -102,10 +98,19 @@ type DeploymentPosition = (chrono::DateTime<chrono::Utc>, Uuid);
 struct Sweep {
     after: Option<DeploymentPosition>,
     through: Option<DeploymentPosition>,
+    initial_complete: bool,
+}
+impl Sweep {
+    fn finish(&mut self) {
+        self.after = None;
+        self.through = None;
+        self.initial_complete = true;
+    }
 }
 
 #[derive(Default)]
 struct ControllerState {
+    startup_fenced: bool,
     active: Sweep,
     inactive: Sweep,
     probes: BTreeMap<Uuid, Probe>,
@@ -131,6 +136,7 @@ async fn deployment_page(
         sweep.through = end.map(|r| (r.get(0), r.get(1)));
     }
     let Some(through) = sweep.through else {
+        sweep.finish();
         return Ok(Vec::new());
     };
     let (created, id) = sweep
@@ -139,7 +145,7 @@ async fn deployment_page(
         .unwrap_or((None, None));
     let rows = c.query(&format!("SELECT d.created_at,d.id FROM deployments d WHERE {predicate} AND ($1::timestamptz IS NULL OR (d.created_at,d.id)>($1,$2)) AND (d.created_at,d.id)<=($3,$4) ORDER BY d.created_at,d.id LIMIT $5"), &[&created, &id, &through.0, &through.1, &(DEPLOYMENTS_PER_LANE as i64)]).await?;
     if rows.is_empty() {
-        *sweep = Sweep::default();
+        sweep.finish();
     }
     Ok(rows)
 }
@@ -168,6 +174,20 @@ async fn prune_probes(
     }
     state.probe_after = ids.last().copied();
     Ok(())
+}
+
+// A successful bounded batch does not mean startup recovery has caught up.
+// Keep this transition shared by the daemon and the HTTP readiness regression.
+async fn reconcile_tick(app: &App, state: &mut ControllerState) -> Result<()> {
+    let result = tick(app, !state.startup_fenced, state).await;
+    app.ready.store(
+        result.is_ok()
+            && state.startup_fenced
+            && state.active.initial_complete
+            && state.inactive.initial_complete,
+        Ordering::SeqCst,
+    );
+    result
 }
 
 async fn tick(app: &App, first: bool, state: &mut ControllerState) -> Result<()> {
@@ -222,6 +242,9 @@ async fn tick(app: &App, first: bool, state: &mut ControllerState) -> Result<()>
         )
         .await?;
     }
+    // Do not repeat global fencing after a later maintenance/page failure: it
+    // would invalidate work already covered by the initial sweep markers.
+    state.startup_fenced = true;
     // Maintenance is revisited every bounded batch, rather than once per full
     // deployment sweep. Recovery precedes potentially slow image installation.
     recover_expired_calls(app).await?;
@@ -267,7 +290,7 @@ async fn tick(app: &App, first: bool, state: &mut ControllerState) -> Result<()>
             }
         }
         if sweep.after.is_some() && sweep.after == sweep.through {
-            *sweep = Sweep::default();
+            sweep.finish();
         }
     }
     Ok(())
@@ -808,6 +831,82 @@ mod pagination_tests {
             .get::<_, i64>(0),
             1000
         );
+        // Simulate the post-fencing state of a controller restart with a large
+        // active backlog. The global fencing path itself is covered by OCI.
+        c.execute(
+            r#"UPDATE deployments SET spec='{"enabled":true}',phase='reconciling'"#,
+            &[],
+        )
+        .await
+        .unwrap();
+        c.execute(r#"INSERT INTO deployments(id,owner_id,installation_id,spec,approval,phase,created_at,updated_at) SELECT md5(n::text)::uuid,$1,$2,'{"enabled":true}',$3,'reconciling',now(),now() FROM generate_series(2000,2598) n"#, &[&owner,&installation,&json!({"rules":[],"egress":[]})]).await.unwrap();
+        // The inactive lane must also complete before readiness can open.
+        let inactive = Uuid::new_v4();
+        c.execute(r#"INSERT INTO deployments(id,owner_id,installation_id,spec,approval,phase,created_at,updated_at) VALUES($1,$2,$3,'{"enabled":false}',$4,'reconciling',now(),now())"#, &[&inactive,&owner,&installation,&json!({"rules":[],"egress":[]})]).await.unwrap();
+        let app = Arc::new(app);
+        let router = crate::api::router(app.clone());
+        use tower::ServiceExt;
+        let path = crate::contracts::openapi()["paths"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .find(|(_, methods)| methods["get"]["operationId"] == "getReadiness")
+            .unwrap()
+            .0
+            .clone();
+        let mut restart = ControllerState {
+            startup_fenced: true,
+            ..Default::default()
+        };
+        let mut rounds = 0;
+        loop {
+            reconcile_tick(&app, &mut restart).await.unwrap();
+            rounds += 1;
+            let pending: i64 = c
+                .query_one(
+                    "SELECT count(*) FROM deployments WHERE phase='reconciling'",
+                    &[],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            let mut request = axum::http::Request::builder()
+                .uri(&path)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            request.extensions_mut().insert(axum::extract::ConnectInfo(
+                "127.0.0.1:30000".parse::<std::net::SocketAddr>().unwrap(),
+            ));
+            let response = router.clone().oneshot(request).await.unwrap();
+            if pending > 0 {
+                assert_eq!(
+                    response.status(),
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE
+                );
+            } else if response.status() == axum::http::StatusCode::OK {
+                break;
+            }
+            assert!(rounds <= 1602, "initial recovery never completes");
+        }
+        assert!(
+            rounds >= 100,
+            "readiness must wait for all 1600 active rows"
+        );
+        assert!(restart.active.initial_complete && restart.inactive.initial_complete);
+        // Subsequent sweeps never reset the initial-completion barrier.
+        reconcile_tick(&app, &mut restart).await.unwrap();
+        assert!(app.ready.load(Ordering::SeqCst));
+        c.batch_execute("ALTER TABLE outbox RENAME TO outbox_unavailable")
+            .await
+            .unwrap();
+        assert!(reconcile_tick(&app, &mut restart).await.is_err());
+        assert!(!app.ready.load(Ordering::SeqCst));
+        assert!(restart.startup_fenced && restart.active.initial_complete);
+        c.batch_execute("ALTER TABLE outbox_unavailable RENAME TO outbox")
+            .await
+            .unwrap();
+        reconcile_tick(&app, &mut restart).await.unwrap();
+        assert!(app.ready.load(Ordering::SeqCst));
         // A selected row may disappear or become archived before reconcile.
         // Both paths release the probe without needing a runtime adapter.
         let tail = Uuid::from_u128(1001);
@@ -847,6 +946,7 @@ mod pagination_tests {
             .unwrap();
         }
         let mut sweep = Sweep::default();
+        assert!(!sweep.initial_complete);
         let first = deployment_page(&tx, &mut sweep, true).await.unwrap();
         assert_eq!(first.len(), DEPLOYMENTS_PER_LANE);
         // Consume just one item (a slow reconciliation exhausted the time slice).
@@ -895,6 +995,7 @@ mod pagination_tests {
         }
         assert_eq!(seen.len(), 1097);
         assert!(sweep.through.is_none());
+        assert!(sweep.initial_complete);
         // Enable a row behind the old cursor; it is visible on the next sweep.
         tx.execute(
             "UPDATE deployments SET spec=$2 WHERE id=$1",
@@ -905,6 +1006,18 @@ mod pagination_tests {
         let next = deployment_page(&tx, &mut sweep, true).await.unwrap();
         assert_eq!(next[0].get::<_, Uuid>(1), Uuid::from_u128(3));
         assert!(sweep.through.unwrap().1 > Uuid::from_u128(1100));
+        tx.execute("DELETE FROM deployments", &[]).await.unwrap();
+        // Deleted watermark ends the old sweep; an empty initial sweep is done.
+        assert!(deployment_page(&tx, &mut sweep, true)
+            .await
+            .unwrap()
+            .is_empty());
+        let mut empty = Sweep::default();
+        assert!(deployment_page(&tx, &mut empty, true)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(empty.initial_complete);
         tx.rollback().await.unwrap();
     }
 
