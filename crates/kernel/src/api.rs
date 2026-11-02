@@ -80,17 +80,25 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
 }
 fn bearer(headers: &HeaderMap) -> Result<&str> {
     if headers.contains_key("authorization") {
-        return header(headers,"authorization").map_err(|_|Error::credential())?.strip_prefix("Bearer ").filter(|s|!s.is_empty()).ok_or_else(Error::credential);
+        return header(headers, "authorization")
+            .map_err(|_| Error::credential())?
+            .strip_prefix("Bearer ")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(Error::credential);
     }
-    let mut found=None;
+    let mut found = None;
     for cookie in headers.get_all("cookie") {
-        for pair in cookie.to_str().map_err(|_|Error::credential())?.split(';') {
-            if let Some(value)=pair.trim().strip_prefix("__Host-xelab_auth=") {
-                if found.replace(value).is_some(){return Err(Error::credential());}
+        for pair in cookie.to_str().map_err(|_| Error::credential())?.split(';') {
+            if let Some(value) = pair.trim().strip_prefix("__Host-xelab_auth=") {
+                if found.replace(value).is_some() {
+                    return Err(Error::credential());
+                }
             }
         }
     }
-    found.filter(|s|!s.is_empty()).ok_or_else(Error::credential)
+    found
+        .filter(|s| !s.is_empty())
+        .ok_or_else(Error::credential)
 }
 pub(crate) fn path_id(p: &HashMap<String, String>, name: &str) -> Result<Uuid> {
     p.get(name)
@@ -140,10 +148,13 @@ async fn handle(
     match dispatch(&app, peer, request_id, request).await {
         Ok((v, s)) => {
             let cookie=v.get("access_token").and_then(Value::as_str).map(|token|format!("__Host-xelab_auth={token}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=3600"));
-            let mut r=response(v,s,request_id);
-            if let Some(cookie)=cookie {r.headers_mut().insert("set-cookie",cookie.parse().unwrap());}
+            let mut r = response(v, s, request_id);
+            if let Some(cookie) = cookie {
+                r.headers_mut()
+                    .insert("set-cookie", cookie.parse().unwrap());
+            }
             r
-        },
+        }
         Err(e) => {
             tracing::warn!(request_id=%request_id,reason_code=e.code,"Request rejected");
             let status = e.status;
@@ -231,8 +242,14 @@ async fn dispatch(
     for parameter in op["parameters"].as_array().unwrap() {
         let source = parameter["in"].as_str().unwrap_or("");
         if source == "header" && parameter["required"] == true {
-            let field=parameter["name"].as_str().unwrap();
-            if field.eq_ignore_ascii_case("if-match")&&!headers.contains_key("if-match"){return Err(Error::new("PRECONDITION_REQUIRED","If-Match is required",StatusCode::PRECONDITION_REQUIRED));}
+            let field = parameter["name"].as_str().unwrap();
+            if field.eq_ignore_ascii_case("if-match") && !headers.contains_key("if-match") {
+                return Err(Error::new(
+                    "PRECONDITION_REQUIRED",
+                    "If-Match is required",
+                    StatusCode::PRECONDITION_REQUIRED,
+                ));
+            }
             let value = header(&headers, field)?;
             contracts::validate_business(&parameter["schema"], &json!(value))?;
         }
@@ -265,7 +282,11 @@ async fn dispatch(
     if app.leader.is_closed() {
         return Err(Error::unavailable("Controller leadership is lost"));
     }
-    if !headers.contains_key("authorization") && matches!(method.as_str(),"POST"|"PUT"|"PATCH"|"DELETE") && headers.get("origin").and_then(|v|v.to_str().ok())!=Some(app.config.text("server","public_origin")) {
+    if !headers.contains_key("authorization")
+        && matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE")
+        && headers.get("origin").and_then(|v| v.to_str().ok())
+            != Some(app.config.text("server", "public_origin"))
+    {
         return Err(Error::denied());
     }
     let token = bearer(&headers)?;
@@ -287,7 +308,11 @@ async fn dispatch(
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
     let mutating = matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
-    db::auth_lock(&tx, (mutating && identity::handles(name)) || name=="getQuota").await?;
+    db::auth_lock(
+        &tx,
+        (mutating && identity::handles(name)) || name == "getQuota",
+    )
+    .await?;
     let ctx = app
         .auth
         .authenticate(&tx, token, peer.ip(), request_id)
@@ -297,10 +322,16 @@ async fn dispatch(
     } else {
         None
     };
-    let canonical=serde_json::to_vec(
+    let canonical = serde_json::to_vec(
         &json!({"body":body,"if_match":headers.get("if-match").and_then(|v|v.to_str().ok())}),
     )?;
-    let fingerprint=if identity::sensitive(name)||name=="changePassword"{contracts::digest(&app.auth.token_digest(std::str::from_utf8(&canonical).map_err(|_|Error::invalid("Invalid fingerprint"))?))}else{contracts::digest(&canonical)};
+    let fingerprint = if identity::sensitive(name) || name == "changePassword" {
+        contracts::digest(&app.auth.token_digest(
+            std::str::from_utf8(&canonical).map_err(|_| Error::invalid("Invalid fingerprint"))?,
+        ))
+    } else {
+        contracts::digest(&canonical)
+    };
     if let Some(key) = key {
         let lock = format!("{}:{}:{method}:{path}:{key}", ctx.subject, ctx.credential);
         tx.query_one(
@@ -622,11 +653,21 @@ async fn authorize_operation(
     if identity::handles(name) {
         return identity::authorize(c, ctx, name, params, body).await;
     }
-    if name=="installPlugin" {
+    if name == "installPlugin" {
         // Stage/verify the signed artifact first. Only its verified manifest can
         // supply plugin_id; the worker authorizes that actual ID before commit.
-        let paths=crate::policy::Policy::new(c,ctx.peer).credential(ctx.credential,0).await?;
-        if paths.iter().any(|p|p.rule["action"]=="plugin.install"&&p.rule["resource"]["kind"]=="plugin"&&p.rule.get("conditions").is_none_or(|v|auth::conditions_match(v,ctx.peer,chrono::Utc::now()))) {return Ok(());}
+        let paths = crate::policy::Policy::new(c, ctx.peer)
+            .credential(ctx.credential, 0)
+            .await?;
+        if paths.iter().any(|p| {
+            p.rule["action"] == "plugin.install"
+                && p.rule["resource"]["kind"] == "plugin"
+                && p.rule
+                    .get("conditions")
+                    .is_none_or(|v| auth::conditions_match(v, ctx.peer, chrono::Utc::now()))
+        }) {
+            return Ok(());
+        }
         return Err(Error::denied());
     }
     let (action, resource) = match name {

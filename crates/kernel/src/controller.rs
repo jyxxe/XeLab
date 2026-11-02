@@ -57,7 +57,7 @@ pub async fn run(app: Arc<App>) {
             }
             Err(e) => {
                 app.ready.store(false, Ordering::SeqCst);
-                tracing::error!(reason_code = e.code, "Controller reconciliation failed");
+                tracing::error!(reason_code = e.code, message=e.message, "Controller reconciliation failed");
             }
         }
         tokio::time::sleep(Duration::from_secs(2)).await;

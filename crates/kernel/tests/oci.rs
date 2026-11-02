@@ -107,7 +107,7 @@ async fn operation(router: &Router, id: &str, token: &str) -> Value {
         assert_ne!(value["state"], "failed", "{value}");
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    panic!("operation did not finish");
+    panic!("operation {id} did not finish");
 }
 
 #[tokio::test]
@@ -286,9 +286,16 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     )
     .await;
     assert_eq!(enabled.0, 202, "{}", enabled.1);
-    let intended:Uuid=c.query_one("SELECT id FROM instances WHERE deployment_id=$1", &[&deployment.parse::<Uuid>().unwrap()]).await.unwrap().get(0);
+    let intended: Uuid = c
+        .query_one(
+            "SELECT id FROM instances WHERE deployment_id=$1",
+            &[&deployment.parse::<Uuid>().unwrap()],
+        )
+        .await
+        .unwrap()
+        .get(0);
     assert!(!app.runtime.inventory().await.unwrap().contains(&intended));
-    worker=tokio::spawn(controller::run(app.clone()));
+    worker = tokio::spawn(controller::run(app.clone()));
     operation(&router, enabled.1["id"].as_str().unwrap(), token).await;
     let input = json!({"contract":manifest["capabilities"][0]["contract"],"input":{"message":"hello OCI"},"provider_deployment_id":deployment,"timeout_ms":10000});
     let called = api(
@@ -350,7 +357,10 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         .unwrap()
         .parse()
         .unwrap();
-    assert_eq!(instance,intended,"restart must reuse the committed instance intent");
+    assert_eq!(
+        instance, intended,
+        "restart must reuse the committed instance intent"
+    );
     // Expected generation is part of the server certificate name; a different one fails closed.
     let instance_row = c
         .query_one("SELECT generation FROM instances WHERE id=$1", &[&instance])
@@ -417,79 +427,327 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         500
     );
     // A second independently implemented language/runtime reuses the same contract.
-    let python_raw=fs::read("examples/generated-python/xelab/plugin.json").unwrap();
-    let python_manifest:Value=serde_json::from_slice(&python_raw).unwrap();
-    assert_eq!(manifest["capabilities"],python_manifest["capabilities"]);
-    assert_ne!(manifest["plugin_id"],python_manifest["plugin_id"]);
-    let python_image=std::env::var("XELAB_TEST_PYTHON_IMAGE").unwrap();
-    let python_digest=artifact::image_ref(&python_image).unwrap();
-    let envelope=artifact::signature_envelope(&python_manifest,python_digest,&python_raw).unwrap();
-    let install=json!({"publisher_id":publisher,"image":python_image,"signature":STANDARD.encode(signing.sign(envelope.as_bytes()).to_bytes())});
-    let installed=api(&router,"installPlugin",&[],Some(token),install,"install-python",None).await;
-    assert_eq!(installed.0,202,"{}",installed.1);
-    let installed=operation(&router,installed.1["id"].as_str().unwrap(),token).await;
+    let python_raw = fs::read("examples/generated-python/xelab/plugin.json").unwrap();
+    let python_manifest: Value = serde_json::from_slice(&python_raw).unwrap();
+    assert_eq!(manifest["capabilities"], python_manifest["capabilities"]);
+    assert_ne!(manifest["plugin_id"], python_manifest["plugin_id"]);
+    let python_image = std::env::var("XELAB_TEST_PYTHON_IMAGE").unwrap();
+    let python_digest = artifact::image_ref(&python_image).unwrap();
+    let envelope =
+        artifact::signature_envelope(&python_manifest, python_digest, &python_raw).unwrap();
+    let install = json!({"publisher_id":publisher,"image":python_image,"signature":STANDARD.encode(signing.sign(envelope.as_bytes()).to_bytes())});
+    let installed = api(
+        &router,
+        "installPlugin",
+        &[],
+        Some(token),
+        install,
+        "install-python",
+        None,
+    )
+    .await;
+    assert_eq!(installed.0, 202, "{}", installed.1);
+    let installed = operation(&router, installed.1["id"].as_str().unwrap(), token).await;
     let created=api(&router,"createDeployment",&[],Some(token),json!({"installation_id":installed["installation_id"],"display_name":"independent Python","enabled":false,"limits":limits,"config":{},"volume_ids":[]}),"deploy-python",None).await;
-    assert_eq!(created.0,202,"{}",created.1);
-    let python_deployment:Uuid=operation(&router,created.1["id"].as_str().unwrap(),token).await["deployment_id"].as_str().unwrap().parse().unwrap();
-    let python_params=[("deployment_id",python_deployment.to_string())];
-    let approved=api(&router,"approvePlugin",&python_params,Some(token),json!({"rules":[],"egress":[]}),"approve-python",Some(1)).await;
-    assert_eq!(approved.0,200,"{}",approved.1);
-    worker.abort();let _=worker.await;app.ready.store(false,Ordering::SeqCst);
-    let enabled=api(&router,"setDeploymentEnabled",&python_params,Some(token),json!({"enabled":true}),"enable-python",Some(2)).await;
-    assert_eq!(enabled.0,202,"{}",enabled.1);
-    let row=c.query_one("SELECT id,generation FROM instances WHERE deployment_id=$1", &[&python_deployment]).await.unwrap();
-    let python_instance:Uuid=row.get(0);let python_generation:i64=row.get(1);
-    let tx=c.transaction().await.unwrap();admission::reserve(&tx,python_instance).await.unwrap();tx.commit().await.unwrap();
+    assert_eq!(created.0, 202, "{}", created.1);
+    let python_deployment: Uuid = operation(&router, created.1["id"].as_str().unwrap(), token)
+        .await["deployment_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let python_params = [("deployment_id", python_deployment.to_string())];
+    let approved = api(
+        &router,
+        "approvePlugin",
+        &python_params,
+        Some(token),
+        json!({"rules":[],"egress":[]}),
+        "approve-python",
+        Some(1),
+    )
+    .await;
+    assert_eq!(approved.0, 200, "{}", approved.1);
+    worker.abort();
+    let _ = worker.await;
+    app.ready.store(false, Ordering::SeqCst);
+    let enabled = api(
+        &router,
+        "setDeploymentEnabled",
+        &python_params,
+        Some(token),
+        json!({"enabled":true}),
+        "enable-python",
+        Some(2),
+    )
+    .await;
+    assert_eq!(enabled.0, 202, "{}", enabled.1);
+    let row = c
+        .query_one(
+            "SELECT id,generation FROM instances WHERE deployment_id=$1",
+            &[&python_deployment],
+        )
+        .await
+        .unwrap();
+    let python_instance: Uuid = row.get(0);
+    let python_generation: i64 = row.get(1);
+    let tx = c.transaction().await.unwrap();
+    admission::reserve(&tx, python_instance).await.unwrap();
+    tx.commit().await.unwrap();
     // RUN-02: OCI has been created, but observation was never committed.
-    app.runtime.ensure(python_instance,python_deployment,python_generation,&python_manifest,&python_image,python_digest,&limits).await.unwrap();
+    app.runtime
+        .ensure(
+            python_instance,
+            python_deployment,
+            python_generation,
+            &python_manifest,
+            &python_image,
+            python_digest,
+            &limits,
+        )
+        .await
+        .unwrap();
     assert!(app.runtime.running(python_instance).await.unwrap());
-    assert!(c.query_one("SELECT runtime_id FROM instances WHERE id=$1", &[&python_instance]).await.unwrap().get::<_,Option<String>>(0).is_none());
-    worker=tokio::spawn(controller::run(app.clone()));
-    operation(&router,enabled.1["id"].as_str().unwrap(),token).await;
-    assert_eq!(c.query_one("SELECT count(*) FROM instances WHERE deployment_id=$1", &[&python_deployment]).await.unwrap().get::<_,i64>(0),1);
-    assert_eq!(c.query_one("SELECT count(*) FROM reservations WHERE instance_id=$1 AND status<>'released'", &[&python_instance]).await.unwrap().get::<_,i64>(0),1);
-    assert_eq!(app.runtime.inventory().await.unwrap().len(),2);
-    assert_eq!(c.query_one("SELECT count(*) FROM provider_records WHERE availability='ready'", &[]).await.unwrap().get::<_,i64>(0),2);
-    let python_input=json!({"contract":manifest["capabilities"][0]["contract"],"input":{"message":"hello OCI"},"provider_deployment_id":python_deployment,"timeout_ms":10000});
-    let python_result=api(&router,"invokeCapability",&[],Some(token),python_input.clone(),"invoke-python",None).await;
-    assert_eq!(python_result.0,200,"{}",python_result.1);
-    assert_eq!(python_result.1["output"],called.1["output"]);
-    assert_eq!(python_result.1["provider_instance_id"],python_instance.to_string());
+    let mut described=false;
+    for _ in 0..30 {
+        if let Ok(channel)=tls::channel(&config,python_instance,python_generation,&app.runtime.address(python_instance).unwrap()).await {
+            let mut client=xelab_kernel::rpc::plugin_lifecycle_client::PluginLifecycleClient::new(channel);
+            let description=client.describe(xelab_kernel::rpc::DescribeRequest{context:Some(controller::context(None))}).await;
+            assert!(description.is_ok(),"independent Describe: {description:?}");
+            assert_eq!(description.unwrap().into_inner().manifest_json,python_raw);
+            described=true;break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(described,"independent plugin TLS listener did not start");
+    assert!(c
+        .query_one(
+            "SELECT runtime_id FROM instances WHERE id=$1",
+            &[&python_instance]
+        )
+        .await
+        .unwrap()
+        .get::<_, Option<String>>(0)
+        .is_none());
+    worker = tokio::spawn(controller::run(app.clone()));
+    operation(&router, enabled.1["id"].as_str().unwrap(), token).await;
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM instances WHERE deployment_id=$1",
+            &[&python_deployment]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM reservations WHERE instance_id=$1 AND status<>'released'",
+            &[&python_instance]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(app.runtime.inventory().await.unwrap().len(), 2);
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM provider_records WHERE availability='ready'",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        2
+    );
+    let python_input = json!({"contract":manifest["capabilities"][0]["contract"],"input":{"message":"hello OCI"},"provider_deployment_id":python_deployment,"timeout_ms":10000});
+    let python_result = api(
+        &router,
+        "invokeCapability",
+        &[],
+        Some(token),
+        python_input.clone(),
+        "invoke-python",
+        None,
+    )
+    .await;
+    assert_eq!(python_result.0, 200, "{}", python_result.1);
+    assert_eq!(python_result.1["output"], called.1["output"]);
+    assert_eq!(
+        python_result.1["provider_instance_id"],
+        python_instance.to_string()
+    );
     // Real per-key lifetime accounting, including replay without another charge.
-    let key_body=json!({"name":"one call","inheritance":{"mode":"selected","rules":[{"action":"capability.invoke","resource":{"kind":"capability","match":"ids","ids":["org.xelab.echo@1.0.0"]}}]},"conditions":{"expires_at":chrono::Utc::now()+chrono::Duration::hours(1),"max_calls":1}});
-    let issued=api(&router,"createApiKey",&[("account_id",owner.to_string())],Some(token),key_body,"issue-one-call",None).await;
-    assert_eq!(issued.0,201,"{}",issued.1);let limited=issued.1["secret"].as_str().unwrap();
-    assert_eq!(api(&router,"invokeCapability",&[],Some(limited),python_input.clone(),"limited-call",None).await.0,200);
-    assert_eq!(api(&router,"invokeCapability",&[],Some(limited),python_input.clone(),"limited-call",None).await.0,200);
-    let exhausted=api(&router,"invokeCapability",&[],Some(limited),python_input.clone(),"limited-again",None).await;
-    assert_eq!(exhausted.0,409,"{}",exhausted.1);assert_eq!(exhausted.1["error"]["code"],"QUOTA_EXCEEDED");
+    let key_body = json!({"name":"one call","inheritance":{"mode":"selected","rules":[{"action":"capability.invoke","resource":{"kind":"capability","match":"ids","ids":["org.xelab.echo@1.0.0"]}}]},"conditions":{"expires_at":chrono::Utc::now()+chrono::Duration::hours(1),"max_calls":1}});
+    let issued = api(
+        &router,
+        "createApiKey",
+        &[("account_id", owner.to_string())],
+        Some(token),
+        key_body,
+        "issue-one-call",
+        None,
+    )
+    .await;
+    assert_eq!(issued.0, 201, "{}", issued.1);
+    let limited = issued.1["secret"].as_str().unwrap();
+    assert_eq!(
+        api(
+            &router,
+            "invokeCapability",
+            &[],
+            Some(limited),
+            python_input.clone(),
+            "limited-call",
+            None
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(
+        api(
+            &router,
+            "invokeCapability",
+            &[],
+            Some(limited),
+            python_input.clone(),
+            "limited-call",
+            None
+        )
+        .await
+        .0,
+        200
+    );
+    let exhausted = api(
+        &router,
+        "invokeCapability",
+        &[],
+        Some(limited),
+        python_input.clone(),
+        "limited-again",
+        None,
+    )
+    .await;
+    assert_eq!(exhausted.0, 409, "{}", exhausted.1);
+    assert_eq!(exhausted.1["error"]["code"], "QUOTA_EXCEEDED");
     // RUN-03: exercise the cgroup, not just serialized OCI configuration.
-    let cg=std::path::Path::new("/sys/fs/cgroup/xelab/plugins").join(python_instance.to_string());
-    assert_eq!(fs::read_to_string(cg.join("memory.max")).unwrap().trim(),"134217728");
-    assert_eq!(fs::read_to_string(cg.join("cpu.max")).unwrap().trim(),"50000 100000");
-    assert_eq!(fs::read_to_string(cg.join("pids.max")).unwrap().trim(),"64");
-    let before=counter(&cg.join("cpu.stat"),"nr_throttled");
-    let stress=exec_python(python_instance,"import time\nend=time.monotonic()+2\nwhile time.monotonic()<end: pass").await;
-    assert!(stress.status.success(),"{}",String::from_utf8_lossy(&stress.stderr));
-    assert!(counter(&cg.join("cpu.stat"),"nr_throttled")>before);
-    let before=counter(&cg.join("memory.events"),"oom_kill");
-    let oom=exec_python(python_instance,"a=bytearray(256*1024*1024)").await;
-    assert!(!oom.status.success());assert!(counter(&cg.join("memory.events"),"oom_kill")>before);
-    assert!(app.runtime.running(instance).await.unwrap(),"another plugin survives the OOM");
+    let cg = std::path::Path::new("/sys/fs/cgroup/xelab/plugins").join(python_instance.to_string());
+    assert_eq!(
+        fs::read_to_string(cg.join("memory.max")).unwrap().trim(),
+        "134217728"
+    );
+    assert_eq!(
+        fs::read_to_string(cg.join("cpu.max")).unwrap().trim(),
+        "50000 100000"
+    );
+    assert_eq!(
+        fs::read_to_string(cg.join("pids.max")).unwrap().trim(),
+        "64"
+    );
+    let before = counter(&cg.join("cpu.stat"), "nr_throttled");
+    let stress = exec_python(
+        python_instance,
+        "import time\nend=time.monotonic()+2\nwhile time.monotonic()<end: pass",
+    )
+    .await;
+    assert!(
+        stress.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stress.stderr)
+    );
+    assert!(counter(&cg.join("cpu.stat"), "nr_throttled") > before);
+    let before = counter(&cg.join("memory.events"), "oom_kill");
+    let oom = exec_python(python_instance, "a=bytearray(256*1024*1024)").await;
+    assert!(!oom.status.success());
+    assert!(counter(&cg.join("memory.events"), "oom_kill") > before);
+    assert!(
+        app.runtime.running(instance).await.unwrap(),
+        "another plugin survives the OOM"
+    );
     let isolation=exec_python(python_instance,"import socket\ntry:\n open('/xelab/forbidden','w')\n raise AssertionError('rootfs writable')\nexcept OSError: pass\ns=socket.socket();s.settimeout(1)\ntry:\n s.connect(('1.1.1.1',443))\n raise AssertionError('egress allowed')\nexcept OSError: pass").await;
-    assert!(isolation.status.success(),"{}",String::from_utf8_lossy(&isolation.stderr));
+    assert!(
+        isolation.status.success(),
+        "{}",
+        String::from_utf8_lossy(&isolation.stderr)
+    );
     // RUN-07: execute the shipped CLI over HTTPS against the same API, without WebUI.
-    let leaf=KeyPair::generate().unwrap();let server_cert=CertificateParams::new(vec!["127.0.0.1".into()]).unwrap().signed_by(&leaf,&cert,&key).unwrap();
-    let server_tls=axum_server::tls_rustls::RustlsConfig::from_pem(server_cert.pem().into_bytes(),leaf.serialize_pem().into_bytes()).await.unwrap();
-    let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
-    let serve=tokio::spawn(axum_server::from_tcp_rustls(listener,server_tls).serve(router.clone().into_make_service_with_connect_info::<SocketAddr>()));
-    let token_file=root.join("cli-token");fs::write(&token_file,token).unwrap();fs::set_permissions(&token_file,fs::Permissions::from_mode(0o600)).unwrap();
-    let input_file=root.join("invoke.json");fs::write(&input_file,serde_json::to_vec(&python_input).unwrap()).unwrap();
-    let cli=tokio::process::Command::new(env!("CARGO_BIN_EXE_xelabctl")).args(["api","invokeCapability","--endpoint",&format!("https://{address}"),"--token-file",token_file.to_str().unwrap(),"--ca-file",root.join("ca.crt").to_str().unwrap(),"--body-file",input_file.to_str().unwrap(),"--idempotency-key","cli-independent-python"]).output().await.unwrap();
-    assert!(cli.status.success(),"{}",String::from_utf8_lossy(&cli.stderr));let cli_value:Value=serde_json::from_slice(&cli.stdout).unwrap();assert_eq!(cli_value["output"],called.1["output"]);serve.abort();
-    let python_value=api(&router,"getDeployment",&python_params,Some(token),Value::Null,"read-python",None).await.1;
-    let disabled=api(&router,"setDeploymentEnabled",&python_params,Some(token),json!({"enabled":false}),"disable-python",python_value["revision"].as_i64()).await;
-    assert_eq!(disabled.0,202,"{}",disabled.1);operation(&router,disabled.1["id"].as_str().unwrap(),token).await;
+    let leaf = KeyPair::generate().unwrap();
+    let server_cert = CertificateParams::new(vec!["127.0.0.1".into()])
+        .unwrap()
+        .signed_by(&leaf, &cert, &key)
+        .unwrap();
+    let server_tls = axum_server::tls_rustls::RustlsConfig::from_pem(
+        server_cert.pem().into_bytes(),
+        leaf.serialize_pem().into_bytes(),
+    )
+    .await
+    .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let serve = tokio::spawn(
+        axum_server::from_tcp_rustls(listener, server_tls).serve(
+            router
+                .clone()
+                .into_make_service_with_connect_info::<SocketAddr>(),
+        ),
+    );
+    let token_file = root.join("cli-token");
+    fs::write(&token_file, token).unwrap();
+    fs::set_permissions(&token_file, fs::Permissions::from_mode(0o600)).unwrap();
+    let input_file = root.join("invoke.json");
+    fs::write(&input_file, serde_json::to_vec(&python_input).unwrap()).unwrap();
+    let cli = tokio::process::Command::new(env!("CARGO_BIN_EXE_xelabctl"))
+        .args([
+            "api",
+            "invokeCapability",
+            "--endpoint",
+            &format!("https://{address}"),
+            "--token-file",
+            token_file.to_str().unwrap(),
+            "--ca-file",
+            root.join("ca.crt").to_str().unwrap(),
+            "--body-file",
+            input_file.to_str().unwrap(),
+            "--idempotency-key",
+            "cli-independent-python",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        cli.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli.stderr)
+    );
+    let cli_value: Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert_eq!(cli_value["output"], called.1["output"]);
+    serve.abort();
+    let python_value = api(
+        &router,
+        "getDeployment",
+        &python_params,
+        Some(token),
+        Value::Null,
+        "read-python",
+        None,
+    )
+    .await
+    .1;
+    let disabled = api(
+        &router,
+        "setDeploymentEnabled",
+        &python_params,
+        Some(token),
+        json!({"enabled":false}),
+        "disable-python",
+        python_value["revision"].as_i64(),
+    )
+    .await;
+    assert_eq!(disabled.0, 202, "{}", disabled.1);
+    operation(&router, disabled.1["id"].as_str().unwrap(), token).await;
     let deployment_value = api(
         &router,
         "getDeployment",
@@ -553,10 +811,36 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     worker.abort();
 }
 
-fn counter(path:&std::path::Path,name:&str)->u64{
-    fs::read_to_string(path).unwrap().lines().find_map(|line|{let (key,value)=line.split_once(' ')?;(key==name).then(||value.parse().unwrap())}).unwrap()
+fn counter(path: &std::path::Path, name: &str) -> u64 {
+    fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once(' ')?;
+            (key == name).then(|| value.parse().unwrap())
+        })
+        .unwrap()
 }
-async fn exec_python(instance:Uuid,script:&str)->std::process::Output{
-    tokio::time::timeout(Duration::from_secs(30),tokio::process::Command::new("/usr/bin/ctr").args(["--namespace","xelab-ci","tasks","exec","--exec-id",&Uuid::new_v4().to_string(),&instance.to_string(),"/usr/bin/python3","-c",script]).kill_on_drop(true).output()).await.unwrap().unwrap()
+async fn exec_python(instance: Uuid, script: &str) -> std::process::Output {
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        tokio::process::Command::new("/usr/bin/ctr")
+            .args([
+                "--namespace",
+                "xelab-ci",
+                "tasks",
+                "exec",
+                "--exec-id",
+                &Uuid::new_v4().to_string(),
+                &instance.to_string(),
+                "/usr/bin/python3",
+                "-c",
+                script,
+            ])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
 }
-

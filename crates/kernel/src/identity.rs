@@ -452,11 +452,22 @@ async fn protect_owners(c: &(impl GenericClient + Sync)) -> Result<()> {
         let paths = Policy::new(c, "127.0.0.1".parse().unwrap())
             .account(owner, 0)
             .await?;
-        let mut unrestricted=true;
-        for row in c.query("SELECT action,resource_kinds FROM permission_definitions", &[]).await? {
-            let action:String=row.get(0);let kinds:Value=row.get(1);
+        let mut unrestricted = true;
+        for row in c
+            .query(
+                "SELECT action,resource_kinds FROM permission_definitions",
+                &[],
+            )
+            .await?
+        {
+            let action: String = row.get(0);
+            let kinds: Value = row.get(1);
             for kind in kinds.as_array().unwrap() {
-                unrestricted &= paths.iter().any(|p|p.rule["action"]==action&&p.rule["resource"]==json!({"kind":kind,"match":"all"})&&p.rule.get("conditions").is_none_or(|v|v==&json!({})));
+                unrestricted &= paths.iter().any(|p| {
+                    p.rule["action"] == action
+                        && p.rule["resource"] == json!({"kind":kind,"match":"all"})
+                        && p.rule.get("conditions").is_none_or(|v| v == &json!({}))
+                });
             }
         }
         if unrestricted {
@@ -722,7 +733,7 @@ pub async fn execute(
             })
             .await
             .map_err(|_| Error::unavailable("Password hashing failed"))??;
-            auth.login_succeeded(account,ctx.peer)?;
+            auth.login_succeeded(account, ctx.peer)?;
             c.execute("UPDATE accounts SET password_hash=$2,revision=revision+1,updated_at=now() WHERE id=$1", &[&account,&hash]).await?;
             c.execute("UPDATE credentials SET status='revoked',revision=revision+1,updated_at=now() WHERE owner_id=$1 AND kind IN ('session','oauth_access','oauth_refresh') AND status='active'", &[&account]).await?;
             changed(c, account).await?;
@@ -892,9 +903,7 @@ pub async fn execute(
         }
         "checkAuthorization" => {
             let requested = json!({"action":body["action"],"resource":body["resource"]});
-            let result = Policy::new(c, ctx.peer)
-                .covers_now(ctx, &requested)
-                .await;
+            let result = Policy::new(c, ctx.peer).covers_now(ctx, &requested).await;
             let allowed = match result {
                 Ok(allowed) => allowed,
                 Err(e) if matches!(e.code, "PERMISSION_DENIED" | "INVALID_ARGUMENT") => false,

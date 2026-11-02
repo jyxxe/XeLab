@@ -113,7 +113,9 @@ impl From<serde_json::Error> for Error {
     }
 }
 impl From<tonic::Status> for Error {
-    fn from(_: tonic::Status) -> Self {
+    fn from(status: tonic::Status) -> Self {
+        tracing::warn!(grpc_code=?status.code(), "Plugin RPC rejected");
         Self::unavailable("Plugin RPC failed")
     }
 }
+
