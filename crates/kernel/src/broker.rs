@@ -126,7 +126,7 @@ pub async fn invoke(
         {
             return Err(Error::exhausted());
         }
-        tx.execute("UPDATE quotas SET concurrent_calls_used=concurrent_calls_used+1,daily_calls_used=$2+1,daily_bucket=$3 WHERE account_id=$1", &[account,&daily,&today]).await?;
+        tx.execute("UPDATE quotas SET concurrent_calls_used=concurrent_calls_used+1,daily_calls_used=$2::bigint+1,daily_bucket=$3 WHERE account_id=$1", &[account,&daily,&today]).await?;
     }
     let call = Uuid::new_v4();
     let timeout = input["timeout_ms"].as_u64().unwrap_or(30000);

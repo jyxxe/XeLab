@@ -94,7 +94,8 @@ impl IntoResponse for Error {
     }
 }
 impl From<tokio_postgres::Error> for Error {
-    fn from(_: tokio_postgres::Error) -> Self {
+    fn from(error: tokio_postgres::Error) -> Self {
+        tracing::error!(sql_state = error.code().map(|c|c.code()).unwrap_or("CLIENT_ERROR"), "Metadata operation failed");
         Self::unavailable("Metadata transaction failed")
     }
 }

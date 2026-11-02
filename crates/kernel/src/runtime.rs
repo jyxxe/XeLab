@@ -482,8 +482,7 @@ impl Runtime {
                     .await?,
                 2097152,
             )?;
-            if !same_spec(&existing, &spec)
-            {
+            if !same_spec(&existing, &spec) {
                 return Err(Error::conflict("Existing OCI instance identity differs"));
             }
         }
@@ -584,13 +583,36 @@ impl Runtime {
 // Normalize only these known defaults; added privileges or changed paths still fail.
 fn same_spec(actual: &Value, expected: &Value) -> bool {
     let mut actual = actual.clone();
-    let Some(process) = actual["process"].as_object_mut() else { return false; };
+    let Some(process) = actual["process"].as_object_mut() else {
+        return false;
+    };
     process.entry("terminal").or_insert(json!(false));
-    let Some(caps) = process.get_mut("capabilities").and_then(Value::as_object_mut) else { return false; };
-    for key in ["bounding","effective","inheritable","permitted","ambient"] {
+    let Some(caps) = process
+        .get_mut("capabilities")
+        .and_then(Value::as_object_mut)
+    else {
+        return false;
+    };
+    for key in [
+        "bounding",
+        "effective",
+        "inheritable",
+        "permitted",
+        "ambient",
+    ] {
         caps.entry(key).or_insert(json!([]));
     }
-    ["annotations","root","process","mounts","linux","hostname","ociVersion"].iter().all(|key|actual[*key]==expected[*key])
+    [
+        "annotations",
+        "root",
+        "process",
+        "mounts",
+        "linux",
+        "hostname",
+        "ociVersion",
+    ]
+    .iter()
+    .all(|key| actual[*key] == expected[*key])
 }
 
 fn mounted(path: &Path) -> Result<bool> {
@@ -647,13 +669,13 @@ mod tests {
     use super::*;
     #[test]
     fn omitted_oci_defaults_are_equivalent_but_added_privileges_are_not() {
-        let expected=json!({"process":{"terminal":false,"capabilities":{"bounding":[],"effective":[],"inheritable":[],"permitted":[],"ambient":[]}}});
-        let mut actual=json!({"process":{"capabilities":{}}});
-        assert!(same_spec(&actual,&expected));
-        actual["process"]["capabilities"]["effective"]=json!(["CAP_SYS_ADMIN"]);
-        assert!(!same_spec(&actual,&expected));
-        actual=json!({"process":{"terminal":true,"capabilities":{}}});
-        assert!(!same_spec(&actual,&expected));
+        let expected = json!({"process":{"terminal":false,"capabilities":{"bounding":[],"effective":[],"inheritable":[],"permitted":[],"ambient":[]}}});
+        let mut actual = json!({"process":{"capabilities":{}}});
+        assert!(same_spec(&actual, &expected));
+        actual["process"]["capabilities"]["effective"] = json!(["CAP_SYS_ADMIN"]);
+        assert!(!same_spec(&actual, &expected));
+        actual = json!({"process":{"terminal":true,"capabilities":{}}});
+        assert!(!same_spec(&actual, &expected));
     }
     #[test]
     fn oci_spec_is_nonprivileged_and_has_hard_limits() {
