@@ -645,7 +645,10 @@ mod pagination_tests {
         assert_eq!(tail.get::<_, String>(0), "degraded");
         assert_ne!(tail.get::<_, Value>(1), json!([]));
         let disabled: i64 = c
-            .query_one("SELECT count(*) FROM deployments WHERE phase='disabled'", &[])
+            .query_one(
+                "SELECT count(*) FROM deployments WHERE phase='disabled'",
+                &[],
+            )
             .await
             .unwrap()
             .get(0);

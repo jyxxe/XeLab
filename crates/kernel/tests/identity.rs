@@ -457,7 +457,10 @@ async fn self_issued_grants_have_linear_proofs_and_live_revocation() {
         );
         let invoke: Vec<_> = paths
             .iter()
-            .filter(|p| p.rule["action"] == "capability.invoke")
+            .filter(|p| {
+                p.rule["action"] == "capability.invoke"
+                    && p.rule["resource"]["kind"] == "capability"
+            })
             .collect();
         assert_eq!(invoke.len(), count + 1);
         for grant in &grants {
