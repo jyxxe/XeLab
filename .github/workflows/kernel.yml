@@ -28,14 +28,7 @@ jobs:
       - name: Toolchain
         run: rustc --version && cargo --version
       - name: Format
-        run: |
-          cargo fmt --all
-          python3 - <<'PYFMT'
-          import json, pathlib, subprocess, base64
-          for p in subprocess.check_output(["git","diff","--name-only"],text=True).splitlines():
-              if p.endswith(".rs"):
-                  print("FMT_B64:"+json.dumps({"path":p,"content":base64.b64encode(pathlib.Path(p).read_bytes()).decode()}))
-          PYFMT
+        run: cargo fmt --all -- --check
       - name: Compile and test
         run: cargo test --workspace --all-targets --locked
       - name: Build reference plugin

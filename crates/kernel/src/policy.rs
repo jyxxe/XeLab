@@ -505,9 +505,20 @@ fn split_ids(rule: &Value) -> Vec<Value> {
         .collect()
 }
 fn same_rule(a: &Value, b: &Value) -> bool {
-    a["action"] == b["action"]
-        && a["resource"] == b["resource"]
-        && a.get("conditions").unwrap_or(&json!({})) == b.get("conditions").unwrap_or(&json!({}))
+    if a["action"] != b["action"] || a["resource"] != b["resource"] {
+        return false;
+    }
+    let empty = json!({});
+    let left = a.get("conditions").unwrap_or(&empty);
+    let right = b.get("conditions").unwrap_or(&empty);
+    // Compare normalized instants, not their RFC3339 spelling (+00:00 vs Z).
+    matches!(
+        (
+            intersect_conditions(left, left),
+            intersect_conditions(right, right)
+        ),
+        (Some(left), Some(right)) if left == right
+    )
 }
 fn bounded(paths: &[Path]) -> Result<()> {
     if paths.len() > MAX_PATHS {
@@ -681,5 +692,11 @@ mod tests {
         assert_eq!(intersect_conditions(&a, &b), Some(b));
         assert!(intersect_conditions(&a, &json!({"source_cidrs":["192.0.2.0/24"]})).is_none());
         assert!(intersect_conditions(&a, &json!({"not_before":"2031-01-01T00:00:00Z"})).is_none());
+        let utc = json!({"action":"platform.read","resource":{"kind":"platform","match":"all"},"conditions":{"expires_at":"2030-01-01T00:00:00Z"}});
+        let mut offset = utc.clone();
+        offset["conditions"]["expires_at"] = json!("2030-01-01T01:00:00+01:00");
+        assert!(same_rule(&utc, &offset));
+        offset["conditions"]["expires_at"] = json!("2030-01-02T00:00:00Z");
+        assert!(!same_rule(&utc, &offset));
     }
 }

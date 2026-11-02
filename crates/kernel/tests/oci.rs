@@ -538,13 +538,34 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     let imposter = root.join("imposter-identity");
     tls::issue(&config, Some((Uuid::new_v4(), 1)), &imposter).unwrap();
     let imposter_tls = tonic::transport::ClientTlsConfig::new()
-        .ca_certificate(tonic::transport::Certificate::from_pem(fs::read(root.join("ca.crt")).unwrap()))
-        .identity(tonic::transport::Identity::from_pem(fs::read(imposter.join("tls.crt")).unwrap(), fs::read(imposter.join("tls.key")).unwrap()))
-        .domain_name(format!("i-{python_instance}-g-{python_generation}.xelab.local"));
-    let imposter_channel = tonic::transport::Endpoint::from_shared(format!("https://{}:7000", app.runtime.address(python_instance).unwrap()))
-        .unwrap().tls_config(imposter_tls).unwrap().timeout(Duration::from_secs(3)).connect().await.unwrap();
-    let denied = xelab_kernel::rpc::plugin_lifecycle_client::PluginLifecycleClient::new(imposter_channel)
-        .describe(xelab_kernel::rpc::DescribeRequest { context: Some(controller::context(None)) }).await.unwrap_err();
+        .ca_certificate(tonic::transport::Certificate::from_pem(
+            fs::read(root.join("ca.crt")).unwrap(),
+        ))
+        .identity(tonic::transport::Identity::from_pem(
+            fs::read(imposter.join("tls.crt")).unwrap(),
+            fs::read(imposter.join("tls.key")).unwrap(),
+        ))
+        .domain_name(format!(
+            "i-{python_instance}-g-{python_generation}.xelab.local"
+        ));
+    let imposter_channel = tonic::transport::Endpoint::from_shared(format!(
+        "https://{}:7000",
+        app.runtime.address(python_instance).unwrap()
+    ))
+    .unwrap()
+    .tls_config(imposter_tls)
+    .unwrap()
+    .timeout(Duration::from_secs(3))
+    .connect()
+    .await
+    .unwrap();
+    let denied =
+        xelab_kernel::rpc::plugin_lifecycle_client::PluginLifecycleClient::new(imposter_channel)
+            .describe(xelab_kernel::rpc::DescribeRequest {
+                context: Some(controller::context(None)),
+            })
+            .await
+            .unwrap_err();
     assert_eq!(denied.code(), tonic::Code::PermissionDenied);
     assert!(c
         .query_one(

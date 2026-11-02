@@ -471,23 +471,80 @@ async fn auth_03_snapshot_follow_and_independent_provenance() {
 
 #[tokio::test]
 async fn snapshot_tracks_partial_source_withdrawal_without_borrowing_new_grants() {
-    let Some(f)=Fixture::new().await else { return; };
-    let (issuer,issuer_token)=f.child(f.owner,&f.token,json!({"mode":"all_snapshot"})).await;
-    let (guest,token)=f.root_guest().await;
-    let both=json!({"kind":"capability","match":"ids","ids":["org.xelab.alpha@1.0.0","org.xelab.beta@1.0.0"]});
-    let alpha=json!({"kind":"capability","match":"ids","ids":["org.xelab.alpha@1.0.0"]});
-    let beta=json!({"kind":"capability","match":"ids","ids":["org.xelab.beta@1.0.0"]});
-    let grant=f.call("createGrant",&[("account_id",guest.to_string())],&issuer_token,json!({"source":"role","role_id":"Guest","scope":both}),None).await;
-    assert_eq!(grant.0,201,"{}",grant.1);
-    let frozen=f.key(guest,&token,json!({"mode":"selected","rules":[{"action":"capability.invoke","resource":both}]})).await;
-    let account=f.call("getAccount",&[("account_id",issuer.to_string())],&f.token,Value::Null,None).await;
-    let narrowed=f.call("updateInheritance",&[("account_id",issuer.to_string())],&f.token,json!({"mode":"selected","rules":[{"action":"capability.invoke","resource":alpha}]}),account.1["revision"].as_i64()).await;
-    assert_eq!(narrowed.0,200,"{}",narrowed.1);
-    let replacement=f.call("createGrant",&[("account_id",guest.to_string())],&f.token,json!({"source":"role","role_id":"Guest","scope":beta}),None).await;
-    assert_eq!(replacement.0,201,"{}",replacement.1);
-    assert!(f.check(&token,"capability.invoke",beta.clone()).await);
-    assert!(f.check(frozen["secret"].as_str().unwrap(),"capability.invoke",alpha).await);
-    assert!(!f.check(frozen["secret"].as_str().unwrap(),"capability.invoke",beta).await,"the old source now covers only alpha; a new beta grant cannot fill its gap");
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let (issuer, issuer_token) = f
+        .child(f.owner, &f.token, json!({"mode":"all_snapshot"}))
+        .await;
+    let (guest, token) = f.root_guest().await;
+    let both = json!({"kind":"capability","match":"ids","ids":["org.xelab.alpha@1.0.0","org.xelab.beta@1.0.0"]});
+    let alpha = json!({"kind":"capability","match":"ids","ids":["org.xelab.alpha@1.0.0"]});
+    let beta = json!({"kind":"capability","match":"ids","ids":["org.xelab.beta@1.0.0"]});
+    let grant = f
+        .call(
+            "createGrant",
+            &[("account_id", guest.to_string())],
+            &issuer_token,
+            json!({"source":"role","role_id":"Guest","scope":both}),
+            None,
+        )
+        .await;
+    assert_eq!(grant.0, 201, "{}", grant.1);
+    let frozen = f
+        .key(
+            guest,
+            &token,
+            json!({"mode":"selected","rules":[{"action":"capability.invoke","resource":both}]}),
+        )
+        .await;
+    let account = f
+        .call(
+            "getAccount",
+            &[("account_id", issuer.to_string())],
+            &f.token,
+            Value::Null,
+            None,
+        )
+        .await;
+    let narrowed = f
+        .call(
+            "updateInheritance",
+            &[("account_id", issuer.to_string())],
+            &f.token,
+            json!({"mode":"selected","rules":[{"action":"capability.invoke","resource":alpha}]}),
+            account.1["revision"].as_i64(),
+        )
+        .await;
+    assert_eq!(narrowed.0, 200, "{}", narrowed.1);
+    let replacement = f
+        .call(
+            "createGrant",
+            &[("account_id", guest.to_string())],
+            &f.token,
+            json!({"source":"role","role_id":"Guest","scope":beta}),
+            None,
+        )
+        .await;
+    assert_eq!(replacement.0, 201, "{}", replacement.1);
+    assert!(f.check(&token, "capability.invoke", beta.clone()).await);
+    assert!(
+        f.check(
+            frozen["secret"].as_str().unwrap(),
+            "capability.invoke",
+            alpha
+        )
+        .await
+    );
+    assert!(
+        !f.check(
+            frozen["secret"].as_str().unwrap(),
+            "capability.invoke",
+            beta
+        )
+        .await,
+        "the old source now covers only alpha; a new beta grant cannot fill its gap"
+    );
 }
 
 #[tokio::test]
@@ -554,10 +611,12 @@ async fn auth_04_05_06_source_revocation_idempotency_and_secret_storage() {
         .unwrap()
         .get(0);
     assert!(!persisted.contains(first.1["secret"].as_str().unwrap()));
-    let issued_id=first.1["credential"]["id"].as_str().unwrap();
+    let issued_id = first.1["credential"]["id"].as_str().unwrap();
     let audit:Value=c.query_one("SELECT to_jsonb(a) FROM audit_events a WHERE action='createApiKey' AND resource->'ids' @> $1 ORDER BY created_at DESC LIMIT 1", &[&json!([issued_id])]).await.unwrap().get(0);
-    assert_eq!(audit["resource"]["kind"],"credential");
-    assert!(!audit.to_string().contains(first.1["secret"].as_str().unwrap()));
+    assert_eq!(audit["resource"]["kind"], "credential");
+    assert!(!audit
+        .to_string()
+        .contains(first.1["secret"].as_str().unwrap()));
     let revoke = f
         .call(
             "revokeApiKey",
