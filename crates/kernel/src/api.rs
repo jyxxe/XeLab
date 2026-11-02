@@ -302,9 +302,14 @@ async fn dispatch(
     }
     let result = match name {
         "getCall" => {
-            let call = path_id(&params,"call_id")?;
-            let r=tx.query_one("SELECT state,result,error FROM calls WHERE id=$1", &[&call]).await?;
-            (json!({"call_id":call,"state":r.get::<_,String>(0),"result":r.get::<_,Option<Value>>(1),"error":r.get::<_,Option<Value>>(2)}),200)
+            let call = path_id(&params, "call_id")?;
+            let r = tx
+                .query_one("SELECT state,result,error FROM calls WHERE id=$1", &[&call])
+                .await?;
+            (
+                json!({"call_id":call,"state":r.get::<_,String>(0),"result":r.get::<_,Option<Value>>(1),"error":r.get::<_,Option<Value>>(2)}),
+                200,
+            )
         }
         "getNode" => (admission::status(&tx).await?, 200),
         "getOperation" => (
@@ -471,7 +476,9 @@ async fn dispatch(
                 )
                 .await?;
             let approval: Value = row.get(0);
-            if approval == json!({}) { return Err(Error::unavailable("Deployment has not been approved")); }
+            if approval == json!({}) {
+                return Err(Error::unavailable("Deployment has not been approved"));
+            }
             (approval, 200)
         }
         "revokePublisher" => {
@@ -527,7 +534,9 @@ async fn dispatch(
     {
         validate(model, &result.0)?;
     }
-    if app.leader.is_closed() { return Err(Error::unavailable("Controller leadership is lost")); }
+    if app.leader.is_closed() {
+        return Err(Error::unavailable("Controller leadership is lost"));
+    }
     tx.commit().await?;
     Ok(result)
 }
@@ -541,9 +550,15 @@ async fn authorize_operation(
 ) -> Result<()> {
     let (action, resource) = match name {
         "getCall" => {
-            let id=path_id(params,"call_id")?;
-            let r=c.query_opt("SELECT owner_id FROM calls WHERE id=$1", &[&id]).await?.ok_or_else(Error::not_found)?;
-            ("capability.call.read",Resource::new("call",id,Some(r.get(0))))
+            let id = path_id(params, "call_id")?;
+            let r = c
+                .query_opt("SELECT owner_id FROM calls WHERE id=$1", &[&id])
+                .await?
+                .ok_or_else(Error::not_found)?;
+            (
+                "capability.call.read",
+                Resource::new("call", id, Some(r.get(0))),
+            )
         }
         "getNode" => ("platform.read", Resource::new("platform", "node", None)),
         "trustPublisher" => (

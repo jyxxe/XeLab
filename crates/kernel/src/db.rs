@@ -23,9 +23,7 @@ impl Db {
             match host {
                 tokio_postgres::config::Host::Tcp(h)
                     if h.parse::<std::net::IpAddr>()
-                        .is_ok_and(|ip| ip.is_loopback()) =>
-                {
-                }
+                        .is_ok_and(|ip| ip.is_loopback()) => {}
                 tokio_postgres::config::Host::Unix(_) => (),
                 _ => {
                     return Err(Error::invalid(

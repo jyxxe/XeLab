@@ -32,9 +32,12 @@ pub fn issue(config: &Config, instance: Option<(Uuid, i64)>, directory: &Path) -
     // cannot expose a mismatched certificate/key pair to concurrent readers.
     let key_path = directory.join("tls.key");
     let fresh = !key_path.exists();
-    let leaf = if fresh { KeyPair::generate() } else {
+    let leaf = if fresh {
+        KeyPair::generate()
+    } else {
         KeyPair::from_pem(&fs::read_to_string(&key_path)?)
-    }.map_err(|_| Error::unavailable("Workload private key is unavailable"))?;
+    }
+    .map_err(|_| Error::unavailable("Workload private key is unavailable"))?;
     let mut params = CertificateParams::new(vec![name])
         .map_err(|_| Error::invalid("Invalid workload identity"))?;
     params.subject_alt_names.push(SanType::URI(
@@ -52,11 +55,13 @@ pub fn issue(config: &Config, instance: Option<(Uuid, i64)>, directory: &Path) -
         .map_err(|_| Error::unavailable("Certificate signing failed"))?;
     atomic_file(&directory.join("tls.crt"), cert.pem().as_bytes(), 0o644)?;
     atomic_file(&directory.join("ca.crt"), ca_pem.as_bytes(), 0o644)?;
-    if fresh { atomic_file(
-        &directory.join("tls.key"),
-        leaf.serialize_pem().as_bytes(),
-        0o600,
-    )?; }
+    if fresh {
+        atomic_file(
+            &directory.join("tls.key"),
+            leaf.serialize_pem().as_bytes(),
+            0o600,
+        )?;
+    }
     if instance.is_some() {
         let path = std::ffi::CString::new(directory.join("tls.key").as_os_str().as_encoded_bytes())
             .map_err(|_| Error::invalid("Invalid identity path"))?;

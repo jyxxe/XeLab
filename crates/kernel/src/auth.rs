@@ -97,7 +97,13 @@ impl Auth {
         mac.verify_slice(&stored).map_err(|_| Error::credential())?;
         self.resume(c, r.get("id"), peer, request).await
     }
-    pub(crate) async fn resume(&self, c: &impl GenericClient, credential: Uuid, peer: IpAddr, request: Uuid) -> Result<Context> {
+    pub(crate) async fn resume(
+        &self,
+        c: &impl GenericClient,
+        credential: Uuid,
+        peer: IpAddr,
+        request: Uuid,
+    ) -> Result<Context> {
         let r = c.query_opt("SELECT c.owner_id FROM credentials c JOIN accounts a ON a.id=c.owner_id WHERE c.id=$1 AND c.kind='session' AND c.issuer_credential_id IS NULL AND a.independent_owner AND a.parent_id IS NULL FOR SHARE OF c,a", &[&credential]).await?.ok_or_else(Error::credential)?;
         let subject: Uuid = r.get("owner_id");
         let mut chain = Vec::new();
@@ -156,18 +162,35 @@ impl Auth {
         Ok(())
     }
     fn login_succeeded(&self, account: Uuid, peer: IpAddr) -> Result<()> {
-        let mut state = self.failures.lock().map_err(|_| Error::unavailable("Login limiter unavailable"))?;
+        let mut state = self
+            .failures
+            .lock()
+            .map_err(|_| Error::unavailable("Login limiter unavailable"))?;
         for key in [format!("account:{account}"), format!("peer:{peer}")] {
-            if let Some((_, n)) = state.get_mut(&key) { *n = n.saturating_sub(1); }
+            if let Some((_, n)) = state.get_mut(&key) {
+                *n = n.saturating_sub(1);
+            }
         }
         Ok(())
     }
     #[allow(clippy::too_many_arguments)] // The delegation binds all of these independently checked identities.
-    pub(crate) async fn issue_rpc(&self, c: &impl GenericClient, ctx: &Context, call: Uuid, instance: Uuid, generation: i64, deadline: DateTime<Utc>) -> Result<String> {
+    pub(crate) async fn issue_rpc(
+        &self,
+        c: &impl GenericClient,
+        ctx: &Context,
+        call: Uuid,
+        instance: Uuid,
+        generation: i64,
+        deadline: DateTime<Utc>,
+    ) -> Result<String> {
         let execution = Uuid::new_v4();
         // The supported pure profile grants no HostService authority.
         c.execute("INSERT INTO execution_delegations(id,subject_id,issuer_credential_id,maximum_rules,run_as,expires_at,status,created_at) VALUES($1,$2,$3,'[]','user',$4,'active',now())", &[&execution,&ctx.subject,&ctx.credential,&deadline]).await?;
-        c.execute("UPDATE calls SET delegation_id=$2 WHERE id=$1", &[&call,&execution]).await?;
+        c.execute(
+            "UPDATE calls SET delegation_id=$2 WHERE id=$1",
+            &[&call, &execution],
+        )
+        .await?;
         let (token, hash) = self.random_token();
         c.execute("INSERT INTO rpc_delegations(id,execution_delegation_id,subject_id,instance_id,generation,call_id,issuer_credential_id,hmac_key_id,verification_digest,expires_at,status,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active',now())", &[&Uuid::new_v4(),&execution,&ctx.subject,&instance,&generation,&call,&ctx.credential,&self.key_id.as_str(),&hash,&deadline]).await?;
         Ok(token)
@@ -202,7 +225,10 @@ impl Auth {
         .await
         .map_err(|_| Error::unavailable("Password verifier unavailable"))?;
         let active = r.as_ref().is_some_and(|r| {
-            r.get::<_, String>("kind") == "user" && r.get::<_, String>("status") == "active" && r.get::<_,bool>("independent_owner") && r.get::<_,Option<Uuid>>("parent_id").is_none()
+            r.get::<_, String>("kind") == "user"
+                && r.get::<_, String>("status") == "active"
+                && r.get::<_, bool>("independent_owner")
+                && r.get::<_, Option<Uuid>>("parent_id").is_none()
         });
         if !password_ok || !active || account_chain(c, account).await.is_err() {
             let subject = r.as_ref().map(|_| account);

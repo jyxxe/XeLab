@@ -62,7 +62,10 @@ impl Error {
             StatusCode::SERVICE_UNAVAILABLE,
         )
     }
-    pub fn with_resource(mut self, id: impl ToString) -> Self { self.resource_id=Some(id.to_string()); self }
+    pub fn with_resource(mut self, id: impl ToString) -> Self {
+        self.resource_id = Some(id.to_string());
+        self
+    }
     pub fn detail(&self) -> Value {
         json!({"code":self.code,"message":self.message,"retryable":false,"violations":[],"retry_after_ms":null,"resource_id":self.resource_id})
     }

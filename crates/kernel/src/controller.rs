@@ -1,8 +1,8 @@
 use crate::{
     admission,
     api::App,
-    auth::{authorize, Resource},
     artifact::Artifact,
+    auth::{authorize, Resource},
     contracts::{digest, strict_json},
     db,
     error::{Error, Result},
@@ -41,8 +41,15 @@ pub async fn run(app: Arc<App>) {
             break;
         }
         if rotate.elapsed() > Duration::from_secs(1800)
-            && tls::issue(&app.config, None, &app.config.root().join("kernel-identity")).is_ok()
-        { rotate = tokio::time::Instant::now(); }
+            && tls::issue(
+                &app.config,
+                None,
+                &app.config.root().join("kernel-identity"),
+            )
+            .is_ok()
+        {
+            rotate = tokio::time::Instant::now();
+        }
         match tick(&app, first, &mut probes).await {
             Ok(()) => {
                 first = false;
@@ -59,20 +66,53 @@ pub async fn run(app: Arc<App>) {
 }
 
 #[derive(Default)]
-struct Probe { next: Option<tokio::time::Instant>, started: Option<tokio::time::Instant>, failures: u64 }
-async fn tick(app: &App, first: bool, probes: &mut std::collections::HashMap<Uuid,Probe>) -> Result<()> {
+struct Probe {
+    next: Option<tokio::time::Instant>,
+    started: Option<tokio::time::Instant>,
+    failures: u64,
+}
+async fn tick(
+    app: &App,
+    first: bool,
+    probes: &mut std::collections::HashMap<Uuid, Probe>,
+) -> Result<()> {
     let mut c = app.db.connect().await?;
     if first {
-        c.execute("UPDATE node_budget SET admission_enabled=false", &[]).await?;
-        c.execute("UPDATE provider_records SET availability='unavailable'", &[]).await?;
+        c.execute("UPDATE node_budget SET admission_enabled=false", &[])
+            .await?;
+        c.execute(
+            "UPDATE provider_records SET availability='unavailable'",
+            &[],
+        )
+        .await?;
         // A new controller must fence every old process before returning call slots.
         // Stable instance IDs and their resource reservations survive this restart.
-        for id in app.runtime.inventory().await? { app.runtime.stop(id).await?; }
+        for id in app.runtime.inventory().await? {
+            app.runtime.stop(id).await?;
+        }
         let tx = c.transaction().await?;
-        tx.execute("UPDATE calls SET state='unknown',error=$1 WHERE state IN ('accepted','running')", &[&Error::new("OUTCOME_UNKNOWN","Kernel restarted before the result was committed",axum::http::StatusCode::CONFLICT).detail()]).await?;
-        tx.execute("UPDATE rpc_delegations SET status='revoked' WHERE status='active'", &[]).await?;
-        tx.execute("UPDATE execution_delegations SET status='revoked' WHERE status='active'", &[]).await?;
-        tx.execute("UPDATE quotas SET concurrent_calls_used=0", &[]).await?;
+        tx.execute(
+            "UPDATE calls SET state='unknown',error=$1 WHERE state IN ('accepted','running')",
+            &[&Error::new(
+                "OUTCOME_UNKNOWN",
+                "Kernel restarted before the result was committed",
+                axum::http::StatusCode::CONFLICT,
+            )
+            .detail()],
+        )
+        .await?;
+        tx.execute(
+            "UPDATE rpc_delegations SET status='revoked' WHERE status='active'",
+            &[],
+        )
+        .await?;
+        tx.execute(
+            "UPDATE execution_delegations SET status='revoked' WHERE status='active'",
+            &[],
+        )
+        .await?;
+        tx.execute("UPDATE quotas SET concurrent_calls_used=0", &[])
+            .await?;
         tx.execute("UPDATE instances SET phase='pending',health='unknown',restart_count=0,revision=revision+1,updated_at=now() WHERE phase<>'stopped'", &[]).await?;
         tx.commit().await?;
         c.execute(
@@ -86,15 +126,19 @@ async fn tick(app: &App, first: bool, probes: &mut std::collections::HashMap<Uui
     for r in rows {
         let id: Uuid = r.get(0);
         if let Err(e) = reconcile(app, id, probes.entry(id).or_default()).await {
-            tracing::warn!(deployment_id=%id,reason_code=e.code,"Deployment is not ready");
+            tracing::warn!(deployment_id=%id,reason_code=e.code,message=e.message,"Deployment is not ready");
             c.execute("UPDATE provider_records SET availability='unavailable' WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)", &[&id]).await?;
             let failed:bool=c.query_one("SELECT EXISTS(SELECT 1 FROM instances WHERE deployment_id=$1 AND phase='failed')", &[&id]).await?.get(0);
-            let phase = if failed { "failed" } else if e.code == "RESOURCE_EXHAUSTED" {
+            let phase = if failed {
+                "failed"
+            } else if e.code == "RESOURCE_EXHAUSTED" {
                 "waiting_resources"
             } else {
                 "degraded"
             };
-            if failed { c.execute("UPDATE operations SET state='failed',error=$2,revision=revision+1,updated_at=now() WHERE resource_id=$1 AND state IN ('pending','running')", &[&id.to_string(),&e.detail()]).await?; }
+            if failed {
+                c.execute("UPDATE operations SET state='failed',error=$2,revision=revision+1,updated_at=now() WHERE resource_id=$1 AND state IN ('pending','running')", &[&id.to_string(),&e.detail()]).await?;
+            }
             c.execute(
                 "UPDATE deployments SET revision=revision+CASE WHEN phase<>$2 OR conditions<>$3 THEN 1 ELSE 0 END,phase=$2,conditions=$3,updated_at=now() WHERE id=$1",
                 &[&id, &phase, &json!([e.code])],
@@ -129,8 +173,13 @@ async fn process_installations(app: &App) -> Result<()> {
 
 async fn install(app: &App, request: &Value, operation: Uuid, payload: &Value) -> Result<Value> {
     let credential = crate::contracts::id(payload, "credential_id")?;
-    let peer = payload["peer"].as_str().and_then(|x|x.parse().ok()).ok_or_else(Error::credential)?;
-    if app.leader.is_closed() { return Err(Error::unavailable("Controller leadership is lost")); }
+    let peer = payload["peer"]
+        .as_str()
+        .and_then(|x| x.parse().ok())
+        .ok_or_else(Error::credential)?;
+    if app.leader.is_closed() {
+        return Err(Error::unavailable("Controller leadership is lost"));
+    }
     let c = app.db.connect().await?;
     app.auth.resume(&c, credential, peer, operation).await?;
     let publisher = crate::contracts::id(request, "publisher_id")?;
@@ -157,7 +206,13 @@ async fn install(app: &App, request: &Value, operation: Uuid, payload: &Value) -
     }
     let ctx = app.auth.resume(&tx, credential, peer, operation).await?;
     let plugin = artifact.manifest["plugin_id"].as_str().unwrap();
-    authorize(&tx, &ctx, "plugin.install", &Resource::new("plugin", plugin, Some(ctx.subject))).await?;
+    authorize(
+        &tx,
+        &ctx,
+        "plugin.install",
+        &Resource::new("plugin", plugin, Some(ctx.subject)),
+    )
+    .await?;
     let version = artifact.manifest["version"].as_str().unwrap();
     let existing=tx.query_opt("SELECT id,image_digest,manifest_digest FROM installations WHERE plugin_id=$1 AND version=$2 FOR UPDATE",&[&plugin,&version]).await?;
     let id = if let Some(r) = existing {
@@ -187,23 +242,25 @@ async fn install(app: &App, request: &Value, operation: Uuid, payload: &Value) -
         }
         id
     };
-        // The immutable full reference is retained in the operation result and a private, root-owned image index.
-        tls::atomic_file(
-            &app.config
-                .root()
-                .join("images")
-                .join(&artifact.image_digest[7..])
-                .with_extension("reference"),
-            artifact.image.as_bytes(),
-            0o600,
-        )?;
+    // The immutable full reference is retained in the operation result and a private, root-owned image index.
+    tls::atomic_file(
+        &app.config
+            .root()
+            .join("images")
+            .join(&artifact.image_digest[7..])
+            .with_extension("reference"),
+        artifact.image.as_bytes(),
+        0o600,
+    )?;
     tx.execute(
         "UPDATE operations SET resource_id=$2 WHERE id=$1",
         &[&operation, &id.to_string()],
     )
     .await?;
     db::outbox(&tx, "installation.installed", id, &json!({})).await?;
-    if app.leader.is_closed() { return Err(Error::unavailable("Controller leadership is lost")); }
+    if app.leader.is_closed() {
+        return Err(Error::unavailable("Controller leadership is lost"));
+    }
     tx.commit().await?;
     Ok(json!({"installation_id":id}))
 }
@@ -234,7 +291,8 @@ async fn reconcile(app: &App, deployment: Uuid, probe: &mut Probe) -> Result<()>
             app.runtime.stop(id).await?;
             let mut c = app.db.connect().await?;
             let tx = c.transaction().await?;
-            tx.query_one("SELECT id FROM node_budget FOR UPDATE", &[]).await?;
+            tx.query_one("SELECT id FROM node_budget FOR UPDATE", &[])
+                .await?;
             tx.execute("UPDATE instances SET phase='stopped',health='unknown',updated_at=now(),revision=revision+1 WHERE id=$1",&[&id]).await?;
             admission::release_stopped(&tx, id).await?;
             tx.commit().await?;
@@ -257,13 +315,30 @@ async fn reconcile(app: &App, deployment: Uuid, probe: &mut Probe) -> Result<()>
     let generation: i64 = i.get("generation");
     let limits: Value = i.get("limits");
     let running = app.runtime.running(id).await?;
-    if running && probe.next.is_some_and(|at|tokio::time::Instant::now()<at) { return Ok(()); }
-    probe.next=Some(tokio::time::Instant::now()+Duration::from_millis(manifest["health"]["interval_ms"].as_u64().unwrap()));
+    if running
+        && probe
+            .next
+            .is_some_and(|at| tokio::time::Instant::now() < at)
+    {
+        return Ok(());
+    }
+    probe.next = Some(
+        tokio::time::Instant::now()
+            + Duration::from_millis(manifest["health"]["interval_ms"].as_u64().unwrap()),
+    );
     if !running {
-        let count = i.get::<_,i32>("restart_count");
-        if count >= 5 { c.execute("UPDATE instances SET phase='failed',health='unhealthy',revision=revision+1,updated_at=now() WHERE id=$1 AND phase<>'failed'", &[&id]).await?; return Err(Error::unavailable("Instance exhausted its restart budget; disable and enable to retry")); }
-        let since = (chrono::Utc::now()-i.get::<_,chrono::DateTime<chrono::Utc>>("updated_at")).num_seconds();
-        if count > 0 && since < (1i64 << count.min(5)) { return Err(Error::unavailable("Instance restart backoff is active")); }
+        let count = i.get::<_, i32>("restart_count");
+        if count >= 5 {
+            c.execute("UPDATE instances SET phase='failed',health='unhealthy',revision=revision+1,updated_at=now() WHERE id=$1 AND phase<>'failed'", &[&id]).await?;
+            return Err(Error::unavailable(
+                "Instance exhausted its restart budget; disable and enable to retry",
+            ));
+        }
+        let since = (chrono::Utc::now() - i.get::<_, chrono::DateTime<chrono::Utc>>("updated_at"))
+            .num_seconds();
+        if count > 0 && since < (1i64 << count.min(5)) {
+            return Err(Error::unavailable("Instance restart backoff is active"));
+        }
     }
     let mut dbc = app.db.connect().await?;
     let tx = dbc.transaction().await?;
@@ -278,7 +353,7 @@ async fn reconcile(app: &App, deployment: Uuid, probe: &mut Probe) -> Result<()>
             .with_extension("reference"),
     )?;
     if !running {
-        probe.started=Some(tokio::time::Instant::now());
+        probe.started = Some(tokio::time::Instant::now());
         c.execute("UPDATE instances SET restart_count=restart_count+1,phase='starting',health='unknown',updated_at=now(),revision=revision+1 WHERE id=$1", &[&id]).await?;
     }
     let obs = app
@@ -289,59 +364,74 @@ async fn reconcile(app: &App, deployment: Uuid, probe: &mut Probe) -> Result<()>
         return Err(Error::unavailable("OCI task is not running"));
     }
     let checked: Result<rpc::HealthResponse> = async {
-    let channel = tls::channel(&app.config, id, generation, &obs.address).await?;
-    let mut client = PluginLifecycleClient::new(channel);
-    if !running || i.get::<_,String>("phase") != "ready" {
-    let description = client
-        .describe(rpc::DescribeRequest {
+        let channel = tls::channel(&app.config, id, generation, &obs.address).await?;
+        let mut client = PluginLifecycleClient::new(channel);
+        if !running || i.get::<_, String>("phase") != "ready" {
+            let description = client
+                .describe(rpc::DescribeRequest {
+                    context: Some(context(None)),
+                })
+                .await?
+                .into_inner();
+            if description.manifest_digest != d.get::<_, String>("manifest_digest")
+                || digest(&description.manifest_json) != description.manifest_digest
+                || strict_json(&description.manifest_json, 1048576)? != manifest
+            {
+                return Err(Error::conflict(
+                    "Describe does not match the signed installation",
+                ));
+            }
+            let initialized = client
+                .initialize(rpc::InitializeRequest {
+                    context: Some(context(None)),
+                    deployment_id: deployment.to_string(),
+                    instance_id: id.to_string(),
+                    generation: generation as u64,
+                    config_json: serde_json::to_vec(&spec["config"])?,
+                    config_digest: digest(&serde_json::to_vec(&spec["config"])?),
+                    approval_revision: d.get::<_, i64>("revision") as u64,
+                })
+                .await?
+                .into_inner();
+            if !initialized.initialized || initialized.observed_generation != generation as u64 {
+                return Err(Error::conflict("Plugin initialization generation differs"));
+            }
+        }
+        let mut health_request = tonic::Request::new(rpc::HealthRequest {
             context: Some(context(None)),
-        })
-        .await?
-        .into_inner();
-    if description.manifest_digest != d.get::<_, String>("manifest_digest")
-        || digest(&description.manifest_json) != description.manifest_digest
-        || strict_json(&description.manifest_json, 1048576)? != manifest
-    {
-        return Err(Error::conflict(
-            "Describe does not match the signed installation",
+        });
+        health_request.set_timeout(Duration::from_millis(
+            manifest["health"]["timeout_ms"].as_u64().unwrap(),
         ));
-    }
-    let initialized = client
-        .initialize(rpc::InitializeRequest {
-            context: Some(context(None)),
-            deployment_id: deployment.to_string(),
-            instance_id: id.to_string(),
-            generation: generation as u64,
-            config_json: serde_json::to_vec(&spec["config"])?,
-            config_digest: digest(&serde_json::to_vec(&spec["config"])?),
-            approval_revision: d.get::<_, i64>("revision") as u64,
-        })
-        .await?
-        .into_inner();
-    if !initialized.initialized || initialized.observed_generation != generation as u64 {
-        return Err(Error::conflict("Plugin initialization generation differs"));
-    }
-    }
-    let mut health_request=tonic::Request::new(rpc::HealthRequest { context:Some(context(None)) });
-    health_request.set_timeout(Duration::from_millis(manifest["health"]["timeout_ms"].as_u64().unwrap()));
-    let health = client
-        .get_health(health_request)
-        .await?
-        .into_inner();
-    if !health.alive || health.observed_generation != generation as u64 {
-        return Err(Error::unavailable("Plugin health generation differs"));
-    }
+        let health = client.get_health(health_request).await?.into_inner();
+        if !health.alive || health.observed_generation != generation as u64 {
+            return Err(Error::unavailable("Plugin health generation differs"));
+        }
         Ok(health)
-    }.await;
+    }
+    .await;
     let health = match checked {
-        Ok(health) => { probe.failures=0; health },
+        Ok(health) => {
+            probe.failures = 0;
+            health
+        }
         Err(error) => {
-            probe.failures+=1;
+            probe.failures += 1;
             c.execute("UPDATE instances SET health='unhealthy',revision=revision+1,updated_at=now() WHERE id=$1 AND health<>'unhealthy'", &[&id]).await?;
-            let failed = if i.get::<_,String>("phase")=="ready" {
+            let failed = if i.get::<_, String>("phase") == "ready" {
                 probe.failures >= manifest["health"]["failure_threshold"].as_u64().unwrap()
-            } else { probe.started.is_some_and(|at|at.elapsed()>=Duration::from_millis(manifest["health"]["startup_timeout_ms"].as_u64().unwrap())) };
-            if failed { app.runtime.stop(id).await?; probe.failures=0; }
+            } else {
+                probe.started.is_some_and(|at| {
+                    at.elapsed()
+                        >= Duration::from_millis(
+                            manifest["health"]["startup_timeout_ms"].as_u64().unwrap(),
+                        )
+                })
+            };
+            if failed {
+                app.runtime.stop(id).await?;
+                probe.failures = 0;
+            }
             return Err(error);
         }
     };
@@ -378,7 +468,9 @@ async fn reconcile(app: &App, deployment: Uuid, probe: &mut Probe) -> Result<()>
     let phase = if all_ready { "ready" } else { "degraded" };
     tx.execute("UPDATE instances SET phase=$2,health='alive',runtime_id=$3,last_heartbeat_at=now(),updated_at=now(),revision=revision+1 WHERE id=$1",&[&id,&phase,&id.to_string()]).await?;
     tx.execute("UPDATE deployments SET revision=revision+CASE WHEN phase<>$2 OR observed_generation<>$3 OR conditions<>'[]'::jsonb THEN 1 ELSE 0 END,phase=$2,observed_generation=$3,conditions='[]',updated_at=now() WHERE id=$1",&[&deployment,&phase,&generation]).await?;
-    if app.leader.is_closed() { return Err(Error::unavailable("Controller leadership is lost")); }
+    if app.leader.is_closed() {
+        return Err(Error::unavailable("Controller leadership is lost"));
+    }
     if all_ready {
         finish_deployment_operations(&tx, deployment, true).await?;
     }

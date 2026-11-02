@@ -48,7 +48,10 @@ async fn start(args: Args) -> Result<()> {
     let tx = c.transaction().await?;
     admission::initialize(&tx, &config.value["resources"], cpu, memory).await?;
     tx.commit().await?;
-    config.value["resources"] = c.query_one("SELECT config FROM node_budget", &[]).await?.get(0);
+    config.value["resources"] = c
+        .query_one("SELECT config FROM node_budget", &[])
+        .await?
+        .get(0);
     let runtime = Runtime::new(config.clone());
     runtime.preflight(cpu, memory).await?;
     tls::issue(&config, None, &config.root().join("kernel-identity"))?;
@@ -69,14 +72,14 @@ async fn start(args: Args) -> Result<()> {
     )
     .await?;
     let handle = axum_server::Handle::new();
-    let monitor_app=app.clone();
-    let monitor_handle=handle.clone();
+    let monitor_app = app.clone();
+    let monitor_handle = handle.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             if monitor_app.leader.is_closed() {
-                monitor_app.ready.store(false,Ordering::SeqCst);
-                monitor_app.shutdown.store(true,Ordering::SeqCst);
+                monitor_app.ready.store(false, Ordering::SeqCst);
+                monitor_app.shutdown.store(true, Ordering::SeqCst);
                 monitor_handle.graceful_shutdown(Some(std::time::Duration::from_secs(1)));
                 break;
             }
@@ -90,7 +93,11 @@ async fn start(args: Args) -> Result<()> {
         tokio::select! {_=tokio::signal::ctrl_c()=>(),_=term.recv()=>()};
         signal_app.ready.store(false, Ordering::SeqCst);
         signal_app.shutdown.store(true, Ordering::SeqCst);
-        stop.graceful_shutdown(Some(std::time::Duration::from_millis(signal_app.config.value["resources"]["shutdown_grace_ms"].as_u64().unwrap())));
+        stop.graceful_shutdown(Some(std::time::Duration::from_millis(
+            signal_app.config.value["resources"]["shutdown_grace_ms"]
+                .as_u64()
+                .unwrap(),
+        )));
     });
     axum_server::bind_rustls(config.listen()?, tls)
         .handle(handle)

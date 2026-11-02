@@ -9,6 +9,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -56,7 +57,17 @@ jobs:
           assert len(binaries)==1,binaries
           subprocess.run(["sudo","--preserve-env=XELAB_TEST_DATABASE_URL,XELAB_TEST_IMAGE,XELAB_OCI_TEST",binaries[0],"--ignored","--nocapture"],check=True)
           PYTEST
+      - name: Diagnose reference container failure
+        if: failure()
+        run: |
+          sudo ctr -n xelab-ci tasks list || true
+          for id in $(sudo ctr -n xelab-ci containers list --quiet); do
+            sudo ctr -n xelab-ci containers info --spec "$id"
+            sudo ctr -n xelab-ci tasks delete "$id" || true
+            sudo timeout 10 ctr -n xelab-ci tasks start "$id" || true
+          done
       - name: Lints
+        if: always()
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Check formatting diff
         if: always()
