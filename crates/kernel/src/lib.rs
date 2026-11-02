@@ -24,4 +24,3 @@ pub const SPEC_VERSION: &str = "2.8.0";
 pub fn init_crypto() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
-

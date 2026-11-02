@@ -151,7 +151,7 @@ impl Auth {
         }
         Ok(())
     }
-    fn login_succeeded(&self, account: Uuid, peer: IpAddr) -> Result<()> {
+    pub(crate) fn login_succeeded(&self, account: Uuid, peer: IpAddr) -> Result<()> {
         let mut state = self
             .failures
             .lock()
@@ -614,4 +614,3 @@ mod tests {
             .is_err());
     }
 }
-

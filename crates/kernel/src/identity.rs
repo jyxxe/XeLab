@@ -433,7 +433,10 @@ async fn bounded_expiry(
             limits.push(row.get(1));
         }
     }
-    if limits.iter().any(|limit| expiry.is_some_and(|e| e > *limit)) {
+    if limits
+        .iter()
+        .any(|limit| expiry.is_some_and(|e| e > *limit))
+    {
         return Err(Error::denied());
     }
     Ok(())
@@ -449,21 +452,13 @@ async fn protect_owners(c: &(impl GenericClient + Sync)) -> Result<()> {
         let paths = Policy::new(c, "127.0.0.1".parse().unwrap())
             .account(owner, 0)
             .await?;
-        // Recovery owner must retain unrestricted current platform/account control.
-        let unrestricted = [
-            ("account.manage", "account"),
-            ("grant.create", "account"),
-            ("publisher.trust", "publisher"),
-            ("platform.read", "platform"),
-        ]
-        .iter()
-        .all(|(action, kind)| {
-            paths.iter().any(|p| {
-                p.rule["action"] == *action
-                    && p.rule["resource"] == json!({"kind":kind,"match":"all"})
-                    && p.rule.get("conditions").is_none_or(|v| v == &json!({}))
-            })
-        });
+        let mut unrestricted=true;
+        for row in c.query("SELECT action,resource_kinds FROM permission_definitions", &[]).await? {
+            let action:String=row.get(0);let kinds:Value=row.get(1);
+            for kind in kinds.as_array().unwrap() {
+                unrestricted &= paths.iter().any(|p|p.rule["action"]==action&&p.rule["resource"]==json!({"kind":kind,"match":"all"})&&p.rule.get("conditions").is_none_or(|v|v==&json!({})));
+            }
+        }
         if unrestricted {
             return Ok(());
         }
@@ -569,7 +564,7 @@ pub async fn execute(
                 .map(|_| Utc::now() + chrono::Duration::hours(24));
             let state = if kind == "user" { "pending" } else { "active" };
             c.execute("INSERT INTO accounts(id,parent_id,kind,status,display_name,activation_digest,activation_expires_at,expires_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,now(),now())", &[&account,&parent,&kind,&state,&string(body,"display_name")?,&digest,&expires,&expiry]).await?;
-            c.execute("INSERT INTO account_closure(ancestor_id,descendant_id,depth) SELECT ancestor_id,$2,depth+1 FROM account_closure WHERE descendant_id=$1 UNION ALL SELECT $2,$2,0", &[&parent,&account]).await?;
+            c.execute("INSERT INTO account_closure(ancestor_id,descendant_id,depth) SELECT ancestor_id,$2::uuid,depth+1 FROM account_closure WHERE descendant_id=$1 UNION ALL SELECT $2::uuid,$2::uuid,0", &[&parent,&account]).await?;
             let maximum = if mode == "follow_parent" {
                 None
             } else {
@@ -727,6 +722,7 @@ pub async fn execute(
             })
             .await
             .map_err(|_| Error::unavailable("Password hashing failed"))??;
+            auth.login_succeeded(account,ctx.peer)?;
             c.execute("UPDATE accounts SET password_hash=$2,revision=revision+1,updated_at=now() WHERE id=$1", &[&account,&hash]).await?;
             c.execute("UPDATE credentials SET status='revoked',revision=revision+1,updated_at=now() WHERE owner_id=$1 AND kind IN ('session','oauth_access','oauth_refresh') AND status='active'", &[&account]).await?;
             changed(c, account).await?;
@@ -846,6 +842,7 @@ pub async fn execute(
         }
         "getQuota" | "updateQuota" => {
             let account = path_id(p, "account_id")?;
+            refresh_quotas(c).await?;
             if name == "updateQuota" {
                 let row = c
                     .query_one(
@@ -896,10 +893,10 @@ pub async fn execute(
         "checkAuthorization" => {
             let requested = json!({"action":body["action"],"resource":body["resource"]});
             let result = Policy::new(c, ctx.peer)
-                .require_subset(ctx, &[requested])
+                .covers_now(ctx, &requested)
                 .await;
             let allowed = match result {
-                Ok(()) => true,
+                Ok(allowed) => allowed,
                 Err(e) if matches!(e.code, "PERMISSION_DENIED" | "INVALID_ARGUMENT") => false,
                 Err(e) => return Err(e),
             };
@@ -943,7 +940,7 @@ async fn group_version(c: &impl GenericClient, group: Uuid, version: i64) -> Res
     project("GroupVersion", row.get(0))
 }
 async fn check_all_quotas(c: &impl GenericClient) -> Result<()> {
-    let exceeds=c.query_one("SELECT EXISTS(SELECT 1 FROM quotas q WHERE q.descendants_used>(q.spec->>'maximum_descendants')::bigint OR q.api_keys_used>(q.spec->>'maximum_api_keys')::bigint OR q.concurrent_calls_used>(q.spec->>'maximum_concurrent_calls')::bigint OR (q.daily_bucket=(now() AT TIME ZONE 'UTC')::date AND q.daily_calls_used>(q.spec->>'daily_calls')::bigint) OR EXISTS(SELECT 1 FROM account_closure t JOIN accounts a ON a.id=t.descendant_id JOIN quotas q ON q.account_id=t.ancestor_id WHERE a.status<>'archived' AND t.depth+1>(q.spec->>'maximum_depth')::bigint)", &[]).await?.get::<_,bool>(0);
+    let exceeds=c.query_one("SELECT EXISTS(SELECT 1 FROM quotas q WHERE q.descendants_used>(q.spec->>'maximum_descendants')::bigint OR q.api_keys_used>(q.spec->>'maximum_api_keys')::bigint OR q.concurrent_calls_used>(q.spec->>'maximum_concurrent_calls')::bigint OR (q.daily_bucket=(now() AT TIME ZONE 'UTC')::date AND q.daily_calls_used>(q.spec->>'daily_calls')::bigint)) OR EXISTS(SELECT 1 FROM account_closure t JOIN accounts a ON a.id=t.descendant_id JOIN quotas q ON q.account_id=t.ancestor_id WHERE a.status<>'archived' AND t.depth+1>(q.spec->>'maximum_depth')::bigint)", &[]).await?.get::<_,bool>(0);
     if exceeds {
         Err(denied_quota())
     } else {

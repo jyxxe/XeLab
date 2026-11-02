@@ -113,4 +113,3 @@ async fn start(args: Args) -> Result<()> {
     }
     Ok(())
 }
-

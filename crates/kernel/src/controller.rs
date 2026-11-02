@@ -111,7 +111,11 @@ async fn tick(
             &[],
         )
         .await?;
-        tx.execute("UPDATE reservations SET status='released' WHERE kind='call' AND status<>'released'", &[]).await?;
+        tx.execute(
+            "UPDATE reservations SET status='released' WHERE kind='call' AND status<>'released'",
+            &[],
+        )
+        .await?;
         tx.execute("UPDATE quotas SET concurrent_calls_used=0", &[])
             .await?;
         tx.execute("UPDATE instances SET phase='pending',health='unknown',restart_count=0,revision=revision+1,updated_at=now() WHERE phase<>'stopped'", &[]).await?;
@@ -487,4 +491,3 @@ async fn finish_deployment_operations(
     c.execute("UPDATE operations SET state='succeeded',progress_percent=100,result=$2,updated_at=now(),revision=revision+1 WHERE resource_id=$1 AND kind IN ('createDeployment','setDeploymentEnabled') AND state IN ('pending','running') AND EXISTS(SELECT 1 FROM deployments WHERE id=$3 AND (spec->>'enabled')::boolean=$4)",&[&id.to_string(),&json!({"deployment_id":id}),&id,&enabled]).await?;
     Ok(())
 }
-

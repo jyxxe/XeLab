@@ -375,6 +375,19 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
         Ok((!kept.is_empty()).then(|| json!({"kind":a["kind"],"match":"ids","ids":kept})))
     }
 
+    pub async fn covers_now(&mut self, ctx: &Context, rule: &Value) -> Result<bool> {
+        self.validate_rules(std::slice::from_ref(rule)).await?;
+        let mut available=self.credential(ctx.credential,0).await?;
+        available.retain(|p|p.rule.get("conditions").is_none_or(|v|conditions_match(v,self.peer,Utc::now())));
+        for p in &mut available {p.rule["conditions"]=json!({});}
+        for part in split_ids(rule) {
+            let wanted=Path{rule:part.clone(),sources:BTreeSet::new()};
+            let intersections=self.intersection(&[wanted],&available).await?;
+            if !intersections.iter().any(|p|same_rule(&p.rule,&part)){return Ok(false);}
+        }
+        Ok(true)
+    }
+
     pub async fn select(&mut self, ctx: &Context, spec: &Value) -> Result<Vec<Path>> {
         validate("InheritanceSpec", spec)?;
         let effective = self.credential(ctx.credential, 0).await?;
