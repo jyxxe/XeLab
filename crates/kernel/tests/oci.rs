@@ -680,6 +680,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     .await;
     assert_eq!(exhausted.0, 409, "{}", exhausted.1);
     assert_eq!(exhausted.1["error"]["code"], "QUOTA_EXCEEDED");
+    grant_source_budget(&router, &db, owner, token, &python_input).await;
     // RUN-03: exercise the cgroup, not just serialized OCI configuration.
     let cg = std::path::Path::new("/sys/fs/cgroup/xelab/plugins").join(python_instance.to_string());
     assert_eq!(
@@ -923,4 +924,66 @@ async fn exec_python(instance: Uuid, script: &str) -> std::process::Output {
     .await
     .unwrap()
     .unwrap()
+}
+
+async fn grant_source_budget(router: &Router, db: &Db, owner: Uuid, token: &str, input: &Value) {
+    let c = db.connect().await.unwrap();
+    let parent = Uuid::new_v4();
+    let password = "grant budget acceptance password";
+    let hash = auth::password_hash(password).unwrap();
+    // Trusted fixture root with one replaceable grant, not another Owner.
+    c.execute("INSERT INTO accounts(id,kind,status,display_name,password_hash,created_at,updated_at) VALUES($1,'user','active','budget parent',$2,now(),now())", &[&parent,&hash]).await.unwrap();
+    c.execute("INSERT INTO account_closure VALUES($1,$1,0)", &[&parent]).await.unwrap();
+    c.execute("INSERT INTO quotas(account_id,spec,daily_bucket,created_at,updated_at) SELECT $1,spec,current_date,now(),now() FROM quotas WHERE account_id=$2", &[&parent,&owner]).await.unwrap();
+    let scope = json!({"kind":"capability","match":"ids","ids":["org.xelab.echo@1.0.0"]});
+    let grant_body = json!({"source":"role","role_id":"Guest","scope":scope});
+    let old = api(router,"createGrant",&[("account_id",parent.to_string())],Some(token),grant_body.clone(),"parent-old",None).await;
+    assert_eq!(old.0,201,"{}",old.1);
+    let login = api(router,"login",&[],None,json!({"account_id":parent,"password":password}),"parent-login",None).await;
+    assert_eq!(login.0,200,"{}",login.1);
+    let parent_token = login.1["access_token"].as_str().unwrap();
+    let child = api(router,"createChildAccount",&[("account_id",parent.to_string())],Some(parent_token),json!({"display_name":"budget child","inheritance":{"mode":"all_snapshot"}}),"budget-child",None).await;
+    assert_eq!(child.0,201,"{}",child.1);
+    let child_id = contracts::id(&child.1["account"],"id").unwrap();
+    let activated = api(router,"activateAccount",&[],None,json!({"activation_token":child.1["activation_token"],"password":password}),"child-activate",None).await;
+    assert_eq!(activated.0,200,"{}",activated.1);
+    let login = api(router,"login",&[],None,json!({"account_id":child_id,"password":password}),"child-login",None).await;
+    assert_eq!(login.0,200,"{}",login.1);
+    let session = login.1["access_token"].as_str().unwrap();
+    let expiry = chrono::Utc::now()+chrono::Duration::hours(1);
+    let key = api(router,"createApiKey",&[("account_id",owner.to_string())],Some(token),json!({"name":"grant issuer one call","inheritance":{"mode":"all_snapshot"},"conditions":{"expires_at":expiry,"max_calls":1}}),"grant-key",None).await;
+    assert_eq!(key.0,201,"{}",key.1);
+    let key_id = contracts::id(&key.1["credential"],"id").unwrap();
+    let mut delegated = grant_body.clone();
+    delegated["expires_at"] = json!(expiry);
+    let grant = api(router,"createGrant",&[("account_id",child_id.to_string())],Some(key.1["secret"].as_str().unwrap()),delegated,"limited-grant",None).await;
+    assert_eq!(grant.0,201,"{}",grant.1);
+    // Withdraw the frozen inherited source, then restore the parent's ceiling
+    // with an independent replacement. Only the child's direct grant survives.
+    let revoked = api(router,"revokeGrant",&[("grant_id",old.1["id"].as_str().unwrap().into())],Some(token),Value::Null,"old-revoke",Some(1)).await;
+    assert_eq!(revoked.0,204,"{}",revoked.1);
+    let replacement = api(router,"createGrant",&[("account_id",parent.to_string())],Some(token),grant_body.clone(),"parent-new",None).await;
+    assert_eq!(replacement.0,201,"{}",replacement.1);
+    let first = api(router,"invokeCapability",&[],Some(session),input.clone(),"grant-call",None).await;
+    assert_eq!(first.0,200,"{}",first.1);
+    let replay = api(router,"invokeCapability",&[],Some(session),input.clone(),"grant-call",None).await;
+    assert_eq!(replay.0,200,"{}",replay.1);
+    assert_eq!(first.1["call_id"],replay.1["call_id"]);
+    let second = api(router,"invokeCapability",&[],Some(session),input.clone(),"grant-call-again",None).await;
+    assert_eq!(second.0,409,"{}",second.1);
+    assert_eq!(second.1["error"]["code"],"QUOTA_EXCEEDED");
+    assert_eq!(xelab_kernel::identity::key_calls(&c,key_id).await.unwrap(),1);
+    // An exhausted alternative cannot block or charge an independent grant.
+    let independent = api(router,"createGrant",&[("account_id",child_id.to_string())],Some(token),grant_body,"independent-grant",None).await;
+    assert_eq!(independent.0,201,"{}",independent.1);
+    let allowed = api(router,"invokeCapability",&[],Some(session),input.clone(),"independent-call",None).await;
+    assert_eq!(allowed.0,200,"{}",allowed.1);
+    assert_eq!(xelab_kernel::identity::key_calls(&c,key_id).await.unwrap(),1);
+    let revoke = api(router,"revokeGrant",&[("grant_id",independent.1["id"].as_str().unwrap().into())],Some(token),Value::Null,"independent-revoke",Some(1)).await;
+    assert_eq!(revoke.0,204,"{}",revoke.1);
+    let revoke = api(router,"revokeApiKey",&[("credential_id",key_id.to_string())],Some(token),Value::Null,"source-key-revoke",Some(1)).await;
+    assert_eq!(revoke.0,204,"{}",revoke.1);
+    let denied = api(router,"invokeCapability",&[],Some(session),input.clone(),"grant-call",None).await;
+    assert_eq!(denied.0,403,"{}",denied.1);
+    assert_eq!(xelab_kernel::identity::key_calls(&c,key_id).await.unwrap(),1,"revocation never refunds used budget");
 }

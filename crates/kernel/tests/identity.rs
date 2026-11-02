@@ -424,6 +424,34 @@ async fn child_direct_grants_obey_selected_sources_and_ceiling() {
 }
 
 #[tokio::test]
+async fn self_issued_grants_have_linear_proofs_and_live_revocation() {
+    let Some(f) = Fixture::new().await else { return; };
+    let c = f.db.connect().await.unwrap();
+    let mut grants = Vec::new();
+    for count in 1..=16 {
+        let grant = tokio::time::timeout(std::time::Duration::from_secs(10), grant_guest(&f, f.owner, cap())).await.expect("self-grant issuance must not expand permutations");
+        grants.push(grant);
+        if ![2, 8, 16].contains(&count) { continue; }
+        let started = std::time::Instant::now();
+        let paths = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            xelab_kernel::policy::Policy::new(&c, "127.0.0.1".parse().unwrap()).account(f.owner, 0).await.unwrap()
+        }).await.expect("self-grant evaluation must remain bounded");
+        eprintln!("self grants={count} paths={} elapsed={:?}", paths.len(), started.elapsed());
+        let invoke: Vec<_> = paths.iter().filter(|p| p.rule["action"] == "capability.invoke").collect();
+        assert_eq!(invoke.len(), count + 1);
+        for grant in &grants {
+            assert!(invoke.iter().any(|p| p.sources.contains(grant)));
+        }
+        assert_child_capability(&f, f.owner, &f.token, cap(), true).await;
+    }
+    let anchor: Uuid = c.query_one("SELECT g.id FROM grants g JOIN accounts a ON a.id=g.subject_id WHERE a.id=$1 AND g.role_id='Owner' AND g.created_at=a.created_at AND g.scope->>'kind'='capability'", &[&f.owner]).await.unwrap().get(0);
+    c.execute("UPDATE grants SET status='revoked' WHERE id=$1", &[&anchor]).await.unwrap();
+    // Sixteen self-issued bindings must not sustain one another after the
+    // independent authority disappears; a fresh request must observe revocation.
+    assert_child_capability(&f, f.owner, &f.token, cap(), false).await;
+}
+
+#[tokio::test]
 async fn child_direct_grants_obey_snapshot_sources_and_ceiling() {
     child_direct_grant_sources("all_snapshot").await;
 }

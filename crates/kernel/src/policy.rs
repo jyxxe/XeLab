@@ -25,6 +25,7 @@ pub struct Policy<'a, C> {
     c: &'a C,
     peer: IpAddr,
     evaluating_grants: HashSet<Uuid>,
+    proving_self_grants: HashSet<Uuid>,
 }
 impl<'a, C: GenericClient + Sync> Policy<'a, C> {
     pub fn new(c: &'a C, peer: IpAddr) -> Self {
@@ -32,6 +33,7 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
             c,
             peer,
             evaluating_grants: HashSet::new(),
+            proving_self_grants: HashSet::new(),
         }
     }
 
@@ -46,8 +48,8 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
             for row in self
                 .c
                 .query(
-                    "SELECT id FROM grants WHERE subject_id=$1 AND status='active' ORDER BY id",
-                    &[subject],
+                    "SELECT g.id FROM grants g JOIN accounts a ON a.id=g.subject_id WHERE g.subject_id=$1 AND g.status='active' AND (NOT $2 OR g.issuer_id<>g.subject_id OR (a.independent_owner AND a.parent_id IS NULL AND g.role_id='Owner' AND g.created_at=a.created_at AND g.issuer_credential_id IS NULL)) ORDER BY g.id",
+                    &[subject, &self.proving_self_grants.contains(subject)],
                 )
                 .await?
             {
@@ -193,7 +195,18 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
         if !self.evaluating_grants.insert(grant) {
             return Ok(Vec::new());
         }
+        // Self-issued bindings cannot add authority to their own issuer: each
+        // is an intersection with authority that must exist independently.
+        // Remove ALL such edges while proving one, instead of enumerating every
+        // permutation of the other self-issued bindings. Keep the bootstrap
+        // Owner anchor and external/inherited paths, and retain the direct
+        // binding's provenance in the outer evaluation.
+        let subject = self.c.query_opt("SELECT subject_id FROM grants WHERE id=$1 AND issuer_id=subject_id", &[&grant]).await?.map(|r| r.get::<_,Uuid>(0));
+        let inserted = subject.is_some_and(|id| self.proving_self_grants.insert(id));
         let result = self.grant_inner(grant, depth).await;
+        if inserted {
+            self.proving_self_grants.remove(&subject.unwrap());
+        }
         self.evaluating_grants.remove(&grant);
         result
     }

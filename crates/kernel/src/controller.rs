@@ -133,8 +133,20 @@ async fn tick(
     }
     process_installations(app).await?;
     recover_expired_calls(app).await?;
-    let rows=c.query("SELECT id FROM deployments WHERE archived_at IS NULL ORDER BY created_at,id LIMIT 1000",&[]).await?;
-    for r in rows {
+    // A fixed upper watermark makes each sweep finite even while deployments
+    // are created. Keyset pages include disabled rows without starving the tail.
+    let end = c.query_opt("SELECT created_at,id FROM deployments WHERE archived_at IS NULL ORDER BY created_at DESC,id DESC LIMIT 1", &[]).await?;
+    let Some(end) = end else { return Ok(()); };
+    let through = (end.get(0), end.get(1));
+    let mut after = None;
+    loop {
+        if app.shutdown.load(Ordering::SeqCst) || app.leader.is_closed() {
+            return Err(Error::unavailable("Controller is stopping"));
+        }
+        let rows = deployment_page(&c, after, through).await?;
+        if rows.is_empty() { break; }
+        for r in rows {
+        after = Some((r.get("created_at"), r.get("id")));
         let id: Uuid = r.get(0);
         if let Err(e) = reconcile(app, id, probes.entry(id).or_default()).await {
             tracing::warn!(deployment_id=%id,reason_code=e.code,message=e.message,"Deployment is not ready");
@@ -157,7 +169,52 @@ async fn tick(
             .await?;
         }
     }
+    }
     Ok(())
+}
+
+type DeploymentPosition = (chrono::DateTime<chrono::Utc>, Uuid);
+async fn deployment_page(
+    c: &impl tokio_postgres::GenericClient,
+    after: Option<DeploymentPosition>,
+    through: DeploymentPosition,
+) -> Result<Vec<tokio_postgres::Row>> {
+    let (created, id) = after.map(|(created, id)| (Some(created), Some(id))).unwrap_or((None, None));
+    Ok(c.query("SELECT created_at,id FROM deployments WHERE archived_at IS NULL AND ($1::timestamptz IS NULL OR (created_at,id)>($1,$2)) AND (created_at,id)<=($3,$4) ORDER BY created_at,id LIMIT 1000", &[&created, &id, &through.0, &through.1]).await?)
+}
+
+#[cfg(test)]
+mod pagination_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn deployment_sweep_passes_disabled_prefix_and_handles_deletions() {
+        let Ok(dsn) = std::env::var("XELAB_TEST_DATABASE_URL") else { return; };
+        let db = db::Db::new(dsn).unwrap();
+        let mut c = db.connect().await.unwrap();
+        let tx = c.transaction().await.unwrap();
+        // Shadow only this query's relation so the pagination test is isolated
+        // from concurrently running database/OCI fixtures.
+        tx.batch_execute("CREATE TEMP TABLE deployments(id uuid PRIMARY KEY,created_at timestamptz NOT NULL,archived_at timestamptz,spec jsonb) ON COMMIT DROP").await.unwrap();
+        let at = chrono::Utc::now();
+        for n in 1..=1002u128 {
+            tx.execute("INSERT INTO deployments VALUES($1,$2,NULL,$3)", &[&Uuid::from_u128(n), &at, &json!({"enabled":n>1000})]).await.unwrap();
+        }
+        let end = (at, Uuid::from_u128(1002));
+        let first = deployment_page(&tx, None, end).await.unwrap();
+        assert_eq!(first.len(), 1000);
+        let last = first.last().unwrap();
+        let cursor = Some((last.get(0), last.get(1)));
+        tx.execute("DELETE FROM deployments WHERE id=$1", &[&Uuid::from_u128(1000)]).await.unwrap();
+        tx.execute("UPDATE deployments SET archived_at=now() WHERE id=$1", &[&Uuid::from_u128(1001)]).await.unwrap();
+        tx.execute("INSERT INTO deployments VALUES($1,$2,NULL,'{}')", &[&Uuid::from_u128(1003), &at]).await.unwrap();
+        let second = deployment_page(&tx, cursor, end).await.unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].get::<_,Uuid>(1), Uuid::from_u128(1002));
+        assert!(deployment_page(&tx, Some(end), end).await.unwrap().is_empty());
+        assert_eq!(deployment_page(&tx, Some(end), (at, Uuid::from_u128(1003))).await.unwrap().len(), 1);
+        tx.rollback().await.unwrap();
+    }
 }
 
 async fn recover_expired_calls(app: &App) -> Result<()> {

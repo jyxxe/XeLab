@@ -129,25 +129,19 @@ pub async fn invoke(
         }
         tx.execute("UPDATE quotas SET concurrent_calls_used=concurrent_calls_used+1,daily_calls_used=$2::bigint+1,daily_bucket=$3 WHERE account_id=$1", &[account,&daily,&today]).await?;
     }
-    for key in &ctx.chain {
-        let conditions: Value = tx
-            .query_one("SELECT conditions FROM credentials WHERE id=$1", &[key])
-            .await?
-            .get(0);
-        if let Some(max) = conditions["max_calls"].as_i64() {
-            if crate::identity::key_calls(&tx, *key).await? >= max {
-                return Err(Error::new(
-                    "QUOTA_EXCEEDED",
-                    "Credential lifetime call budget is exhausted",
-                    axum::http::StatusCode::CONFLICT,
-                ));
-            }
-        }
-    }
+    let charged = crate::identity::call_sources(
+        &tx,
+        &ctx,
+        &Resource::new("capability", format!("{name}@{version}"), None),
+    )
+    .await?;
     let call = Uuid::new_v4();
     let timeout = input["timeout_ms"].as_u64().unwrap_or(30000);
     let deadline = chrono::Utc::now() + chrono::Duration::milliseconds(timeout as i64);
     tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,idempotency_key,state,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,'running',$8,now())",&[&call,&ctx.subject,&ctx.credential,&instance,&contract,&digest(&bytes),&key,&deadline]).await?;
+    for credential in charged {
+        tx.execute("INSERT INTO call_credential_charges(call_id,credential_id) VALUES($1,$2)", &[&call, &credential]).await?;
+    }
     tx.execute("INSERT INTO reservations(id,account_id,kind,expires_at,status,created_at) VALUES($1,$2,'call',$3,'active',now())", &[&call,&ctx.subject,&deadline]).await?;
     let delegation = app
         .auth

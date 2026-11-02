@@ -12,7 +12,7 @@ use axum::http::{HeaderMap, StatusCode};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
-use std::{collections::HashMap, net::IpAddr};
+use std::{collections::{BTreeSet, HashMap}, net::IpAddr};
 use tokio_postgres::GenericClient;
 use uuid::Uuid;
 
@@ -994,7 +994,56 @@ async fn check_all_quotas(c: &impl GenericClient) -> Result<()> {
 /// Lifetime business calls charged to a key include key-derived credentials and
 /// accounts. Revocation never deletes the journal, so the counter cannot reset.
 pub async fn key_calls(c: &impl GenericClient, key: Uuid) -> Result<i64> {
-    Ok(c.query_one("WITH RECURSIVE edges(source,target) AS (SELECT issuer_credential_id,id FROM credentials WHERE issuer_credential_id IS NOT NULL UNION ALL SELECT issuer_credential_id,account_id FROM inheritance_grants WHERE issuer_credential_id IS NOT NULL UNION ALL SELECT parent_id,id FROM accounts WHERE parent_id IS NOT NULL UNION ALL SELECT owner_id,id FROM credentials),derived(id) AS (SELECT $1::uuid UNION SELECT e.target FROM edges e JOIN derived d ON e.source=d.id) SELECT count(*) FROM calls WHERE credential_id IN(SELECT id FROM derived)", &[&key]).await?.get(0))
+    Ok(c.query_one("WITH RECURSIVE edges(source,target) AS (SELECT issuer_credential_id,id FROM credentials WHERE issuer_credential_id IS NOT NULL UNION ALL SELECT issuer_credential_id,account_id FROM inheritance_grants WHERE issuer_credential_id IS NOT NULL UNION ALL SELECT parent_id,id FROM accounts WHERE parent_id IS NOT NULL UNION ALL SELECT owner_id,id FROM credentials),derived(id) AS (SELECT $1::uuid UNION SELECT e.target FROM edges e JOIN derived d ON e.source=d.id) SELECT count(*) FROM calls WHERE credential_id IN(SELECT id FROM derived) OR id IN(SELECT call_id FROM call_credential_charges WHERE credential_id=$1)", &[&key]).await?.get(0))
+}
+
+/// Choose one live authorization alternative under the caller's call_lock.
+/// All keys on that proof are conjunctive; unrelated alternatives are not billed.
+pub async fn call_sources(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    resource: &Resource,
+) -> Result<BTreeSet<Uuid>> {
+    let paths = Policy::new(c, ctx.peer).credential(ctx.credential, 0).await?;
+    let mut alternatives = Vec::new();
+    for path in paths {
+        if !auth::rules_allow(&json!([path.rule]), "capability.invoke", resource, ctx.peer) {
+            continue;
+        }
+        let mut keys: BTreeSet<_> = ctx.chain.iter().copied().collect();
+        let sources: Vec<_> = path.sources.into_iter().collect();
+        for row in c.query("SELECT issuer_id,issuer_credential_id FROM grants WHERE id=ANY($1)", &[&sources]).await? {
+            keys.extend(auth::validate_sources(c, row.get(1), Some(row.get(0)), ctx.peer).await?);
+        }
+        alternatives.push(keys);
+    }
+    if alternatives.is_empty() {
+        return Err(Error::denied());
+    }
+    alternatives.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+    alternatives.dedup();
+    let mut available = HashMap::new();
+    for keys in alternatives {
+        let mut allowed = true;
+        for key in &keys {
+            let remaining = if let Some(remaining) = available.get(key) {
+                *remaining
+            } else {
+                let conditions: Value = c.query_one("SELECT conditions FROM credentials WHERE id=$1", &[key]).await?.get(0);
+                let remaining = match conditions["max_calls"].as_i64() {
+                    Some(max) => key_calls(c, *key).await? < max,
+                    None => true,
+                };
+                available.insert(*key, remaining);
+                remaining
+            };
+            allowed &= remaining;
+        }
+        if allowed {
+            return Ok(keys);
+        }
+    }
+    Err(Error::new("QUOTA_EXCEEDED", "Credential lifetime call budget is exhausted", StatusCode::CONFLICT))
 }
 
 #[allow(clippy::too_many_arguments)]
