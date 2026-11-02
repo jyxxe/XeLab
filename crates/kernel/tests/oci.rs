@@ -140,6 +140,9 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     value["storage"]["root_path"] = json!(root.join("state"));
     value["security"]["workload_ca_cert_file"] = json!(root.join("ca.crt"));
     value["security"]["workload_ca_key_file"] = json!(root.join("ca.key"));
+    value["security"]["master_key_file"] = json!(root.join("master.key"));
+    fs::write(root.join("master.key"), [42; 32]).unwrap();
+    fs::set_permissions(root.join("master.key"), fs::Permissions::from_mode(0o600)).unwrap();
     value["runtime"]["namespace"] = json!("xelab-ci");
     value["runtime"]["network_cidr"] = json!("172.29.240.0/24");
     value["server"]["host_rpc_listen"] = json!("172.29.240.1:7443");
@@ -159,6 +162,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     fs::write("/sys/fs/cgroup/xelab/plugins/memory.max", "1073741824").unwrap();
     fs::write("/sys/fs/cgroup/xelab/plugins/cpu.max", "200000 100000").unwrap();
     fs::create_dir_all(config.root()).unwrap();
+    runtime.prepare_host_service_network().await.unwrap();
     tls::issue(&config, None, &config.root().join("kernel-identity")).unwrap();
     let mut c = db.connect().await.unwrap();
     let tx = c.transaction().await.unwrap();
@@ -626,6 +630,94 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         python_result.1["provider_instance_id"],
         python_instance.to_string()
     );
+    // Real plugin -> HostService mTLS path, with a signed requested secret.use
+    // rule, approved binding, rotation, and immediate binding revocation.
+    let host_worker = tokio::spawn(xelab_kernel::host::serve(app.clone()));
+    let secret = api(
+        &router,
+        "createSecret",
+        &[],
+        Some(token),
+        json!({"name":"oci-provider","value_base64":STANDARD.encode(b"oci-initial-secret")}),
+        "oci-secret",
+        None,
+    )
+    .await;
+    assert_eq!(secret.0, 201, "{}", secret.1);
+    let secret_id = secret.1["id"].as_str().unwrap();
+    let bound = api(
+        &router,
+        "bindSecret",
+        &[],
+        Some(token),
+        json!({"secret_id":secret_id,"deployment_id":python_deployment,"maximum_lease_seconds":60}),
+        "oci-bind-secret",
+        None,
+    )
+    .await;
+    assert_eq!(bound.0, 201, "{}", bound.1);
+    let binding = bound.1["id"].as_str().unwrap();
+    let probe = |expected: String, version: &str| {
+        vec![
+            "tasks".into(),
+            "exec".into(),
+            "--exec-id".into(),
+            format!("secret-{}", Uuid::new_v4()),
+            python_instance.to_string(),
+            "/usr/bin/python3".into(),
+            "/opt/plugin/lease_probe.py".into(),
+            binding.to_string(),
+            expected,
+            version.to_string(),
+        ]
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let initial = app
+        .runtime
+        .ctr(&probe(
+            contracts::digest(b"oci-initial-secret")[7..].to_string(),
+            "1",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(initial, b"lease-verified\n");
+    let rotated = api(
+        &router,
+        "rotateSecret",
+        &[("secret_id", secret_id.to_string())],
+        Some(token),
+        json!({"name":"oci-provider","value_base64":STANDARD.encode(b"oci-rotated-secret")}),
+        "oci-rotate-secret",
+        Some(1),
+    )
+    .await;
+    assert_eq!(rotated.0, 200, "{}", rotated.1);
+    let rotation = app
+        .runtime
+        .ctr(&probe(
+            contracts::digest(b"oci-rotated-secret")[7..].to_string(),
+            "2",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(rotation, b"lease-verified\n");
+    let revoked = api(
+        &router,
+        "revokeSecretBinding",
+        &[("binding_id", binding.to_string())],
+        Some(token),
+        Value::Null,
+        "oci-revoke-binding",
+        Some(1),
+    )
+    .await;
+    assert_eq!(revoked.0, 204, "{}", revoked.1);
+    assert_eq!(
+        app.runtime.ctr(&probe("denied".into(), "2")).await.unwrap(),
+        b"lease-denied\n"
+    );
+    host_worker.abort();
+    let _ = host_worker.await;
     // Real per-key lifetime accounting, including replay without another charge.
     let key_body = json!({"name":"one call","inheritance":{"mode":"selected","rules":[{"action":"capability.invoke","resource":{"kind":"capability","match":"ids","ids":["org.xelab.echo@1.0.0"]}}]},"conditions":{"expires_at":chrono::Utc::now()+chrono::Duration::hours(1),"max_calls":1}});
     let issued = api(

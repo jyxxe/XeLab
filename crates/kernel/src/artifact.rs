@@ -120,7 +120,6 @@ pub fn validate_profile(manifest: &Value) -> Result<()> {
     validate("Manifest", manifest)?;
     for field in [
         "dependencies",
-        "requested_rules",
         "volumes",
         "routes",
         "event_topics",
@@ -133,6 +132,22 @@ pub fn validate_profile(manifest: &Value) -> Result<()> {
         {
             return Err(Error::invalid("This M1 profile supports only stateless ordinary plugins without dependencies, proxy rules, UI, volumes or extensions"));
         }
+    }
+    if manifest
+        .get("requested_rules")
+        .and_then(Value::as_array)
+        .is_some_and(|rules| {
+            rules.iter().any(|r| {
+                r["action"] != "secret.use"
+                    || r["resource"]["kind"] != "secret"
+                    || r.get("conditions")
+                        .is_some_and(|v| !v.as_object().is_some_and(serde_json::Map::is_empty))
+            })
+        })
+    {
+        return Err(Error::invalid(
+            "This profile permits only unconditional secret.use workload requests",
+        ));
     }
     if manifest["data_schema_version"] != "none"
         || manifest

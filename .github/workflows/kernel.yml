@@ -9,7 +9,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:16
@@ -49,7 +49,7 @@ jobs:
           test -n "$digest"
           sudo ctr -n xelab-ci images tag docker.io/xelab-ci/echo:test "docker.io/xelab-ci/echo@$digest"
           echo "XELAB_TEST_IMAGE=docker.io/xelab-ci/echo@$digest" >> "$GITHUB_ENV"
-          python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output examples/generated-python --implementation python
+          python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output examples/generated-python --implementation python --request-secret
           docker build -t docker.io/xelab-ci/echo-python:test -f examples/echo-python/Dockerfile .
           docker save docker.io/xelab-ci/echo-python:test -o examples/generated-python/echo.tar
           sudo ctr -n xelab-ci images import examples/generated-python/echo.tar
@@ -67,6 +67,11 @@ jobs:
           assert len(binaries)==1,binaries
           subprocess.run(["sudo","--preserve-env=XELAB_TEST_DATABASE_URL,XELAB_TEST_IMAGE,XELAB_TEST_PYTHON_IMAGE,XELAB_OCI_TEST",binaries[0],"--ignored","--nocapture"],check=True)
           PYTEST
+      - name: Strict documentation validation
+        run: |
+          python3 -m venv /tmp/xelab-docs
+          /tmp/xelab-docs/bin/pip install -r docs/tools/requirements.txt
+          /tmp/xelab-docs/bin/python docs/tools/validate_docs.py --strict
       - name: Lints
         if: always()
         run: cargo clippy --workspace --all-targets --locked -- -D warnings

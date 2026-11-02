@@ -9,7 +9,7 @@ use xelab_kernel::{
     auth,
     config::{read_private, require_host_admin, Config},
     contracts::{openapi, strict_json},
-    db::{Db, LEADER_LOCK},
+    db::{Db, LEADER_LOCK, SCHEMA_VERSION},
     error::{Error, Result},
 };
 
@@ -99,15 +99,18 @@ async fn run(args: Args) -> Result<()> {
         }
         Cmd::Migrate { config, target } => {
             require_host_admin()?;
-            if target != 2 {
+            if target != SCHEMA_VERSION {
                 return Err(Error::invalid(
-                    "Only explicit migration target 2 is supported",
+                    "Only the current explicit migration target is supported",
                 ));
             }
             let cfg = Config::load(&config)?;
             let (dsn, _) = cfg.secrets()?;
             Db::new(dsn)?.migrate().await?;
-            println!("{}", json!({"migration":2,"status":"applied_or_verified"}));
+            println!(
+                "{}",
+                json!({"migration":SCHEMA_VERSION,"status":"applied_or_verified"})
+            );
         }
         Cmd::Bootstrap { config, owner_name } => {
             require_host_admin()?;

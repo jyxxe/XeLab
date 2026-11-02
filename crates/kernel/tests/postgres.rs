@@ -203,7 +203,7 @@ async fn call_charges_migrate_from_v1_without_rewriting_baseline() {
             .await
             .unwrap()
             .get::<_, i64>(0),
-        2
+        xelab_kernel::db::SCHEMA_VERSION as i64
     );
     c.query("SELECT * FROM call_credential_charges", &[])
         .await
