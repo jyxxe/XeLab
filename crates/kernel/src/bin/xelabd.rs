@@ -46,6 +46,7 @@ async fn start(args: Args) -> Result<()> {
     let (cpu, memory) = admission::host_capacity()?;
     let mut c = db.connect().await?;
     let tx = c.transaction().await?;
+    xelab_kernel::auth::seed_roles(&tx).await?;
     admission::initialize(&tx, &config.value["resources"], cpu, memory).await?;
     tx.commit().await?;
     config.value["resources"] = c
@@ -112,3 +113,4 @@ async fn start(args: Args) -> Result<()> {
     }
     Ok(())
 }
+

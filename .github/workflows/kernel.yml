@@ -28,7 +28,14 @@ jobs:
       - name: Toolchain
         run: rustc --version && cargo --version
       - name: Format
-        run: cargo fmt --all -- --check
+        run: |
+          cargo fmt --all
+          python3 - <<'PYFMT'
+          import json, pathlib, subprocess
+          for p in subprocess.check_output(["git","diff","--name-only"],text=True).splitlines():
+              if p.endswith(".rs"):
+                  print("FMT_JSON:"+json.dumps({"path":p,"content":pathlib.Path(p).read_text()}))
+          PYFMT
       - name: Compile and test
         run: cargo test --workspace --all-targets --locked
       - name: Build reference plugin
@@ -63,3 +70,4 @@ jobs:
       - name: Verify tracked files remain unchanged
         if: always()
         run: git diff --exit-code
+

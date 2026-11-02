@@ -22,7 +22,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct Auth {
     key: Arc<Vec<u8>>,
-    key_id: Arc<String>,
+    pub(crate) key_id: Arc<String>,
     failures: Arc<Mutex<HashMap<String, (Instant, u32)>>>,
 }
 // Never deserialize a security context from an HTTP body or RPC message.
@@ -72,7 +72,12 @@ impl Auth {
         mac.update(token.as_bytes());
         mac.finalize().into_bytes().to_vec()
     }
-    fn random_token(&self) -> (String, Vec<u8>) {
+    pub(crate) fn verify_mac(&self, value: &str, signature: &[u8]) -> bool {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.key).expect("HMAC key");
+        mac.update(value.as_bytes());
+        mac.verify_slice(signature).is_ok()
+    }
+    pub(crate) fn random_token(&self) -> (String, Vec<u8>) {
         let mut raw = [0u8; 32];
         OsRng.fill_bytes(&mut raw);
         let token = URL_SAFE_NO_PAD.encode(raw);
@@ -89,6 +94,7 @@ impl Auth {
         if token.len() > 512 || token.len() < 32 {
             return Err(Error::credential());
         }
+        crate::db::auth_lock(c, false).await?;
         let hash = self.token_digest(token);
         let r=c.query_opt("SELECT * FROM credentials WHERE hmac_key_id=$1 AND verification_digest=$2 FOR SHARE",&[&self.key_id.as_str(),&hash]).await?.ok_or_else(Error::credential)?;
         let stored: Vec<u8> = r.get("verification_digest");
@@ -104,32 +110,10 @@ impl Auth {
         peer: IpAddr,
         request: Uuid,
     ) -> Result<Context> {
-        let r = c.query_opt("SELECT c.owner_id FROM credentials c JOIN accounts a ON a.id=c.owner_id WHERE c.id=$1 AND c.kind='session' AND c.issuer_credential_id IS NULL AND a.independent_owner AND a.parent_id IS NULL FOR SHARE OF c,a", &[&credential]).await?.ok_or_else(Error::credential)?;
-        let subject: Uuid = r.get("owner_id");
-        let mut chain = Vec::new();
-        let mut cursor = Some(credential);
-        let mut seen = HashSet::new();
-        while let Some(id) = cursor {
-            if chain.len() >= 64 || !seen.insert(id) {
-                return Err(Error::credential());
-            }
-            let r = c
-                .query_opt("SELECT * FROM credentials WHERE id=$1 FOR SHARE", &[&id])
-                .await?
-                .ok_or_else(Error::credential)?;
-            if r.get::<_, String>("status") != "active"
-                || r.get::<_, DateTime<Utc>>("expires_at") <= Utc::now()
-            {
-                return Err(Error::credential());
-            }
-            let conditions: Value = r.get("conditions");
-            if !conditions_match(&conditions, peer, Utc::now()) {
-                return Err(Error::credential());
-            }
-            account_chain(c, r.get("owner_id")).await?;
-            cursor = r.get("issuer_credential_id");
-            chain.push(id);
-        }
+        crate::db::auth_lock(c, false).await?;
+        let r = c.query_opt("SELECT owner_id FROM credentials WHERE id=$1 AND kind IN ('session','api_key')", &[&credential]).await?.ok_or_else(Error::credential)?;
+        let subject: Uuid = r.get(0);
+        let chain = validate_sources(c, Some(credential), Some(subject), peer).await?;
         Ok(Context {
             subject,
             credential,
@@ -227,10 +211,9 @@ impl Auth {
         let active = r.as_ref().is_some_and(|r| {
             r.get::<_, String>("kind") == "user"
                 && r.get::<_, String>("status") == "active"
-                && r.get::<_, bool>("independent_owner")
-                && r.get::<_, Option<Uuid>>("parent_id").is_none()
+
         });
-        if !password_ok || !active || account_chain(c, account).await.is_err() {
+        if !password_ok || !active || validate_sources(c, None, Some(account), peer).await.is_err() {
             let subject = r.as_ref().map(|_| account);
             c.execute("INSERT INTO audit_events(id,subject_id,request_id,action,resource,outcome,policy_revision,reason_code,created_at,updated_at) VALUES($1,$2,$3,'login',$4,'denied',1,'INVALID_CREDENTIAL',now(),now())",&[&Uuid::new_v4(),&subject,&request,&json!({"kind":"account","match":"ids","ids":[account]})]).await?;
             return Err(Error::credential());
@@ -337,7 +320,7 @@ pub fn conditions_match(v: &Value, peer: IpAddr, now: DateTime<Utc>) -> bool {
     v.as_object().unwrap().keys().all(|k| {
         matches!(
             k.as_str(),
-            "not_before" | "expires_at" | "source_cidrs" | "audiences"
+            "not_before" | "expires_at" | "source_cidrs" | "audiences" | "max_calls"
         )
     })
 }
@@ -365,109 +348,68 @@ pub fn rules_allow(rules: &Value, action: &str, resource: &Resource, peer: IpAdd
     })
 }
 
-async fn account_allows(
-    c: &impl GenericClient,
-    subject: Uuid,
-    action: &str,
-    res: &Resource,
-    peer: IpAddr,
-) -> Result<bool> {
-    let chain = account_chain(c, subject).await?;
-    let mut effective = false;
-    for (level, id) in chain.iter().enumerate() {
-        let grants=c.query("SELECT g.scope,g.role_id,g.group_id,g.group_version,g.issuer_credential_id FROM grants g WHERE g.subject_id=$1 AND g.status='active' AND (g.expires_at IS NULL OR g.expires_at>now()) FOR SHARE",&[id]).await?;
-        let mut local = false;
-        for g in grants {
-            if g.get::<_, Option<Uuid>>("issuer_credential_id").is_some() {
-                continue;
-            } // delegated grant issuance is not exposed by this M1 profile
-            let scope: Value = g.get("scope");
-            if !selector_matches(&scope, res) {
-                continue;
-            }
-            if let Some(role) = g.get::<_, Option<String>>("role_id") {
-                let r = c
-                    .query_one(
-                        "SELECT definition FROM role_definitions WHERE id=$1 FOR SHARE",
-                        &[&role],
-                    )
-                    .await?;
-                let d: Value = r.get(0);
-                local |= d["actions"]
-                    .as_array()
-                    .is_some_and(|a| a.iter().any(|v| v == action));
-            } else if let Some(group) = g.get::<_, Option<Uuid>>("group_id") {
-                let version: i64 = g.get("group_version");
-                if let Some(r)=c.query_opt("SELECT v.rules FROM group_versions v JOIN permission_groups g ON g.id=v.group_id WHERE v.group_id=$1 AND v.version=$2 AND g.status='active' FOR SHARE OF g,v",&[&group,&version]).await?{local|=rules_allow(&r.get::<_,Value>(0),action,res,peer);}
-            }
-        }
-        if level == 0 {
-            effective = local;
-        } else {
-            let r = c
-                .query_opt(
-                    "SELECT * FROM inheritance_grants WHERE account_id=$1 FOR SHARE",
-                    &[id],
-                )
-                .await?
-                .ok_or_else(Error::credential)?;
-            if r.get::<_, Uuid>("parent_id") != chain[level - 1]
-                || r.get::<_, Option<Uuid>>("issuer_credential_id").is_some()
-            {
-                return Ok(false);
-            }
-            let mode: String = r.get("mode");
-            let ceiling = mode == "follow_parent"
-                || r.get::<_, Option<Value>>("maximum_rules")
-                    .is_some_and(|rules| rules_allow(&rules, action, res, peer));
-            effective = effective && ceiling;
-        }
-    }
-    Ok(effective)
-}
-
 pub async fn authorize(
-    c: &impl GenericClient,
+    c: &(impl GenericClient + Sync),
     ctx: &Context,
     action: &str,
     res: &Resource,
 ) -> Result<()> {
-    let registered = c
-        .query_opt(
-            "SELECT resource_kinds FROM permission_definitions WHERE action=$1",
-            &[&action],
-        )
-        .await?;
-    let kind_ok = registered.is_some_and(|r| {
-        r.get::<_, Value>(0)
-            .as_array()
-            .is_some_and(|a| a.iter().any(|v| v == &res.kind))
-    });
-    let mut allowed = kind_ok && account_allows(c, ctx.subject, action, res, ctx.peer).await?;
-    for id in &ctx.chain {
-        let row = c
-            .query_one("SELECT * FROM credentials WHERE id=$1 FOR SHARE", &[id])
-            .await?;
-        allowed &= row.get::<_, String>("status") == "active"
-            && row.get::<_, DateTime<Utc>>("expires_at") > Utc::now();
-        allowed &= account_allows(c, row.get("owner_id"), action, res, ctx.peer).await?;
-        if row.get::<_, String>("kind") != "session" {
-            match row.get::<_, Option<String>>("inheritance_mode").as_deref() {
-                Some("follow_parent") => (),
-                Some("selected" | "all_snapshot") => {
-                    allowed &= row
-                        .get::<_, Option<Value>>("maximum_rules")
-                        .is_some_and(|r| rules_allow(&r, action, res, ctx.peer))
+    if crate::policy::allows(c, ctx, action, res).await? { Ok(()) } else { Err(Error::denied()) }
+}
+
+/// Validate the complete account/credential source graph, including sources on
+/// ancestor accounts. Non-action restrictions also gate fixed self-service.
+pub(crate) async fn validate_sources(c: &impl GenericClient, credential: Option<Uuid>, account: Option<Uuid>, peer: IpAddr) -> Result<Vec<Uuid>> {
+    let mut pending=Vec::new();
+    if let Some(id)=credential {pending.push((true,id));}
+    if let Some(id)=account {pending.push((false,id));}
+    let mut seen=HashSet::new();let mut credentials=Vec::new();
+    while let Some((is_credential,id))=pending.pop() {
+        if !seen.insert((is_credential,id)) {continue;}
+        if seen.len()>512 {return Err(Error::credential());}
+        if is_credential {
+            let r=c.query_opt("SELECT * FROM credentials WHERE id=$1 FOR SHARE", &[&id]).await?.ok_or_else(Error::credential)?;
+            if r.get::<_,String>("status")!="active" || r.get::<_,DateTime<Utc>>("expires_at")<=Utc::now() || !conditions_match(&r.get::<_,Value>("conditions"),peer,Utc::now()) {return Err(Error::credential());}
+            let kind:String=r.get("kind");
+            if !matches!(kind.as_str(),"session"|"api_key") {return Err(Error::credential());}
+            pending.push((false,r.get("owner_id")));
+            if let Some(issuer)=r.get::<_,Option<Uuid>>("issuer_credential_id") {pending.push((true,issuer));}
+            credentials.push(id);
+        } else {
+            for ancestor in account_chain(c,id).await? {
+                if let Some(r)=c.query_opt("SELECT issuer_credential_id FROM inheritance_grants WHERE account_id=$1", &[&ancestor]).await? {
+                    if let Some(issuer)=r.get::<_,Option<Uuid>>(0) {pending.push((true,issuer));}
                 }
-                _ => allowed = false,
             }
         }
     }
-    if allowed {
-        Ok(())
-    } else {
-        Err(Error::denied())
+    // Parent links are immutable and issuance always points to an existing key.
+    // Also reject corrupted credential cycles explicitly, independent of dedup.
+    for start in &credentials {
+        let mut cursor=Some(*start);let mut chain=HashSet::new();
+        while let Some(id)=cursor {
+            if !chain.insert(id) || chain.len()>64 {return Err(Error::credential());}
+            cursor=c.query_one("SELECT issuer_credential_id FROM credentials WHERE id=$1", &[&id]).await?.get(0);
+        }
     }
+    credentials.sort();
+    Ok(credentials)
+}
+
+pub async fn seed_roles(c: &impl GenericClient) -> Result<()> {
+    let defs:Value=serde_json::from_str(include_str!("../../../docs/contracts/permissions.json"))?;
+    let actions:Vec<&str>=defs["definitions"].as_object().unwrap().keys().map(String::as_str).collect();
+    let templates=[
+        ("Owner",actions.clone(),"所有当前注册动作，仍受强制边界限制"),
+        ("Operator",vec!["plugin.read","plugin.enable","plugin.upgrade","operation.read","operation.cancel","platform.read","plugin.logs.read"],"插件和平台运维"),
+        ("Auditor",vec!["audit.read","platform.read","plugin.read"],"脱敏审计"),
+        ("Guest",vec!["capability.discover","capability.invoke","plugin.ui.open"],"仅明确共享的能力和页面"),
+        ("Member",actions.iter().copied().filter(|a| a.starts_with("task.")||a.starts_with("workflow.")||a.starts_with("schedule.")||a.starts_with("blob.")||a.starts_with("batch.")||a.starts_with("micro.")||matches!(*a,"capability.discover"|"capability.invoke")).collect(),"本人业务资源；必须绑定明确 scope"),
+    ];
+    for (name,actions,description) in templates {
+        c.execute("INSERT INTO role_definitions(id,definition,version) VALUES($1,$2,1) ON CONFLICT(id) DO UPDATE SET definition=EXCLUDED.definition", &[&name,&json!({"actions":actions,"description":description})]).await?;
+    }
+    Ok(())
 }
 
 pub async fn bootstrap(
@@ -489,20 +431,14 @@ pub async fn bootstrap(
     }
     let defs: Value =
         serde_json::from_str(include_str!("../../../docs/contracts/permissions.json"))?;
-    let mut actions = Vec::new();
     let mut kinds = HashSet::new();
     for (action, spec) in defs["definitions"].as_object().unwrap() {
         c.execute("INSERT INTO permission_definitions(action,resource_kinds,description,self_service) VALUES($1,$2,$3,$4)",&[&action,&spec["resource_kinds"],&string(spec,"description")?,&spec["self_service"].as_bool().unwrap_or(false)]).await?;
-        actions.push(action);
         for kind in spec["resource_kinds"].as_array().unwrap() {
             kinds.insert(kind.as_str().unwrap());
         }
     }
-    c.execute(
-        "INSERT INTO role_definitions(id,definition,version) VALUES('Owner',$1,1)",
-        &[&json!({"actions":actions})],
-    )
-    .await?;
+    seed_roles(c).await?;
     let id = Uuid::new_v4();
     c.execute("INSERT INTO accounts(id,kind,status,display_name,independent_owner,password_hash,created_at,updated_at) VALUES($1,'user','active',$2,true,$3,now(),now())",&[&id,&name,&hash]).await?;
     c.execute(
@@ -576,3 +512,4 @@ mod tests {
             .is_err());
     }
 }
+

@@ -9,6 +9,8 @@ pub mod controller;
 pub mod db;
 pub mod error;
 pub mod runtime;
+pub mod policy;
+pub mod identity;
 pub mod tls;
 
 #[allow(clippy::result_large_err)] // Generated Tonic service signatures use tonic::Status.
@@ -22,3 +24,4 @@ pub const SPEC_VERSION: &str = "2.8.0";
 pub fn init_crypto() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
+
