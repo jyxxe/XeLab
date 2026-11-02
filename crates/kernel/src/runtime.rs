@@ -432,7 +432,10 @@ impl Runtime {
         let dir = self.dir(id);
         fs::create_dir_all(&dir)?;
         let root = self.mount_image(image, sha).await?;
-        let net = self.network(id).await.map_err(|_| Error::unavailable("OCI network setup failed"))?;
+        let net = self
+            .network(id)
+            .await
+            .map_err(|_| Error::unavailable("OCI network setup failed"))?;
         let identity = dir.join("identity");
         if identity
             .join("tls.crt")
@@ -470,7 +473,8 @@ impl Runtime {
                 format!("org.xelab.generation={generation}"),
                 id.to_string(),
             ])
-            .await.map_err(|_| Error::unavailable("OCI container creation failed"))?;
+            .await
+            .map_err(|_| Error::unavailable("OCI container creation failed"))?;
         } else {
             let existing = strict_json(
                 &self
@@ -478,9 +482,7 @@ impl Runtime {
                     .await?,
                 2097152,
             )?;
-            if ["annotations", "root", "process", "mounts", "linux"]
-                .iter()
-                .any(|key| existing[*key] != spec[*key])
+            if !same_spec(&existing, &spec)
             {
                 return Err(Error::conflict("Existing OCI instance identity differs"));
             }
@@ -489,7 +491,8 @@ impl Runtime {
             // A stopped task record is removed before recreating the same stable instance.
             let _ = self.ctr(&strs(&["tasks", "delete", &id.to_string()])).await;
             self.ctr(&strs(&["tasks", "start", "--detach", &id.to_string()]))
-                .await.map_err(|_| Error::unavailable("OCI task start failed"))?;
+                .await
+                .map_err(|_| Error::unavailable("OCI task start failed"))?;
         }
         let cgroup = Path::new("/sys/fs/cgroup/xelab/plugins").join(id.to_string());
         let expected = format!("{} 100000", limits["cpu_millis"].as_i64().unwrap() * 100);
@@ -577,6 +580,19 @@ impl Runtime {
     }
 }
 
+// containerd's Go encoder omits false terminal and empty capability arrays.
+// Normalize only these known defaults; added privileges or changed paths still fail.
+fn same_spec(actual: &Value, expected: &Value) -> bool {
+    let mut actual = actual.clone();
+    let Some(process) = actual["process"].as_object_mut() else { return false; };
+    process.entry("terminal").or_insert(json!(false));
+    let Some(caps) = process.get_mut("capabilities").and_then(Value::as_object_mut) else { return false; };
+    for key in ["bounding","effective","inheritable","permitted","ambient"] {
+        caps.entry(key).or_insert(json!([]));
+    }
+    ["annotations","root","process","mounts","linux","hostname","ociVersion"].iter().all(|key|actual[*key]==expected[*key])
+}
+
 fn mounted(path: &Path) -> Result<bool> {
     let target = path
         .to_str()
@@ -622,13 +638,23 @@ pub fn oci_spec(
     ];
     let tmp = format!("size={},mode=1777", limits["ephemeral_bytes"]);
     Ok(
-        json!({"ociVersion":"1.0.2","hostname":"xelab-plugin","root":{"path":root,"readonly":true},"process":{"terminal":false,"user":{"uid":65532,"gid":65532},"args":manifest["entrypoint"],"env":env,"cwd":"/","noNewPrivileges":true,"capabilities":{"bounding":[],"effective":[],"inheritable":[],"permitted":[],"ambient":[]},"rlimits":[{"type":"RLIMIT_NOFILE","hard":1024,"soft":1024}]},"mounts":[{"destination":"/proc","type":"proc","source":"proc","options":["nosuid","noexec","nodev"]},{"destination":"/dev","type":"tmpfs","source":"tmpfs","options":["nosuid","strictatime","mode=755","size=65536k"]},{"destination":"/tmp","type":"tmpfs","source":"tmpfs","options":["nosuid","nodev","noexec",tmp]},{"destination":"/run/xelab/identity","type":"bind","source":identity,"options":["rbind","ro","nosuid","nodev","noexec"]}],"annotations":{"org.xelab.instance":id.to_string(),"org.xelab.deployment":deployment.to_string(),"org.xelab.generation":generation.to_string()},"linux":{"cgroupsPath":format!("/xelab/plugins/{id}"),"namespaces":[{"type":"pid"},{"type":"ipc"},{"type":"uts"},{"type":"mount"},{"type":"cgroup"},{"type":"network","path":format!("/run/netns/xelab-{id}")}],"resources":{"cpu":{"period":100000,"quota":limits["cpu_millis"].as_u64().unwrap()*100},"memory":{"limit":limits["memory_bytes"],"swap":limits["memory_bytes"]},"pids":{"limit":limits["pids"]},"devices":[{"allow":false,"access":"rwm"},{"allow":true,"type":"c","major":1,"minor":3,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":5,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":8,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":9,"access":"rw"}]},"devices":[{"path":"/dev/null","type":"c","major":1,"minor":3,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/zero","type":"c","major":1,"minor":5,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/random","type":"c","major":1,"minor":8,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/urandom","type":"c","major":1,"minor":9,"fileMode":438,"uid":0,"gid":0}],"maskedPaths":["/proc/kcore","/proc/keys","/proc/timer_list","/proc/sched_debug","/sys/firmware"],"readonlyPaths":["/proc/asound","/proc/bus","/proc/fs","/proc/irq","/proc/sys","/proc/sysrq-trigger"],"seccomp":{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{"names":["mount","umount2","pivot_root","ptrace","process_vm_readv","process_vm_writev","bpf","perf_event_open","kexec_load","kexec_file_load","init_module","finit_module","delete_module","reboot","swapon","swapoff","open_by_handle_at","name_to_handle_at","setns","unshare","keyctl","add_key","request_key","userfaultfd","io_uring_setup"],"action":"SCMP_ACT_ERRNO","errnoRet":1},{"names":["clone3"],"action":"SCMP_ACT_ERRNO","errnoRet":38},{"names":["clone"],"action":"SCMP_ACT_ERRNO","errnoRet":1,"args":[{"index":0,"value":268435456,"valueTwo":268435456,"op":"SCMP_CMP_MASKED_EQ"}]}]}}}),
+        json!({"ociVersion":"1.0.2","hostname":"xelab-plugin","root":{"path":root,"readonly":true},"process":{"terminal":false,"user":{"uid":65532,"gid":65532},"args":manifest["entrypoint"],"env":env,"cwd":"/","noNewPrivileges":true,"capabilities":{"bounding":[],"effective":[],"inheritable":[],"permitted":[],"ambient":[]},"rlimits":[{"type":"RLIMIT_NOFILE","hard":1024,"soft":1024}]},"mounts":[{"destination":"/proc","type":"proc","source":"proc","options":["nosuid","noexec","nodev"]},{"destination":"/dev","type":"tmpfs","source":"tmpfs","options":["nosuid","strictatime","mode=755","size=65536k"]},{"destination":"/tmp","type":"tmpfs","source":"tmpfs","options":["nosuid","nodev","noexec",tmp]},{"destination":"/run","type":"tmpfs","source":"tmpfs","options":["nosuid","nodev","noexec","size=1048576","mode=755"]},{"destination":"/run/xelab/identity","type":"bind","source":identity,"options":["rbind","ro","nosuid","nodev","noexec"]}],"annotations":{"org.xelab.instance":id.to_string(),"org.xelab.deployment":deployment.to_string(),"org.xelab.generation":generation.to_string()},"linux":{"cgroupsPath":format!("/xelab/plugins/{id}"),"namespaces":[{"type":"pid"},{"type":"ipc"},{"type":"uts"},{"type":"mount"},{"type":"cgroup"},{"type":"network","path":format!("/run/netns/xelab-{id}")}],"resources":{"cpu":{"period":100000,"quota":limits["cpu_millis"].as_u64().unwrap()*100},"memory":{"limit":limits["memory_bytes"],"swap":limits["memory_bytes"]},"pids":{"limit":limits["pids"]},"devices":[{"allow":false,"access":"rwm"},{"allow":true,"type":"c","major":1,"minor":3,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":5,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":8,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":9,"access":"rw"}]},"devices":[{"path":"/dev/null","type":"c","major":1,"minor":3,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/zero","type":"c","major":1,"minor":5,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/random","type":"c","major":1,"minor":8,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/urandom","type":"c","major":1,"minor":9,"fileMode":438,"uid":0,"gid":0}],"maskedPaths":["/proc/kcore","/proc/keys","/proc/timer_list","/proc/sched_debug","/sys/firmware"],"readonlyPaths":["/proc/asound","/proc/bus","/proc/fs","/proc/irq","/proc/sys","/proc/sysrq-trigger"],"seccomp":{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{"names":["mount","umount2","pivot_root","ptrace","process_vm_readv","process_vm_writev","bpf","perf_event_open","kexec_load","kexec_file_load","init_module","finit_module","delete_module","reboot","swapon","swapoff","open_by_handle_at","name_to_handle_at","setns","unshare","keyctl","add_key","request_key","userfaultfd","io_uring_setup"],"action":"SCMP_ACT_ERRNO","errnoRet":1},{"names":["clone3"],"action":"SCMP_ACT_ERRNO","errnoRet":38},{"names":["clone"],"action":"SCMP_ACT_ERRNO","errnoRet":1,"args":[{"index":0,"value":268435456,"valueTwo":268435456,"op":"SCMP_CMP_MASKED_EQ"}]}]}}}),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn omitted_oci_defaults_are_equivalent_but_added_privileges_are_not() {
+        let expected=json!({"process":{"terminal":false,"capabilities":{"bounding":[],"effective":[],"inheritable":[],"permitted":[],"ambient":[]}}});
+        let mut actual=json!({"process":{"capabilities":{}}});
+        assert!(same_spec(&actual,&expected));
+        actual["process"]["capabilities"]["effective"]=json!(["CAP_SYS_ADMIN"]);
+        assert!(!same_spec(&actual,&expected));
+        actual=json!({"process":{"terminal":true,"capabilities":{}}});
+        assert!(!same_spec(&actual,&expected));
+    }
     #[test]
     fn oci_spec_is_nonprivileged_and_has_hard_limits() {
         let t: toml::Value =
