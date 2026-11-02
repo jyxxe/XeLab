@@ -1,6 +1,6 @@
 # XeLab 3.0 产品架构与演进规划
 
-> 状态：3.0 演进规划；M1 部分能力已有实现与 CI，后续能力仍按本文门槛开发，不替代 2.8.0 规范。更新日期：2026-11-02。运行基线：`main` @ [`9005c428e1264ec52e10c3db1960924cfa2a8a1b`](https://github.com/jyxxe/XeLab/commit/9005c428e1264ec52e10c3db1960924cfa2a8a1b)。本次文档分支同步 main，未把待审 PR #5/#6 当作主线代码，不改变 API、Proto、Schema、数据库或现行规范。
+> 状态：3.0 演进规划；M1 部分能力已有实现与 CI，后续能力仍按本文门槛开发，不替代 2.8.0 规范。更新日期：2026-11-02。运行基线：`main` @ [`9005c428e1264ec52e10c3db1960924cfa2a8a1b`](https://github.com/jyxxe/XeLab/commit/9005c428e1264ec52e10c3db1960924cfa2a8a1b)。本次文档分支同步 main，未把待审 PR #5/#6/#7 当作主线代码，不改变 API、Proto、Schema、数据库或现行规范。
 
 ## 1. 产品愿景与定位
 
@@ -18,7 +18,7 @@ XeLab 面向自托管用户与插件开发者，成为**以稳定 Skill 为组�
 
 当前 main @ `9005c428` 已合并 M1 内核、身份、CLI 和两种独立插件；push CI 通过。旧版“只有规格、没有运行实现”的判断已过时。完整能力、证据与本轮 P0/P1/P2 映射见 [实施状态](xelab-3.0-status.md)。
 
-Controller #5 和 RUN-03 工具 #6 为待审 PR，尚未合并；真实 4C16G 宿主验收仍受环境阻塞。M2、SDK、Skill/WebUI、Batch/Extension 未完成，不因存在表、配置键或 Schema 就标记可用。[S11]
+Controller #5 和 RUN-03 工具 #6 为待审 PR，尚未合并；真实 4C16G 宿主验收仍受环境阻塞。M2-A 硬配额后端 #7 已提交，授权卷服务仍未启用；M2、SDK、Skill/WebUI、Batch/Extension 未完成，不因存在表、配置键或 Schema 就标记可用。[S11]
 
 ### 2.2 保留与调整
 
@@ -213,4 +213,4 @@ UI Extension 与 Extension Plugin 不混同：3.0 的插件页面由现有 ifram
 - **[S9]** [插件开发入口](../plugins/README.md)、[版本](../plugins/versioning.md)、[升级](../plugins/upgrades.md)、[变更规则](../implementation/change-policy.md)。
 - **[S10]** [规划插件落地门槛](../preset-plugins/planned/feature-gates.md)。
 
-- **[S11]** [Kernel 实现/运行指南](../../crates/kernel/README.md)、[M1 实现与验收记录](../implementation/m1-acceptance.md)、[main push CI](https://github.com/jyxxe/XeLab/actions/runs/41444998012)、[#5](https://github.com/jyxxe/XeLab/pull/5)、[#6](https://github.com/jyxxe/XeLab/pull/6)。
+- **[S11]** [Kernel 实现/运行指南](../../crates/kernel/README.md)、[M1 实现与验收记录](../implementation/m1-acceptance.md)、[main push CI](https://github.com/jyxxe/XeLab/actions/runs/41444998012)、[#5](https://github.com/jyxxe/XeLab/pull/5)、[#6](https://github.com/jyxxe/XeLab/pull/6)、[#7](https://github.com/jyxxe/XeLab/pull/7)。
