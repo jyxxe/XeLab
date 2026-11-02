@@ -22,6 +22,8 @@
 | AUTH-01/02 | `auth_01_02_guest_self_service_and_group_cannot_escape_parent` | Guest 自助子账户与 Key；拒绝平台读取/权限扩张；绑定高角色仍受父级上限约束；Key 不自动取得自助动作 |
 | AUTH-03 | `auth_03_snapshot_follow_and_independent_provenance` | 新增权限只扩张 follow_parent；两个独立来源保留有效分支；撤销来源后新 grant 不复活旧快照 |
 | 来源部分收缩 | `snapshot_tracks_partial_source_withdrawal_without_borrowing_new_grants` | 来源由 A/B 收缩至 A 后，后来新增的独立 B 授权不能填补旧快照的 B 缺口 |
+| 子账户直接授权 | `child_direct_grants_obey_selected_sources_and_ceiling`、`child_direct_grants_obey_snapshot_sources_and_ceiling`、`child_direct_grants_preserve_follow_parent_alternatives` | 角色/组直接 Grant 纳入实时来源和派生 Key；父级撤权及固定范围限制；独立来源分别撤销；传递到孙账户；旧 Key 快照不被替代来源复活 |
+| 源密钥上限 | `child_direct_grants_remain_bounded_by_issuer_key` | 即使父级和直接 Grant 更宽，子账户仍受原签发 Key 范围约束；吊销源 Key 后直接 Grant 不能恢复认证 |
 | AUTH-04/05/06 | `auth_04_05_06_source_revocation_idempotency_and_secret_storage` | K1→K2/子账户来源链失效，独立 Key 保留；一次性响应重放 409；元数据/审计不含 secret；归档不改父级 |
 | AUTH-07/08 | `auth_07_08_object_visibility_last_owner_and_stale_etag` | 他人对象隐藏；最后 Owner 保护；过期 ETag；游标不能换主体使用 |
 | AUTH-09 | `auth_09_concurrent_tree_and_key_quotas_are_atomic` | 并发创建子账户/API Key 时额度内恰好成功，不超售 |
@@ -30,6 +32,8 @@
 | 浏览器边界 | `browser_session_cookie_requires_same_origin_for_mutation` | 安全 cookie 属性；缺少或不匹配 Origin 的 cookie 写请求拒绝 |
 
 [`tests/postgres.rs`](../../crates/kernel/tests/postgres.rs) 验证原始基线迁移、会话撤销、并发实例准入及幂等资源回收。单元测试覆盖严格解析、权限条件交集、配置/秘密文件、签名信封、OCI 参数等。
+
+子账户的继承来源与显式直接 Grant 在同级取并集，两条路径均受当前父级、固定规则范围及原源凭证限制。固定模式的继承路径继续检查创建时的来源；后来显式签发的合法直接 Grant 使用自身来源，不借已失效的继承路径授权。撤销直接 Grant 只移除该路径，仍有效的继承/其他直接来源保留；已签发的 Key 继续冻结当时的真实来源，新直接 Grant 不会复活旧 Key。
 
 特权用例 [`tests/oci.rs`](../../crates/kernel/tests/oci.rs) 的 `signed_oci_plugin_runs_through_the_management_api_and_recovers` 使用真实 containerd、两个镜像、网络隔离、cgroups v2 与 mTLS：
 

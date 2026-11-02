@@ -42,18 +42,20 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
         let chain = crate::auth::account_chain(self.c, account).await?;
         let mut paths = Vec::new();
         for (level, subject) in chain.iter().enumerate() {
+            let mut direct = Vec::new();
+            for row in self
+                .c
+                .query(
+                    "SELECT id FROM grants WHERE subject_id=$1 AND status='active' ORDER BY id",
+                    &[subject],
+                )
+                .await?
+            {
+                direct.extend(Box::pin(self.grant(row.get(0), depth + 1)).await?);
+                bounded(&direct)?;
+            }
             if level == 0 {
-                for row in self
-                    .c
-                    .query(
-                        "SELECT id FROM grants WHERE subject_id=$1 AND status='active' ORDER BY id",
-                        &[subject],
-                    )
-                    .await?
-                {
-                    paths.extend(Box::pin(self.grant(row.get(0), depth + 1)).await?);
-                    bounded(&paths)?;
-                }
+                paths = direct;
             } else {
                 let row = self
                     .c
@@ -70,18 +72,32 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
                     let limits = Box::pin(self.credential(issuer, depth + 1)).await?;
                     paths = self.intersection(&paths, &limits).await?;
                 }
+                // Inherited and direct grants are alternative sources. Both
+                // must obey the current parent and original credential ceiling.
+                direct = self.intersection(&direct, &paths).await?;
                 if row.get::<_, String>("mode") != "follow_parent" {
+                    let maximum: Value = row
+                        .get::<_, Option<Value>>("maximum_rules")
+                        .ok_or_else(Error::denied)?;
+                    let caps: Vec<Path> = maximum
+                        .as_array()
+                        .ok_or_else(Error::denied)?
+                        .iter()
+                        .map(|rule| Path {
+                            rule: rule.clone(),
+                            sources: BTreeSet::new(),
+                        })
+                        .collect();
+                    direct = self.intersection(&direct, &caps).await?;
                     paths = self
-                        .freeze(
-                            paths,
-                            row.get::<_, Option<Value>>("maximum_rules")
-                                .as_ref()
-                                .ok_or_else(Error::denied)?,
-                            Some(*subject),
-                            None,
-                        )
+                        .freeze(paths, &maximum, Some(*subject), None)
                         .await?;
                 }
+                // Only the inherited branch uses its frozen issuance sources.
+                // An explicit direct grant has its own live provenance; it
+                // cannot widen maximum_rules or revive a previously issued Key.
+                paths.extend(direct);
+                bounded(&paths)?;
             }
         }
         // Identity self-service is a fixed system source, scoped to this user.

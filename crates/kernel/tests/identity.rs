@@ -226,6 +226,237 @@ fn key_body(inheritance: Value) -> Value {
     json!({"name":"acceptance key","inheritance":inheritance,"conditions":{"expires_at":(chrono::Utc::now()+chrono::Duration::days(30)).date_naive().and_hms_opt(0,0,0).unwrap().and_utc()}})
 }
 
+async fn grant_guest(f: &Fixture, account: Uuid, scope: Value) -> Uuid {
+    let granted = f
+        .call(
+            "createGrant",
+            &[("account_id", account.to_string())],
+            &f.token,
+            json!({"source":"role","role_id":"Guest","scope":scope}),
+            None,
+        )
+        .await;
+    assert_eq!(granted.0, 201, "{}", granted.1);
+    contracts::id(&granted.1, "id").unwrap()
+}
+
+async fn revoke_grant(f: &Fixture, grant: Uuid) {
+    let revoked = f
+        .call(
+            "revokeGrant",
+            &[("grant_id", grant.to_string())],
+            &f.token,
+            Value::Null,
+            Some(1),
+        )
+        .await;
+    assert_eq!(revoked.0, 204, "{}", revoked.1);
+}
+
+async fn assert_child_capability(
+    f: &Fixture,
+    account: Uuid,
+    token: &str,
+    scope: Value,
+    expected: bool,
+) {
+    let effective = f
+        .call(
+            "getEffectivePermissions",
+            &[("account_id", account.to_string())],
+            &f.token,
+            Value::Null,
+            None,
+        )
+        .await;
+    assert_eq!(effective.0, 200, "{}", effective.1);
+    let resource = auth::Resource::new("capability", scope["ids"][0].as_str().unwrap(), None);
+    assert_eq!(
+        auth::rules_allow(
+            &effective.1["rules"],
+            "capability.invoke",
+            &resource,
+            "127.0.0.1".parse().unwrap(),
+        ),
+        expected,
+        "effective account rules: {}",
+        effective.1
+    );
+    assert_eq!(f.check(token, "capability.invoke", scope).await, expected);
+}
+
+async fn child_direct_grant_sources(mode: &str) {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let (parent, parent_token) = f.root_guest().await;
+    let c = f.db.connect().await.unwrap();
+    let original: Uuid = c
+        .query_one("SELECT id FROM grants WHERE subject_id=$1", &[&parent])
+        .await
+        .unwrap()
+        .get(0);
+    let inheritance = if mode == "selected" {
+        selected()
+    } else {
+        json!({"mode":mode})
+    };
+    let (child, token) = f.child(parent, &parent_token, inheritance).await;
+    let (grandchild, grandchild_token) = f
+        .child(child, &token, json!({"mode":"follow_parent"}))
+        .await;
+    let old_key = f.key(child, &token, json!({"mode":"all_snapshot"})).await;
+    let direct = grant_guest(&f, child, cap()).await;
+    assert_child_capability(&f, child, &token, cap(), true).await;
+    let paths = xelab_kernel::policy::Policy::new(&c, "127.0.0.1".parse().unwrap())
+        .account(child, 0)
+        .await
+        .unwrap();
+    assert!(
+        paths.iter().any(|p| p.sources.contains(&direct)),
+        "a successful child Grant must participate in live provenance"
+    );
+    let issued = f.key(child, &token, json!({"mode":"all_snapshot"})).await;
+    let issued_id = contracts::id(&issued["credential"], "id").unwrap();
+    let count: i64 = c
+        .query_one(
+            "SELECT count(*) FROM grant_provenance WHERE derived_credential_id=$1 AND source_grant_id=$2",
+            &[&issued_id, &direct],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(count > 0, "derived Keys retain the child Grant source");
+
+    // A direct binding cannot exceed the parent or a selected/snapshot ceiling.
+    let other = json!({"kind":"capability","match":"ids","ids":["org.xelab.other@1.0.0"]});
+    grant_guest(&f, child, other.clone()).await;
+    assert_child_capability(&f, child, &token, other.clone(), false).await;
+    grant_guest(&f, parent, other.clone()).await;
+    assert_child_capability(&f, child, &token, other, mode == "follow_parent").await;
+
+    revoke_grant(&f, original).await;
+    assert_child_capability(&f, child, &token, cap(), false).await;
+    assert_child_capability(&f, grandchild, &grandchild_token, cap(), false).await;
+    grant_guest(&f, parent, cap()).await;
+    // Fixed-mode inheritance lost its original source. The explicit direct
+    // grant remains independently valid, within the unchanged fixed selector.
+    assert_child_capability(&f, child, &token, cap(), true).await;
+    assert_child_capability(&f, grandchild, &grandchild_token, cap(), true).await;
+    for key in [&old_key, &issued] {
+        assert!(
+            !f.check(key["secret"].as_str().unwrap(), "capability.invoke", cap()).await,
+            "new parent/direct sources cannot revive an old Key snapshot"
+        );
+    }
+
+    // A second, group-backed direct grant is an OR alternative to the role.
+    let group = f
+        .call(
+            "createGroup",
+            &[],
+            &f.token,
+            json!({"name":"child alternative","rules":[{"action":"capability.invoke","resource":cap(),"conditions":{"source_cidrs":["127.0.0.1/32"]}}]}),
+            None,
+        )
+        .await;
+    assert_eq!(group.0, 201, "{}", group.1);
+    let alternate = f
+        .call(
+            "createGrant",
+            &[("account_id", child.to_string())],
+            &f.token,
+            json!({"source":"group","group_version":{"group_id":group.1["id"],"version":1},"scope":cap()}),
+            None,
+        )
+        .await;
+    assert_eq!(alternate.0, 201, "{}", alternate.1);
+    let alternate = contracts::id(&alternate.1, "id").unwrap();
+    let current_key = f.key(child, &token, json!({"mode":"all_snapshot"})).await;
+    revoke_grant(&f, direct).await;
+    assert_child_capability(&f, child, &token, cap(), true).await;
+    assert!(f.check(current_key["secret"].as_str().unwrap(), "capability.invoke", cap()).await);
+    revoke_grant(&f, alternate).await;
+    let inherited = mode == "follow_parent";
+    assert_child_capability(&f, child, &token, cap(), inherited).await;
+    assert_child_capability(&f, grandchild, &grandchild_token, cap(), inherited).await;
+    assert_eq!(
+        f.check(current_key["secret"].as_str().unwrap(), "capability.invoke", cap()).await,
+        inherited
+    );
+    let paths = xelab_kernel::policy::Policy::new(&c, "127.0.0.1".parse().unwrap())
+        .account(child, 0)
+        .await
+        .unwrap();
+    assert!(paths.iter().all(|p| !p.sources.contains(&direct) && !p.sources.contains(&alternate)));
+    grant_guest(&f, child, cap()).await;
+    assert_child_capability(&f, child, &token, cap(), true).await;
+    assert_eq!(
+        f.check(current_key["secret"].as_str().unwrap(), "capability.invoke", cap()).await,
+        inherited,
+        "a replacement child Grant does not revive withdrawn Key sources"
+    );
+}
+
+#[tokio::test]
+async fn child_direct_grants_obey_selected_sources_and_ceiling() {
+    child_direct_grant_sources("selected").await;
+}
+
+#[tokio::test]
+async fn child_direct_grants_obey_snapshot_sources_and_ceiling() {
+    child_direct_grant_sources("all_snapshot").await;
+}
+
+#[tokio::test]
+async fn child_direct_grants_preserve_follow_parent_alternatives() {
+    child_direct_grant_sources("follow_parent").await;
+}
+
+#[tokio::test]
+async fn child_direct_grants_remain_bounded_by_issuer_key() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let (parent, parent_token) = f.root_guest().await;
+    let issuer = f
+        .key(
+            parent,
+            &parent_token,
+            json!({"mode":"selected","rules":[{"action":"capability.invoke","resource":cap()},{"action":"account.child.create","resource":{"kind":"account","match":"ids","ids":[parent]}}]}),
+        )
+        .await;
+    let (child, token) = f
+        .child(parent, issuer["secret"].as_str().unwrap(), json!({"mode":"follow_parent"}))
+        .await;
+    grant_guest(&f, child, cap()).await;
+    let other = json!({"kind":"capability","match":"ids","ids":["org.xelab.other@1.0.0"]});
+    grant_guest(&f, parent, other.clone()).await;
+    grant_guest(&f, child, other.clone()).await;
+    assert_child_capability(&f, child, &token, cap(), true).await;
+    assert_child_capability(&f, child, &token, other, false).await;
+    let revoked = f
+        .call(
+            "revokeApiKey",
+            &[("credential_id", issuer["credential"]["id"].as_str().unwrap().into())],
+            &parent_token,
+            Value::Null,
+            Some(1),
+        )
+        .await;
+    assert_eq!(revoked.0, 204, "{}", revoked.1);
+    let denied = f
+        .call(
+            "checkAuthorization",
+            &[],
+            &token,
+            json!({"action":"capability.invoke","resource":cap()}),
+            None,
+        )
+        .await;
+    assert_eq!(denied.0, 401, "{}", denied.1);
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn api(
     router: &Router,
