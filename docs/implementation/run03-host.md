@@ -10,10 +10,10 @@
 
 - `preflight`：只读检查真实可用 CPU/内存、当前 cgroup 及祖先硬限额、内核/系统预留、容器环境、主机二进制和 containerd socket。通过仅表示具备初步条件；不代表网络、存储、守护进程与压力验收成功。
 - `collect`：核实 PID 确实运行指定配置的 `xelabd` 且位于 kernel cgroup，记录二进制 SHA256、真实父级限额/用量、管理 API 状态/延迟、只读一致性数据库快照。对资源配置与实测宿主不一致、资源账本/祖先并发账本不一致输出错误。
-- `stress`：通过 `ctr tasks exec` **仅在指定现有插件实例内**运行有时间上限的 CPU/OOM/PID 工作负载；拒绝缺 CPU、内存、PID 硬限制的目标，不在宿主启动压力进程。使用 Python 参考镜像。OOM 非零退出既可能是预期终止也可能是故障，必须检查 `memory.events` 与恢复状态，不能当作通过。
+- `stress`：通过 `ctr tasks exec` **仅在指定现有插件实例内**运行有时间上限的 CPU/OOM/PID 工作负载；核对 task PID、真实 cgroup、OCI 标签/代次、实例限额/预留账本和父级硬限制；有限但超预算同样拒绝。远端先 SIGSTOP，经 pidfd 核实后才释放压力。使用 Python 参考镜像。OOM 非零退出既可能是预期终止也可能是故障，必须检查 `memory.events` 与恢复状态，不能当作通过。
 - `calls`：通过现有 OpenAPI 的 invokeCapability 发起有并发、数量与时间上限的调用；记录状态码、错误码和延迟，不保存输入/结果明文。截止时未执行项明确记为 not_attempted；正常返回不代表并发上限已经触发。
 
-除 preflight 外需 `--isolated-test-host`，表示执行者已确认目标是授权测试主机。工具不自动迁移、引导账户、安装镜像、启动/杀死 daemon 或启停部署；这些按下述显式步骤执行。不会合并代码或操作生产环境。
+除 preflight 外需 `--isolated-test-host`，表示执行者已确认目标是授权测试主机。工具不自动迁移、引导账户、安装镜像、启动/杀死 daemon 或修改部署意图。stress 结束（包括正常结束）会冻结并清空事先固定的测试实例 cgroup，终止该实例及所有子进程；Controller 可随后重建，或由操作员恢复。不会合并代码或操作生产环境。
 
 ## 1. 固定版本、部署与启动
 
@@ -34,7 +34,11 @@ RUN03_DAEMON_PID=$!
 
 使用 HTTPS 登录，把 access_token 存入 0600 的 `run03-session.token`。按运行指南通过 `installPlugin → createDeployment → approvePlugin → setDeploymentEnabled` 建立至少两个 Python 插件部署；一个承受压力，另一个用于验证隔离。管理写入使用当前 If-Match 和唯一幂等键。使用独立 namespace，记录安装摘要/发布者/部署 ID。
 
-从 `ctr --namespace <配置 namespace> containers list` 的 `org.xelab.deployment` 标签核对实例 ID，再调用公开 `getInstance` 核对身份和 limits。勿猜测 ID，勿把 deployment UUID 当 instance UUID。整个宿主必须是测试环境。
+从 `ctr --namespace <配置 namespace> containers list` 的 `org.xelab.deployment` 标签核对实例 ID，再调用公开 `getInstance` 核对身份和 limits。勿猜测 ID，勿把 deployment UUID 当 instance UUID。整个宿主必须是测试环境。stress 还要求插件父级 `pids.max` 为有限正值且
+不低于目标实例 PID 上限；当前 M1 不自动配置该父级 PID 上限，操作员须在
+隔离测试宿主先设置并记录该测试环境约束，不能宣称这是内核已实现的策略。
+父级 CPU/内存必须与实际宿主和 node_budget 推导的插件池完全一致，swap 为 0。
+工具通过只读 repeatable-read 快照核实目标实例和 reservation，不凭人工抄录值放行。
 
 ```bash
 RUN03_INSTANCE=<经标签和getInstance核对的实例UUID>
@@ -62,7 +66,13 @@ python3 tools/acceptance/run03.py stress --isolated-test-host \
   --output run03-evidence/cpu-instance-1.json
 ```
 
-随后在持续管理采样期间分别运行 `--fault oom --seconds 30` 和 `--fault pids --seconds 30`。每次使用新 output。检查：
+随后在持续管理采样期间分别运行 `--fault oom --seconds 30` 和 `--fault pids --seconds 30`。每次使用新 output。工具保存 exec-id，超时/异常时显式向远端 exec 发送
+SIGKILL，再通过预先打开的 cgroup 描述符冻结、kill 全部子进程并核实 populated=0。
+清理不会按路径误杀已替换的 cgroup，也不会主动解冻不确定的旧组。清理失败
+写入 safety_blocked 并返回 3，必须停止本轮验收，保留现场并人工停机/销毁 VM。
+SIGINT/SIGTERM 触发清理；工具被 SIGKILL、宿主掉电或内核阻塞时仍需操作员处置。
+先检查 after（清理前计数）与 cleanup（清理结果），避免把主动停机当成 OOM。
+检查：
 
 - 插件及父级 CPU `nr_throttled`/`usage_usec` 增量与预期限额相符；父级 memory.max/CPU cap 不侵占实际内核/系统预留，kernel memory.min 至少 16 GiB。memory.min 是保护值，不是常驻内存或独占物理内存证明。
 - OOM 后 `memory.events.oom_kill` 增长、无宿主或内核 OOM；PID 压力使 `pids.events.max` 增长。若实例重建导致计数器消失，保存 daemon 日志和重建前采样，不能把缺失计数当作通过。
@@ -104,4 +114,6 @@ python3 tools/acceptance/run03.py calls --isolated-test-host \
 | 插件/daemon 恢复 | 注入时间、旧进程围栏、同意图恢复、unknown 语义 | 待验证 |
 | 全部释放 | 容器/cgroup 清理、零残留账本或逐项解释 | 待验证 |
 
-退出码 0 只表示所请求的采集完成（preflight 为环境初步合格）；stress 的非零码需按证据区分预期终止与测试失败。所有 JSON 的 acceptance 保持 pending。只有上述全部项目有实际证据且审阅通过，才可在另一个验收记录 PR 中关闭 RUN-03。CI 的 9 项工具单元测试验证拒绝/保密/有界行为，不执行真实宿主压力。
+退出码 0 只表示所请求的采集完成（preflight 为环境初步合格）；stress 的非零码需按证据区分预期终止与测试失败。所有 JSON 的 acceptance 保持 pending。只有上述全部项目有实际证据且审阅通过，才可在另一个验收记录 PR 中关闭 RUN-03。CI 的工具单元测试覆盖超预算、task/cgroup/代次不符、远端超时残留及清理失败。
+OCI 步骤额外运行真实 exec 暂停/放行/清理组件测试；该组件明确替换 CI 无法满足的
+4C16G/SQL 宿主准入观察，不是完整 RUN-03，不能充当真实宿主验收。

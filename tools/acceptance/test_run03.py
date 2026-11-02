@@ -1,11 +1,13 @@
 import json
+import copy
+import subprocess
 import os
 from pathlib import Path
 import stat
 import tempfile
 import unittest
 import uuid
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 import run03
 
@@ -107,6 +109,135 @@ class Run03Tests(unittest.TestCase):
             self.assertEqual(result['acceptance'], 'pending')
             self.assertTrue(result['collection_failed'])
             self.assertNotIn('secret', output.read_text())
+
+
+    def stress_fixture(self):
+        host = {'resources': self.resources(), 'effective_cpu_millis': 8000,
+                'effective_memory_bytes': 32 * run03.GIB,
+                'plugin_cpu_millis': 2000, 'plugin_memory_bytes': 12 * run03.GIB}
+        kernel = {'memory.min': str(16 * run03.GIB)}
+        parent = {'cpu.max': '200000 100000', 'memory.max': str(12 * run03.GIB),
+                  'memory.swap.max': '0', 'pids.max': '1024'}
+        target = {'cpu.max': '50000 100000', 'memory.max': str(run03.GIB),
+                  'memory.swap.max': '0', 'pids.max': '64'}
+        limits = {'cpu_millis': 500, 'memory_bytes': run03.GIB, 'pids': 64}
+        book = {'host_cpu_millis': 8000, 'host_memory_bytes': 32 * run03.GIB,
+                'resources': self.resources(), 'reserved_cpu_millis': 500,
+                'instance_reservation_cpu': 500, 'reserved_memory_bytes': run03.GIB,
+                'instance_reservation_memory': run03.GIB, 'quota_mismatches': 0,
+                'instance': {'phase': 'ready', 'enabled': True, 'archived': False,
+                   'limits': limits, 'deployment_limits': copy.deepcopy(limits),
+                   'reservation_count': 1, 'reservation_cpu': 500,
+                   'reservation_memory': run03.GIB, 'generation': 1,
+                   'deployment_id': str(uuid.uuid4())}}
+        return host, kernel, parent, target, book
+
+    def test_stress_rejects_finite_but_oversized_and_mismatched_budgets(self):
+        values = self.stress_fixture()
+        self.assertEqual(run03.validate_stress_limits(*values), values[-1]['instance'])
+        for index, key, value in [(3, 'memory.max', str(1024 * run03.GIB)),
+                (3, 'cpu.max', '300000 100000'), (3, 'pids.max', '999999'),
+                (3, 'memory.swap.max', 'max'), (2, 'memory.max', str(1024 * run03.GIB)),
+                (2, 'cpu.max', '300000 100000'), (2, 'pids.max', 'max')]:
+            with self.subTest(key=key, index=index):
+                fixture = copy.deepcopy(values)
+                fixture[index][key] = value
+                with self.assertRaises(ValueError): run03.validate_stress_limits(*fixture)
+        for key, value in [('reservation_count', 0), ('reservation_cpu', 100),
+                           ('reservation_memory', 1), ('enabled', False), ('archived', True)]:
+            fixture = copy.deepcopy(values)
+            fixture[-1]['instance'][key] = value
+            with self.assertRaises(ValueError): run03.validate_stress_limits(*fixture)
+
+    def test_stress_rejects_task_in_another_cgroup_before_any_exec(self):
+        instance = str(uuid.uuid4())
+        with patch('run03.task_pid', return_value=123), patch('run03.process_identity', return_value=(123, 1)), patch('run03.read_text', return_value='0::/host'), patch('run03.subprocess.Popen') as execute:
+            with self.assertRaises(ValueError):
+                run03.verify_stress_target({}, instance, {}, Mock())
+            execute.assert_not_called()
+
+    def test_stress_rejects_container_label_and_generation_mismatch(self):
+        instance = str(uuid.uuid4())
+        host, kernel, parent, target, book = self.stress_fixture()
+        labels = {'org.xelab.instance': instance, 'org.xelab.deployment': book['instance']['deployment_id'],
+                  'org.xelab.generation': '2'}
+        spec = {'annotations': labels, 'linux': {'cgroupsPath': f'/xelab/plugins/{instance}'}}
+        with patch('run03.task_pid', return_value=123), patch('run03.process_identity', return_value=(123, 1)), patch('run03.read_text', return_value=f'0::/xelab/plugins/{instance}'), patch('run03.ledger', return_value=book), patch('run03.cgroup_snapshot', side_effect=[kernel, parent, target]), patch('run03.ctr', side_effect=[json.dumps({'ID': instance, 'Labels': labels}), json.dumps(spec)]):
+            with self.assertRaises(ValueError): run03.verify_stress_target({}, instance, host, Mock())
+
+    def test_timeout_explicitly_kills_remote_and_fences_all_descendants(self):
+        group = Mock()
+        group.removed.return_value = False
+        group.empty.side_effect = [False, True]
+        with patch('run03.ctr', side_effect=subprocess.TimeoutExpired('ctr', 5)), patch('run03.time.sleep'):
+            result = run03.cleanup_stress({}, 'instance', 'run03-saved-id', group)
+        self.assertTrue(result['confirmed'])
+        self.assertEqual(result['exec_id'], 'run03-saved-id')
+        self.assertEqual(group.write.call_args_list[0].args, ('cgroup.freeze', '1'))
+        self.assertEqual(group.write.call_args_list[1].args, ('cgroup.kill', '1'))
+        self.assertEqual(group.write.call_count, 2)  # never unfreeze an uncertain exec
+
+    def test_failed_remote_cleanup_is_a_safety_blocker(self):
+        group = Mock()
+        group.removed.return_value = False
+        group.empty.return_value = False
+        with patch('run03.ctr'), patch('run03.time.monotonic', side_effect=[0, 6]):
+            result = run03.cleanup_stress({}, 'instance', 'run03-saved-id', group)
+        self.assertFalse(result['confirmed'])
+        self.assertTrue(result['safety_blocked'])
+
+    def test_client_timeout_or_kill_failure_still_cleans_remote(self):
+        for kill_failure in (False, True):
+            group, process = Mock(), Mock()
+            process.poll.return_value = None
+            process.wait.side_effect = subprocess.TimeoutExpired('ctr', 1)
+            if kill_failure:
+                process.kill.side_effect = OSError('client already disappeared')
+            report = {}
+            with patch('run03.PinnedCgroup', return_value=group), patch('run03.verify_stress_target', return_value={}), patch('run03.release_stress_gate'), patch('run03.subprocess.Popen', return_value=process), patch('run03.cgroup_snapshot', return_value={}), patch('run03.cleanup_stress', return_value={'confirmed': False}) as cleanup:
+                self.assertEqual(run03.run_stress({'runtime': {'socket': 's', 'namespace': 'n'}}, str(uuid.uuid4()), {}, 'cpu', 1, 1, report), 1)
+            cleanup.assert_called_once()
+            self.assertTrue(report['safety_blocked'])
+            self.assertEqual(cleanup.call_args.args[2], report['fault']['exec_id'])
+            group.close.assert_called_once()
+
+    def test_replaced_cgroup_is_rejected_without_starting_workload(self):
+        group = Mock()
+        group.same_path.return_value = False
+        with patch('run03.subprocess.Popen') as execute:
+            with self.assertRaises(ValueError): run03.verify_stress_target({}, str(uuid.uuid4()), {}, group)
+            execute.assert_not_called()
+
+    def test_workload_stops_before_any_pressure_and_has_an_alarm(self):
+        code = run03.stress_command({'runtime': {'socket': 's', 'namespace': 'n'}}, str(uuid.uuid4()), 'cpu', 10, 2)[-1]
+        self.assertLess(code.index('signal.SIGSTOP'), code.index('multiprocessing.Process'))
+        self.assertIn('signal.alarm(25)', code)
+
+    def test_instance_sql_accepts_only_canonical_uuid_and_remains_readonly(self):
+        with patch('run03.private_bytes', return_value=b'postgresql://test'), patch('run03.subprocess.run') as command:
+            command.return_value.returncode = 0
+            command.return_value.stdout = b'{}'
+            instance = str(uuid.uuid4())
+            run03.ledger({'database': {'dsn_file': '/unused'}}, instance)
+            query = command.call_args.args[0][-1]
+            self.assertIn(instance, query)
+            self.assertIn('READ ONLY', query)
+            self.assertNotIn('__INSTANCE_SQL__', query)
+            with self.assertRaises(ValueError): run03.ledger({'database': {'dsn_file': '/unused'}}, "';DROP TABLE instances;")
+
+    def test_unconfirmed_cleanup_forces_cli_safety_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / 'config.toml'
+            config.write_text('')
+            output = Path(directory) / 'report.json'
+            def blocked(*args):
+                args[-1]['safety_blocked'] = True
+                return 0
+            with patch('sys.argv', ['run03', 'stress', '--isolated-test-host', '--daemon-pid', '123', '--instance', str(uuid.uuid4()), '--config', str(config), '--output', str(output)]), patch('run03.preflight', return_value={'status': 'eligible'}), patch('run03.daemon_evidence', return_value={}), patch('run03.cgroup_snapshot', return_value={}), patch('run03.run_stress', side_effect=blocked):
+                self.assertEqual(run03.main(), 3)
+            report = json.loads(output.read_text())
+            self.assertTrue(report['safety_blocked'])
+            self.assertEqual(report['acceptance'], 'pending')
 
 
 if __name__ == '__main__':

@@ -806,6 +806,23 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     let cli_value: Value = serde_json::from_slice(&cli.stdout).unwrap();
     assert_eq!(cli_value["output"], called.1["output"]);
     serve.abort();
+    // Component-only: verify the actual RUN-03 exec gate / cgroup cleanup on
+    // the disposable CI plugin. This does not satisfy production host admission.
+    let component = tokio::process::Command::new("python3")
+        .args([
+            "tools/acceptance/oci_stress_component.py",
+            &python_instance.to_string(),
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        component.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&component.stdout),
+        String::from_utf8_lossy(&component.stderr)
+    );
+    println!("{}", String::from_utf8_lossy(&component.stdout));
     let python_value = api(
         &router,
         "getDeployment",

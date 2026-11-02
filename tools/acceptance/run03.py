@@ -11,6 +11,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
+import tempfile
 import ssl
 import stat
 import subprocess
@@ -154,6 +156,7 @@ LEDGER_SQL = """
 BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
 SET LOCAL statement_timeout='5s';
 SELECT json_build_object(
+ 'instance',__INSTANCE_SQL__,
  'schema_versions',(SELECT json_agg(version ORDER BY version) FROM schema_migrations),
  'host_cpu_millis',(SELECT host_cpu_millis FROM node_budget),
  'host_memory_bytes',(SELECT host_memory_bytes FROM node_budget),
@@ -170,11 +173,22 @@ COMMIT;
 """
 
 
-def ledger(config):
+INSTANCE_SQL = """(SELECT json_build_object(
+ 'deployment_id',i.deployment_id,'generation',i.generation,'phase',i.phase,'limits',i.limits,
+ 'deployment_limits',d.spec->'limits','enabled',d.spec->'enabled','archived',d.archived_at IS NOT NULL,
+ 'reservation_count',(SELECT count(*) FROM reservations r WHERE r.instance_id=i.id AND r.kind='instance' AND r.status<>'released'),
+ 'reservation_cpu',(SELECT sum(cpu_millis) FROM reservations r WHERE r.instance_id=i.id AND r.kind='instance' AND r.status<>'released'),
+ 'reservation_memory',(SELECT sum(memory_bytes) FROM reservations r WHERE r.instance_id=i.id AND r.kind='instance' AND r.status<>'released')
+ ) FROM instances i JOIN deployments d ON d.id=i.deployment_id WHERE i.id='__ID__'::uuid)"""
+
+
+def ledger(config, instance=None):
     env = dict(os.environ)
     env['PGDATABASE'] = private_bytes(config['database']['dsn_file']).decode().strip()
     env['PGCONNECT_TIMEOUT'] = '5'
-    result = subprocess.run(['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-c', LEDGER_SQL],
+    target = 'NULL' if instance is None else INSTANCE_SQL.replace('__ID__', str(uuid.UUID(instance)))
+    query = LEDGER_SQL.replace('__INSTANCE_SQL__', target)
+    result = subprocess.run(['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-c', query],
                             env=env, capture_output=True, timeout=10, check=False)
     if result.returncode:
         raise ValueError('read-only ledger snapshot failed (database details withheld)')
@@ -216,7 +230,237 @@ def daemon_evidence(pid, config):
     return {'pid': pid, 'binary_sha256': hashlib.sha256(executable.read_bytes()).hexdigest()}
 
 
-def stress_command(config, instance, mode, seconds, workers):
+def ctr(config, *args, timeout=5):
+    command = ['ctr', '--address', config['runtime']['socket'], '--namespace', config['runtime']['namespace'], *args]
+    result = subprocess.run(command, capture_output=True, timeout=timeout, check=False)
+    if result.returncode:
+        raise ValueError('containerd observation failed')
+    return result.stdout
+
+
+def task_pid(config, instance):
+    rows = [line.split() for line in ctr(config, 'tasks', 'list').decode().splitlines()]
+    matches = [row for row in rows if row and row[0] == instance]
+    if len(matches) != 1 or len(matches[0]) != 3 or matches[0][2] != 'RUNNING':
+        raise ValueError('target task is not uniquely running')
+    pid = int(matches[0][1])
+    if pid <= 1:
+        raise ValueError('invalid task PID')
+    return pid
+
+
+def process_identity(pid):
+    fields = read_text(f'/proc/{pid}/stat').rsplit(')', 1)[1].split()
+    return pid, int(fields[19])  # starttime prevents PID reuse
+
+
+def cpu_cap(value):
+    quota, period = value.split()
+    if quota == 'max' or int(quota) <= 0 or int(period) <= 0:
+        raise ValueError('finite positive CPU limit required')
+    return int(quota), int(period)
+
+
+def finite_cap(value):
+    if value == 'max' or int(value) <= 0:
+        raise ValueError('finite positive limit required')
+    return int(value)
+
+
+def validate_stress_limits(host, kernel, parent, target, book):
+    if evidence_errors(host, kernel, parent, book):
+        raise ValueError('host/parent/ledger mismatch')
+    record = book.get('instance')
+    if not record or record['phase'] != 'ready' or record['archived'] or not record['enabled']:
+        raise ValueError('target is not an enabled, admitted ready instance')
+    limits = record['limits']
+    if (limits != record['deployment_limits'] or record['reservation_count'] != 1
+            or record['reservation_cpu'] != limits['cpu_millis']
+            or record['reservation_memory'] != limits['memory_bytes']):
+        raise ValueError('instance reservation/intent mismatch')
+    cq, cp = cpu_cap(target['cpu.max'])
+    pq, pp = cpu_cap(parent['cpu.max'])
+    memory, pids = finite_cap(target['memory.max']), finite_cap(target['pids.max'])
+    pm, pid_parent = finite_cap(parent['memory.max']), finite_cap(parent['pids.max'])
+    if (cq * 1000 != limits['cpu_millis'] * cp or memory != limits['memory_bytes']
+            or pids != limits['pids'] or target['memory.swap.max'] != '0'):
+        raise ValueError('actual target hard limits differ from admitted limits')
+    if (pq * 1000 != host['plugin_cpu_millis'] * pp or pm != host['plugin_memory_bytes']
+            or cq * pp > pq * cp or memory > pm or pids > pid_parent
+            or book['reserved_cpu_millis'] > host['plugin_cpu_millis']
+            or book['reserved_memory_bytes'] > host['plugin_memory_bytes']):
+        raise ValueError('actual parent or reservation exceeds the isolated pool')
+    return record
+
+
+class PinnedCgroup:
+    """Pin the verified kernel object; never kill a replacement at the same path."""
+    def __init__(self, path):
+        self.path = path
+        self.fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        self.controls = {}
+        try:
+            for name in ('cgroup.freeze', 'cgroup.kill'):
+                self.controls[name] = os.open(name, os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.fd)
+        except BaseException:
+            self.close()
+            raise
+
+    def same_path(self):
+        a, b = os.fstat(self.fd), self.path.stat()
+        return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
+
+    def read(self, name):
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=self.fd)
+        with os.fdopen(fd) as stream:
+            return stream.read().strip()
+
+    def write(self, name, value):
+        os.lseek(self.controls[name], 0, os.SEEK_SET)
+        os.write(self.controls[name], value.encode())
+
+    def removed(self):
+        return os.fstat(self.fd).st_nlink == 0
+
+    def empty(self):
+        if self.removed():
+            return True  # the kernel cannot remove a populated cgroup
+        return dict(line.split() for line in self.read('cgroup.events').splitlines())['populated'] == '0'
+
+    def close(self):
+        for fd in self.controls.values():
+            os.close(fd)
+        self.controls.clear()
+        os.close(self.fd)
+
+
+def verify_stress_target(config, instance, host, group):
+    if not group.same_path():
+        raise ValueError('target cgroup was replaced')
+    pid = task_pid(config, instance)
+    identity = process_identity(pid)
+    if read_text(f'/proc/{pid}/cgroup') != f'0::/xelab/plugins/{instance}':
+        raise ValueError('task PID does not belong to target cgroup')
+    book = ledger(config, instance)
+    root = CGROUP / 'xelab'
+    record = validate_stress_limits(host, cgroup_snapshot(root / 'kernel'),
+              cgroup_snapshot(root / 'plugins'), cgroup_snapshot(group.path), book)
+    container = json.loads(ctr(config, 'containers', 'info', instance))
+    spec = json.loads(ctr(config, 'containers', 'info', '--spec', instance))
+    labels = {'org.xelab.instance': instance, 'org.xelab.deployment': record['deployment_id'],
+              'org.xelab.generation': str(record['generation'])}
+    if (container['ID'] != instance or any(container['Labels'].get(k) != v for k, v in labels.items())
+            or any(spec['annotations'].get(k) != v for k, v in labels.items())
+            or spec['linux']['cgroupsPath'] != f'/xelab/plugins/{instance}'):
+        raise ValueError('container identity/generation/cgroup mismatch')
+    resources, limits = spec['linux']['resources'], record['limits']
+    if (resources['cpu']['quota'] * 1000 != limits['cpu_millis'] * resources['cpu']['period']
+            or resources['memory']['limit'] != limits['memory_bytes']
+            or resources['memory']['swap'] != limits['memory_bytes']
+            or resources['pids']['limit'] != limits['pids']):
+        raise ValueError('OCI resource limits differ from admission')
+    if (process_identity(pid) != identity or task_pid(config, instance) != pid or not group.same_path()
+            or read_text(f'/proc/{pid}/cgroup') != f'0::/xelab/plugins/{instance}'):
+        raise ValueError('target changed during observation')
+    return {'pid': pid, 'starttime': identity[1], 'generation': record['generation'],
+            'deployment_id': record['deployment_id'], 'limits': limits}
+
+
+def cleanup_stress(config, instance, exec_id, group):
+    result = {'exec_id': exec_id, 'confirmed': False, 'instance_stopped': False}
+    # An RPC timeout may only kill ctr. Explicitly signal the remote exec too.
+    try:
+        ctr(config, 'tasks', 'kill', '--exec-id', exec_id, '--signal', 'SIGKILL', instance)
+        result['remote_signal'] = 'sent'
+    except Exception:
+        result['remote_signal'] = 'unconfirmed'
+    try:
+        if not group.removed():
+            # Freeze before kill, retain the fence, and include all descendants.
+            # Finishing stress intentionally stops this disposable test instance.
+            group.write('cgroup.freeze', '1')
+            group.write('cgroup.kill', '1')
+        end = time.monotonic() + 5
+        while not group.empty():
+            if time.monotonic() >= end:
+                raise TimeoutError('target cgroup remains populated')
+            time.sleep(.05)
+        result.update(confirmed=True, instance_stopped=True)
+    except Exception:
+        result['safety_blocked'] = True
+    return result
+
+
+def release_stress_gate(config, instance, host, group, expected, command, pidfile, process):
+    # The wrapper SIGSTOPs before any workload. Release only this exact
+    # process via pidfd after validating its actual cgroup and fresh budget.
+    end = time.monotonic() + 10
+    while not pidfile.exists():
+        if process.poll() is not None or time.monotonic() >= end:
+            raise TimeoutError('remote exec did not reach the validation gate')
+        time.sleep(.05)
+    pid = int(pidfile.read_text())
+    if pid <= 1:
+        raise ValueError('invalid exec PID')
+    identity = process_identity(pid)
+    pidfd = os.pidfd_open(pid)
+    try:
+        while read_text(f'/proc/{pid}/stat').rsplit(')', 1)[1].split()[0] != 'T':
+            if time.monotonic() >= end:
+                raise TimeoutError('remote exec did not stop at validation gate')
+            time.sleep(.05)
+        if (read_text(f'/proc/{pid}/cgroup') != f'0::/xelab/plugins/{instance}'
+                or Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')[-2] != command[-1].encode()
+                or process_identity(pid) != identity
+                or verify_stress_target(config, instance, host, group) != expected):
+            raise ValueError('exec or admitted target changed before workload start')
+        signal.pidfd_send_signal(pidfd, signal.SIGCONT)
+    finally:
+        os.close(pidfd)
+
+
+def run_stress(config, instance, host, mode, seconds, workers, report):
+    with tempfile.TemporaryDirectory(prefix='xelab-run03-') as directory:
+        group = PinnedCgroup(CGROUP / 'xelab' / 'plugins' / instance)
+        process = None
+        previous_term = signal.getsignal(signal.SIGTERM)
+        def interrupted(*_):
+            raise InterruptedError('stress interrupted')
+        signal.signal(signal.SIGTERM, interrupted)
+        exec_id = 'run03-' + uuid.uuid4().hex
+        fault = report['fault'] = {'mode': mode, 'exec_id': exec_id, 'seconds': seconds, 'workers': workers}
+        try:
+            fault['target'] = verify_stress_target(config, instance, host, group)
+            pidfile = Path(directory) / 'pid'
+            command = stress_command(config, instance, mode, seconds, workers, exec_id, pidfile)
+            process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            release_stress_gate(config, instance, host, group, fault['target'], command, pidfile, process)
+            fault['exit_code'] = process.wait(timeout=seconds + 5)
+            return 0 if fault['exit_code'] == 0 else 2
+        except BaseException as error:
+            fault['error_type'] = type(error).__name__
+            return 1
+        finally:
+            if process is not None:
+                try:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=5)
+                except Exception:
+                    report['client_cleanup_failed'] = True
+                # Remote cleanup MUST still run if killing/waiting for ctr fails.
+                try:
+                    report['after'] = {instance: cgroup_snapshot(group.path)}
+                except Exception:
+                    report['after_unavailable'] = True
+                report['cleanup'] = cleanup_stress(config, instance, exec_id, group)
+                if not report['cleanup']['confirmed']:
+                    report['safety_blocked'] = True
+            group.close()
+            signal.signal(signal.SIGTERM, previous_term)
+
+
+def stress_command(config, instance, mode, seconds, workers, exec_id=None, pidfile=None):
     instance = str(uuid.UUID(instance))
     if not 1 <= seconds <= 900 or not 1 <= workers <= 256:
         raise ValueError('bounded seconds/workers required')
@@ -235,8 +479,13 @@ def stress_command(config, instance, mode, seconds, workers):
                 " for p in ps:p.terminate()\n for p in ps:p.wait()\n")
     else:
         raise ValueError('unknown fault mode')
+    # No load executes until the host validates this exact stopped process.
+    code = ("import os,signal\nsignal.signal(signal.SIGALRM,lambda *_:os._exit(124))\n"
+            f"signal.alarm({seconds + 15})\nos.kill(os.getpid(),signal.SIGSTOP)\n" + code)
+    options = ['--pid-file', str(pidfile)] if pidfile else []
     return ['ctr', '--address', config['runtime']['socket'], '--namespace', config['runtime']['namespace'],
-            'tasks', 'exec', '--exec-id', 'run03-' + uuid.uuid4().hex, instance, '/usr/bin/python3', '-c', code]
+            'tasks', 'exec', '--exec-id', exec_id or 'run03-' + uuid.uuid4().hex, *options,
+            instance, '/usr/bin/python3', '-c', code]
 
 
 def main():
@@ -280,22 +529,10 @@ def main():
         if args.mode == 'stress':
             if len(args.instance) != 1:
                 raise ValueError('stress requires exactly one instance UUID')
-            cg = root / 'plugins' / str(args.instance[0])
-            # Faults only run inside an existing capped plugin, never on host.
-            for field in ('memory.max', 'pids.max'):
-                cap = read_text(cg / field)
-                if cap == 'max' or int(cap) <= 0:
-                    raise ValueError('stress target lacks hard memory/PID caps')
-            if read_text(cg / 'cpu.max').split()[0] == 'max':
-                raise ValueError('stress target lacks CPU cap')
-            command = stress_command(config, str(args.instance[0]), args.fault, args.seconds, args.workers)
-            result = subprocess.run(command, capture_output=True, timeout=args.seconds + 30, check=False)
-            report['fault'] = {'mode': args.fault, 'exit_code': result.returncode,
-                               'seconds': args.seconds, 'workers': args.workers}
-            report['after'] = {str(args.instance[0]): cgroup_snapshot(cg)}
-            # Nonzero may mean expected OOM, or infrastructure failure. A human
-            # must inspect counter deltas; never convert it to a pass.
-            exit_code = 0 if result.returncode == 0 else 2
+            exit_code = run_stress(config, str(args.instance[0]), report['preflight'],
+                                   args.fault, args.seconds, args.workers, report)
+            if report.get('safety_blocked'):
+                exit_code = 3
         else:
             if not args.token_file or not args.ca_file:
                 raise ValueError('token and server CA files required')
