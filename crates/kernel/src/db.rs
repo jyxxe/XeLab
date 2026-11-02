@@ -182,11 +182,14 @@ pub async fn complete(
     Ok(())
 }
 
-
 /// Single-node authorization fence. Acquire exclusive BEFORE authentication for
 /// identity mutations, shared for all protected side effects. No lock upgrades.
 pub async fn auth_lock(c: &impl GenericClient, write: bool) -> Result<()> {
-    let sql=if write {"SELECT pg_advisory_xact_lock($1)"}else{"SELECT pg_advisory_xact_lock_shared($1)"};
-    c.query_one(sql,&[&0x58454c4142415554_i64]).await?;
+    let sql = if write {
+        "SELECT pg_advisory_xact_lock($1)"
+    } else {
+        "SELECT pg_advisory_xact_lock_shared($1)"
+    };
+    c.query_one(sql, &[&0x58454c4142415554_i64]).await?;
     Ok(())
 }

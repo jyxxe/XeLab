@@ -26,6 +26,8 @@ pub async fn invoke(
     let schema_digest = string(contract, "schema_digest")?;
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
+    db::auth_lock(&tx,false).await?;
+    tx.query_one("SELECT pg_advisory_xact_lock($1)", &[&0x58454c414243414c_i64]).await?;
     let ctx = app.auth.authenticate(&tx, token, peer, request_id).await?;
     let authorization = authorize(
         &tx,
@@ -128,10 +130,19 @@ pub async fn invoke(
         }
         tx.execute("UPDATE quotas SET concurrent_calls_used=concurrent_calls_used+1,daily_calls_used=$2::bigint+1,daily_bucket=$3 WHERE account_id=$1", &[account,&daily,&today]).await?;
     }
+    for key in &ctx.chain {
+        let conditions:Value=tx.query_one("SELECT conditions FROM credentials WHERE id=$1", &[key]).await?.get(0);
+        if let Some(max)=conditions["max_calls"].as_i64() {
+            if crate::identity::key_calls(&tx,*key).await?>=max {
+                return Err(Error::new("QUOTA_EXCEEDED","Credential lifetime call budget is exhausted",axum::http::StatusCode::CONFLICT));
+            }
+        }
+    }
     let call = Uuid::new_v4();
     let timeout = input["timeout_ms"].as_u64().unwrap_or(30000);
     let deadline = chrono::Utc::now() + chrono::Duration::milliseconds(timeout as i64);
     tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,idempotency_key,state,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,'running',$8,now())",&[&call,&ctx.subject,&ctx.credential,&instance,&contract,&digest(&bytes),&key,&deadline]).await?;
+    tx.execute("INSERT INTO reservations(id,account_id,kind,expires_at,status,created_at) VALUES($1,$2,'call',$3,'active',now())", &[&call,&ctx.subject,&deadline]).await?;
     let delegation = app
         .auth
         .issue_rpc(&tx, &ctx, call, instance, generation, deadline)
@@ -218,6 +229,7 @@ pub async fn invoke(
         )
         .with_resource(call));
     }
+    tx.execute("UPDATE reservations SET status='released' WHERE id=$1 AND kind='call'", &[&call]).await?;
     for account in &accounts {
         tx.execute("UPDATE quotas SET concurrent_calls_used=greatest(0,concurrent_calls_used-1) WHERE account_id=$1", &[account]).await?;
     }
@@ -249,3 +261,4 @@ pub async fn invoke(
     tx.commit().await?;
     result.map_err(|e| e.with_resource(call))
 }
+

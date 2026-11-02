@@ -111,7 +111,13 @@ impl Auth {
         request: Uuid,
     ) -> Result<Context> {
         crate::db::auth_lock(c, false).await?;
-        let r = c.query_opt("SELECT owner_id FROM credentials WHERE id=$1 AND kind IN ('session','api_key')", &[&credential]).await?.ok_or_else(Error::credential)?;
+        let r = c
+            .query_opt(
+                "SELECT owner_id FROM credentials WHERE id=$1 AND kind IN ('session','api_key')",
+                &[&credential],
+            )
+            .await?
+            .ok_or_else(Error::credential)?;
         let subject: Uuid = r.get(0);
         let chain = validate_sources(c, Some(credential), Some(subject), peer).await?;
         Ok(Context {
@@ -209,11 +215,14 @@ impl Auth {
         .await
         .map_err(|_| Error::unavailable("Password verifier unavailable"))?;
         let active = r.as_ref().is_some_and(|r| {
-            r.get::<_, String>("kind") == "user"
-                && r.get::<_, String>("status") == "active"
-
+            r.get::<_, String>("kind") == "user" && r.get::<_, String>("status") == "active"
         });
-        if !password_ok || !active || validate_sources(c, None, Some(account), peer).await.is_err() {
+        if !password_ok
+            || !active
+            || validate_sources(c, None, Some(account), peer)
+                .await
+                .is_err()
+        {
             let subject = r.as_ref().map(|_| account);
             c.execute("INSERT INTO audit_events(id,subject_id,request_id,action,resource,outcome,policy_revision,reason_code,created_at,updated_at) VALUES($1,$2,$3,'login',$4,'denied',1,'INVALID_CREDENTIAL',now(),now())",&[&Uuid::new_v4(),&subject,&request,&json!({"kind":"account","match":"ids","ids":[account]})]).await?;
             return Err(Error::credential());
@@ -354,31 +363,69 @@ pub async fn authorize(
     action: &str,
     res: &Resource,
 ) -> Result<()> {
-    if crate::policy::allows(c, ctx, action, res).await? { Ok(()) } else { Err(Error::denied()) }
+    if crate::policy::allows(c, ctx, action, res).await? {
+        Ok(())
+    } else {
+        Err(Error::denied())
+    }
 }
 
 /// Validate the complete account/credential source graph, including sources on
 /// ancestor accounts. Non-action restrictions also gate fixed self-service.
-pub(crate) async fn validate_sources(c: &impl GenericClient, credential: Option<Uuid>, account: Option<Uuid>, peer: IpAddr) -> Result<Vec<Uuid>> {
-    let mut pending=Vec::new();
-    if let Some(id)=credential {pending.push((true,id));}
-    if let Some(id)=account {pending.push((false,id));}
-    let mut seen=HashSet::new();let mut credentials=Vec::new();
-    while let Some((is_credential,id))=pending.pop() {
-        if !seen.insert((is_credential,id)) {continue;}
-        if seen.len()>512 {return Err(Error::credential());}
+pub(crate) async fn validate_sources(
+    c: &impl GenericClient,
+    credential: Option<Uuid>,
+    account: Option<Uuid>,
+    peer: IpAddr,
+) -> Result<Vec<Uuid>> {
+    let mut pending = Vec::new();
+    if let Some(id) = credential {
+        pending.push((true, id));
+    }
+    if let Some(id) = account {
+        pending.push((false, id));
+    }
+    let mut seen = HashSet::new();
+    let mut credentials = Vec::new();
+    while let Some((is_credential, id)) = pending.pop() {
+        if !seen.insert((is_credential, id)) {
+            continue;
+        }
+        if seen.len() > 512 {
+            return Err(Error::credential());
+        }
         if is_credential {
-            let r=c.query_opt("SELECT * FROM credentials WHERE id=$1 FOR SHARE", &[&id]).await?.ok_or_else(Error::credential)?;
-            if r.get::<_,String>("status")!="active" || r.get::<_,DateTime<Utc>>("expires_at")<=Utc::now() || !conditions_match(&r.get::<_,Value>("conditions"),peer,Utc::now()) {return Err(Error::credential());}
-            let kind:String=r.get("kind");
-            if !matches!(kind.as_str(),"session"|"api_key") {return Err(Error::credential());}
-            pending.push((false,r.get("owner_id")));
-            if let Some(issuer)=r.get::<_,Option<Uuid>>("issuer_credential_id") {pending.push((true,issuer));}
+            let r = c
+                .query_opt("SELECT * FROM credentials WHERE id=$1 FOR SHARE", &[&id])
+                .await?
+                .ok_or_else(Error::credential)?;
+            if r.get::<_, String>("status") != "active"
+                || r.get::<_, DateTime<Utc>>("expires_at") <= Utc::now()
+                || !conditions_match(&r.get::<_, Value>("conditions"), peer, Utc::now())
+            {
+                return Err(Error::credential());
+            }
+            let kind: String = r.get("kind");
+            if !matches!(kind.as_str(), "session" | "api_key") {
+                return Err(Error::credential());
+            }
+            pending.push((false, r.get("owner_id")));
+            if let Some(issuer) = r.get::<_, Option<Uuid>>("issuer_credential_id") {
+                pending.push((true, issuer));
+            }
             credentials.push(id);
         } else {
-            for ancestor in account_chain(c,id).await? {
-                if let Some(r)=c.query_opt("SELECT issuer_credential_id FROM inheritance_grants WHERE account_id=$1", &[&ancestor]).await? {
-                    if let Some(issuer)=r.get::<_,Option<Uuid>>(0) {pending.push((true,issuer));}
+            for ancestor in account_chain(c, id).await? {
+                if let Some(r) = c
+                    .query_opt(
+                        "SELECT issuer_credential_id FROM inheritance_grants WHERE account_id=$1",
+                        &[&ancestor],
+                    )
+                    .await?
+                {
+                    if let Some(issuer) = r.get::<_, Option<Uuid>>(0) {
+                        pending.push((true, issuer));
+                    }
                 }
             }
         }
@@ -386,10 +433,19 @@ pub(crate) async fn validate_sources(c: &impl GenericClient, credential: Option<
     // Parent links are immutable and issuance always points to an existing key.
     // Also reject corrupted credential cycles explicitly, independent of dedup.
     for start in &credentials {
-        let mut cursor=Some(*start);let mut chain=HashSet::new();
-        while let Some(id)=cursor {
-            if !chain.insert(id) || chain.len()>64 {return Err(Error::credential());}
-            cursor=c.query_one("SELECT issuer_credential_id FROM credentials WHERE id=$1", &[&id]).await?.get(0);
+        let mut cursor = Some(*start);
+        let mut chain = HashSet::new();
+        while let Some(id) = cursor {
+            if !chain.insert(id) || chain.len() > 64 {
+                return Err(Error::credential());
+            }
+            cursor = c
+                .query_one(
+                    "SELECT issuer_credential_id FROM credentials WHERE id=$1",
+                    &[&id],
+                )
+                .await?
+                .get(0);
         }
     }
     credentials.sort();
@@ -397,16 +453,62 @@ pub(crate) async fn validate_sources(c: &impl GenericClient, credential: Option<
 }
 
 pub async fn seed_roles(c: &impl GenericClient) -> Result<()> {
-    let defs:Value=serde_json::from_str(include_str!("../../../docs/contracts/permissions.json"))?;
-    let actions:Vec<&str>=defs["definitions"].as_object().unwrap().keys().map(String::as_str).collect();
-    let templates=[
-        ("Owner",actions.clone(),"所有当前注册动作，仍受强制边界限制"),
-        ("Operator",vec!["plugin.read","plugin.enable","plugin.upgrade","operation.read","operation.cancel","platform.read","plugin.logs.read"],"插件和平台运维"),
-        ("Auditor",vec!["audit.read","platform.read","plugin.read"],"脱敏审计"),
-        ("Guest",vec!["capability.discover","capability.invoke","plugin.ui.open"],"仅明确共享的能力和页面"),
-        ("Member",actions.iter().copied().filter(|a| a.starts_with("task.")||a.starts_with("workflow.")||a.starts_with("schedule.")||a.starts_with("blob.")||a.starts_with("batch.")||a.starts_with("micro.")||matches!(*a,"capability.discover"|"capability.invoke")).collect(),"本人业务资源；必须绑定明确 scope"),
+    let defs: Value =
+        serde_json::from_str(include_str!("../../../docs/contracts/permissions.json"))?;
+    let actions: Vec<&str> = defs["definitions"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let templates = [
+        (
+            "Owner",
+            actions.clone(),
+            "所有当前注册动作，仍受强制边界限制",
+        ),
+        (
+            "Operator",
+            vec![
+                "plugin.read",
+                "plugin.enable",
+                "plugin.upgrade",
+                "operation.read",
+                "operation.cancel",
+                "platform.read",
+                "plugin.logs.read",
+            ],
+            "插件和平台运维",
+        ),
+        (
+            "Auditor",
+            vec!["audit.read", "platform.read", "plugin.read"],
+            "脱敏审计",
+        ),
+        (
+            "Guest",
+            vec!["capability.discover", "capability.invoke", "plugin.ui.open"],
+            "仅明确共享的能力和页面",
+        ),
+        (
+            "Member",
+            actions
+                .iter()
+                .copied()
+                .filter(|a| {
+                    a.starts_with("task.")
+                        || a.starts_with("workflow.")
+                        || a.starts_with("schedule.")
+                        || a.starts_with("blob.")
+                        || a.starts_with("batch.")
+                        || a.starts_with("micro.")
+                        || matches!(*a, "capability.discover" | "capability.invoke")
+                })
+                .collect(),
+            "本人业务资源；必须绑定明确 scope",
+        ),
     ];
-    for (name,actions,description) in templates {
+    for (name, actions, description) in templates {
         c.execute("INSERT INTO role_definitions(id,definition,version) VALUES($1,$2,1) ON CONFLICT(id) DO UPDATE SET definition=EXCLUDED.definition", &[&name,&json!({"actions":actions,"description":description})]).await?;
     }
     Ok(())
