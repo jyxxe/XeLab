@@ -112,7 +112,21 @@ fn enforced_projects_survive_reopen_isolate_usage_and_fail_closed() {
         .unwrap()
         .sync_all()
         .unwrap();
-    assert_eq!(store.inspect(a, 1001).unwrap().used_bytes, 0);
+    // XFS inodegc is asynchronous: fsync of the parent persists the unlink
+    // but does not promise quota reclamation has finished. Keep requiring the
+    // real quota usage to reach exactly zero, with a bounded observation window.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let used = store.inspect(a, 1001).unwrap().used_bytes;
+        if used == 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "quota usage was not reclaimed: {used}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     fs::remove_dir(root.join(a.to_string()).join("nested")).unwrap();
     fs::remove_dir(root.join(a.to_string())).unwrap();
     assert!(
