@@ -89,9 +89,7 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
                         })
                         .collect();
                     direct = self.intersection(&direct, &caps).await?;
-                    paths = self
-                        .freeze(paths, &maximum, Some(*subject), None)
-                        .await?;
+                    paths = self.freeze(paths, &maximum, Some(*subject), None).await?;
                 }
                 // Only the inherited branch uses its frozen issuance sources.
                 // An explicit direct grant has its own live provenance; it

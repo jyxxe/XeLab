@@ -345,7 +345,8 @@ async fn child_direct_grant_sources(mode: &str) {
     assert_child_capability(&f, grandchild, &grandchild_token, cap(), true).await;
     for key in [&old_key, &issued] {
         assert!(
-            !f.check(key["secret"].as_str().unwrap(), "capability.invoke", cap()).await,
+            !f.check(key["secret"].as_str().unwrap(), "capability.invoke", cap())
+                .await,
             "new parent/direct sources cannot revive an old Key snapshot"
         );
     }
@@ -375,24 +376,43 @@ async fn child_direct_grant_sources(mode: &str) {
     let current_key = f.key(child, &token, json!({"mode":"all_snapshot"})).await;
     revoke_grant(&f, direct).await;
     assert_child_capability(&f, child, &token, cap(), true).await;
-    assert!(f.check(current_key["secret"].as_str().unwrap(), "capability.invoke", cap()).await);
+    assert!(
+        f.check(
+            current_key["secret"].as_str().unwrap(),
+            "capability.invoke",
+            cap()
+        )
+        .await
+    );
     revoke_grant(&f, alternate).await;
     let inherited = mode == "follow_parent";
     assert_child_capability(&f, child, &token, cap(), inherited).await;
     assert_child_capability(&f, grandchild, &grandchild_token, cap(), inherited).await;
     assert_eq!(
-        f.check(current_key["secret"].as_str().unwrap(), "capability.invoke", cap()).await,
+        f.check(
+            current_key["secret"].as_str().unwrap(),
+            "capability.invoke",
+            cap()
+        )
+        .await,
         inherited
     );
     let paths = xelab_kernel::policy::Policy::new(&c, "127.0.0.1".parse().unwrap())
         .account(child, 0)
         .await
         .unwrap();
-    assert!(paths.iter().all(|p| !p.sources.contains(&direct) && !p.sources.contains(&alternate)));
+    assert!(paths
+        .iter()
+        .all(|p| !p.sources.contains(&direct) && !p.sources.contains(&alternate)));
     grant_guest(&f, child, cap()).await;
     assert_child_capability(&f, child, &token, cap(), true).await;
     assert_eq!(
-        f.check(current_key["secret"].as_str().unwrap(), "capability.invoke", cap()).await,
+        f.check(
+            current_key["secret"].as_str().unwrap(),
+            "capability.invoke",
+            cap()
+        )
+        .await,
         inherited,
         "a replacement child Grant does not revive withdrawn Key sources"
     );
@@ -427,7 +447,11 @@ async fn child_direct_grants_remain_bounded_by_issuer_key() {
         )
         .await;
     let (child, token) = f
-        .child(parent, issuer["secret"].as_str().unwrap(), json!({"mode":"follow_parent"}))
+        .child(
+            parent,
+            issuer["secret"].as_str().unwrap(),
+            json!({"mode":"follow_parent"}),
+        )
         .await;
     grant_guest(&f, child, cap()).await;
     let other = json!({"kind":"capability","match":"ids","ids":["org.xelab.other@1.0.0"]});
@@ -438,7 +462,10 @@ async fn child_direct_grants_remain_bounded_by_issuer_key() {
     let revoked = f
         .call(
             "revokeApiKey",
-            &[("credential_id", issuer["credential"]["id"].as_str().unwrap().into())],
+            &[(
+                "credential_id",
+                issuer["credential"]["id"].as_str().unwrap().into(),
+            )],
             &parent_token,
             Value::Null,
             Some(1),
