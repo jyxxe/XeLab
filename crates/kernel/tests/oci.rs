@@ -723,6 +723,10 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     );
     // A dropped HTTP task can leave a durable running call without a finalizer.
     // Recovery must fence the old process before returning its slot, then restart.
+    // Keep an unsettled disabled backlog larger than the old 1000-row page.
+    // Recovery and health work must proceed before this cleanup sweep finishes.
+    c.execute("INSERT INTO deployments(id,owner_id,installation_id,spec,phase,created_at,updated_at) SELECT gen_random_uuid(),owner_id,installation_id,'{\"enabled\":false}'::jsonb,'reconciling',created_at-interval '1 day',now() FROM deployments CROSS JOIN generate_series(1,1200) WHERE id=$1", &[&deployment.parse::<Uuid>().unwrap()]).await.unwrap();
+    let recovery_started = tokio::time::Instant::now();
     let abandoned = Uuid::new_v4();
     let prior: Uuid = called.1["call_id"].as_str().unwrap().parse().unwrap();
     let tx = c.transaction().await.unwrap();
@@ -754,6 +758,20 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         recovered,
         "abandoned call slot is reclaimed and stable provider recovers"
     );
+    assert!(recovery_started.elapsed() < Duration::from_secs(60));
+    let backlog: i64 = c.query_one("SELECT count(*) FROM deployments WHERE spec->'enabled'='false'::jsonb AND phase='reconciling'", &[]).await.unwrap().get(0);
+    assert!(
+        backlog > 0,
+        "call recovery must not wait for the disabled sweep"
+    );
+    // Clean just the fixture rows (they have no instances/operations) so the
+    // subsequent explicit disable operations retain their own latency budget.
+    c.execute(
+        "DELETE FROM deployments WHERE spec=$1",
+        &[&json!({"enabled":false})],
+    )
+    .await
+    .unwrap();
     // RUN-07: execute the shipped CLI over HTTPS against the same API, without WebUI.
     let leaf = KeyPair::generate().unwrap();
     let server_cert = CertificateParams::new(vec!["127.0.0.1".into()])
