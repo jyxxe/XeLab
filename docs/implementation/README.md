@@ -4,6 +4,7 @@
 
 - [验收矩阵与故障注入](acceptance.md)
 - [M1 实现与验收记录](m1-acceptance.md)
+- [M2-A XFS 硬配额后端](m2-storage.md)
 - [契约优先级、变更与文档维护](change-policy.md)
 - [原计划迁移映射](migration-map.md)
 - [外部规范与实现依据](references.md)
