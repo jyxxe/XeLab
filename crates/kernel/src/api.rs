@@ -7,6 +7,7 @@ use crate::{
     contracts::{self, id, openapi, strict_json, string, validate},
     db::{self, Db},
     error::{Error, Result},
+    identity,
     runtime::Runtime,
 };
 use axum::{
@@ -78,18 +79,33 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
         .ok_or_else(|| Error::invalid("Missing or invalid required header"))
 }
 fn bearer(headers: &HeaderMap) -> Result<&str> {
-    header(headers, "authorization")
-        .map_err(|_| Error::credential())?
-        .strip_prefix("Bearer ")
+    if headers.contains_key("authorization") {
+        return header(headers, "authorization")
+            .map_err(|_| Error::credential())?
+            .strip_prefix("Bearer ")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(Error::credential);
+    }
+    let mut found = None;
+    for cookie in headers.get_all("cookie") {
+        for pair in cookie.to_str().map_err(|_| Error::credential())?.split(';') {
+            if let Some(value) = pair.trim().strip_prefix("__Host-xelab_auth=") {
+                if found.replace(value).is_some() {
+                    return Err(Error::credential());
+                }
+            }
+        }
+    }
+    found
         .filter(|s| !s.is_empty())
         .ok_or_else(Error::credential)
 }
-fn path_id(p: &HashMap<String, String>, name: &str) -> Result<Uuid> {
+pub(crate) fn path_id(p: &HashMap<String, String>, name: &str) -> Result<Uuid> {
     p.get(name)
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| Error::invalid("Invalid path UUID"))
 }
-fn etag(headers: &HeaderMap, revision: i64) -> Result<()> {
+pub(crate) fn etag(headers: &HeaderMap, revision: i64) -> Result<()> {
     let value = header(headers, "if-match").map_err(|_| {
         Error::new(
             "PRECONDITION_REQUIRED",
@@ -130,7 +146,15 @@ async fn handle(
 ) -> Response {
     let request_id = Uuid::new_v4();
     match dispatch(&app, peer, request_id, request).await {
-        Ok((v, s)) => response(v, s, request_id),
+        Ok((v, s)) => {
+            let cookie=v.get("access_token").and_then(Value::as_str).map(|token|format!("__Host-xelab_auth={token}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=3600"));
+            let mut r = response(v, s, request_id);
+            if let Some(cookie) = cookie {
+                r.headers_mut()
+                    .insert("set-cookie", cookie.parse().unwrap());
+            }
+            r
+        }
         Err(e) => {
             tracing::warn!(request_id=%request_id,reason_code=e.code,"Request rejected");
             let status = e.status;
@@ -218,13 +242,30 @@ async fn dispatch(
     for parameter in op["parameters"].as_array().unwrap() {
         let source = parameter["in"].as_str().unwrap_or("");
         if source == "header" && parameter["required"] == true {
-            let value = header(&headers, parameter["name"].as_str().unwrap())?;
+            let field = parameter["name"].as_str().unwrap();
+            if field.eq_ignore_ascii_case("if-match") && !headers.contains_key("if-match") {
+                return Err(Error::new(
+                    "PRECONDITION_REQUIRED",
+                    "If-Match is required",
+                    StatusCode::PRECONDITION_REQUIRED,
+                ));
+            }
+            let value = header(&headers, field)?;
             contracts::validate_business(&parameter["schema"], &json!(value))?;
         }
+    }
+    if name == "activateAccount" {
+        let mut c = app.db.connect().await?;
+        let tx = c.transaction().await?;
+        db::auth_lock(&tx, true).await?;
+        let value = identity::activate(&tx, &app.auth, &body, peer.ip(), request_id).await?;
+        tx.commit().await?;
+        return Ok((value, 200));
     }
     if name == "login" {
         let mut c = app.db.connect().await?;
         let tx = c.transaction().await?;
+        db::auth_lock(&tx, false).await?;
         let result = app
             .auth
             .login(
@@ -240,6 +281,13 @@ async fn dispatch(
     }
     if app.leader.is_closed() {
         return Err(Error::unavailable("Controller leadership is lost"));
+    }
+    if !headers.contains_key("authorization")
+        && matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE")
+        && headers.get("origin").and_then(|v| v.to_str().ok())
+            != Some(app.config.text("server", "public_origin"))
+    {
+        return Err(Error::denied());
     }
     let token = bearer(&headers)?;
     if name == "invokeCapability" {
@@ -259,19 +307,31 @@ async fn dispatch(
     }
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
+    let mutating = matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
+    db::auth_lock(
+        &tx,
+        (mutating && identity::handles(name)) || name == "getQuota",
+    )
+    .await?;
     let ctx = app
         .auth
         .authenticate(&tx, token, peer.ip(), request_id)
         .await?;
-    let mutating = matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
     let key = if mutating {
         Some(header(&headers, "idempotency-key")?)
     } else {
         None
     };
-    let fingerprint = contracts::digest(&serde_json::to_vec(
+    let canonical = serde_json::to_vec(
         &json!({"body":body,"if_match":headers.get("if-match").and_then(|v|v.to_str().ok())}),
-    )?);
+    )?;
+    let fingerprint = if identity::sensitive(name) || name == "changePassword" {
+        contracts::digest(&app.auth.token_digest(
+            std::str::from_utf8(&canonical).map_err(|_| Error::invalid("Invalid fingerprint"))?,
+        ))
+    } else {
+        contracts::digest(&canonical)
+    };
     if let Some(key) = key {
         let lock = format!("{}:{}:{method}:{path}:{key}", ctx.subject, ctx.credential);
         tx.query_one(
@@ -279,8 +339,12 @@ async fn dispatch(
             &[&lock],
         )
         .await?;
-        if let Some(row)=tx.query_opt("SELECT fingerprint,safe_response,response_status FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method=$3 AND path=$4 AND key=$5 AND expires_at>now()",&[&ctx.subject,&ctx.credential,&method,&path,&key]).await?{
+        if let Some(row)=tx.query_opt("SELECT fingerprint,safe_response,response_status,sensitive,resource_id FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method=$3 AND path=$4 AND key=$5 AND expires_at>now()",&[&ctx.subject,&ctx.credential,&method,&path,&key]).await?{
             if row.get::<_,String>("fingerprint")!=fingerprint{return Err(Error::new("IDEMPOTENCY_CONFLICT","Idempotency key fingerprint differs",StatusCode::CONFLICT));}
+            if row.get::<_,bool>("sensitive") {
+                authorize_operation(&tx,&ctx,name,&params,&body).await?;
+                return Err(Error::new("ONE_TIME_RESPONSE_UNAVAILABLE","The one-time secret is unavailable; inspect the existing resource",StatusCode::CONFLICT).with_resource(row.get::<_,String>("resource_id")));
+            }
             // Authentication has been rechecked; resource authorization is checked by the same dispatch before any replay below.
             let response:Option<Value>=row.get("safe_response");if let Some(value)=response{authorize_operation(&tx,&ctx,name,&params,&body).await?;return Ok((value,row.get::<_,i32>("response_status") as u16));}return Err(Error::conflict("Operation has no replayable response"));
         }
@@ -292,7 +356,7 @@ async fn dispatch(
             Some(ctx.credential),
             request_id,
             name,
-            &json!({"kind":"platform","match":"all"}),
+            &identity::audit_resource(name, &params, ctx.subject, &Value::Null),
             "denied",
             error.code,
         )
@@ -300,7 +364,11 @@ async fn dispatch(
         tx.commit().await?;
         return Err(error);
     }
-    let result = match name {
+    tx.batch_execute("SAVEPOINT mutation").await?;
+    let execution=async {
+    let result = if identity::handles(name) {
+        identity::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
+    } else {match name {
         "getCall" => {
             let call = path_id(&params, "call_id")?;
             let r = tx
@@ -510,6 +578,28 @@ async fn dispatch(
                 "Operation is not implemented in the M1 profile; see crates/kernel/README.md",
             ))
         }
+    }
+    };
+    Ok::<_,Error>(result)
+    }.await;
+    let result = match execution {
+        Ok(value) => value,
+        Err(e) => {
+            tx.batch_execute("ROLLBACK TO SAVEPOINT mutation").await?;
+            db::audit(
+                &tx,
+                ctx.subject,
+                Some(ctx.credential),
+                request_id,
+                name,
+                &identity::audit_resource(name, &params, ctx.subject, &Value::Null),
+                "failed",
+                e.code,
+            )
+            .await?;
+            tx.commit().await?;
+            return Err(e);
+        }
     };
     if mutating {
         db::audit(
@@ -518,14 +608,26 @@ async fn dispatch(
             Some(ctx.credential),
             request_id,
             name,
-            &json!({"kind":"platform","match":"all"}),
+            &identity::audit_resource(name, &params, ctx.subject, &result.0),
             "succeeded",
             "COMMITTED",
         )
         .await?;
         let key = key.unwrap();
         tx.execute("DELETE FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method=$3 AND path=$4 AND key=$5 AND expires_at<=now()",&[&ctx.subject,&ctx.credential,&method,&path,&key]).await?;
-        tx.execute("INSERT INTO idempotency_records(subject_id,credential_id,method,path,key,fingerprint,response_status,safe_response,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,now()+interval '24 hours',now())",&[&ctx.subject,&ctx.credential,&method,&path,&key,&fingerprint,&(result.1 as i32),&result.0]).await?;
+        let sensitive = identity::sensitive(name);
+        let resource = if name == "createChildAccount" {
+            result.0["account"]["id"].as_str()
+        } else {
+            result.0["credential"]["id"].as_str()
+        }
+        .map(str::to_owned);
+        let safe = if sensitive {
+            None
+        } else {
+            Some(result.0.clone())
+        };
+        tx.execute("INSERT INTO idempotency_records(subject_id,credential_id,method,path,key,fingerprint,response_status,safe_response,sensitive,resource_id,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now()+interval '24 hours',now())",&[&ctx.subject,&ctx.credential,&method,&path,&key,&fingerprint,&(result.1 as i32),&safe,&sensitive,&resource]).await?;
     }
     if let Some(model) = op["responses"][result.1.to_string()]["content"]["application/json"]
         ["schema"]["$ref"]
@@ -542,12 +644,32 @@ async fn dispatch(
 }
 
 async fn authorize_operation(
-    c: &impl GenericClient,
+    c: &(impl GenericClient + Sync),
     ctx: &Context,
     name: &str,
     params: &HashMap<String, String>,
     body: &Value,
 ) -> Result<()> {
+    if identity::handles(name) {
+        return identity::authorize(c, ctx, name, params, body).await;
+    }
+    if name == "installPlugin" {
+        // Stage/verify the signed artifact first. Only its verified manifest can
+        // supply plugin_id; the worker authorizes that actual ID before commit.
+        let paths = crate::policy::Policy::new(c, ctx.peer)
+            .credential(ctx.credential, 0)
+            .await?;
+        if paths.iter().any(|p| {
+            p.rule["action"] == "plugin.install"
+                && p.rule["resource"]["kind"] == "plugin"
+                && p.rule
+                    .get("conditions")
+                    .is_none_or(|v| auth::conditions_match(v, ctx.peer, chrono::Utc::now()))
+        }) {
+            return Ok(());
+        }
+        return Err(Error::denied());
+    }
     let (action, resource) = match name {
         "getCall" => {
             let id = path_id(params, "call_id")?;
@@ -671,7 +793,12 @@ async fn authorize_operation(
         })
 }
 
-async fn read_object(c: &impl GenericClient, table: &str, id: Uuid, model: &str) -> Result<Value> {
+pub(crate) async fn read_object(
+    c: &(impl GenericClient + Sync),
+    table: &str,
+    id: Uuid,
+    model: &str,
+) -> Result<Value> {
     // table is selected exclusively from the static dispatch above.
     let row = c
         .query_opt(

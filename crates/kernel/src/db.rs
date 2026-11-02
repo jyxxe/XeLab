@@ -8,6 +8,7 @@ use tokio_postgres::{Client, GenericClient, NoTls, Row};
 use uuid::Uuid;
 
 pub const BASELINE: &str = include_str!("../../../docs/contracts/metadata.sql");
+const CALL_CHARGES: &str = include_str!("../migrations/0002_call_credential_charges.sql");
 pub const LEADER_LOCK: i64 = 0x58454c41424d3101;
 
 #[derive(Clone)]
@@ -69,7 +70,19 @@ impl Db {
             )
             .await?;
         } else {
-            verify_migration(&tx).await?;
+            verify_migrations(&tx, false).await?;
+        }
+        let version: i64 = tx
+            .query_one("SELECT max(version) FROM schema_migrations", &[])
+            .await?
+            .get(0);
+        if version == 1 {
+            tx.batch_execute(CALL_CHARGES).await?;
+            tx.execute(
+                "INSERT INTO schema_migrations(version,checksum,applied_at) VALUES(2,$1,now())",
+                &[&digest(CALL_CHARGES.as_bytes())],
+            )
+            .await?;
         }
         tx.commit().await?;
         Ok(())
@@ -90,15 +103,24 @@ impl Db {
 }
 
 pub async fn verify_migration(c: &impl GenericClient) -> Result<()> {
+    verify_migrations(c, true).await
+}
+
+async fn verify_migrations(c: &impl GenericClient, latest: bool) -> Result<()> {
     let r = c
         .query(
             "SELECT version,checksum FROM schema_migrations ORDER BY version",
             &[],
         )
         .await?;
-    if r.len() != 1
+    if r.is_empty()
+        || r.len() > 2
+        || (latest && r.len() != 2)
         || r[0].get::<_, i64>(0) != 1
         || r[0].get::<_, String>(1) != digest(BASELINE.as_bytes())
+        || (r.len() == 2
+            && (r[1].get::<_, i64>(0) != 2
+                || r[1].get::<_, String>(1) != digest(CALL_CHARGES.as_bytes())))
     {
         return Err(Error::conflict(
             "Metadata migration version or checksum differs",
@@ -179,5 +201,29 @@ pub async fn complete(
         Err(e) => ("failed", None, Some(e.detail())),
     };
     c.execute("UPDATE operations SET state=$2,result=$3,error=$4,progress_percent=100,revision=revision+1,updated_at=now() WHERE id=$1 AND state IN ('pending','running')",&[&id,&state,&value,&error]).await?;
+    Ok(())
+}
+
+/// Single-node authorization fence. Acquire exclusive BEFORE authentication for
+/// identity mutations, shared for all protected side effects. No lock upgrades.
+pub async fn auth_lock(c: &impl GenericClient, write: bool) -> Result<()> {
+    let sql = if write {
+        "SELECT pg_advisory_xact_lock($1)"
+    } else {
+        "SELECT pg_advisory_xact_lock_shared($1)"
+    };
+    c.query_one(sql, &[&0x58454c4142415554_i64]).await?;
+    Ok(())
+}
+
+/// Order: authorization fence, call ledger, provider, root-to-leaf quota rows.
+/// Never hold this short transaction lock across an OCI or RPC operation.
+pub async fn call_lock(c: &impl GenericClient) -> Result<()> {
+    auth_lock(c, false).await?;
+    c.query_one(
+        "SELECT pg_advisory_xact_lock($1)",
+        &[&0x58454c414243414c_i64],
+    )
+    .await?;
     Ok(())
 }

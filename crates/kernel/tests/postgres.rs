@@ -159,3 +159,53 @@ async fn real_postgres_enforces_authentication_and_atomic_admission() {
         0
     );
 }
+
+#[tokio::test]
+async fn call_charges_migrate_from_v1_without_rewriting_baseline() {
+    let Ok(base) = std::env::var("XELAB_TEST_DATABASE_URL") else {
+        return;
+    };
+    let admin = Db::new(base.clone()).unwrap().connect().await.unwrap();
+    let name = format!("upgrade_{}", Uuid::new_v4().simple());
+    admin
+        .batch_execute(&format!("CREATE DATABASE {name}"))
+        .await
+        .unwrap();
+    let db = Db::new(format!("{base} dbname={name}")).unwrap();
+    let c = db.connect().await.unwrap();
+    c.batch_execute(xelab_kernel::db::BASELINE).await.unwrap();
+    let checksum = xelab_kernel::contracts::digest(xelab_kernel::db::BASELINE.as_bytes());
+    c.execute(
+        "INSERT INTO schema_migrations VALUES(1,$1,now())",
+        &[&checksum],
+    )
+    .await
+    .unwrap();
+    assert!(
+        db.check().await.is_err(),
+        "unmigrated daemon must fail closed"
+    );
+    db.migrate().await.unwrap();
+    db.migrate().await.unwrap();
+    db.check().await.unwrap();
+    assert_eq!(
+        c.query_one(
+            "SELECT checksum FROM schema_migrations WHERE version=1",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, String>(0),
+        checksum
+    );
+    assert_eq!(
+        c.query_one("SELECT count(*) FROM schema_migrations", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        2
+    );
+    c.query("SELECT * FROM call_credential_charges", &[])
+        .await
+        .unwrap();
+}

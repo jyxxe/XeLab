@@ -57,7 +57,11 @@ pub async fn run(app: Arc<App>) {
             }
             Err(e) => {
                 app.ready.store(false, Ordering::SeqCst);
-                tracing::error!(reason_code = e.code, "Controller reconciliation failed");
+                tracing::error!(
+                    reason_code = e.code,
+                    message = e.message,
+                    "Controller reconciliation failed"
+                );
             }
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -91,6 +95,7 @@ async fn tick(
             app.runtime.stop(id).await?;
         }
         let tx = c.transaction().await?;
+        db::call_lock(&tx).await?;
         tx.execute(
             "UPDATE calls SET state='unknown',error=$1 WHERE state IN ('accepted','running')",
             &[&Error::new(
@@ -111,6 +116,11 @@ async fn tick(
             &[],
         )
         .await?;
+        tx.execute(
+            "UPDATE reservations SET status='released' WHERE kind='call' AND status<>'released'",
+            &[],
+        )
+        .await?;
         tx.execute("UPDATE quotas SET concurrent_calls_used=0", &[])
             .await?;
         tx.execute("UPDATE instances SET phase='pending',health='unknown',restart_count=0,revision=revision+1,updated_at=now() WHERE phase<>'stopped'", &[]).await?;
@@ -122,29 +132,122 @@ async fn tick(
         .await?;
     }
     process_installations(app).await?;
-    let rows=c.query("SELECT id FROM deployments WHERE archived_at IS NULL ORDER BY created_at,id LIMIT 1000",&[]).await?;
-    for r in rows {
-        let id: Uuid = r.get(0);
-        if let Err(e) = reconcile(app, id, probes.entry(id).or_default()).await {
-            tracing::warn!(deployment_id=%id,reason_code=e.code,message=e.message,"Deployment is not ready");
-            c.execute("UPDATE provider_records SET availability='unavailable' WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)", &[&id]).await?;
-            let failed:bool=c.query_one("SELECT EXISTS(SELECT 1 FROM instances WHERE deployment_id=$1 AND phase='failed')", &[&id]).await?.get(0);
-            let phase = if failed {
-                "failed"
-            } else if e.code == "RESOURCE_EXHAUSTED" {
-                "waiting_resources"
-            } else {
-                "degraded"
-            };
-            if failed {
-                c.execute("UPDATE operations SET state='failed',error=$2,revision=revision+1,updated_at=now() WHERE resource_id=$1 AND state IN ('pending','running')", &[&id.to_string(),&e.detail()]).await?;
-            }
-            c.execute(
+    recover_expired_calls(app).await?;
+    // A fixed upper watermark makes each sweep finite even while deployments
+    // are created. Keyset pages include disabled rows without starving the tail.
+    let end = c.query_opt("SELECT created_at,id FROM deployments WHERE archived_at IS NULL ORDER BY created_at DESC,id DESC LIMIT 1", &[]).await?;
+    let Some(end) = end else {
+        return Ok(());
+    };
+    let through = (end.get(0), end.get(1));
+    let mut after = None;
+    loop {
+        if app.shutdown.load(Ordering::SeqCst) || app.leader.is_closed() {
+            return Err(Error::unavailable("Controller is stopping"));
+        }
+        let rows = deployment_page(&c, after, through).await?;
+        if rows.is_empty() {
+            break;
+        }
+        for r in rows {
+            after = Some((r.get("created_at"), r.get("id")));
+            let id: Uuid = r.get("id");
+            if let Err(e) = reconcile(app, id, probes.entry(id).or_default()).await {
+                tracing::warn!(deployment_id=%id,reason_code=e.code,message=e.message,"Deployment is not ready");
+                c.execute("UPDATE provider_records SET availability='unavailable' WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)", &[&id]).await?;
+                let failed:bool=c.query_one("SELECT EXISTS(SELECT 1 FROM instances WHERE deployment_id=$1 AND phase='failed')", &[&id]).await?.get(0);
+                let phase = if failed {
+                    "failed"
+                } else if e.code == "RESOURCE_EXHAUSTED" {
+                    "waiting_resources"
+                } else {
+                    "degraded"
+                };
+                if failed {
+                    c.execute("UPDATE operations SET state='failed',error=$2,revision=revision+1,updated_at=now() WHERE resource_id=$1 AND state IN ('pending','running')", &[&id.to_string(),&e.detail()]).await?;
+                }
+                c.execute(
                 "UPDATE deployments SET revision=revision+CASE WHEN phase<>$2 OR conditions<>$3 THEN 1 ELSE 0 END,phase=$2,conditions=$3,updated_at=now() WHERE id=$1",
                 &[&id, &phase, &json!([e.code])],
             )
             .await?;
+            }
         }
+    }
+    Ok(())
+}
+
+type DeploymentPosition = (chrono::DateTime<chrono::Utc>, Uuid);
+async fn deployment_page(
+    c: &impl tokio_postgres::GenericClient,
+    after: Option<DeploymentPosition>,
+    through: DeploymentPosition,
+) -> Result<Vec<tokio_postgres::Row>> {
+    let (created, id) = after
+        .map(|(created, id)| (Some(created), Some(id)))
+        .unwrap_or((None, None));
+    Ok(c.query("SELECT created_at,id FROM deployments WHERE archived_at IS NULL AND ($1::timestamptz IS NULL OR (created_at,id)>($1,$2)) AND (created_at,id)<=($3,$4) ORDER BY created_at,id LIMIT 1000", &[&created, &id, &through.0, &through.1]).await?)
+}
+
+async fn recover_expired_calls(app: &App) -> Result<()> {
+    let mut c = app.db.connect().await?;
+    let rows=c.query("SELECT DISTINCT provider_instance_id FROM calls c JOIN reservations r ON r.id=c.id AND r.kind='call' AND r.status<>'released' WHERE (c.state='unknown' OR (c.state IN ('accepted','running') AND deadline_at<now()-interval '1 second')) AND provider_instance_id IS NOT NULL", &[]).await?;
+    for row in rows {
+        let instance: Uuid = row.get(0);
+        let tx = c.transaction().await?;
+        db::call_lock(&tx).await?;
+        // A running provider cannot receive another call after this fence commits.
+        tx.query_one(
+            "SELECT id FROM instances WHERE id=$1 FOR UPDATE",
+            &[&instance],
+        )
+        .await?;
+        tx.execute(
+            "UPDATE provider_records SET availability='unavailable' WHERE instance_id=$1",
+            &[&instance],
+        )
+        .await?;
+        tx.commit().await?;
+        app.runtime.stop(instance).await?;
+        // Only confirmed process termination permits slot reuse. Concurrent late
+        // responses are fenced by the same call-state conditional update.
+        let tx = c.transaction().await?;
+        db::call_lock(&tx).await?;
+        let error = Error::new(
+            "OUTCOME_UNKNOWN",
+            "Call lease expired before its result was committed",
+            axum::http::StatusCode::CONFLICT,
+        )
+        .detail();
+        let calls=tx.query("UPDATE calls SET state='unknown',error=$2 WHERE provider_instance_id=$1 AND (state IN ('accepted','running') OR (state='unknown' AND EXISTS(SELECT 1 FROM reservations WHERE id=calls.id AND kind='call' AND status<>'released'))) RETURNING id,owner_id", &[&instance,&error]).await?;
+        for call in calls {
+            let id: Uuid = call.get(0);
+            let owner: Uuid = call.get(1);
+            let released=tx.execute("UPDATE reservations SET status='released' WHERE id=$1 AND kind='call' AND status<>'released'", &[&id]).await?;
+            if released == 1 {
+                for ancestor in tx.query("SELECT ancestor_id FROM account_closure WHERE descendant_id=$1 ORDER BY depth DESC", &[&owner]).await? {
+                    tx.execute("UPDATE quotas SET concurrent_calls_used=greatest(0,concurrent_calls_used-1) WHERE account_id=$1", &[&ancestor.get::<_,Uuid>(0)]).await?;
+                }
+            }
+            tx.execute(
+                "UPDATE rpc_delegations SET status='revoked' WHERE call_id=$1",
+                &[&id],
+            )
+            .await?;
+            tx.execute("UPDATE execution_delegations SET status='revoked' WHERE id IN(SELECT delegation_id FROM calls WHERE id=$1)", &[&id]).await?;
+            db::audit(
+                &tx,
+                owner,
+                None,
+                Uuid::new_v4(),
+                "capability.invoke",
+                &Resource::new("call", id, Some(owner)).json(),
+                "failed",
+                "CALL_LEASE_EXPIRED",
+            )
+            .await?;
+        }
+        tx.commit().await?;
     }
     Ok(())
 }
@@ -485,4 +588,130 @@ async fn finish_deployment_operations(
 ) -> Result<()> {
     c.execute("UPDATE operations SET state='succeeded',progress_percent=100,result=$2,updated_at=now(),revision=revision+1 WHERE resource_id=$1 AND kind IN ('createDeployment','setDeploymentEnabled') AND state IN ('pending','running') AND EXISTS(SELECT 1 FROM deployments WHERE id=$3 AND (spec->>'enabled')::boolean=$4)",&[&id.to_string(),&json!({"deployment_id":id}),&id,&enabled]).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod pagination_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn controller_reconciles_deployment_1001_after_disabled_prefix() {
+        let Ok(base) = std::env::var("XELAB_TEST_DATABASE_URL") else {
+            return;
+        };
+        let admin = db::Db::new(base.clone()).unwrap().connect().await.unwrap();
+        let database = format!("controller_{}", Uuid::new_v4().simple());
+        admin
+            .batch_execute(&format!("CREATE DATABASE {database}"))
+            .await
+            .unwrap();
+        let db = db::Db::new(format!("{base} dbname={database}")).unwrap();
+        db.migrate().await.unwrap();
+        let c = db.connect().await.unwrap();
+        let owner = Uuid::new_v4();
+        let publisher = Uuid::new_v4();
+        let installation = Uuid::new_v4();
+        c.execute("INSERT INTO accounts(id,kind,status,display_name,created_at,updated_at) VALUES($1,'user','active','fixture',now(),now())", &[&owner]).await.unwrap();
+        c.execute("INSERT INTO publishers(id,name,key_id,public_key_pem,status,created_at,updated_at) VALUES($1,'fixture','fixture','unused','trusted',now(),now())", &[&publisher]).await.unwrap();
+        c.execute("INSERT INTO installations(id,plugin_id,version,publisher_id,image_digest,manifest_digest,manifest,state,created_at,updated_at) VALUES($1,'org.xelab.fixture','1.0.0',$2,'test','test','{}','installed',now(),now())", &[&installation,&publisher]).await.unwrap();
+        for n in 1..=1001u128 {
+            c.execute("INSERT INTO deployments(id,owner_id,installation_id,spec,approval,phase,created_at,updated_at) VALUES($1,$2,$3,$4,$5,'reconciling',now(),now())", &[&Uuid::from_u128(n),&owner,&installation,&json!({"enabled":n==1001}),&json!({"rules":[],"egress":[]})]).await.unwrap();
+        }
+        let value: toml::Value =
+            toml::from_str(include_str!("../../../docs/contracts/examples/kernel.toml")).unwrap();
+        let config =
+            crate::config::Config::from_value(serde_json::to_value(value).unwrap()).unwrap();
+        let app = App {
+            runtime: crate::runtime::Runtime::new(config.clone()),
+            config,
+            db: db.clone(),
+            auth: crate::auth::Auth::new(vec![42; 32]).unwrap(),
+            leader: Arc::new(db.leader().await.unwrap()),
+            ready: std::sync::atomic::AtomicBool::new(false),
+            shutdown: std::sync::atomic::AtomicBool::new(false),
+        };
+        tick(&app, false, &mut std::collections::HashMap::new())
+            .await
+            .unwrap();
+        let tail = c
+            .query_one(
+                "SELECT phase,conditions FROM deployments WHERE id=$1",
+                &[&Uuid::from_u128(1001)],
+            )
+            .await
+            .unwrap();
+        // No instance intent is provided: reconciliation must actually reach
+        // the tail and record that error, without needing an OCI runtime.
+        assert_eq!(tail.get::<_, String>(0), "degraded");
+        assert_ne!(tail.get::<_, Value>(1), json!([]));
+        let disabled: i64 = c
+            .query_one(
+                "SELECT count(*) FROM deployments WHERE phase='disabled'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(disabled, 1000);
+    }
+
+    #[tokio::test]
+    async fn deployment_sweep_passes_disabled_prefix_and_handles_deletions() {
+        let Ok(dsn) = std::env::var("XELAB_TEST_DATABASE_URL") else {
+            return;
+        };
+        let db = db::Db::new(dsn).unwrap();
+        let mut c = db.connect().await.unwrap();
+        let tx = c.transaction().await.unwrap();
+        // Shadow only this query's relation so the pagination test is isolated
+        // from concurrently running database/OCI fixtures.
+        tx.batch_execute("CREATE TEMP TABLE deployments(id uuid PRIMARY KEY,created_at timestamptz NOT NULL,archived_at timestamptz,spec jsonb) ON COMMIT DROP").await.unwrap();
+        let at = chrono::Utc::now();
+        for n in 1..=1002u128 {
+            tx.execute(
+                "INSERT INTO deployments VALUES($1,$2,NULL,$3)",
+                &[&Uuid::from_u128(n), &at, &json!({"enabled":n>1000})],
+            )
+            .await
+            .unwrap();
+        }
+        let end = (at, Uuid::from_u128(1002));
+        let first = deployment_page(&tx, None, end).await.unwrap();
+        assert_eq!(first.len(), 1000);
+        let last = first.last().unwrap();
+        let cursor = Some((last.get(0), last.get(1)));
+        tx.execute(
+            "DELETE FROM deployments WHERE id=$1",
+            &[&Uuid::from_u128(1000)],
+        )
+        .await
+        .unwrap();
+        tx.execute(
+            "UPDATE deployments SET archived_at=now() WHERE id=$1",
+            &[&Uuid::from_u128(1001)],
+        )
+        .await
+        .unwrap();
+        tx.execute(
+            "INSERT INTO deployments VALUES($1,$2,NULL,'{}')",
+            &[&Uuid::from_u128(1003), &at],
+        )
+        .await
+        .unwrap();
+        let second = deployment_page(&tx, cursor, end).await.unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].get::<_, Uuid>(1), Uuid::from_u128(1002));
+        assert!(deployment_page(&tx, Some(end), end)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            deployment_page(&tx, Some(end), (at, Uuid::from_u128(1003)))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        tx.rollback().await.unwrap();
+    }
 }

@@ -8,6 +8,8 @@ pub mod contracts;
 pub mod controller;
 pub mod db;
 pub mod error;
+pub mod identity;
+pub mod policy;
 pub mod runtime;
 pub mod tls;
 

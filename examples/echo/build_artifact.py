@@ -11,7 +11,7 @@ def encoded(value):
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
-def build(root, publisher, platform="linux/amd64"):
+def build(root, publisher, platform="linux/amd64", implementation="rust"):
     publisher = str(uuid.UUID(publisher))
     schema = {"type": "object", "properties": {"message": {"type": "string", "maxLength": 1024}}, "required": ["message"], "additionalProperties": False}
     name, version = "org.xelab.echo", "1.0.0"
@@ -24,9 +24,9 @@ def build(root, publisher, platform="linux/amd64"):
         checks.append(f"{file} {hashlib.sha256(raw).hexdigest()}\n")
     contract = {"name": name, "version": version, "schema_digest": "sha256:" + hashlib.sha256("".join(checks).encode()).hexdigest()}
     manifest = {
-        "manifest_version": "1", "plugin_id": name, "version": version,
+        "manifest_version": "1", "plugin_id": name if implementation == "rust" else "org.xelab.echo-python", "version": version,
         "publisher_id": publisher, "host_api_major": 1, "platforms": [platform],
-        "entrypoint": ["/usr/local/bin/xelab-echo"],
+        "entrypoint": ["/usr/local/bin/xelab-echo"] if implementation == "rust" else ["/usr/bin/python3", "/opt/plugin/server.py"],
         "capabilities": [{"contract": contract, "input_schema": schema, "output_schema": schema, "stream_item_schema": None, "side_effect": "none", "maximum_input_bytes": 65536, "maximum_output_bytes": 65536}],
         "dependencies": [], "requested_rules": [], "volumes": [], "routes": [],
         "minimum_resources": {"cpu_millis": 100, "memory_bytes": 67108864, "ephemeral_bytes": 1048576, "pids": 64},
@@ -44,5 +44,7 @@ if __name__ == "__main__":
     parser.add_argument("--publisher-id", required=True)
     parser.add_argument("--output", type=pathlib.Path, default=pathlib.Path("examples/generated"))
     parser.add_argument("--platform", choices=["linux/amd64", "linux/arm64"], default="linux/amd64")
+    parser.add_argument("--implementation", choices=["rust", "python"], default="rust")
     args = parser.parse_args()
-    build(args.output, args.publisher_id, args.platform)
+    build(args.output, args.publisher_id, args.platform, args.implementation)
+

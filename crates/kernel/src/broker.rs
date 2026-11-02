@@ -26,6 +26,7 @@ pub async fn invoke(
     let schema_digest = string(contract, "schema_digest")?;
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
+    db::call_lock(&tx).await?;
     let ctx = app.auth.authenticate(&tx, token, peer, request_id).await?;
     let authorization = authorize(
         &tx,
@@ -128,10 +129,24 @@ pub async fn invoke(
         }
         tx.execute("UPDATE quotas SET concurrent_calls_used=concurrent_calls_used+1,daily_calls_used=$2::bigint+1,daily_bucket=$3 WHERE account_id=$1", &[account,&daily,&today]).await?;
     }
+    let charged = crate::identity::call_sources(
+        &tx,
+        &ctx,
+        &Resource::new("capability", format!("{name}@{version}"), None),
+    )
+    .await?;
     let call = Uuid::new_v4();
     let timeout = input["timeout_ms"].as_u64().unwrap_or(30000);
     let deadline = chrono::Utc::now() + chrono::Duration::milliseconds(timeout as i64);
     tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,idempotency_key,state,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,'running',$8,now())",&[&call,&ctx.subject,&ctx.credential,&instance,&contract,&digest(&bytes),&key,&deadline]).await?;
+    for credential in charged {
+        tx.execute(
+            "INSERT INTO call_credential_charges(call_id,credential_id) VALUES($1,$2)",
+            &[&call, &credential],
+        )
+        .await?;
+    }
+    tx.execute("INSERT INTO reservations(id,account_id,kind,expires_at,status,created_at) VALUES($1,$2,'call',$3,'active',now())", &[&call,&ctx.subject,&deadline]).await?;
     let delegation = app
         .auth
         .issue_rpc(&tx, &ctx, call, instance, generation, deadline)
@@ -192,6 +207,7 @@ pub async fn invoke(
     }
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
+    db::call_lock(&tx).await?;
     let check = async {
         let current = app.auth.authenticate(&tx, token, peer, request_id).await?;
         authorize(
@@ -218,8 +234,17 @@ pub async fn invoke(
         )
         .with_resource(call));
     }
-    for account in &accounts {
-        tx.execute("UPDATE quotas SET concurrent_calls_used=greatest(0,concurrent_calls_used-1) WHERE account_id=$1", &[account]).await?;
+    // An error/timeout does not prove that the provider stopped executing.
+    // Recovery fences its process before returning the reserved call slot.
+    if result.is_ok() {
+        tx.execute(
+            "UPDATE reservations SET status='released' WHERE id=$1 AND kind='call'",
+            &[&call],
+        )
+        .await?;
+        for account in &accounts {
+            tx.execute("UPDATE quotas SET concurrent_calls_used=greatest(0,concurrent_calls_used-1) WHERE account_id=$1", &[account]).await?;
+        }
     }
     tx.execute(
         "UPDATE rpc_delegations SET status='revoked' WHERE call_id=$1",

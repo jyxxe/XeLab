@@ -99,15 +99,15 @@ async fn run(args: Args) -> Result<()> {
         }
         Cmd::Migrate { config, target } => {
             require_host_admin()?;
-            if target != 1 {
+            if target != 2 {
                 return Err(Error::invalid(
-                    "Only explicit baseline migration target 1 is supported",
+                    "Only explicit migration target 2 is supported",
                 ));
             }
             let cfg = Config::load(&config)?;
             let (dsn, _) = cfg.secrets()?;
             Db::new(dsn)?.migrate().await?;
-            println!("{}", json!({"migration":1,"status":"applied_or_verified"}));
+            println!("{}", json!({"migration":2,"status":"applied_or_verified"}));
         }
         Cmd::Bootstrap { config, owner_name } => {
             require_host_admin()?;
