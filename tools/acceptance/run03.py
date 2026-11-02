@@ -365,8 +365,9 @@ def verify_stress_target(config, instance, host, group):
             'deployment_id': record['deployment_id'], 'limits': limits}
 
 
-def cleanup_stress(config, instance, exec_id, group):
-    result = {'exec_id': exec_id, 'confirmed': False, 'instance_stopped': False}
+def cleanup_stress(config, instance, exec_id, group, exec_completed=False):
+    result = {'exec_id': exec_id, 'confirmed': False, 'instance_stopped': False,
+              'quarantined': not exec_completed}
     # An RPC timeout may only kill ctr. Explicitly signal the remote exec too.
     try:
         ctr(config, 'tasks', 'kill', '--exec-id', exec_id, '--signal', 'SIGKILL', instance)
@@ -375,9 +376,13 @@ def cleanup_stress(config, instance, exec_id, group):
         result['remote_signal'] = 'unconfirmed'
     try:
         if not group.removed():
-            # Freeze before kill, retain the fence, and include all descendants.
-            # Finishing stress intentionally stops this disposable test instance.
-            group.write('cgroup.freeze', '1')
+            # A successful ctr wait proves the wrapper has exited: no delayed
+            # exec can start. cgroup.kill atomically includes descendants/forks.
+            # On uncertainty retain a freeze fence; never automatically thaw it.
+            # Freezing even a successful run makes runc report an empty task as
+            # PAUSED and prevents the ordinary controller stop/delete path.
+            if not exec_completed:
+                group.write('cgroup.freeze', '1')
             group.write('cgroup.kill', '1')
         end = time.monotonic() + 5
         while not group.empty():
@@ -467,7 +472,8 @@ def run_stress(config, instance, host, mode, seconds, workers, report):
                 report['after'] = {instance: cgroup_snapshot(group.path)}
             except Exception:
                 report['after_unavailable'] = True
-            report['cleanup'] = cleanup_stress(config, instance, exec_id, group)
+            report['cleanup'] = cleanup_stress(
+                config, instance, exec_id, group, exec_completed=fault.get('exit_code') == 0)
             if not report['cleanup']['confirmed']:
                 report['safety_blocked'] = True
         group.close()

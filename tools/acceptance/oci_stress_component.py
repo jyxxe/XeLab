@@ -36,6 +36,7 @@ with patch.object(run03, 'verify_stress_target', side_effect=observe_ci):
 assert result == 0, report
 assert report['cleanup']['confirmed'] and report['cleanup']['instance_stopped'], report
 assert not report.get('safety_blocked'), report
+assert not report['cleanup']['quarantined'], report
 # Actual cgroup is empty or was removed by the controller. Do not inspect a
 # replacement at the same path as though it were the object just stopped.
 print(json.dumps({'component': 'stopped_exec_gate_and_remote_cleanup',

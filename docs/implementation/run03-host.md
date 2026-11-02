@@ -13,7 +13,7 @@
 - `stress`：通过 `ctr tasks exec` **仅在指定现有插件实例内**运行有时间上限的 CPU/OOM/PID 工作负载；核对 task PID、真实 cgroup、OCI 标签/代次、实例限额/预留账本和父级硬限制；有限但超预算同样拒绝。远端先 SIGSTOP，经 pidfd 核实后才释放压力。使用 Python 参考镜像。OOM 非零退出既可能是预期终止也可能是故障，必须检查 `memory.events` 与恢复状态，不能当作通过。
 - `calls`：通过现有 OpenAPI 的 invokeCapability 发起有并发、数量与时间上限的调用；记录状态码、错误码和延迟，不保存输入/结果明文。截止时未执行项明确记为 not_attempted；正常返回不代表并发上限已经触发。
 
-除 preflight 外需 `--isolated-test-host`，表示执行者已确认目标是授权测试主机。工具不自动迁移、引导账户、安装镜像、启动/杀死 daemon 或修改部署意图。stress 结束（包括正常结束）会冻结并清空事先固定的测试实例 cgroup，终止该实例及所有子进程；Controller 可随后重建，或由操作员恢复。不会合并代码或操作生产环境。
+除 preflight 外需 `--isolated-test-host`，表示执行者已确认目标是授权测试主机。工具不自动迁移、引导账户、安装镜像、启动/杀死 daemon 或修改部署意图。stress 结束（包括正常结束）会清空事先固定的测试实例 cgroup，终止该实例及所有子进程。仅当 ctr 已确认正常完成时不设置冻结围栏，Controller 可随后重建；超时/异常/非零退出保留冻结围栏并报告 quarantined，必须由操作员处置。不会合并代码或操作生产环境。
 
 ## 1. 固定版本、部署与启动
 
@@ -67,8 +67,11 @@ python3 tools/acceptance/run03.py stress --isolated-test-host \
 ```
 
 随后在持续管理采样期间分别运行 `--fault oom --seconds 30` 和 `--fault pids --seconds 30`。每次使用新 output。工具保存 exec-id，超时/异常时显式向远端 exec 发送
-SIGKILL，再通过预先打开的 cgroup 描述符冻结、kill 全部子进程并核实 populated=0。
-清理不会按路径误杀已替换的 cgroup，也不会主动解冻不确定的旧组。清理失败
+SIGKILL，再通过预先打开的 cgroup 描述符 kill 全部子进程并核实 populated=0；
+仅在不能确认 exec 正常完成时先冻结，保留隔离状态。
+清理不会按路径误杀已替换的 cgroup，也不会主动解冻不确定的旧组。quarantined=true
+时 runc 可能把空组仍视为 PAUSED，普通管理停用不保证可完成；停止本轮并保留证据，
+由操作员停机/销毁 VM，不得直接解冻后继续验收。清理失败
 写入 safety_blocked 并返回 3，必须停止本轮验收，保留现场并人工停机/销毁 VM。
 SIGINT/SIGTERM 触发清理；工具被 SIGKILL、宿主掉电或内核阻塞时仍需操作员处置。
 先检查 after（清理前计数）与 cleanup（清理结果），避免把主动停机当成 OOM。

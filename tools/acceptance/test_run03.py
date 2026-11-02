@@ -186,6 +186,16 @@ class Run03Tests(unittest.TestCase):
         self.assertFalse(result['confirmed'])
         self.assertTrue(result['safety_blocked'])
 
+    def test_confirmed_completed_exec_cleans_descendants_without_pausing_empty_task(self):
+        group = Mock()
+        group.removed.return_value = False
+        group.empty.return_value = True
+        with patch('run03.ctr'):
+            result = run03.cleanup_stress({}, 'instance', 'run03-saved-id', group, exec_completed=True)
+        self.assertTrue(result['confirmed'])
+        self.assertFalse(result['quarantined'])
+        group.write.assert_called_once_with('cgroup.kill', '1')
+
     def test_client_timeout_or_kill_failure_still_cleans_remote(self):
         for kill_failure in (False, True):
             group, process = Mock(), Mock()
