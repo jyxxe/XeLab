@@ -21,6 +21,7 @@
 |---|---|---|
 | AUTH-01/02 | `auth_01_02_guest_self_service_and_group_cannot_escape_parent` | Guest 自助子账户与 Key；拒绝平台读取/权限扩张；绑定高角色仍受父级上限约束；Key 不自动取得自助动作 |
 | AUTH-03 | `auth_03_snapshot_follow_and_independent_provenance` | 新增权限只扩张 follow_parent；两个独立来源保留有效分支；撤销来源后新 grant 不复活旧快照 |
+| 来源部分收缩 | `snapshot_tracks_partial_source_withdrawal_without_borrowing_new_grants` | 来源由 A/B 收缩至 A 后，后来新增的独立 B 授权不能填补旧快照的 B 缺口 |
 | AUTH-04/05/06 | `auth_04_05_06_source_revocation_idempotency_and_secret_storage` | K1→K2/子账户来源链失效，独立 Key 保留；一次性响应重放 409；元数据/审计不含 secret；归档不改父级 |
 | AUTH-07/08 | `auth_07_08_object_visibility_last_owner_and_stale_etag` | 他人对象隐藏；最后 Owner 保护；过期 ETag；游标不能换主体使用 |
 | AUTH-09 | `auth_09_concurrent_tree_and_key_quotas_are_atomic` | 并发创建子账户/API Key 时额度内恰好成功，不超售 |

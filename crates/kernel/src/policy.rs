@@ -294,12 +294,17 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
             if v["version"]!=1 {return Err(Error::denied());}
             let p:Path=serde_json::from_value(v["path"].clone()).map_err(|_|Error::denied())?;
             if seen.insert(serde_json::to_string(&p)?) {
-                let mut valid=true;
+                let mut current=vec![p.clone()];
                 for source in &p.sources {
                     let rule_paths=Box::pin(self.grant(*source,1)).await?;
-                    valid &= !self.intersection(std::slice::from_ref(&p),&rule_paths).await?.is_empty();
+                    // Retain each source's current selectors and conditions.
+                    // A mere nonempty overlap could resurrect a withdrawn part
+                    // through an unrelated grant acquired after the snapshot.
+                    current=self.intersection(&current,&rule_paths).await?;
+                    if current.is_empty(){break;}
                 }
-                if valid {saved.push(p);}
+                saved.extend(current);
+                bounded(&saved)?;
             }
         }
         // Source-less paths can only originate from fixed user self-service;
