@@ -60,8 +60,19 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 ## 兼容与剩余发布门槛
 
-- 从 #2 升级继续使用同一 SQL 基线及校验和，不运行破坏性迁移。启动幂等补全内置角色定义，既有 Owner、会话、安装、部署与非敏感幂等账本仍可读取；角色动作与既有权限目录一致。
+- 从 #2/#3 升级继续保留原 SQL 基线及校验和，显式执行 `migrate --target 2` 添加内部调用来源计费表，迁移与版本记录原子提交，不运行破坏性迁移。启动幂等补全内置角色定义，既有 Owner、会话、安装、部署与非敏感幂等账本仍可读取；角色动作与既有权限目录一致。
 - 新身份能力使用现有表和 `grant_provenance.source_rules` 保存来源路径。旧二进制不能识别新增 API Key/子账户认证语义；回退前停机备份并停用新凭证，不把回退当作等价授权语义。原始秘密始终不能恢复。
 - 生产 `xelabd` 必须实际满足内核至少 4 CPU/16 GiB、另加系统预留和插件池；不能使用组件测试的合成预算作为容量证明。仍需在合规独占宿主运行守护进程、并发饱和 CPU/内存并验证父级合计上限、管理可用性及真实保留量。当前环境没有完成该项，**RUN-03 完整生产验收未关闭**。
 - 独占授权写锁与有界来源图优先保证正确性；大账户树/高频授权更改吞吐、长期稳定性尚未给出性能承诺。内核重启当前会中断并重建插件进程。
-- 持久卷、Blob、备份/灾备、升级迁移、OAuth、Skill/WebUI、HostService/依赖/事件、Workflow/AI、微插件、Extension Plugin、多节点/GPU不属于本次交付；对应 RUN-04～06、TASK/STREAM/EVENT/BACKUP/EXT 验收不标记完成。
+- 持久卷、Blob、备份/灾备、通用升级迁移、OAuth、Skill/WebUI、HostService/依赖/事件、Workflow/AI、微插件、Extension Plugin、多节点/GPU不属于本次交付；对应 RUN-04～06、TASK/STREAM/EVENT/BACKUP/EXT 验收不标记完成。
+
+## PR #3 审查回归
+
+| 问题 | 回归证据 |
+|---|---|
+| Grant 来源 Key 调用预算 | OCI 用例中的 `grant_source_budget`：K1(max_calls=1) 给子账户直接授权，子账户用独立 session 调用；首次成功、同键重放不重复计费、新键拒绝；独立授权可继续调用且不扣 K1；撤销来源后旧重放也拒绝，历史用量仍为 1 |
+| 自授 Grant 递归 | `self_issued_grants_have_linear_proofs_and_live_revocation`：2/8/16 条自授 Grant，各有独立来源路径，调用证明数为 N+1；签发/求值有 10 秒超时，撤销引导来源后不循环续权 |
+| Deployment 饥饿 | `deployment_sweep_passes_disabled_prefix_and_handles_deletions`：1000 条禁用前缀、同一 created_at、游标行删除、尾部归档与并发新增；后续可用部署仍被取出，上界外新增留给下轮 |
+| 升级兼容 | `call_charges_migrate_from_v1_without_rewriting_baseline`：v1 未升级拒绝启动；v2 重复迁移成功，原始基线校验和不变 |
+
+本修复不关闭 RUN-03 生产宿主压力验收。自授回归记录路径数和耗时，不代表完整授权图或大规模数据库的吞吐基准；v1 未记录的 Grant 计费来源也不能追溯恢复，升级处理见运行指南。

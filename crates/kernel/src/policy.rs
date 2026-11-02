@@ -201,7 +201,14 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
         // permutation of the other self-issued bindings. Keep the bootstrap
         // Owner anchor and external/inherited paths, and retain the direct
         // binding's provenance in the outer evaluation.
-        let subject = self.c.query_opt("SELECT subject_id FROM grants WHERE id=$1 AND issuer_id=subject_id", &[&grant]).await?.map(|r| r.get::<_,Uuid>(0));
+        let subject = self
+            .c
+            .query_opt(
+                "SELECT subject_id FROM grants WHERE id=$1 AND issuer_id=subject_id",
+                &[&grant],
+            )
+            .await?
+            .map(|r| r.get::<_, Uuid>(0));
         let inserted = subject.is_some_and(|id| self.proving_self_grants.insert(id));
         let result = self.grant_inner(grant, depth).await;
         if inserted {

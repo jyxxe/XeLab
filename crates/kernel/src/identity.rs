@@ -12,7 +12,10 @@ use axum::http::{HeaderMap, StatusCode};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
-use std::{collections::{BTreeSet, HashMap}, net::IpAddr};
+use std::{
+    collections::{BTreeSet, HashMap},
+    net::IpAddr,
+};
 use tokio_postgres::GenericClient;
 use uuid::Uuid;
 
@@ -1004,7 +1007,9 @@ pub async fn call_sources(
     ctx: &Context,
     resource: &Resource,
 ) -> Result<BTreeSet<Uuid>> {
-    let paths = Policy::new(c, ctx.peer).credential(ctx.credential, 0).await?;
+    let paths = Policy::new(c, ctx.peer)
+        .credential(ctx.credential, 0)
+        .await?;
     let mut alternatives = Vec::new();
     for path in paths {
         if !auth::rules_allow(&json!([path.rule]), "capability.invoke", resource, ctx.peer) {
@@ -1012,7 +1017,13 @@ pub async fn call_sources(
         }
         let mut keys: BTreeSet<_> = ctx.chain.iter().copied().collect();
         let sources: Vec<_> = path.sources.into_iter().collect();
-        for row in c.query("SELECT issuer_id,issuer_credential_id FROM grants WHERE id=ANY($1)", &[&sources]).await? {
+        for row in c
+            .query(
+                "SELECT issuer_id,issuer_credential_id FROM grants WHERE id=ANY($1)",
+                &[&sources],
+            )
+            .await?
+        {
             keys.extend(auth::validate_sources(c, row.get(1), Some(row.get(0)), ctx.peer).await?);
         }
         alternatives.push(keys);
@@ -1029,7 +1040,10 @@ pub async fn call_sources(
             let remaining = if let Some(remaining) = available.get(key) {
                 *remaining
             } else {
-                let conditions: Value = c.query_one("SELECT conditions FROM credentials WHERE id=$1", &[key]).await?.get(0);
+                let conditions: Value = c
+                    .query_one("SELECT conditions FROM credentials WHERE id=$1", &[key])
+                    .await?
+                    .get(0);
                 let remaining = match conditions["max_calls"].as_i64() {
                     Some(max) => key_calls(c, *key).await? < max,
                     None => true,
@@ -1043,7 +1057,11 @@ pub async fn call_sources(
             return Ok(keys);
         }
     }
-    Err(Error::new("QUOTA_EXCEEDED", "Credential lifetime call budget is exhausted", StatusCode::CONFLICT))
+    Err(Error::new(
+        "QUOTA_EXCEEDED",
+        "Credential lifetime call budget is exhausted",
+        StatusCode::CONFLICT,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]

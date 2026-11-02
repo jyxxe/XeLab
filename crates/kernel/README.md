@@ -44,12 +44,12 @@ cargo fmt --all -- --check
 
 ```bash
 xelabctl validate-config --config /etc/xelab/kernel.toml
-xelabctl migrate --config /etc/xelab/kernel.toml --target 1
+xelabctl migrate --config /etc/xelab/kernel.toml --target 2
 xelabctl bootstrap --config /etc/xelab/kernel.toml --owner-name admin
 xelabd --config /etc/xelab/kernel.toml
 ```
 
-`validate-config` 只验证结构和本地约束；不宣称宿主检查已经通过。迁移只作用于空库或校验同一基线；bootstrap 只允许空账户库，须在启动守护进程前执行。守护进程不会隐式迁移数据库。
+`validate-config` 只验证结构和本地约束；不宣称宿主检查已经通过。迁移目标 2 在空库建立原始基线，或将已校验的 v1 数据库升级，随后创建调用来源计费表；重复执行只校验版本与校验和；bootstrap 只允许空账户库，须在启动守护进程前执行。守护进程不会隐式迁移数据库。
 
 ## 管理与插件示例
 
@@ -143,3 +143,11 @@ CI 另在一次性 Linux 主机运行 `tests/oci.rs`：真实 containerd + Rust/
 发布前补齐合规宿主容量验收；后续按 M2 存储与可恢复运行、M3 Skill/OAuth/WebUI、M4–M6 通信/自动化/生态顺序演进。身份求值和全局授权写锁优先保证正确性，大账户树下的吞吐须实测再优化。
 
 
+
+## PR #3 审查修复
+
+- 调用准入在授权/调用事务锁内选择一个可用的真实来源路径，将请求凭证链与该路径全部 Grant 的来源凭证链合并检查 `max_calls`。独立来源取并集；耗尽的 Key 不阻断其他合法来源。`call_credential_charges` 与 Call 原子写入，幂等成功重放不重复计费，撤销 Grant/Key 不退还已用额度。轮换仍扣除已使用预算。
+- 自授 Grant 证明签发权限时，忽略同账户其他非引导自授绑定，只使用独立来源（外部 Grant、父级继承或初始 Owner）。这些自授绑定仍在最外层保留权限/来源记录；撤销独立来源后不能互相维持权限。此优化针对同账户自授，其他来源图仍受现有深度/路径边界限制。
+- 控制器每轮固定 `(created_at,id)` 上界，按每页 1000 条扫描全部未归档部署。禁用部署不再遮住尾部，扫描期间新增的后续部署交由下一轮处理。
+
+升级前备份并停机，执行上面的 `--target 2` 后再启动。旧二进制拒绝 v2 元数据，不能直接回退。v1 已有的凭证/账户派生调用继续计入预算；旧版本未记录的实际 Grant 来源无法事后精确重建，因此已有受此漏洞影响的限次来源 Key 应在升级时撤销后重新签发，不把旧账本当成完整历史计费证据。

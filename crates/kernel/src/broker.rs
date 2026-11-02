@@ -140,7 +140,11 @@ pub async fn invoke(
     let deadline = chrono::Utc::now() + chrono::Duration::milliseconds(timeout as i64);
     tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,idempotency_key,state,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,'running',$8,now())",&[&call,&ctx.subject,&ctx.credential,&instance,&contract,&digest(&bytes),&key,&deadline]).await?;
     for credential in charged {
-        tx.execute("INSERT INTO call_credential_charges(call_id,credential_id) VALUES($1,$2)", &[&call, &credential]).await?;
+        tx.execute(
+            "INSERT INTO call_credential_charges(call_id,credential_id) VALUES($1,$2)",
+            &[&call, &credential],
+        )
+        .await?;
     }
     tx.execute("INSERT INTO reservations(id,account_id,kind,expires_at,status,created_at) VALUES($1,$2,'call',$3,'active',now())", &[&call,&ctx.subject,&deadline]).await?;
     let delegation = app

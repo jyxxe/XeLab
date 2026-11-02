@@ -72,10 +72,17 @@ impl Db {
         } else {
             verify_migrations(&tx, false).await?;
         }
-        let version: i64 = tx.query_one("SELECT max(version) FROM schema_migrations", &[]).await?.get(0);
+        let version: i64 = tx
+            .query_one("SELECT max(version) FROM schema_migrations", &[])
+            .await?
+            .get(0);
         if version == 1 {
             tx.batch_execute(CALL_CHARGES).await?;
-            tx.execute("INSERT INTO schema_migrations(version,checksum,applied_at) VALUES(2,$1,now())", &[&digest(CALL_CHARGES.as_bytes())]).await?;
+            tx.execute(
+                "INSERT INTO schema_migrations(version,checksum,applied_at) VALUES(2,$1,now())",
+                &[&digest(CALL_CHARGES.as_bytes())],
+            )
+            .await?;
         }
         tx.commit().await?;
         Ok(())
@@ -106,10 +113,14 @@ async fn verify_migrations(c: &impl GenericClient, latest: bool) -> Result<()> {
             &[],
         )
         .await?;
-    if r.is_empty() || r.len() > 2 || (latest && r.len() != 2)
+    if r.is_empty()
+        || r.len() > 2
+        || (latest && r.len() != 2)
         || r[0].get::<_, i64>(0) != 1
         || r[0].get::<_, String>(1) != digest(BASELINE.as_bytes())
-        || (r.len() == 2 && (r[1].get::<_, i64>(0) != 2 || r[1].get::<_, String>(1) != digest(CALL_CHARGES.as_bytes())))
+        || (r.len() == 2
+            && (r[1].get::<_, i64>(0) != 2
+                || r[1].get::<_, String>(1) != digest(CALL_CHARGES.as_bytes())))
     {
         return Err(Error::conflict(
             "Metadata migration version or checksum differs",
