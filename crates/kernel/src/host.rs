@@ -32,6 +32,9 @@ fn workload<T>(request: &Request<T>) -> std::result::Result<Workload, Status> {
         .ok_or_else(|| Status::unauthenticated("mTLS required"))?;
     let (_, parsed) = x509_parser::parse_x509_certificate(leaf.as_ref())
         .map_err(|_| Status::unauthenticated("Invalid certificate"))?;
+    if !parsed.validity().is_valid() {
+        return Err(Status::unauthenticated("Workload certificate expired"));
+    }
     let san = parsed
         .subject_alternative_name()
         .map_err(|_| Status::unauthenticated("Invalid SAN"))?
@@ -67,6 +70,7 @@ fn parse_identity(uri: &str) -> std::result::Result<Workload, Status> {
 #[derive(Clone)]
 pub struct Host {
     pub app: Arc<App>,
+    leases: Arc<tokio::sync::Semaphore>,
 }
 #[tonic::async_trait]
 impl HostService for Host {
@@ -78,6 +82,10 @@ impl HostService for Host {
         &self,
         r: Request<rpc::LeaseSecretRequest>,
     ) -> std::result::Result<Response<rpc::SecretLease>, Status> {
+        let _permit = self
+            .leases
+            .try_acquire()
+            .map_err(|_| Status::resource_exhausted("Secret lease capacity is unavailable"))?;
         let identity = workload(&r)?;
         let request = r.into_inner();
         let duration = request
@@ -280,9 +288,12 @@ pub async fn serve(app: Arc<App>) -> Result<()> {
             }
         })
         .buffer_unordered(32);
-    let service = HostServiceServer::new(Host { app: app.clone() })
-        .max_decoding_message_size(65536)
-        .max_encoding_message_size(131072);
+    let service = HostServiceServer::new(Host {
+        app: app.clone(),
+        leases: Arc::new(tokio::sync::Semaphore::new(32)),
+    })
+    .max_decoding_message_size(65536)
+    .max_encoding_message_size(131072);
     let stop = app.clone();
     tonic::transport::Server::builder()
         .concurrency_limit_per_connection(16)

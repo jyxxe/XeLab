@@ -610,3 +610,85 @@ async fn scoped_credentials_cannot_read_bind_or_enumerate_other_secrets() {
         .await;
     assert_eq!(list.1["items"].as_array().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn expiry_and_current_deployment_state_fence_new_leases() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let secret = f.secret().await;
+    let (deployment, instance) = f.workload().await;
+    let binding = f.binding(secret, deployment).await;
+    let c = f.app.db.connect().await.unwrap();
+    c.execute(
+        "UPDATE secrets SET expires_at=now()-interval '1 second' WHERE id=$1",
+        &[&secret],
+    )
+    .await
+    .unwrap();
+    assert!(
+        xelab_kernel::secrets::lease(&f.app, instance, 7, &request(binding))
+            .await
+            .is_err()
+    );
+    let metadata = f
+        .call(
+            "getSecretMetadata",
+            &[("secret_id", secret)],
+            Value::Null,
+            None,
+            "expired",
+            None,
+        )
+        .await;
+    assert_eq!(metadata.0, 200);
+    assert_eq!(metadata.1["status"], "expired");
+    c.execute("UPDATE secrets SET expires_at=NULL WHERE id=$1", &[&secret])
+        .await
+        .unwrap();
+    c.execute(
+        "UPDATE deployments SET spec='{}' WHERE id=$1",
+        &[&deployment],
+    )
+    .await
+    .unwrap();
+    assert!(
+        xelab_kernel::secrets::lease(&f.app, instance, 7, &request(binding))
+            .await
+            .is_err()
+    );
+    c.execute(
+        "UPDATE deployments SET spec=$2 WHERE id=$1",
+        &[&deployment, &json!({"enabled":true})],
+    )
+    .await
+    .unwrap();
+    c.execute(
+        "UPDATE instances SET phase='draining' WHERE id=$1",
+        &[&instance],
+    )
+    .await
+    .unwrap();
+    assert!(
+        xelab_kernel::secrets::lease(&f.app, instance, 7, &request(binding))
+            .await
+            .is_err()
+    );
+    c.execute(
+        "UPDATE instances SET phase='ready' WHERE id=$1",
+        &[&instance],
+    )
+    .await
+    .unwrap();
+    assert!(
+        xelab_kernel::secrets::lease(&f.app, instance, 7, &request(binding))
+            .await
+            .is_ok()
+    );
+    f.app.ready.store(false, Ordering::SeqCst);
+    assert!(
+        xelab_kernel::secrets::lease(&f.app, instance, 7, &request(binding))
+            .await
+            .is_err()
+    );
+}

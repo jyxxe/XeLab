@@ -1460,6 +1460,7 @@ pub(crate) async fn list(
             "listApiKeys" => key_value(c, object).await?,
             "listGrants" => grant_value(c, object).await?,
             "listSecretBindings" => crate::secrets::binding_value(c, object).await?,
+            "listSecrets" => crate::secrets::metadata(c, object).await?,
             "listSessions" => {
                 v["account_id"] = v["owner_id"].clone();
                 v["last_seen_at"] = v["last_used_at"].clone();

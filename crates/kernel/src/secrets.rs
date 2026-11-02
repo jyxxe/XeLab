@@ -138,7 +138,7 @@ pub async fn deployment_access(
 ) -> Result<()> {
     let row = c
         .query_opt(
-            "SELECT owner_id FROM deployments WHERE id=$1 AND archived_at IS NULL",
+            "SELECT owner_id FROM deployments WHERE id=$1",
             &[&deployment],
         )
         .await?
@@ -212,6 +212,17 @@ pub async fn authorize(
     })
 }
 
+pub async fn metadata(c: &(impl GenericClient + Sync), secret: Uuid) -> Result<Value> {
+    let mut value = read_object(c, "secrets", secret, "Secret").await?;
+    if value["status"] == "active"
+        && value["expires_at"]
+            .as_str()
+            .is_some_and(|v| DateTime::parse_from_rfc3339(v).is_ok_and(|t| t <= Utc::now()))
+    {
+        value["status"] = json!("expired");
+    }
+    Ok(value)
+}
 pub async fn binding_value(c: &(impl GenericClient + Sync), binding: Uuid) -> Result<Value> {
     let row = c
         .query_opt("SELECT * FROM secret_bindings WHERE id=$1", &[&binding])
@@ -285,14 +296,11 @@ pub async fn execute(
                 c.execute("UPDATE secrets SET name=$2,version=$3,encrypted_value=$4,encryption_key_id=$5,expires_at=$6,revision=revision+1,updated_at=now() WHERE id=$1", &[&secret,&name_value,&version,&ciphertext,&key.id,&expires]).await?;
             }
             Ok((
-                read_object(c, "secrets", secret, "Secret").await?,
+                metadata(c, secret).await?,
                 if name == "createSecret" { 201 } else { 200 },
             ))
         }
-        "getSecretMetadata" => Ok((
-            read_object(c, "secrets", path_id(params, "secret_id")?, "Secret").await?,
-            200,
-        )),
+        "getSecretMetadata" => Ok((metadata(c, path_id(params, "secret_id")?).await?, 200)),
         "revokeSecret" => {
             let secret = path_id(params, "secret_id")?;
             let row = c
@@ -309,7 +317,7 @@ pub async fn execute(
             let secret = id(body, "secret_id")?;
             let deployment = id(body, "deployment_id")?;
             // Serialize binding creation with revoke/rotation and deployment state.
-            let manifest=c.query_one("SELECT a.manifest FROM deployments d JOIN installations a ON a.id=d.installation_id WHERE d.id=$1 FOR UPDATE OF d", &[&deployment]).await?.get::<_,Value>(0);
+            let manifest=c.query_opt("SELECT a.manifest FROM deployments d JOIN installations a ON a.id=d.installation_id WHERE d.id=$1 AND d.archived_at IS NULL FOR UPDATE OF d", &[&deployment]).await?.ok_or_else(||Error::conflict("Archived deployment cannot receive a new binding"))?.get::<_,Value>(0);
             let secret_owner = c
                 .query_one("SELECT owner_id FROM secrets WHERE id=$1", &[&secret])
                 .await?
@@ -423,7 +431,10 @@ pub async fn lease(
     let lease = Uuid::new_v4();
     tx.execute("INSERT INTO secret_leases(id,binding_id,instance_id,generation,secret_version,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6,now())", &[&lease,&binding,&instance,&generation,&version,&until]).await?;
     tx.execute("INSERT INTO audit_events(id,subject_id,actor_instance_id,credential_id,request_id,action,resource,outcome,policy_revision,reason_code,created_at,updated_at) VALUES($1,$2,$3,$4,$5,'secret.use',$6,'succeeded',(SELECT authz_revision FROM accounts WHERE id=$2),'LEASED',now(),now())", &[&Uuid::new_v4(),&authority.subject,&instance,&authority.credential,&authority.request,&Resource::new("secret",secret,Some(owner)).json()]).await?;
-    if app.leader.is_closed() || context.deadline_unix_ms <= Utc::now().timestamp_millis() {
+    if until <= Utc::now()
+        || app.leader.is_closed()
+        || context.deadline_unix_ms <= Utc::now().timestamp_millis()
+    {
         return Err(Error::unavailable("Lease authority expired"));
     }
     tx.commit().await?;
