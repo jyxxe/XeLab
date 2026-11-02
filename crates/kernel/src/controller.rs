@@ -506,9 +506,12 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
     if d.get::<_, Value>("approval") != json!({"rules":[],"egress":[]}) {
         return Err(Error::denied());
     }
-    let i = instances
-        .last()
-        .ok_or_else(|| Error::conflict("Enabled deployment has no admitted instance intent"))?;
+    let Some(i) = instances.last() else {
+        probes.remove(&deployment);
+        return Err(Error::conflict(
+            "Enabled deployment has no admitted instance intent",
+        ));
+    };
     let id: Uuid = i.get("id");
     let generation: i64 = i.get("generation");
     let probe = probes.entry(deployment).or_default();
@@ -749,6 +752,8 @@ mod pagination_tests {
             shutdown: std::sync::atomic::AtomicBool::new(false),
         };
         let mut state = ControllerState::default();
+        // Losing an instance intent must also discard its obsolete probe.
+        state.probes.insert(Uuid::from_u128(1001), Probe::default());
         tokio::time::timeout(Duration::from_secs(10), tick(&app, false, &mut state))
             .await
             .unwrap()
@@ -803,6 +808,24 @@ mod pagination_tests {
             .get::<_, i64>(0),
             1000
         );
+        // A selected row may disappear or become archived before reconcile.
+        // Both paths release the probe without needing a runtime adapter.
+        let tail = Uuid::from_u128(1001);
+        c.execute(
+            "UPDATE deployments SET archived_at=now() WHERE id=$1",
+            &[&tail],
+        )
+        .await
+        .unwrap();
+        state.probes.insert(tail, Probe::default());
+        reconcile(&app, tail, &mut state.probes).await.unwrap();
+        assert!(!state.probes.contains_key(&tail));
+        c.execute("DELETE FROM deployments WHERE id=$1", &[&tail])
+            .await
+            .unwrap();
+        state.probes.insert(tail, Probe::default());
+        reconcile(&app, tail, &mut state.probes).await.unwrap();
+        assert!(!state.probes.contains_key(&tail));
     }
 
     #[tokio::test]
