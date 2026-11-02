@@ -13,6 +13,7 @@ pub mod identity;
 pub mod policy;
 pub mod runtime;
 pub mod secrets;
+pub mod storage;
 pub mod tls;
 
 #[allow(clippy::result_large_err)] // Generated Tonic service signatures use tonic::Status.

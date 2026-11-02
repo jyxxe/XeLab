@@ -38,7 +38,7 @@ jobs:
       - name: Prepare real OCI test
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y nftables
+          sudo apt-get install -y nftables xfsprogs
           sudo systemctl start containerd
           sudo ctr namespaces create xelab-ci
           python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001
@@ -72,6 +72,14 @@ jobs:
           python3 -m venv /tmp/xelab-docs
           /tmp/xelab-docs/bin/pip install -r docs/tools/requirements.txt
           /tmp/xelab-docs/bin/python docs/tools/validate_docs.py --strict
+      - name: Real XFS project quota enforcement
+        run: |
+          python3 - <<'PYTEST'
+          import glob, os, subprocess
+          binaries=[p for p in glob.glob("target/debug/deps/xfs-*") if os.path.isfile(p) and os.access(p,os.X_OK)]
+          assert len(binaries)==1,binaries
+          subprocess.run(["sudo","env","XELAB_XFS_TEST=1","bash","tools/test-xfs.sh","--isolated-test-host",binaries[0]],check=True)
+          PYTEST
       - name: Lints
         if: always()
         run: cargo clippy --workspace --all-targets --locked -- -D warnings

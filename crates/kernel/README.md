@@ -153,5 +153,11 @@ CI 另在一次性 Linux 主机运行 `tests/oci.rs`：真实 containerd + Rust/
 
 升级前备份并停机，执行上面的 `--target 3` 后再启动。旧二进制拒绝 v3 元数据，不能直接回退。v1 已有的凭证/账户派生调用继续计入预算；旧版本未记录的实际 Grant 来源无法事后精确重建，因此已有受此漏洞影响的限次来源 Key 应在升级时撤销后重新签发，不把旧账本当成完整历史计费证据。
 
+## M2 存储后端预检
+
+`xelabctl storage-check --config /etc/xelab/kernel.toml` 只读验证平台卷目录的
+XFS project quota 强制执行条件。后端创建/扩容原语和真实文件系统测试见
+[M2-A 操作说明](../../docs/implementation/m2-storage.md)。本阶段不启用公开
+Volume API 或容器卷挂载；M1 的持久卷拒绝策略继续生效。
 启动 readiness 等待 active/inactive 两条队列各自完成首轮固定水位扫描；
 首批成功不表示恢复完成。全局旧进程围栏完成后不因后续批次错误重复执行。

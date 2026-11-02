@@ -24,6 +24,11 @@ enum Cmd {
         #[arg(long)]
         config: PathBuf,
     },
+    /// Read-only XFS project quota preflight; does not enable Volume APIs.
+    StorageCheck {
+        #[arg(long)]
+        config: PathBuf,
+    },
     Migrate {
         #[arg(long)]
         config: PathBuf,
@@ -96,6 +101,12 @@ async fn run(args: Args) -> Result<()> {
                 "{}",
                 json!({"configuration":"valid","runtime_checked":false})
             );
+        }
+        Cmd::StorageCheck { config } => {
+            require_host_admin()?;
+            let cfg = Config::load(&config)?;
+            let status = xelab_kernel::storage::xfs::check(&cfg.root().join("volumes"))?;
+            println!("{}", serde_json::to_string(&status)?);
         }
         Cmd::Migrate { config, target } => {
             require_host_admin()?;
