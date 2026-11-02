@@ -151,7 +151,7 @@ async fn tick(
         }
         for r in rows {
             after = Some((r.get("created_at"), r.get("id")));
-            let id: Uuid = r.get(0);
+            let id: Uuid = r.get("id");
             if let Err(e) = reconcile(app, id, probes.entry(id).or_default()).await {
                 tracing::warn!(deployment_id=%id,reason_code=e.code,message=e.message,"Deployment is not ready");
                 c.execute("UPDATE provider_records SET availability='unavailable' WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)", &[&id]).await?;
@@ -593,6 +593,64 @@ async fn finish_deployment_operations(
 #[cfg(test)]
 mod pagination_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn controller_reconciles_deployment_1001_after_disabled_prefix() {
+        let Ok(base) = std::env::var("XELAB_TEST_DATABASE_URL") else {
+            return;
+        };
+        let admin = db::Db::new(base.clone()).unwrap().connect().await.unwrap();
+        let database = format!("controller_{}", Uuid::new_v4().simple());
+        admin
+            .batch_execute(&format!("CREATE DATABASE {database}"))
+            .await
+            .unwrap();
+        let db = db::Db::new(format!("{base} dbname={database}")).unwrap();
+        db.migrate().await.unwrap();
+        let c = db.connect().await.unwrap();
+        let owner = Uuid::new_v4();
+        let publisher = Uuid::new_v4();
+        let installation = Uuid::new_v4();
+        c.execute("INSERT INTO accounts(id,kind,status,display_name,created_at,updated_at) VALUES($1,'user','active','fixture',now(),now())", &[&owner]).await.unwrap();
+        c.execute("INSERT INTO publishers(id,name,key_id,public_key_pem,status,created_at,updated_at) VALUES($1,'fixture','fixture','unused','trusted',now(),now())", &[&publisher]).await.unwrap();
+        c.execute("INSERT INTO installations(id,plugin_id,version,publisher_id,image_digest,manifest_digest,manifest,state,created_at,updated_at) VALUES($1,'org.xelab.fixture','1.0.0',$2,'test','test','{}','installed',now(),now())", &[&installation,&publisher]).await.unwrap();
+        for n in 1..=1001u128 {
+            c.execute("INSERT INTO deployments(id,owner_id,installation_id,spec,approval,phase,created_at,updated_at) VALUES($1,$2,$3,$4,$5,'reconciling',now(),now())", &[&Uuid::from_u128(n),&owner,&installation,&json!({"enabled":n==1001}),&json!({"rules":[],"egress":[]})]).await.unwrap();
+        }
+        let value: toml::Value =
+            toml::from_str(include_str!("../../../docs/contracts/examples/kernel.toml")).unwrap();
+        let config =
+            crate::config::Config::from_value(serde_json::to_value(value).unwrap()).unwrap();
+        let app = App {
+            runtime: crate::runtime::Runtime::new(config.clone()),
+            config,
+            db: db.clone(),
+            auth: crate::auth::Auth::new(vec![42; 32]).unwrap(),
+            leader: Arc::new(db.leader().await.unwrap()),
+            ready: std::sync::atomic::AtomicBool::new(false),
+            shutdown: std::sync::atomic::AtomicBool::new(false),
+        };
+        tick(&app, false, &mut std::collections::HashMap::new())
+            .await
+            .unwrap();
+        let tail = c
+            .query_one(
+                "SELECT phase,conditions FROM deployments WHERE id=$1",
+                &[&Uuid::from_u128(1001)],
+            )
+            .await
+            .unwrap();
+        // No instance intent is provided: reconciliation must actually reach
+        // the tail and record that error, without needing an OCI runtime.
+        assert_eq!(tail.get::<_, String>(0), "degraded");
+        assert_ne!(tail.get::<_, Value>(1), json!([]));
+        let disabled: i64 = c
+            .query_one("SELECT count(*) FROM deployments WHERE phase='disabled'", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(disabled, 1000);
+    }
 
     #[tokio::test]
     async fn deployment_sweep_passes_disabled_prefix_and_handles_deletions() {

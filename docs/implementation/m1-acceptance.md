@@ -72,7 +72,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 |---|---|
 | Grant 来源 Key 调用预算 | OCI 用例中的 `grant_source_budget`：K1(max_calls=1) 给子账户直接授权，子账户用独立 session 调用；首次成功、同键重放不重复计费、新键拒绝；独立授权可继续调用且不扣 K1；撤销来源后旧重放也拒绝，历史用量仍为 1 |
 | 自授 Grant 递归 | `self_issued_grants_have_linear_proofs_and_live_revocation`：2/8/16 条自授 Grant，各有独立来源路径，调用证明数为 N+1；签发/求值有 10 秒超时，撤销引导来源后不循环续权 |
-| Deployment 饥饿 | `deployment_sweep_passes_disabled_prefix_and_handles_deletions`：1000 条禁用前缀、同一 created_at、游标行删除、尾部归档与并发新增；后续可用部署仍被取出，上界外新增留给下轮 |
+| Deployment 饥饿 | `controller_reconciles_deployment_1001_after_disabled_prefix` 实际运行控制器并确认尾部进入 reconcile；`deployment_sweep_passes_disabled_prefix_and_handles_deletions`：1000 条禁用前缀、同一 created_at、游标行删除、尾部归档与并发新增；后续可用部署仍被取出，上界外新增留给下轮 |
 | 升级兼容 | `call_charges_migrate_from_v1_without_rewriting_baseline`：v1 未升级拒绝启动；v2 重复迁移成功，原始基线校验和不变 |
 
 本修复不关闭 RUN-03 生产宿主压力验收。自授回归记录路径数和耗时，不代表完整授权图或大规模数据库的吞吐基准；v1 未记录的 Grant 计费来源也不能追溯恢复，升级处理见运行指南。
