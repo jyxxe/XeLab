@@ -356,7 +356,7 @@ async fn dispatch(
             Some(ctx.credential),
             request_id,
             name,
-            &json!({"kind":"platform","match":"all"}),
+            &identity::audit_resource(name, &params, ctx.subject, &Value::Null),
             "denied",
             error.code,
         )
@@ -592,7 +592,7 @@ async fn dispatch(
                 Some(ctx.credential),
                 request_id,
                 name,
-                &json!({"kind":"account","match":"ids","ids":[ctx.subject]}),
+                &identity::audit_resource(name, &params, ctx.subject, &Value::Null),
                 "failed",
                 e.code,
             )
@@ -608,7 +608,7 @@ async fn dispatch(
             Some(ctx.credential),
             request_id,
             name,
-            &json!({"kind":"platform","match":"all"}),
+            &identity::audit_resource(name, &params, ctx.subject, &result.0),
             "succeeded",
             "COMMITTED",
         )

@@ -55,6 +55,26 @@ pub fn handles(name: &str) -> bool {
 pub fn sensitive(name: &str) -> bool {
     matches!(name, "createChildAccount" | "createApiKey" | "rotateApiKey")
 }
+/// Audit references contain identifiers only; never copy request/response secrets.
+pub fn audit_resource(name: &str, p: &HashMap<String, String>, subject: Uuid, response: &Value) -> Value {
+    let created = match name {
+        "createChildAccount" => Some(("account", &response["account"]["id"])),
+        "createApiKey" | "rotateApiKey" => Some(("credential", &response["credential"]["id"])),
+        "createGroup" => Some(("group", &response["id"])),
+        _ => None,
+    };
+    if let Some((kind, id)) = created {
+        if let Some(id) = id.as_str() {
+            return Resource::new(kind, id, None).json();
+        }
+    }
+    for (parameter, kind) in [("credential_id", "credential"), ("session_id", "credential"), ("group_id", "group"), ("account_id", "account"), ("deployment_id", "deployment"), ("publisher_id", "publisher"), ("instance_id", "instance"), ("operation_id", "operation")] {
+        if let Some(id) = p.get(parameter) {
+            return Resource::new(kind, id, None).json();
+        }
+    }
+    Resource::new("account", subject, Some(subject)).json()
+}
 fn denied_quota() -> Error {
     Error::new(
         "QUOTA_EXCEEDED",

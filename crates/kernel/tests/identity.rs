@@ -31,7 +31,10 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Option<Self> {
         let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-        let base = std::env::var("XELAB_TEST_DATABASE_URL").ok()?;
+        let Ok(base) = std::env::var("XELAB_TEST_DATABASE_URL") else {
+            eprintln!("Skipping real identity database tests: XELAB_TEST_DATABASE_URL is not set");
+            return None;
+        };
         let admin = Db::new(base.clone()).unwrap().connect().await.unwrap();
         let database = format!("identity_{}", Uuid::new_v4().simple());
         admin
@@ -530,6 +533,10 @@ async fn auth_04_05_06_source_revocation_idempotency_and_secret_storage() {
         .unwrap()
         .get(0);
     assert!(!persisted.contains(first.1["secret"].as_str().unwrap()));
+    let issued_id=first.1["credential"]["id"].as_str().unwrap();
+    let audit:Value=c.query_one("SELECT to_jsonb(a) FROM audit_events a WHERE action='createApiKey' AND resource->'ids' @> $1 ORDER BY created_at DESC LIMIT 1", &[&json!([issued_id])]).await.unwrap().get(0);
+    assert_eq!(audit["resource"]["kind"],"credential");
+    assert!(!audit.to_string().contains(first.1["secret"].as_str().unwrap()));
     let revoke = f
         .call(
             "revokeApiKey",
@@ -869,42 +876,166 @@ async fn key_rotation_password_and_parent_disable_preserve_boundaries() {
 }
 
 #[tokio::test]
-async fn immutable_group_templates_do_not_become_authority_sources(){
-    let Some(f)=Fixture::new().await else{return;};let (guest,token)=f.root_guest().await;
-    let rules=json!([{"action":"capability.invoke","resource":cap()}]);
-    let group=f.call("createGroup",&[],&f.token,json!({"name":"public echo template","visibility":"public","rules":rules}),None).await;
-    assert_eq!(group.0,201,"{}",group.1);let group_id=group.1["id"].as_str().unwrap();
-    let key=f.key(guest,&token,json!({"mode":"selected","group_versions":[{"group_id":group_id,"version":1}]})).await;
+async fn immutable_group_templates_do_not_become_authority_sources() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let (guest, token) = f.root_guest().await;
+    let rules = json!([{"action":"capability.invoke","resource":cap()}]);
+    let group = f
+        .call(
+            "createGroup",
+            &[],
+            &f.token,
+            json!({"name":"public echo template","visibility":"public","rules":rules}),
+            None,
+        )
+        .await;
+    assert_eq!(group.0, 201, "{}", group.1);
+    let group_id = group.1["id"].as_str().unwrap();
+    let key = f
+        .key(
+            guest,
+            &token,
+            json!({"mode":"selected","group_versions":[{"group_id":group_id,"version":1}]}),
+        )
+        .await;
     let version=f.call("publishGroupVersion",&[("group_id",group_id.into())],&f.token,json!({"rules":[{"action":"platform.read","resource":{"kind":"platform","match":"all"}}]}),Some(1)).await;
-    assert_eq!(version.0,201,"{}",version.1);assert_eq!(version.1["version"],2);
-    let v1=f.call("getGroupVersion",&[("group_id",group_id.into()),("version_id","1".into())],&token,Value::Null,None).await;
-    assert_eq!(v1.0,200,"{}",v1.1);assert_eq!(v1.1["rules"],rules);
-    let escalation=f.call("createApiKey",&[("account_id",guest.to_string())],&token,key_body(json!({"mode":"selected","group_versions":[{"group_id":group_id,"version":2}]})),None).await;
-    assert_eq!(escalation.0,403,"a readable group is not a grant: {}",escalation.1);
-    let archived=f.call("archiveGroup",&[("group_id",group_id.into())],&f.token,Value::Null,Some(2)).await;assert_eq!(archived.0,204,"{}",archived.1);
-    assert!(f.check(key["secret"].as_str().unwrap(),"capability.invoke",cap()).await,"the snapshot traces the actual Guest grant, not the selected template");
-    for rule in [json!({"action":"unregistered.action","resource":cap()}),json!({"action":"capability.invoke","resource":cap(),"conditions":{"source_cidrs":["not-a-cidr"]}})] {
-        assert_eq!(f.call("createGroup",&[],&f.token,json!({"name":"invalid","rules":[rule]}),None).await.0,400);
+    assert_eq!(version.0, 201, "{}", version.1);
+    assert_eq!(version.1["version"], 2);
+    let v1 = f
+        .call(
+            "getGroupVersion",
+            &[("group_id", group_id.into()), ("version_id", "1".into())],
+            &token,
+            Value::Null,
+            None,
+        )
+        .await;
+    assert_eq!(v1.0, 200, "{}", v1.1);
+    assert_eq!(v1.1["rules"], rules);
+    let escalation = f
+        .call(
+            "createApiKey",
+            &[("account_id", guest.to_string())],
+            &token,
+            key_body(
+                json!({"mode":"selected","group_versions":[{"group_id":group_id,"version":2}]}),
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(
+        escalation.0, 403,
+        "a readable group is not a grant: {}",
+        escalation.1
+    );
+    let archived = f
+        .call(
+            "archiveGroup",
+            &[("group_id", group_id.into())],
+            &f.token,
+            Value::Null,
+            Some(2),
+        )
+        .await;
+    assert_eq!(archived.0, 204, "{}", archived.1);
+    assert!(
+        f.check(key["secret"].as_str().unwrap(), "capability.invoke", cap())
+            .await,
+        "the snapshot traces the actual Guest grant, not the selected template"
+    );
+    for rule in [
+        json!({"action":"unregistered.action","resource":cap()}),
+        json!({"action":"capability.invoke","resource":cap(),"conditions":{"source_cidrs":["not-a-cidr"]}}),
+    ] {
+        assert_eq!(
+            f.call(
+                "createGroup",
+                &[],
+                &f.token,
+                json!({"name":"invalid","rules":[rule]}),
+                None
+            )
+            .await
+            .0,
+            400
+        );
     }
-    let mut restricted=key_body(selected());restricted["conditions"]["source_cidrs"]=json!(["192.0.2.0/24"]);
-    let issued=f.call("createApiKey",&[("account_id",guest.to_string())],&token,restricted,None).await;assert_eq!(issued.0,201,"{}",issued.1);
-    assert_eq!(f.call("checkAuthorization",&[],issued.1["secret"].as_str().unwrap(),json!({"action":"capability.invoke","resource":cap()}),None).await.0,401);
+    let mut restricted = key_body(selected());
+    restricted["conditions"]["source_cidrs"] = json!(["192.0.2.0/24"]);
+    let issued = f
+        .call(
+            "createApiKey",
+            &[("account_id", guest.to_string())],
+            &token,
+            restricted,
+            None,
+        )
+        .await;
+    assert_eq!(issued.0, 201, "{}", issued.1);
+    assert_eq!(
+        f.call(
+            "checkAuthorization",
+            &[],
+            issued.1["secret"].as_str().unwrap(),
+            json!({"action":"capability.invoke","resource":cap()}),
+            None
+        )
+        .await
+        .0,
+        401
+    );
 }
 
 #[tokio::test]
-async fn browser_session_cookie_requires_same_origin_for_mutation(){
-    let Some(f)=Fixture::new().await else{return;};
-    let mut login=Request::builder().method("POST").uri("/api/platform/v1/auth/login").header("content-type","application/json").body(Body::from(serde_json::to_vec(&json!({"account_id":f.owner,"password":PASSWORD})).unwrap())).unwrap();
-    login.extensions_mut().insert(ConnectInfo("127.0.0.1:50000".parse::<SocketAddr>().unwrap()));
-    let response=f.router.clone().oneshot(login).await.unwrap();assert_eq!(response.status().as_u16(),200);
-    let set_cookie=response.headers()["set-cookie"].to_str().unwrap();
-    for flag in ["Secure","HttpOnly","SameSite=Lax","Path=/"]{assert!(set_cookie.contains(flag));}
-    assert!(!set_cookie.contains("Domain="));let cookie=set_cookie.split(';').next().unwrap().to_owned();
-    let config:toml::Value=toml::from_str(include_str!("../../../docs/contracts/examples/kernel.toml")).unwrap();
-    for (origin,status) in [(None,403),(Some("https://attacker.invalid"),403),(config["server"]["public_origin"].as_str(),200)] {
-        let mut request=Request::builder().method("PATCH").uri(format!("/api/platform/v1/accounts/{}",f.owner)).header("cookie",&cookie).header("content-type","application/json").header("if-match","\"rev-1\"").header("idempotency-key",Uuid::new_v4().to_string());
-        if let Some(origin)=origin{request=request.header("origin",origin);}
-        let mut request=request.body(Body::from("{\"display_name\":\"browser\"}")).unwrap();request.extensions_mut().insert(ConnectInfo("127.0.0.1:50000".parse::<SocketAddr>().unwrap()));
-        let response=f.router.clone().oneshot(request).await.unwrap();assert_eq!(response.status().as_u16(),status);
+async fn browser_session_cookie_requires_same_origin_for_mutation() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let mut login = Request::builder()
+        .method("POST")
+        .uri("/api/platform/v1/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({"account_id":f.owner,"password":PASSWORD})).unwrap(),
+        ))
+        .unwrap();
+    login.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:50000".parse::<SocketAddr>().unwrap(),
+    ));
+    let response = f.router.clone().oneshot(login).await.unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let set_cookie = response.headers()["set-cookie"].to_str().unwrap();
+    for flag in ["Secure", "HttpOnly", "SameSite=Lax", "Path=/"] {
+        assert!(set_cookie.contains(flag));
+    }
+    assert!(!set_cookie.contains("Domain="));
+    let cookie = set_cookie.split(';').next().unwrap().to_owned();
+    let config: toml::Value =
+        toml::from_str(include_str!("../../../docs/contracts/examples/kernel.toml")).unwrap();
+    for (origin, status) in [
+        (None, 403),
+        (Some("https://attacker.invalid"), 403),
+        (config["server"]["public_origin"].as_str(), 200),
+    ] {
+        let mut request = Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/platform/v1/accounts/{}", f.owner))
+            .header("cookie", &cookie)
+            .header("content-type", "application/json")
+            .header("if-match", "\"rev-1\"")
+            .header("idempotency-key", Uuid::new_v4().to_string());
+        if let Some(origin) = origin {
+            request = request.header("origin", origin);
+        }
+        let mut request = request
+            .body(Body::from("{\"display_name\":\"browser\"}"))
+            .unwrap();
+        request.extensions_mut().insert(ConnectInfo(
+            "127.0.0.1:50000".parse::<SocketAddr>().unwrap(),
+        ));
+        let response = f.router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status().as_u16(), status);
     }
 }

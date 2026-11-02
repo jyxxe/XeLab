@@ -152,4 +152,3 @@ pub fn require_kernel<T>(
     }
     Ok(request)
 }
-

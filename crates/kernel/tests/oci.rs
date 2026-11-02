@@ -533,6 +533,19 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     assert!(described, "independent plugin TLS listener did not start");
+    // A CA-trusted workload is still not the kernel: identity authorization
+    // must reject it after mTLS, not merely trust every certificate from the CA.
+    let imposter = root.join("imposter-identity");
+    tls::issue(&config, Some((Uuid::new_v4(), 1)), &imposter).unwrap();
+    let imposter_tls = tonic::transport::ClientTlsConfig::new()
+        .ca_certificate(tonic::transport::Certificate::from_pem(fs::read(root.join("ca.crt")).unwrap()))
+        .identity(tonic::transport::Identity::from_pem(fs::read(imposter.join("tls.crt")).unwrap(), fs::read(imposter.join("tls.key")).unwrap()))
+        .domain_name(format!("i-{python_instance}-g-{python_generation}.xelab.local"));
+    let imposter_channel = tonic::transport::Endpoint::from_shared(format!("https://{}:7000", app.runtime.address(python_instance).unwrap()))
+        .unwrap().tls_config(imposter_tls).unwrap().timeout(Duration::from_secs(3)).connect().await.unwrap();
+    let denied = xelab_kernel::rpc::plugin_lifecycle_client::PluginLifecycleClient::new(imposter_channel)
+        .describe(xelab_kernel::rpc::DescribeRequest { context: Some(controller::context(None)) }).await.unwrap_err();
+    assert_eq!(denied.code(), tonic::Code::PermissionDenied);
     assert!(c
         .query_one(
             "SELECT runtime_id FROM instances WHERE id=$1",
@@ -689,21 +702,36 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     // A dropped HTTP task can leave a durable running call without a finalizer.
     // Recovery must fence the old process before returning its slot, then restart.
     let abandoned = Uuid::new_v4();
-    let prior:Uuid=called.1["call_id"].as_str().unwrap().parse().unwrap();
-    let tx=c.transaction().await.unwrap();
+    let prior: Uuid = called.1["call_id"].as_str().unwrap().parse().unwrap();
+    let tx = c.transaction().await.unwrap();
     xelab_kernel::db::call_lock(&tx).await.unwrap();
     tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,idempotency_key,state,deadline_at,created_at) SELECT $1,owner_id,credential_id,$2,contract,input_digest,'abandoned-fixture','running',now()-interval '10 seconds',now() FROM calls WHERE id=$3", &[&abandoned,&python_instance,&prior]).await.unwrap();
     tx.execute("INSERT INTO reservations(id,account_id,kind,expires_at,status,created_at) VALUES($1,$2,'call',now()-interval '10 seconds','active',now())", &[&abandoned,&owner]).await.unwrap();
-    tx.execute("UPDATE quotas SET concurrent_calls_used=concurrent_calls_used+1 WHERE account_id=$1", &[&owner]).await.unwrap();
+    tx.execute(
+        "UPDATE quotas SET concurrent_calls_used=concurrent_calls_used+1 WHERE account_id=$1",
+        &[&owner],
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
-    let mut recovered=false;
+    let mut recovered = false;
     for _ in 0..120 {
         let state=c.query_one("SELECT c.state,r.status,q.concurrent_calls_used FROM calls c JOIN reservations r ON r.id=c.id JOIN quotas q ON q.account_id=c.owner_id WHERE c.id=$1", &[&abandoned]).await.unwrap();
         let ready:bool=c.query_one("SELECT EXISTS(SELECT 1 FROM provider_records WHERE instance_id=$1 AND availability='ready')", &[&python_instance]).await.unwrap().get(0);
-        if state.get::<_,String>(0)=="unknown" && state.get::<_,String>(1)=="released" && state.get::<_,i64>(2)==0 && ready {recovered=true;break;}
+        if state.get::<_, String>(0) == "unknown"
+            && state.get::<_, String>(1) == "released"
+            && state.get::<_, i64>(2) == 0
+            && ready
+        {
+            recovered = true;
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    assert!(recovered,"abandoned call slot is reclaimed and stable provider recovers");
+    assert!(
+        recovered,
+        "abandoned call slot is reclaimed and stable provider recovers"
+    );
     // RUN-07: execute the shipped CLI over HTTPS against the same API, without WebUI.
     let leaf = KeyPair::generate().unwrap();
     let server_cert = CertificateParams::new(vec!["127.0.0.1".into()])

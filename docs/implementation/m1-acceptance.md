@@ -1,0 +1,62 @@
+# M1 实现与验收记录
+
+[实施目录](README.md) · [运行指南](../../crates/kernel/README.md) · [规范性验收矩阵](acceptance.md)
+
+本记录描述 M1 的代码与测试证据，不改变 2.8 规范。PR #2 提供普通插件运行基础，本增量补齐身份与授权闭环、独立插件互操作及异常调用回收。**实现交付与生产发布验收分开记录**；本文件不能代替对应提交的绿色 CI。
+
+## 交付边界
+
+- 单节点 PostgreSQL + containerd/runc；安装、部署、实例分离；固定镜像摘要和发布者签名；普通插件的单副本、无状态、非流式、无副作用调用。
+- Guest 固定自助能力、五种角色、权限组及不可变版本、授权来源、固定父级账户树、激活与密码、会话/API Key、快照/选定/实时继承、来源撤销、原子树配额、逐对象可见性、审计。
+- 两个独立插件实现：Rust 参考实现与仅依赖生成 Proto 的 Python 实现。共享同一契约文件和摘要，镜像、插件 ID 与部署独立；安装第二种实现无需修改核心。
+- HTTPS 管理 API 与通用 CLI。实际支持 operationId 见运行指南；其余操作明确拒绝，不返回空成功。
+
+核心实现对应 `policy.rs`、`identity.rs`、`auth.rs`、`api.rs`、`broker.rs`、`controller.rs`。没有更改 OpenAPI、Proto、JSON Schema、数据库基线或已有 2.8 设计文档。
+
+## 自动化证据
+
+真实数据库用例在 [`tests/identity.rs`](../../crates/kernel/tests/identity.rs)，每个用例使用独立数据库并经 HTTP Router 请求。不得用未设置 DSN 时的跳过结果替代数据库验收。
+
+| 编号 | 测试函数/检查点 | 覆盖内容 |
+|---|---|---|
+| AUTH-01/02 | `auth_01_02_guest_self_service_and_group_cannot_escape_parent` | Guest 自助子账户与 Key；拒绝平台读取/权限扩张；绑定高角色仍受父级上限约束；Key 不自动取得自助动作 |
+| AUTH-03 | `auth_03_snapshot_follow_and_independent_provenance` | 新增权限只扩张 follow_parent；两个独立来源保留有效分支；撤销来源后新 grant 不复活旧快照 |
+| AUTH-04/05/06 | `auth_04_05_06_source_revocation_idempotency_and_secret_storage` | K1→K2/子账户来源链失效，独立 Key 保留；一次性响应重放 409；元数据/审计不含 secret；归档不改父级 |
+| AUTH-07/08 | `auth_07_08_object_visibility_last_owner_and_stale_etag` | 他人对象隐藏；最后 Owner 保护；过期 ETag；游标不能换主体使用 |
+| AUTH-09 | `auth_09_concurrent_tree_and_key_quotas_are_atomic` | 并发创建子账户/API Key 时额度内恰好成功，不超售 |
+| 补充身份 | `key_rotation_password_and_parent_disable_preserve_boundaries` | 密钥轮换保留旧上限与源链；父级禁用生效；改密使会话失效但保留独立 Key |
+| 模板与条件 | `immutable_group_templates_do_not_become_authority_sources` | 发布不改旧版本；公开模板不授权；模板归档不抹去来自真实 grant 的快照；拒绝非法 action/CIDR；来源网段限制 |
+| 浏览器边界 | `browser_session_cookie_requires_same_origin_for_mutation` | 安全 cookie 属性；缺少或不匹配 Origin 的 cookie 写请求拒绝 |
+
+[`tests/postgres.rs`](../../crates/kernel/tests/postgres.rs) 验证原始基线迁移、会话撤销、并发实例准入及幂等资源回收。单元测试覆盖严格解析、权限条件交集、配置/秘密文件、签名信封、OCI 参数等。
+
+特权用例 [`tests/oci.rs`](../../crates/kernel/tests/oci.rs) 的 `signed_oci_plugin_runs_through_the_management_api_and_recovers` 使用真实 containerd、两个镜像、网络隔离、cgroups v2 与 mTLS：
+
+| 编号 | 注入/断言 | 证据边界 |
+|---|---|---|
+| RUN-01 | DB 启用意图提交后、创建 OCI 前取消控制循环，再启动；实例 ID 与唯一 reservation 不变 | 已有持久意图恢复路径 |
+| RUN-02 | 手动完成 OCI 创建、未提交 runtime_id 即重启控制循环；旧进程受控停止并按原 ID 重建 | 无重复实例或资源预留 |
+| RUN-03 部分 | 实际 CPU 限额与 throttled 计数、内存上限/OOM、PID 限制、另一插件存活；只读根目录及出网拒绝 | 托管 CI 使用小 cgroup；不等于生产 4C16G 保留量压力验收 |
+| RUN-07 | 无 WebUI，启动实际 HTTPS 管理服务，执行构建出的 `xelabctl api invokeCapability` 并核对输出 | CLI、TLS、身份、调用同链路；不是完整宿主部署验证 |
+| 互操作 | 同一契约经两个独立实现返回相同业务结果；错误签名/错误实例代次证书拒绝 | 含真实生成的 Python gRPC 绑定 |
+| 调用额度/恢复 | `max_calls=1`、幂等重放不再次扣账；注入无人处理的过期 running 记录，确认进程停止后回收 reservation/祖先并发额度，再恢复相同实例 | 结果未知不能作为成功或自动重发依据 |
+
+## 执行与复核
+
+```bash
+cargo fmt --all -- --check
+cargo test --workspace --all-targets --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+数据库测试设置 `XELAB_TEST_DATABASE_URL`，账户需有创建测试数据库权限。特权测试显式设置 `XELAB_OCI_TEST=1`、`XELAB_TEST_IMAGE`、`XELAB_TEST_PYTHON_IMAGE`，镜像先生成、构建、导入 `xelab-ci` namespace，再执行 ignored 用例；完整可复现步骤见 [Kernel M1 CI](../../.github/workflows/kernel.yml)。只能在可销毁 Linux 主机上运行，该测试会管理 cgroup、网络、容器和测试数据库。
+
+审阅时检查对应 PR 最新提交的全部 CI 步骤成功，包括真实 OCI 步骤及最后的 tracked-files 检查。格式修复、测试失败或仅跳过特权用例的运行均不算通过。
+
+## 兼容与剩余发布门槛
+
+- 从 #2 升级继续使用同一 SQL 基线及校验和，不运行破坏性迁移。启动幂等补全内置角色定义，既有 Owner、会话、安装、部署与非敏感幂等账本仍可读取；角色动作与既有权限目录一致。
+- 新身份能力使用现有表和 `grant_provenance.source_rules` 保存来源路径。旧二进制不能识别新增 API Key/子账户认证语义；回退前停机备份并停用新凭证，不把回退当作等价授权语义。原始秘密始终不能恢复。
+- 生产 `xelabd` 必须实际满足内核至少 4 CPU/16 GiB、另加系统预留和插件池；不能使用组件测试的合成预算作为容量证明。仍需在合规独占宿主运行守护进程、并发饱和 CPU/内存并验证父级合计上限、管理可用性及真实保留量。当前环境没有完成该项，**RUN-03 完整生产验收未关闭**。
+- 独占授权写锁与有界来源图优先保证正确性；大账户树/高频授权更改吞吐、长期稳定性尚未给出性能承诺。内核重启当前会中断并重建插件进程。
+- 持久卷、Blob、备份/灾备、升级迁移、OAuth、Skill/WebUI、HostService/依赖/事件、Workflow/AI、微插件、Extension Plugin、多节点/GPU不属于本次交付；对应 RUN-04～06、TASK/STREAM/EVENT/BACKUP/EXT 验收不标记完成。
