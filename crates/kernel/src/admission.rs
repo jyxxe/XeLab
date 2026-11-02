@@ -4,6 +4,7 @@ use crate::{
     error::{Error, Result},
 };
 use serde_json::{json, Value};
+use std::path::{Component, Path};
 use tokio_postgres::GenericClient;
 use uuid::Uuid;
 
@@ -32,7 +33,98 @@ pub fn host_capacity() -> Result<(i64, i64)> {
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|s| s.parse::<i64>().ok())
         .ok_or_else(|| Error::unavailable("Cannot discover host memory"))?;
-    Ok((cpu, kb.checked_mul(1024).ok_or_else(Error::exhausted)?))
+    let memory = kb.checked_mul(1024).ok_or_else(Error::exhausted)?;
+    let membership = std::fs::read_to_string("/proc/self/cgroup")?;
+    let mounts = std::fs::read_to_string("/proc/self/mountinfo")?;
+    let group = unified_group(&membership, &mounts)?;
+    effective_capacity(Path::new("/sys/fs/cgroup"), group, cpu, memory)
+}
+
+// The runtime manages /sys/fs/cgroup/xelab directly. A subtree mount hides
+// ancestor budgets and is not an adequate view of the host for that adapter.
+fn unified_group<'a>(membership: &'a str, mounts: &str) -> Result<&'a Path> {
+    let group = membership
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .ok_or_else(|| Error::unavailable("Unified cgroup membership is unavailable"))?;
+    let path = Path::new(group);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| !matches!(c, Component::RootDir | Component::Normal(_)))
+        || !mounts.lines().any(|line| {
+            let Some((fields, filesystem)) = line.split_once(" - ") else {
+                return false;
+            };
+            let fields: Vec<_> = fields.split_whitespace().collect();
+            filesystem.starts_with("cgroup2 ")
+                && fields.get(3) == Some(&"/")
+                && fields.get(4) == Some(&"/sys/fs/cgroup")
+        })
+    {
+        return Err(Error::unavailable(
+            "Runtime requires a complete host cgroup hierarchy",
+        ));
+    }
+    Ok(path)
+}
+
+fn effective_capacity(
+    root: &Path,
+    group: &Path,
+    mut cpu: i64,
+    mut memory: i64,
+) -> Result<(i64, i64)> {
+    let relative = group
+        .strip_prefix("/")
+        .map_err(|_| Error::unavailable("Invalid cgroup membership"))?;
+    let mut directory = root.join(relative);
+    loop {
+        let raw = cgroup_limit(&directory, root, "memory.max", "max")?;
+        if raw.trim() != "max" {
+            let limit = positive_limit(raw.trim())?;
+            memory = memory.min(limit);
+        }
+        let raw = cgroup_limit(&directory, root, "cpu.max", "max 100000")?;
+        let parts: Vec<_> = raw.split_whitespace().collect();
+        if parts.len() != 2 {
+            return Err(Error::unavailable("Invalid cgroup CPU limit"));
+        }
+        let period = positive_limit(parts[1])?;
+        if parts[0] != "max" {
+            let quota = positive_limit(parts[0])?;
+            let millis =
+                (i128::from(quota) * 1000 / i128::from(period)).min(i128::from(i64::MAX)) as i64;
+            cpu = cpu.min(millis);
+        }
+        if directory == root {
+            break;
+        }
+        if !directory.pop() || !directory.starts_with(root) {
+            return Err(Error::unavailable("Invalid cgroup ancestry"));
+        }
+    }
+    Ok((cpu, memory))
+}
+
+fn cgroup_limit(directory: &Path, root: &Path, name: &str, unlimited: &str) -> Result<String> {
+    match std::fs::read_to_string(directory.join(name)) {
+        Ok(value) => Ok(value),
+        // The actual host root cgroup has no resource limit files. Missing
+        // files below that root must fail closed (e.g. disabled controller).
+        Err(e) if directory == root && e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(unlimited.into())
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn positive_limit(value: &str) -> Result<i64> {
+    value
+        .parse::<i64>()
+        .ok()
+        .filter(|n| *n > 0)
+        .ok_or_else(|| Error::unavailable("Invalid cgroup resource limit"))
 }
 
 pub async fn initialize(
@@ -189,6 +281,62 @@ pub async fn status(c: &impl GenericClient) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn host_capacity_respects_every_visible_ancestor_budget() {
+        let root = tempfile::tempdir().unwrap();
+        let leaf = root.path().join("service/worker");
+        std::fs::create_dir_all(&leaf).unwrap();
+        for (dir, cpu, memory) in [
+            (root.path().to_path_buf(), "400000 100000", "17179869184"),
+            (root.path().join("service"), "150000 100000", "8589934592"),
+            (leaf.clone(), "max 100000", "max"),
+        ] {
+            std::fs::write(dir.join("cpu.max"), cpu).unwrap();
+            std::fs::write(dir.join("memory.max"), memory).unwrap();
+        }
+        assert_eq!(
+            effective_capacity(root.path(), Path::new("/service/worker"), 8000, 34359738368)
+                .unwrap(),
+            (1500, 8589934592)
+        );
+        std::fs::write(leaf.join("cpu.max"), "100001 100000").unwrap();
+        assert_eq!(
+            effective_capacity(root.path(), Path::new("/service/worker"), 8000, 34359738368)
+                .unwrap()
+                .0,
+            1000
+        );
+        std::fs::write(leaf.join("memory.max"), "invalid").unwrap();
+        assert!(
+            effective_capacity(root.path(), Path::new("/service/worker"), 8000, 34359738368)
+                .is_err()
+        );
+        std::fs::remove_file(leaf.join("memory.max")).unwrap();
+        assert!(
+            effective_capacity(root.path(), Path::new("/service/worker"), 8000, 34359738368)
+                .is_err()
+        );
+    }
+    #[test]
+    fn hidden_cgroup_ancestry_cannot_establish_host_capacity() {
+        let mount = "1 0 0:1 / /sys/fs/cgroup rw - cgroup2 cgroup rw";
+        assert_eq!(
+            unified_group("0::/service\n", mount).unwrap(),
+            Path::new("/service")
+        );
+        assert!(unified_group("0::/\n", &mount.replace(" / /sys", " /.. /sys")).is_err());
+        assert!(unified_group("0::/../../service\n", mount).is_err());
+        assert!(unified_group("1:memory:/\n", mount).is_err());
+        assert!(unified_group("0::/\n", "").is_err());
+    }
+    #[test]
+    fn actual_host_root_has_no_limit_files() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(
+            effective_capacity(root.path(), Path::new("/"), 8000, 34359738368).unwrap(),
+            (8000, 34359738368)
+        );
+    }
     #[test]
     fn reservations_never_borrow_kernel_or_system() {
         let c = json!({"kernel_cpu_millis":4000,"kernel_memory_bytes":17179869184u64,"system_cpu_millis":1000,"system_memory_bytes":1073741824u64,"shutdown_grace_ms":30000});
