@@ -374,7 +374,9 @@ impl ProjectStore {
                 return Err(Error::conflict("Project ID is already reserved"))
             }
             Ok(_) => (),
-            Err(e) if e.raw_os_error() == Some(libc::ESRCH) => (),
+            // XFS reports an unallocated dquot as ENOENT. ESRCH can mean
+            // quotas were disabled and must remain an error.
+            Err(e) if e.raw_os_error() == Some(libc::ENOENT) => (),
             Err(e) => return Err(e.into()),
         }
         let name = CString::new(volume.to_string()).unwrap();
