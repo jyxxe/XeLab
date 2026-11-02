@@ -213,6 +213,35 @@ class Run03Tests(unittest.TestCase):
         self.assertLess(code.index('signal.SIGSTOP'), code.index('multiprocessing.Process'))
         self.assertIn('signal.alarm(25)', code)
 
+    def test_gate_releases_pinned_pid_only_after_fresh_target_validation(self):
+        instance = str(uuid.uuid4())
+        group = Mock()
+        group.read.return_value = '123'
+        for cgroup, target, allowed in [(f'0::/xelab/plugins/{instance}', {'generation': 1}, True),
+                ('0::/host', {'generation': 1}, False),
+                (f'0::/xelab/plugins/{instance}', {'generation': 2}, False)]:
+            def read(path):
+                return cgroup if path.endswith('/cgroup') else '123 (python3) T'
+            with patch('run03.Path.read_bytes', return_value=b'/usr/bin/python3\0-c\0nonce\0'), patch('run03.read_text', side_effect=read), patch('run03.process_identity', return_value=(123, 1)), patch('run03.os.pidfd_open', return_value=99), patch('run03.os.close') as close, patch('run03.signal.pidfd_send_signal') as send, patch('run03.verify_stress_target', return_value=target) as verify:
+                if allowed:
+                    run03.release_stress_gate({}, instance, {}, group, {'generation': 1}, ['nonce'], Mock())
+                    verify.assert_called_once()
+                    send.assert_called_once_with(99, run03.signal.SIGCONT)
+                else:
+                    with self.assertRaises(ValueError):
+                        run03.release_stress_gate({}, instance, {}, group, {'generation': 1}, ['nonce'], Mock())
+                    send.assert_not_called()
+                close.assert_called_once_with(99)
+
+    def test_stopped_exec_rejects_reused_pid_and_ambiguous_wrapper(self):
+        group = Mock()
+        group.read.return_value = '123'
+        with patch('run03.Path.read_bytes', return_value=b'/usr/bin/python3\0-c\0nonce\0'), patch('run03.read_text', return_value='123 (python3) T'), patch('run03.process_identity', side_effect=[(123, 1), (123, 2)]):
+            self.assertIsNone(run03.stopped_exec(group, 'nonce'))
+        group.read.return_value = '123 456'
+        with patch('run03.Path.read_bytes', return_value=b'/usr/bin/python3\0-c\0nonce\0'), patch('run03.read_text', return_value='123 (python3) T'), patch('run03.process_identity', side_effect=[(123, 1), (123, 1), (456, 1), (456, 1)]):
+            with self.assertRaises(ValueError): run03.stopped_exec(group, 'nonce')
+
     def test_instance_sql_accepts_only_canonical_uuid_and_remains_readonly(self):
         with patch('run03.private_bytes', return_value=b'postgresql://test'), patch('run03.subprocess.run') as command:
             command.return_value.returncode = 0

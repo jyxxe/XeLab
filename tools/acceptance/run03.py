@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 import shutil
 import signal
-import tempfile
 import ssl
 import stat
 import subprocess
@@ -391,26 +390,43 @@ def cleanup_stress(config, instance, exec_id, group):
     return result
 
 
-def release_stress_gate(config, instance, host, group, expected, command, pidfile, process):
+def stopped_exec(group, code):
+    # ctr exec has no --pid-file. Read host PIDs from the pinned cgroup,
+    # and match the unique exec nonce embedded in the exact wrapper argv.
+    found = set()
+    for value in group.read('cgroup.procs').split():
+        pid = int(value)
+        if pid <= 1:
+            raise ValueError('invalid exec PID')
+        try:
+            identity = process_identity(pid)
+            if (Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0') ==
+                    [b'/usr/bin/python3', b'-c', code.encode(), b'']
+                    and read_text(f'/proc/{pid}/stat').rsplit(')', 1)[1].split()[0] == 'T'
+                    and process_identity(pid) == identity):
+                found.add(identity)
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # a different task exited during enumeration
+    if len(found) > 1:
+        raise ValueError('ambiguous stopped exec')
+    return next(iter(found), None)
+
+
+def release_stress_gate(config, instance, host, group, expected, command, process):
     # The wrapper SIGSTOPs before any workload. Release only this exact
     # process via pidfd after validating its actual cgroup and fresh budget.
     end = time.monotonic() + 10
-    while not pidfile.exists():
+    while True:
+        identity = stopped_exec(group, command[-1])
+        if identity is not None:
+            break
         if process.poll() is not None or time.monotonic() >= end:
             raise TimeoutError('remote exec did not reach the validation gate')
         time.sleep(.05)
-    pid = int(pidfile.read_text())
-    if pid <= 1:
-        raise ValueError('invalid exec PID')
-    identity = process_identity(pid)
+    pid = identity[0]
     pidfd = os.pidfd_open(pid)
     try:
-        while read_text(f'/proc/{pid}/stat').rsplit(')', 1)[1].split()[0] != 'T':
-            if time.monotonic() >= end:
-                raise TimeoutError('remote exec did not stop at validation gate')
-            time.sleep(.05)
         if (read_text(f'/proc/{pid}/cgroup') != f'0::/xelab/plugins/{instance}'
-                or Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')[-2] != command[-1].encode()
                 or process_identity(pid) != identity
                 or verify_stress_target(config, instance, host, group) != expected):
             raise ValueError('exec or admitted target changed before workload start')
@@ -420,47 +436,45 @@ def release_stress_gate(config, instance, host, group, expected, command, pidfil
 
 
 def run_stress(config, instance, host, mode, seconds, workers, report):
-    with tempfile.TemporaryDirectory(prefix='xelab-run03-') as directory:
-        group = PinnedCgroup(CGROUP / 'xelab' / 'plugins' / instance)
-        process = None
-        previous_term = signal.getsignal(signal.SIGTERM)
-        def interrupted(*_):
-            raise InterruptedError('stress interrupted')
-        signal.signal(signal.SIGTERM, interrupted)
-        exec_id = 'run03-' + uuid.uuid4().hex
-        fault = report['fault'] = {'mode': mode, 'exec_id': exec_id, 'seconds': seconds, 'workers': workers}
-        try:
-            fault['target'] = verify_stress_target(config, instance, host, group)
-            pidfile = Path(directory) / 'pid'
-            command = stress_command(config, instance, mode, seconds, workers, exec_id, pidfile)
-            process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            release_stress_gate(config, instance, host, group, fault['target'], command, pidfile, process)
-            fault['exit_code'] = process.wait(timeout=seconds + 5)
-            return 0 if fault['exit_code'] == 0 else 2
-        except BaseException as error:
-            fault['error_type'] = type(error).__name__
-            return 1
-        finally:
-            if process is not None:
-                try:
-                    if process.poll() is None:
-                        process.kill()
-                        process.wait(timeout=5)
-                except Exception:
-                    report['client_cleanup_failed'] = True
-                # Remote cleanup MUST still run if killing/waiting for ctr fails.
-                try:
-                    report['after'] = {instance: cgroup_snapshot(group.path)}
-                except Exception:
-                    report['after_unavailable'] = True
-                report['cleanup'] = cleanup_stress(config, instance, exec_id, group)
-                if not report['cleanup']['confirmed']:
-                    report['safety_blocked'] = True
-            group.close()
-            signal.signal(signal.SIGTERM, previous_term)
+    group = PinnedCgroup(CGROUP / 'xelab' / 'plugins' / instance)
+    process = None
+    previous_term = signal.getsignal(signal.SIGTERM)
+    def interrupted(*_):
+        raise InterruptedError('stress interrupted')
+    signal.signal(signal.SIGTERM, interrupted)
+    exec_id = 'run03-' + uuid.uuid4().hex
+    fault = report['fault'] = {'mode': mode, 'exec_id': exec_id, 'seconds': seconds, 'workers': workers}
+    try:
+        fault['target'] = verify_stress_target(config, instance, host, group)
+        command = stress_command(config, instance, mode, seconds, workers, exec_id)
+        process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        release_stress_gate(config, instance, host, group, fault['target'], command, process)
+        fault['exit_code'] = process.wait(timeout=seconds + 5)
+        return 0 if fault['exit_code'] == 0 else 2
+    except BaseException as error:
+        fault['error_type'] = type(error).__name__
+        return 1
+    finally:
+        if process is not None:
+            try:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+            except Exception:
+                report['client_cleanup_failed'] = True
+            # Remote cleanup MUST still run if killing/waiting for ctr fails.
+            try:
+                report['after'] = {instance: cgroup_snapshot(group.path)}
+            except Exception:
+                report['after_unavailable'] = True
+            report['cleanup'] = cleanup_stress(config, instance, exec_id, group)
+            if not report['cleanup']['confirmed']:
+                report['safety_blocked'] = True
+        group.close()
+        signal.signal(signal.SIGTERM, previous_term)
 
 
-def stress_command(config, instance, mode, seconds, workers, exec_id=None, pidfile=None):
+def stress_command(config, instance, mode, seconds, workers, exec_id=None):
     instance = str(uuid.UUID(instance))
     if not 1 <= seconds <= 900 or not 1 <= workers <= 256:
         raise ValueError('bounded seconds/workers required')
@@ -479,12 +493,12 @@ def stress_command(config, instance, mode, seconds, workers, exec_id=None, pidfi
                 " for p in ps:p.terminate()\n for p in ps:p.wait()\n")
     else:
         raise ValueError('unknown fault mode')
+    exec_id = exec_id or 'run03-' + uuid.uuid4().hex
     # No load executes until the host validates this exact stopped process.
-    code = ("import os,signal\nsignal.signal(signal.SIGALRM,lambda *_:os._exit(124))\n"
+    code = (f"# exec nonce: {exec_id}\nimport os,signal\nsignal.signal(signal.SIGALRM,lambda *_:os._exit(124))\n"
             f"signal.alarm({seconds + 15})\nos.kill(os.getpid(),signal.SIGSTOP)\n" + code)
-    options = ['--pid-file', str(pidfile)] if pidfile else []
     return ['ctr', '--address', config['runtime']['socket'], '--namespace', config['runtime']['namespace'],
-            'tasks', 'exec', '--exec-id', exec_id or 'run03-' + uuid.uuid4().hex, *options,
+            'tasks', 'exec', '--exec-id', exec_id,
             instance, '/usr/bin/python3', '-c', code]
 
 
