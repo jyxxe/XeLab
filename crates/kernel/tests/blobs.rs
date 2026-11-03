@@ -47,7 +47,10 @@ impl Fixture {
         db.migrate().await.unwrap();
         db.migrate().await.unwrap();
         db.check().await.unwrap();
-        let root = tempfile::tempdir_in("/tmp").unwrap();
+        let root = tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir_in("/tmp")
+            .unwrap();
         let t: toml::Value =
             toml::from_str(include_str!("../../../docs/contracts/examples/kernel.toml")).unwrap();
         let mut value = serde_json::to_value(t).unwrap();
