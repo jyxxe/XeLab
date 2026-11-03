@@ -1,5 +1,4 @@
-//! Durable upgrade admission. HTTP dispatch is intentionally connected only
-//! when the owning runtime supervisor is implemented and verified.
+//! Durable recreate admission for stateless and same-schema volume upgrades.
 use crate::{
     api::{self, App},
     artifact::{self, Artifact},
@@ -15,6 +14,8 @@ use std::sync::atomic::Ordering;
 use tokio_postgres::{GenericClient, Row};
 use uuid::Uuid;
 
+#[path = "upgrades_volumes.rs"]
+mod volume_group;
 #[path = "upgrades_worker.rs"]
 mod worker;
 pub use worker::run;
@@ -36,15 +37,12 @@ async fn installation(c: &(impl GenericClient + Sync), installation: Uuid) -> Re
     }
     Ok(value)
 }
-fn stateless(source: &Value, target: &Value, spec: &Value) -> Result<()> {
+fn same_schema(source: &Value, target: &Value) -> Result<()> {
     if source["manifest"]["data_schema_version"] != "none"
         || target["manifest"]["data_schema_version"] != "none"
-        || source["manifest"]["volumes"] != json!([])
-        || target["manifest"]["volumes"] != json!([])
-        || spec["volume_ids"] != json!([])
     {
         return Err(Error::conflict(
-            "Stateful upgrade requires the durable migration worker",
+            "Schema-changing upgrade requires the durable DataMigration worker",
         ));
     }
     Ok(())
@@ -72,6 +70,11 @@ pub async fn authorize(
     if owner != ctx.subject {
         return Err(Error::denied());
     }
+    let spec: Value = c
+        .query_one("SELECT spec FROM deployments WHERE id=$1", &[&deployment])
+        .await?
+        .get(0);
+    volume_group::authorize_group(c, ctx, &spec["volume_ids"]).await?;
     for required in [action, "plugin.read", "plugin.enable"] {
         auth::authorize(
             c,
@@ -113,8 +116,34 @@ pub async fn authorize(
     }
     Ok(())
 }
-/// Caller owns an authorization-fenced transaction, including replay/ETag
-/// handling. No OCI or filesystem mutation occurs before its durable job/hold.
+/// Replay uses the original operation mapping after deployment UUIDs change.
+pub async fn authorize_replay(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    operation: Uuid,
+) -> Result<()> {
+    let row = c
+        .query_one(
+            "SELECT * FROM deployment_upgrade_jobs WHERE operation_id=$1",
+            &[&operation],
+        )
+        .await?;
+    if row.get::<_, Uuid>("subject_id") != ctx.subject
+        || row.get::<_, Uuid>("credential_id") != ctx.credential
+    {
+        return Err(Error::denied());
+    }
+    let saved: Vec<policy::Path> =
+        serde_json::from_value(row.get("authority")).map_err(|_| Error::denied())?;
+    let available = policy::rules(
+        &Policy::new(c, ctx.peer)
+            .revalidate(&saved, ctx.credential)
+            .await?,
+    );
+    volume_group::authorize_saved(c, ctx, &row, &available).await
+}
+
+/// Caller owns the authorization-fenced admission transaction.
 pub async fn create(
     c: &(impl GenericClient + Sync),
     app: &App,
@@ -138,13 +167,8 @@ pub async fn create(
             "Upgrade waits for startup runtime fencing",
         ));
     }
-    c.query_one("SELECT id FROM node_budget FOR UPDATE", &[])
-        .await?;
     let row = c
-        .query_opt(
-            "SELECT * FROM deployments WHERE id=$1 FOR UPDATE",
-            &[&deployment],
-        )
+        .query_opt("SELECT * FROM deployments WHERE id=$1", &[&deployment])
         .await?
         .ok_or_else(Error::not_found)?;
     api::etag(headers, row.get("revision"))?;
@@ -224,7 +248,38 @@ pub async fn create(
         manifest_digest: target["manifest_digest"].as_str().unwrap().into(),
     }
     .validate_deployment(&next)?;
-    stateless(&source, &target, &original)?;
+    same_schema(&source, &target)?;
+    let volumes = volume_group::plan(c, app, ctx, &original, &target).await?;
+    if let Some(group) = &volumes {
+        next["volume_ids"] = json!(group
+            .items
+            .iter()
+            .map(|item| item.target)
+            .collect::<Vec<_>>());
+    }
+    // Binding/geometry above uses independent transactions. Take the runtime
+    // budget and deployment locks only after it completes, then recheck intent.
+    c.query_one("SELECT id FROM node_budget FOR UPDATE", &[])
+        .await?;
+    let locked = c.query_one("SELECT revision,spec,installation_id,owner_id,archived_at FROM deployments WHERE id=$1 FOR UPDATE", &[&deployment]).await?;
+    if locked.get::<_, i64>("revision") != original_revision
+        || locked.get::<_, Value>("spec") != original
+        || locked.get::<_, Uuid>("installation_id") != source_id
+        || locked.get::<_, Uuid>("owner_id") != ctx.subject
+        || locked
+            .get::<_, Option<chrono::DateTime<chrono::Utc>>>("archived_at")
+            .is_some()
+    {
+        return Err(Error::conflict("Upgrade source changed during admission"));
+    }
+    crate::backups::ensure_unheld(c, deployment).await?;
+    if c.query_one("SELECT count(*) FROM deployment_storage_holds", &[])
+        .await?
+        .get::<_, i64>(0)
+        >= 2
+    {
+        return Err(Error::exhausted());
+    }
     let backup = body
         .get("backup_id")
         .map(|_| id(body, "backup_id"))
@@ -274,6 +329,9 @@ pub async fn create(
     let candidate = Uuid::new_v4();
     c.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,created_at,updated_at) VALUES($1,$2,$3,0,'pending','unknown',$4,now(),now())",&[&candidate,&deployment,&generation,&next["limits"]]).await?;
     c.execute("INSERT INTO deployment_upgrade_jobs(operation_id,deployment_id,action,credential_id,subject_id,peer,authority,source_installation_id,target_installation_id,source_metadata,target_metadata,original_spec,target_spec,instances,candidate_id,candidate_generation,strategy,state,backup_id,source_revision) VALUES($1,$2,$3,$4,$5,$6::text::inet,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'recreate','freezing',$17,$18)",&[&operation,&deployment,&action,&ctx.credential,&ctx.subject,&ctx.peer.to_string(),&authority,&source_id,&target_id,&source,&target,&original,&next,&json!(instances),&candidate,&generation,&backup,&revision]).await?;
+    if let Some(group) = volumes {
+        volume_group::reserve(c, ctx, deployment, operation, group).await?;
+    }
     c.execute(
         "INSERT INTO deployment_storage_holds(deployment_id,operation_id) VALUES($1,$2)",
         &[&deployment, &operation],
@@ -325,6 +383,7 @@ pub async fn revalidate(c: &(impl GenericClient + Sync), app: &App, row: &Row) -
     let saved: Vec<policy::Path> =
         serde_json::from_value(row.get("authority")).map_err(|_| Error::denied())?;
     let available = policy::rules(&Policy::new(c, peer).revalidate(&saved, credential).await?);
+    volume_group::authorize_saved(c, &ctx, row, &available).await?;
     for action in [
         row.get::<_, String>("action").as_str(),
         "plugin.read",

@@ -131,6 +131,95 @@ async fn actual_postgres_upgrade_admission_is_atomic_and_keeps_original_authorit
     authorize(&c, &ctx, deployment, "plugin.upgrade", &body)
         .await
         .unwrap();
+    // Mapping/permission checks use real FK-constrained PostgreSQL rows. These
+    // are metadata fixtures, not physical allocation or runtime stop proofs.
+    let mapped = c.transaction().await.unwrap();
+    let root = Uuid::new_v4();
+    let old_volume = Uuid::new_v4();
+    let new_volume = Uuid::new_v4();
+    let volume_spec = json!({"name":"data","capacity_bytes":1048576,"access":"single_writer","scope":"deployment"});
+    mapped.execute("INSERT INTO volume_storage_root(id,filesystem_uuid,state,capacity_bytes) VALUES($1,$2,'ready',67108864)", &[&root,&Uuid::new_v4()]).await.unwrap();
+    for (volume, state) in [(old_volume, "ready"), (new_volume, "restoring")] {
+        mapped.execute("INSERT INTO volume_allocations(volume_id,root_id,project_id,owner_id,spec,capacity_bytes,inode_limit,metadata_charge,desired_capacity,desired_inodes,desired_metadata_charge,state,operation_id,credential_id,peer) VALUES($1,$2,nextval('volume_project_ids'),$3,$4,1048576,64,65536,1048576,64,65536,$5,$6,$7,'127.0.0.1')", &[&volume,&root,&ctx.subject,&volume_spec,&state,&operation,&ctx.credential]).await.unwrap();
+    }
+    mapped.execute("INSERT INTO volumes(id,owner_id,spec,backend_id,capacity_bytes,write_fence,state,created_at,updated_at) VALUES($1,$2,$3,$4,1048576,7,'available',now(),now())", &[&old_volume,&ctx.subject,&volume_spec,&old_volume.to_string()]).await.unwrap();
+    mapped
+        .execute(
+            "INSERT INTO volume_holds(volume_id,operation_id,kind) VALUES($1,$2,'migration')",
+            &[&old_volume, &operation],
+        )
+        .await
+        .unwrap();
+    mapped.execute("INSERT INTO deployment_upgrade_volumes(operation_id,ordinal,source_volume_id,target_volume_id,source_spec,state) VALUES($1,0,$2,$3,$4,'reserved')", &[&operation,&old_volume,&new_volume,&volume_spec]).await.unwrap();
+    mapped.execute("UPDATE deployment_upgrade_jobs SET original_spec=jsonb_set(original_spec,'{volume_ids}',$2),target_spec=jsonb_set(target_spec,'{volume_ids}',$3) WHERE operation_id=$1", &[&operation,&json!([old_volume]),&json!([new_volume])]).await.unwrap();
+    let mapping_job = mapped
+        .query_one(
+            "SELECT * FROM deployment_upgrade_jobs WHERE operation_id=$1",
+            &[&operation],
+        )
+        .await
+        .unwrap();
+    for permitted in [
+        vec![old_volume],
+        vec![new_volume],
+        vec![old_volume, new_volume],
+    ] {
+        let rules = json!([
+            {"action":"volume.create","resource":{"kind":"volume","match":"owned_by","owner_id":ctx.subject}},
+            {"action":"volume.read","resource":{"kind":"volume","match":"ids","ids":permitted}}
+        ]);
+        assert_eq!(
+            volume_group::authorize_saved(&mapped, &ctx, &mapping_job, &rules)
+                .await
+                .is_ok(),
+            permitted.len() == 2,
+            "both the retained source and new private UUID require authority"
+        );
+    }
+    volume_group::freeze(&mapped, operation).await.unwrap();
+    let fences = mapped.query_one("SELECT source_fence,target_fence FROM deployment_upgrade_volumes WHERE operation_id=$1", &[&operation]).await.unwrap();
+    assert_eq!(fences.get::<_, Option<i64>>(0), Some(8));
+    assert_eq!(fences.get::<_, Option<i64>>(1), Some(9));
+    volume_group::failed(&mapped, operation).await.unwrap();
+    assert_eq!(
+        mapped
+            .query_one(
+                "SELECT state FROM volume_allocations WHERE volume_id=$1",
+                &[&new_volume]
+            )
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        "quarantined"
+    );
+    assert_eq!(
+        mapped
+            .query_one(
+                "SELECT state FROM volume_allocations WHERE volume_id=$1",
+                &[&old_volume]
+            )
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        "ready"
+    );
+    assert!(mapped
+        .query_opt("SELECT id FROM volumes WHERE id=$1", &[&new_volume])
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        mapped
+            .query_one(
+                "SELECT count(*) FROM volume_holds WHERE operation_id=$1",
+                &[&operation]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    mapped.rollback().await.unwrap();
     let revoked = c.transaction().await.unwrap();
     db::auth_lock(&revoked, true).await.unwrap();
     revoked
