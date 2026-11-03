@@ -26,6 +26,10 @@ pub struct Observation {
     pub address: String,
 }
 
+#[path = "runtime_images.rs"]
+mod images;
+pub use images::ImageArchive;
+
 fn binary(name: &str) -> Result<PathBuf> {
     for root in ["/usr/sbin", "/usr/bin", "/sbin", "/bin", "/usr/local/bin"] {
         let p = Path::new(root).join(name);
