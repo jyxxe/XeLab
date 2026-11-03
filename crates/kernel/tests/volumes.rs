@@ -267,6 +267,7 @@ async fn unsupported_storage_never_publishes_a_volume_or_allocation() {
 #[tokio::test]
 #[ignore = "requires a dedicated real XFS mount and root; tools/test-xfs.sh"]
 async fn actual_volume_operations_recover_enforce_capacity_and_fence_writers() {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     assert_eq!(unsafe { libc::geteuid() }, 0);
     assert_eq!(std::env::var("XELAB_XFS_TEST").unwrap(), "1");
     let f = Fixture::new(true).await.unwrap();
