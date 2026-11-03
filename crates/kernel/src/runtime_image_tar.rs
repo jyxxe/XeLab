@@ -54,7 +54,11 @@ pub(super) async fn verify(
     input: &mut (impl AsyncRead + Unpin),
     images: &[String],
     maximum: u64,
-) -> Result<()> {
+) -> Result<BTreeMap<String, u64>> {
+    let expected_names: BTreeMap<String, String> = images
+        .iter()
+        .map(|s| Ok((s.clone(), artifact::image_ref(s)?.to_owned())))
+        .collect::<Result<_>>()?;
     let expected: BTreeSet<String> = images
         .iter()
         .map(|s| artifact::image_ref(s).map(str::to_owned))
@@ -234,16 +238,30 @@ pub(super) async fn verify(
     if !layout || index["schemaVersion"] != 2 || roots.is_empty() || roots.len() > MAX_IMAGES {
         return Err(Error::invalid("OCI archive layout is invalid"));
     }
-    let mut found = BTreeSet::new();
+    let mut found = BTreeMap::new();
     for root in roots {
         descriptor(root, &blobs)?;
         let id = digest(root)?;
-        if !expected.contains(id) {
-            return Err(Error::invalid("OCI index includes an unexpected image"));
+        let image = root["annotations"]["io.containerd.image.name"]
+            .as_str()
+            .ok_or_else(|| Error::invalid("OCI index has no full image name"))?;
+        if expected_names.get(image).map(String::as_str) != Some(id)
+            || found.insert(image.to_owned(), id.to_owned()).is_some()
+        {
+            return Err(Error::invalid("OCI index image names differ or repeat"));
         }
-        found.insert(id.to_owned());
+        let path = image.split_once('/').map(|(_, p)| p).unwrap_or(image);
+        let start = path
+            .find([':', '@'])
+            .ok_or_else(|| Error::invalid("OCI image name has no immutable object"))?;
+        let reference = path[start..].strip_prefix(':').unwrap_or(&path[start..]);
+        if root["annotations"]["org.opencontainers.image.ref.name"].as_str() != Some(reference) {
+            return Err(Error::invalid(
+                "OCI reference annotation differs from its full name",
+            ));
+        }
     }
-    if found != expected {
+    if found != expected_names {
         return Err(Error::invalid(
             "OCI index does not cover every requested image",
         ));
@@ -275,7 +293,7 @@ pub(super) async fn verify(
             descriptor(layer, &blobs)?;
         }
     }
-    Ok(())
+    Ok(blobs)
 }
 
 #[cfg(test)]
@@ -305,6 +323,79 @@ mod tests {
     fn fixture(missing: bool, wrong_size: bool) -> (Vec<u8>, Vec<String>) {
         fixture_layer(missing, wrong_size, b"immutable layer contents")
     }
+    fn rewrite_index(tar: &[u8], change: impl FnOnce(&mut Value)) -> Vec<u8> {
+        let mut result = Vec::new();
+        let mut offset = 0;
+        let mut change = Some(change);
+        while offset + 512 <= tar.len() && !tar[offset..offset + 512].iter().all(|b| *b == 0) {
+            let header = &tar[offset..offset + 512];
+            let end = header[..100].iter().position(|b| *b == 0).unwrap_or(100);
+            let name = std::str::from_utf8(&header[..end]).unwrap();
+            let size = octal(&header[124..136]).unwrap() as usize;
+            let next = offset + 512 + size.div_ceil(512) * 512;
+            if name == "index.json" {
+                let mut value: Value =
+                    serde_json::from_slice(&tar[offset + 512..offset + 512 + size]).unwrap();
+                change.take().unwrap()(&mut value);
+                entry(
+                    &mut result,
+                    name,
+                    &serde_json::to_vec(&value).unwrap(),
+                    b'0',
+                );
+            } else {
+                result.extend_from_slice(&tar[offset..next]);
+            }
+            offset = next;
+        }
+        assert!(change.is_none());
+        result.resize(result.len() + 1024, 0);
+        result
+    }
+    #[tokio::test]
+    async fn index_names_bind_exactly_even_when_two_names_share_one_digest() {
+        let (tar, images) = fixture(false, false);
+        let id = artifact::image_ref(&images[0]).unwrap();
+        let alias = format!("example.test/alias@{id}");
+        let with_alias = rewrite_index(&tar, |index| {
+            let mut copy = index["manifests"][0].clone();
+            copy["annotations"]["io.containerd.image.name"] = json!(alias);
+            index["manifests"].as_array_mut().unwrap().push(copy);
+        });
+        assert!(
+            verify(&mut with_alias.as_slice(), &images, with_alias.len() as u64)
+                .await
+                .is_err(),
+            "unrequested alias must not pass by sharing a digest"
+        );
+        let mut allowed = vec![images[0].clone(), alias];
+        allowed.sort();
+        verify(
+            &mut with_alias.as_slice(),
+            &allowed,
+            with_alias.len() as u64,
+        )
+        .await
+        .unwrap();
+        let duplicate = rewrite_index(&tar, |index| {
+            let copy = index["manifests"][0].clone();
+            index["manifests"].as_array_mut().unwrap().push(copy);
+        });
+        assert!(
+            verify(&mut duplicate.as_slice(), &images, duplicate.len() as u64)
+                .await
+                .is_err()
+        );
+        let secondary = rewrite_index(&tar, |index| {
+            index["manifests"][0]["annotations"]["org.opencontainers.image.ref.name"] =
+                json!("unrequested-tag")
+        });
+        assert!(
+            verify(&mut secondary.as_slice(), &images, secondary.len() as u64)
+                .await
+                .is_err()
+        );
+    }
     fn fixture_layer(missing: bool, wrong_size: bool, layer_data: &[u8]) -> (Vec<u8>, Vec<String>) {
         let mut tar = Vec::new();
         entry(
@@ -323,8 +414,9 @@ mod tests {
             layer["size"] = json!(9999);
         }
         let manifest=serde_json::to_vec(&json!({"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":config,"layers":[layer]})).unwrap();
-        let root = blob(&mut tar, &manifest);
+        let mut root = blob(&mut tar, &manifest);
         let image = format!("example.test/archive@{}", root["digest"].as_str().unwrap());
+        root["annotations"] = json!({"io.containerd.image.name":image,"org.opencontainers.image.ref.name":format!("@{}",root["digest"].as_str().unwrap())});
         entry(
             &mut tar,
             "index.json",
