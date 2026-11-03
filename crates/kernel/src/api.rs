@@ -39,12 +39,16 @@ pub struct App {
     pub leader: Arc<tokio_postgres::Client>,
     pub ready: AtomicBool,
     pub shutdown: AtomicBool,
+    pub blob_uploads: tokio::sync::Semaphore,
 }
 pub fn router(app: Arc<App>) -> Router {
     Router::new().fallback(handle).with_state(app)
 }
 
-fn operation(method: &str, path: &str) -> Option<(&'static Value, HashMap<String, String>)> {
+pub(crate) fn operation(
+    method: &str,
+    path: &str,
+) -> Option<(&'static Value, HashMap<String, String>)> {
     for (template, item) in openapi()["paths"].as_object()? {
         let Some(op) = item.get(method.to_ascii_lowercase()) else {
             continue;
@@ -70,7 +74,7 @@ fn operation(method: &str, path: &str) -> Option<(&'static Value, HashMap<String
     }
     None
 }
-fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
+pub(crate) fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
     if headers.get_all(name).iter().count() != 1 {
         return Err(Error::invalid("Required header must occur exactly once"));
     }
@@ -79,7 +83,7 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
         .and_then(|s| s.to_str().ok())
         .ok_or_else(|| Error::invalid("Missing or invalid required header"))
 }
-fn bearer(headers: &HeaderMap) -> Result<&str> {
+pub(crate) fn bearer(headers: &HeaderMap) -> Result<&str> {
     if headers.contains_key("authorization") {
         return header(headers, "authorization")
             .map_err(|_| Error::credential())?
@@ -123,7 +127,7 @@ pub(crate) fn etag(headers: &HeaderMap, revision: i64) -> Result<()> {
     }
     Ok(())
 }
-fn response(value: Value, code: u16, request: Uuid) -> Response {
+pub(crate) fn response(value: Value, code: u16, request: Uuid) -> Response {
     let mut r = if code == 204 {
         StatusCode::NO_CONTENT.into_response()
     } else {
@@ -146,6 +150,20 @@ async fn handle(
     request: Request<Body>,
 ) -> Response {
     let request_id = Uuid::new_v4();
+    let blob = operation(request.method().as_str(), request.uri().path())
+        .is_some_and(|(op, _)| crate::blobs::handles(op["operationId"].as_str().unwrap_or("")));
+    if blob {
+        match crate::blobs::handle(app.clone(), peer, request_id, request).await {
+            Ok(response) => return response,
+            Err(error) => {
+                return response(
+                    json!({"error":error.detail(),"request_id":request_id}),
+                    error.status.as_u16(),
+                    request_id,
+                )
+            }
+        }
+    }
     match dispatch(&app, peer, request_id, request).await {
         Ok((v, s)) => {
             let cookie=v.get("access_token").and_then(Value::as_str).map(|token|format!("__Host-xelab_auth={token}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=3600"));

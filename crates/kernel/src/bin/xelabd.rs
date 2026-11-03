@@ -65,8 +65,10 @@ async fn start(args: Args) -> Result<()> {
         leader,
         ready: AtomicBool::new(false),
         shutdown: AtomicBool::new(false),
+        blob_uploads: tokio::sync::Semaphore::new(4),
     });
     let worker = tokio::spawn(controller::run(app.clone()));
+    let blob_worker = tokio::spawn(xelab_kernel::blobs::run(app.clone()));
     let host_app = app.clone();
     let host_worker = tokio::spawn(async move {
         if xelab_kernel::host::serve(host_app.clone()).await.is_err() {
@@ -115,6 +117,7 @@ async fn start(args: Args) -> Result<()> {
     app.shutdown.store(true, Ordering::SeqCst);
     worker.abort();
     host_worker.abort();
+    blob_worker.abort();
     if let Ok(c) = app.db.connect().await {
         let _ = c
             .execute("UPDATE node_budget SET admission_enabled=false", &[])

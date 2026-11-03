@@ -205,6 +205,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         leader: Arc::new(db.leader().await.unwrap()),
         ready: AtomicBool::new(false),
         shutdown: AtomicBool::new(false),
+        blob_uploads: tokio::sync::Semaphore::new(4),
     });
     let mut worker = tokio::spawn(controller::run(app.clone()));
     let router = router(app.clone());

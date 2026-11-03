@@ -108,6 +108,7 @@ impl Fixture {
             leader: Arc::new(db.leader().await.unwrap()),
             ready: AtomicBool::new(true),
             shutdown: AtomicBool::new(false),
+            blob_uploads: tokio::sync::Semaphore::new(4),
         });
         Some(Self {
             router: router(app.clone()),

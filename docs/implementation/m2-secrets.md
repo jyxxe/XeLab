@@ -62,12 +62,13 @@ host_rpc_listen 必须使用专用 plugin CIDR 的首个主机地址；daemon �
 升级前停机并备份 PostgreSQL 与独立保护的 master key，执行：
 
 ```sh
-xelabctl migrate --config /etc/xelab/kernel.toml --target 3
+xelabctl migrate --config /etc/xelab/kernel.toml --target 4
 ```
 
+Secret 首次引入 v3；当前显式升级到 v4，同时加入 [Blob 清理表](m2-blobs.md)。
 v3 只增加内部 secret_binding_authority、secret_leases 和查询索引，不改
 原始 metadata.sql 校验和或既有 API/Proto/配置 Schema。v1/v2 可显式升级，
-重复迁移验证校验和；旧二进制拒绝 v3，禁止只切回旧镜像。历史上非此服务
+重复迁移验证校验和；旧二进制拒绝更新后的元数据版本，禁止只切回旧镜像。历史上非此服务
 创建的绑定没有审批来源，不能租约；先撤销再重新审批。恢复数据库时必须
 配套正确主密钥；数据库备份本身不含主密钥。全平台防撤销回滚恢复尚需
 备份恢复里程碑实现，不能用恢复旧数据库绕过最新撤销状态。
