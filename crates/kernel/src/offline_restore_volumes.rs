@@ -624,7 +624,7 @@ mod tests {
             },
             metadata_summary: metadata_snapshot::Summary {
                 snapshot: Uuid::new_v4(),
-                schema_version: 9,
+                schema_version: db::SCHEMA_VERSION,
                 postgres_major: 16,
                 lsn: "0/11".into(),
                 bytes: 1,

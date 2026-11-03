@@ -16,7 +16,8 @@ const HOST_BLOB: &str = include_str!("../migrations/0006_host_blob.sql");
 const BACKUP_JOBS: &str = include_str!("../migrations/0007_backup_jobs.sql");
 const RESTORE_VOLUMES: &str = include_str!("../migrations/0008_restore_volumes.sql");
 const PLATFORM_RECOVERY: &str = include_str!("../migrations/0009_platform_recovery.sql");
-const MIGRATIONS: [&str; 9] = [
+const DEPLOYMENT_UPGRADES: &str = include_str!("../migrations/0010_deployment_upgrades.sql");
+const MIGRATIONS: [&str; 10] = [
     BASELINE,
     CALL_CHARGES,
     SECRET_AUTHORITY,
@@ -26,6 +27,7 @@ const MIGRATIONS: [&str; 9] = [
     BACKUP_JOBS,
     RESTORE_VOLUMES,
     PLATFORM_RECOVERY,
+    DEPLOYMENT_UPGRADES,
 ];
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 pub const LEADER_LOCK: i64 = 0x58454c41424d3101;
@@ -65,7 +67,7 @@ pub(crate) struct DeploymentFence {
 }
 impl DeploymentFence {
     pub(crate) fn protects(&self, deployment: Uuid) -> bool {
-        self.deployment == deployment
+        self.deployment == deployment && !self._connection.is_closed()
     }
 }
 pub(crate) async fn deployment_fence(db: &Db, deployment: Uuid) -> Result<Option<DeploymentFence>> {

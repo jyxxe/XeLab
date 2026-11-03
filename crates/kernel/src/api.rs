@@ -400,6 +400,10 @@ async fn dispatch(
     } else if secrets::handles(name) {
         secrets::execute(&tx,&app.config,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
     } else {match name {
+        "upgradeDeployment" | "rollbackDeployment" => {
+            let action=if name=="upgradeDeployment"{"plugin.upgrade"}else{"plugin.rollback"};
+            crate::upgrades::create(&tx,app,&ctx,path_id(&params,"deployment_id")?,action,&body,&headers).await?
+        }
         "getCall" => {
             let call = path_id(&params, "call_id")?;
             let r = tx
@@ -696,6 +700,15 @@ async fn authorize_operation(
     }
     if crate::backups::handles(name) {
         return crate::backups::authorize(c, ctx, name, params, body).await;
+    }
+    if matches!(name, "upgradeDeployment" | "rollbackDeployment") {
+        let action = if name == "upgradeDeployment" {
+            "plugin.upgrade"
+        } else {
+            "plugin.rollback"
+        };
+        return crate::upgrades::authorize(c, ctx, path_id(params, "deployment_id")?, action, body)
+            .await;
     }
     if name == "installPlugin" {
         // Stage/verify the signed artifact first. Only its verified manifest can
