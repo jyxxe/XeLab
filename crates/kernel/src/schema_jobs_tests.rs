@@ -142,6 +142,40 @@ async fn actual_postgres_schema_checkpoints_and_original_authority() {
     .unwrap();
     tx.commit().await.unwrap();
     authorize_replay(&c, &ctx, operation).await.unwrap();
+    // An original backup foreign key alone cannot admit a format change. This
+    // tests constraints only; the fixture backup remains non-off-host/creating.
+    for registration in [
+        None,
+        Some(json!({})),
+        Some(json!({"expected":{"backup":f.backup,"deployment":deployment}})),
+    ] {
+        let invalid = c.transaction().await.unwrap();
+        assert!(invalid.execute("UPDATE volume_schema_jobs SET kind='upgrade',source_schema='0',backup_id=$2,backup_registration=$3 WHERE operation_id=$1", &[&operation,&f.backup,&registration]).await.is_err(), "missing registration fields must not pass SQL CHECK as UNKNOWN");
+        invalid.rollback().await.unwrap();
+    }
+    let registration = json!({"credential":ctx.credential,"subject":ctx.subject,"expected":{"backup":f.backup,"deployment":deployment,"installation":{"manifest":{"data_schema_version":"0","plugin_id":manifest["plugin_id"],"publisher_id":manifest["publisher_id"]}}}});
+    for field in [
+        "credential",
+        "subject",
+        "backup",
+        "deployment",
+        "data_schema_version",
+        "plugin_id",
+        "publisher_id",
+    ] {
+        let mut wrong = registration.clone();
+        match field {
+            "credential" | "subject" => wrong[field] = json!(Uuid::new_v4()),
+            "backup" | "deployment" => wrong["expected"][field] = json!(Uuid::new_v4()),
+            "publisher_id" => {
+                wrong["expected"]["installation"]["manifest"][field] = json!(Uuid::new_v4())
+            }
+            _ => wrong["expected"]["installation"]["manifest"][field] = json!("different"),
+        }
+        let invalid = c.transaction().await.unwrap();
+        assert!(invalid.execute("UPDATE volume_schema_jobs SET kind='upgrade',source_schema='0',backup_id=$2,backup_registration=$3 WHERE operation_id=$1", &[&operation,&f.backup,&wrong]).await.is_err(), "original backup {field} binding is required");
+        invalid.rollback().await.unwrap();
+    }
     let stable = Plan {
         id: Uuid::new_v4(),
         digest: crate::contracts::digest(b"metadata plan only"),
