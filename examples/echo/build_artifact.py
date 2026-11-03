@@ -11,7 +11,7 @@ def encoded(value):
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
-def build(root, publisher, platform="linux/amd64", implementation="rust", request_secret=False, volume_access=None, request_blob=False):
+def build(root, publisher, platform="linux/amd64", implementation="rust", request_secret=False, volume_access=None, request_blob=False, plugin_version="1.0.0", failed_startup=False):
     publisher = str(uuid.UUID(publisher))
     schema = {"type": "object", "properties": {"message": {"type": "string", "maxLength": 1024}}, "required": ["message"], "additionalProperties": False}
     input_schema = json.loads(json.dumps(schema))
@@ -29,7 +29,7 @@ def build(root, publisher, platform="linux/amd64", implementation="rust", reques
         checks.append(f"{file} {hashlib.sha256(raw).hexdigest()}\n")
     contract = {"name": name, "version": version, "schema_digest": "sha256:" + hashlib.sha256("".join(checks).encode()).hexdigest()}
     manifest = {
-        "manifest_version": "1", "plugin_id": name if implementation == "rust" else "org.xelab.echo-python", "version": version,
+        "manifest_version": "1", "plugin_id": name if implementation == "rust" else "org.xelab.echo-python", "version": plugin_version,
         "publisher_id": publisher, "host_api_major": 1, "platforms": [platform],
         "entrypoint": ["/usr/local/bin/xelab-echo"] if implementation == "rust" else ["/usr/bin/python3", "/opt/plugin/server.py"],
         "capabilities": [{"contract": contract, "input_schema": input_schema, "output_schema": output_schema, "stream_item_schema": None, "side_effect": "none", "maximum_input_bytes": 65536, "maximum_output_bytes": 65536}],
@@ -47,6 +47,9 @@ def build(root, publisher, platform="linux/amd64", implementation="rust", reques
         manifest["requested_rules"].extend({"rule": {"action": action, "resource": {"kind": "blob", "match": "all"}}, "required": False} for action in ["blob.read", "blob.create"])
     if volume_access:
         manifest["volumes"] = [{"name": "data", "mount_path": "/data", "access": volume_access, "scope": "deployment", "minimum_bytes": 1048576}]
+    if failed_startup:
+        manifest["entrypoint"] = ["/bin/false"]
+        manifest["health"]["startup_timeout_ms"] = 2000
     (root / "xelab" / "plugin.json").write_bytes(encoded(manifest))
     return manifest
 
@@ -60,6 +63,8 @@ if __name__ == "__main__":
     parser.add_argument("--request-secret", action="store_true", help="Enable the explicit Secret lease acceptance probe")
     parser.add_argument("--volume-access", choices=["ro", "rw"], help="Enable explicit persistent-volume acceptance")
     parser.add_argument("--request-blob", action="store_true", help="Enable explicit Blob proxy acceptance with a separate contract")
+    parser.add_argument("--plugin-version", choices=["1.0.0", "2.0.0", "3.0.0"], default="1.0.0", help="Plugin release version; capability contract stays at 1.0.0")
+    parser.add_argument("--failed-startup", action="store_true", help="Build an explicit failing startup acceptance artifact")
     args = parser.parse_args()
-    build(args.output, args.publisher_id, args.platform, args.implementation, args.request_secret, args.volume_access, args.request_blob)
+    build(args.output, args.publisher_id, args.platform, args.implementation, args.request_secret, args.volume_access, args.request_blob, args.plugin_version, args.failed_startup)
 

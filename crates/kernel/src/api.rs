@@ -400,6 +400,10 @@ async fn dispatch(
     } else if secrets::handles(name) {
         secrets::execute(&tx,&app.config,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
     } else {match name {
+        "upgradeDeployment" | "rollbackDeployment" => {
+            let action=if name=="upgradeDeployment"{"plugin.upgrade"}else{"plugin.rollback"};
+            crate::upgrades::create(&tx,app,&ctx,path_id(&params,"deployment_id")?,action,&body,&headers).await?
+        }
         "getCall" => {
             let call = path_id(&params, "call_id")?;
             let r = tx
@@ -771,7 +775,12 @@ async fn authorize_operation(
                 Resource::new("plugin", r.get::<_, String>(0), None),
             )
         }
-        "getDeployment" | "setDeploymentEnabled" | "approvePlugin" | "getPluginApproval" => {
+        "getDeployment"
+        | "setDeploymentEnabled"
+        | "approvePlugin"
+        | "getPluginApproval"
+        | "upgradeDeployment"
+        | "rollbackDeployment" => {
             let id = path_id(params, "deployment_id")?;
             let r = c
                 .query_opt("SELECT owner_id FROM deployments WHERE id=$1", &[&id])
@@ -779,6 +788,8 @@ async fn authorize_operation(
                 .ok_or_else(Error::not_found)?;
             (
                 match name {
+                    "upgradeDeployment" => "plugin.upgrade",
+                    "rollbackDeployment" => "plugin.rollback",
                     "setDeploymentEnabled" => "plugin.enable",
                     "approvePlugin" => "plugin.permission.grant",
                     _ => "plugin.read",

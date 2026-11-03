@@ -71,6 +71,7 @@ async fn start(args: Args) -> Result<()> {
     let volume_worker = tokio::spawn(xelab_kernel::volumes::run(app.clone()));
     let blob_worker = tokio::spawn(xelab_kernel::blobs::run(app.clone()));
     let backup_worker = tokio::spawn(xelab_kernel::backups::run(app.clone()));
+    let upgrade_worker = tokio::spawn(xelab_kernel::upgrades::run(app.clone()));
     let host_app = app.clone();
     let host_worker = tokio::spawn(async move {
         if xelab_kernel::host::serve(host_app.clone()).await.is_err() {
@@ -121,6 +122,7 @@ async fn start(args: Args) -> Result<()> {
     host_worker.abort();
     blob_worker.abort();
     backup_worker.abort();
+    upgrade_worker.abort();
     volume_worker.abort();
     if let Ok(c) = app.db.connect().await {
         let _ = c

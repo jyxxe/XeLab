@@ -33,6 +33,9 @@ use xelab_kernel::{
     tls,
 };
 
+#[path = "support/upgrades.rs"]
+mod upgrade_acceptance;
+
 #[allow(clippy::too_many_arguments)] // Test request envelope.
 async fn api(
     router: &Router,
@@ -1015,6 +1018,20 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     .await;
     assert_eq!(enable.0, 202, "{}", enable.1);
     operation(&router, enable.1["id"].as_str().unwrap(), token).await;
+    upgrade_acceptance::exercise(
+        &app,
+        &router,
+        token,
+        publisher,
+        &signing,
+        &deployment,
+        installed["installation_id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap(),
+    )
+    .await;
     let revoke = api(
         &router,
         "revokeSession",
@@ -1175,7 +1192,10 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         .await
         .unwrap();
     let manifest: xelab_kernel::offline::backup::Manifest = serde_json::from_value(value).unwrap();
-    assert_eq!(manifest.metadata_summary.schema_version, 9);
+    assert_eq!(
+        manifest.metadata_summary.schema_version,
+        xelab_kernel::db::SCHEMA_VERSION
+    );
     assert!(manifest.metadata_summary.rows > 0);
     assert!(!manifest.installations.is_empty());
     assert!(manifest.images.is_some());

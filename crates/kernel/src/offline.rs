@@ -424,6 +424,9 @@ async fn source_preflight(c: &(impl GenericClient + Sync)) -> Result<()> {
             "Unsettled storage or recovery work blocks offline snapshot",
         ));
     }
+    if c.query_one("SELECT EXISTS(SELECT 1 FROM deployment_upgrade_jobs WHERE state NOT IN ('succeeded','failed'))", &[]).await?.get::<_,bool>(0) {
+        return Err(Error::conflict("Unsettled deployment upgrade blocks offline snapshot"));
+    }
     if !c.query_one("SELECT EXISTS(SELECT 1 FROM accounts WHERE independent_owner AND parent_id IS NULL AND kind='user' AND status<>'archived')",&[]).await?.get::<_,bool>(0){return Err(Error::conflict("Offline source has no eligible recovery Owner"));}
     let volumes: i64 = c
         .query_one("SELECT count(*) FROM volumes WHERE state<>'deleted'", &[])
