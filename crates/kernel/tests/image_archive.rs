@@ -141,10 +141,100 @@ async fn real_oci_archive_recovers_into_an_empty_independent_content_store() {
                 "Nonempty namespace accepted a second import",
             ));
         }
+        // Export two admitted names for the same manifest. A distinct empty
+        // namespace then shares this daemon's already populated CAS.
+        let alias = format!("docker.io/xelab-ci/permitted-alias@{}", artifact::image_ref(&images[0])?);
+        target.ctr(&["images".into(), "tag".into(), images[0].clone(), alias.clone()]).await?;
+        let mut alias_names = images.clone();
+        alias_names.push(alias);
+        alias_names.sort();
+        let alias_file = tempfile::NamedTempFile::new()?;
+        fs::set_permissions(alias_file.path(), fs::Permissions::from_mode(0o600))?;
+        let mut alias_archive = tokio::fs::File::from_std(alias_file.reopen()?);
+        let alias_saved = target.export_images(&alias_names, &mut alias_archive, 1024 * 1024 * 1024).await?;
+        let mut shared_value=target.config.value.clone();shared_value["runtime"]["namespace"]=json!("xelab-shared-content-recovery");let shared=Runtime::new(Config::from_value(shared_value.clone())?);
+        target.ctr(&["namespaces".into(),"create".into(),"xelab-shared-content-recovery".into()]).await?;shared.import_images(&mut alias_archive,&alias_saved).await?;
+        // Simulate damaged media in this test daemon's private CAS only. The
+        // source daemon and every other root remain untouched.
+        let manifest:serde_json::Value=serde_json::from_slice(&target.ctr(&["content".into(),"get".into(),artifact::image_ref(&images[0])?.into()]).await?)?;
+        let layer=manifest["layers"][0]["digest"].as_str().ok_or_else(||Error::invalid("Fixture image has no layer"))?;
+        let path=find_owned_blob(&root.path().join("content-root"),&layer[7..])?;
+        corrupt_owned_blob(&path)?;
+        shared_value["runtime"]["namespace"]=json!("xelab-damaged-content-recovery");let damaged=Runtime::new(Config::from_value(shared_value)?);target.ctr(&["namespaces".into(),"create".into(),"xelab-damaged-content-recovery".into()]).await?;
+        let restored=damaged.import_images(&mut archive,&saved).await;
+        // Upstream may repair a blob in a future version. Successful import is
+        // allowed only when an independent read proves its bytes were repaired.
+        if restored.is_ok()&&file_digest(&path)?!=layer{return Err(Error::conflict("Damaged existing layer was accepted without repair"));}
+        println!("Shared CAS: intact existing blobs verified; damaged layer rejected or fully repaired and reverified");
         Ok(())
     }
     .await;
     let _ = daemon.kill().await;
     let _ = daemon.wait().await;
     result.unwrap();
+}
+
+fn find_owned_blob(root: &std::path::Path, name: &str) -> Result<std::path::PathBuf> {
+    let mut pending = vec![(root.to_path_buf(), 0usize)];
+    let mut entries = 0;
+    let mut found = None;
+    while let Some((directory, depth)) = pending.pop() {
+        if depth > 16 {
+            return Err(Error::exhausted());
+        }
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            entries += 1;
+            if entries > 4096 {
+                return Err(Error::exhausted());
+            }
+            let kind = entry.file_type()?;
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                pending.push((entry.path(), depth + 1));
+            } else if kind.is_file()
+                && entry.file_name() == name
+                && found.replace(entry.path()).is_some()
+            {
+                return Err(Error::conflict("Fixture blob identity is ambiguous"));
+            }
+        }
+    }
+    found.ok_or_else(Error::not_found)
+}
+fn corrupt_owned_blob(path: &std::path::Path) -> Result<()> {
+    use std::{
+        io::{Read, Seek, SeekFrom, Write},
+        os::unix::fs::OpenOptionsExt,
+    };
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    file.seek(SeekFrom::Start(17))?;
+    let mut byte = [0u8];
+    file.read_exact(&mut byte)?;
+    byte[0] ^= 1;
+    file.seek(SeekFrom::Start(17))?;
+    file.write_all(&byte)?;
+    file.sync_all()?;
+    Ok(())
+}
+fn file_digest(path: &std::path::Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buffer = vec![0u8; 65536];
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buffer[..n]);
+    }
+    Ok(format!("sha256:{:x}", hash.finalize()))
 }
