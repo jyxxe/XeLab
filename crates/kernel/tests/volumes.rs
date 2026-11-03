@@ -71,7 +71,21 @@ impl Fixture {
             value["security"]["workload_ca_cert_file"] = json!(root.path().join("ca.crt"));
             value["security"]["workload_ca_key_file"] = json!(root.path().join("ca.key"));
         }
+        value["security"]["workload_ca_cert_file"] = json!(root.path().join("ca.crt"));
+        value["security"]["workload_ca_key_file"] = json!(root.path().join("ca.key"));
+        let ca_key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["volume-test-ca".into()]).unwrap();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca = params.self_signed(&ca_key).unwrap();
+        fs::write(root.path().join("ca.crt"), ca.pem()).unwrap();
+        fs::write(root.path().join("ca.key"), ca_key.serialize_pem()).unwrap();
+        fs::set_permissions(
+            root.path().join("ca.key"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
         let config = Config::from_value(value).unwrap();
+        xelab_kernel::tls::issue(&config, None, &config.root().join("kernel-identity")).unwrap();
         let mut c = db.connect().await.unwrap();
         let tx = c.transaction().await.unwrap();
         let owner = auth::bootstrap(
