@@ -395,6 +395,8 @@ async fn dispatch(
         identity::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
     } else if crate::volumes::handles(name) {
         crate::volumes::execute(&tx,app,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("" )).await?
+    } else if crate::backups::handles(name) {
+        crate::backups::execute(&tx,app,&ctx,name,&params,&body,uri.query().unwrap_or("")).await?
     } else if secrets::handles(name) {
         secrets::execute(&tx,&app.config,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
     } else {match name {
@@ -484,6 +486,7 @@ async fn dispatch(
                     &[&id],
                 )
                 .await?;
+            crate::backups::ensure_unheld(&tx,id).await?;
             etag(&headers, r.get("revision"))?;
             if r.get::<_, Value>("spec")["enabled"] == true {
                 return Err(Error::conflict(
@@ -501,6 +504,7 @@ async fn dispatch(
             let row = tx
                 .query_one("SELECT * FROM deployments WHERE id=$1 FOR UPDATE", &[&id])
                 .await?;
+            crate::backups::ensure_unheld(&tx,id).await?;
             etag(&headers, row.get("revision"))?;
             tx.execute("UPDATE operations SET state='failed',error=$2,revision=revision+1,updated_at=now() WHERE resource_id=$1 AND kind='setDeploymentEnabled' AND state IN ('pending','running')", &[&id.to_string(),&Error::conflict("Superseded by a newer deployment intent").detail()]).await?;
             let enabled = body["enabled"].as_bool().unwrap();
@@ -689,6 +693,9 @@ async fn authorize_operation(
     }
     if crate::volumes::handles(name) {
         return crate::volumes::authorize(c, ctx, name, params).await;
+    }
+    if crate::backups::handles(name) {
+        return crate::backups::authorize(c, ctx, name, params, body).await;
     }
     if name == "installPlugin" {
         // Stage/verify the signed artifact first. Only its verified manifest can

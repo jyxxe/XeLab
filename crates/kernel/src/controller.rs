@@ -487,7 +487,22 @@ async fn install(app: &App, request: &Value, operation: Uuid, payload: &Value) -
 }
 
 async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Probe>) -> Result<()> {
+    // Check holds after taking the runtime fence. A previous reconciliation
+    // cannot create a writer after a backup worker has proved it stopped.
+    let Some(_runtime_fence) = db::deployment_fence(&app.db, deployment).await? else {
+        return Ok(());
+    };
     let c = app.db.connect().await?;
+    if c.query_opt(
+        "SELECT deployment_id FROM deployment_storage_holds WHERE deployment_id=$1",
+        &[&deployment],
+    )
+    .await?
+    .is_some()
+    {
+        probes.remove(&deployment);
+        return Ok(());
+    }
     let Some(d)=c.query_opt("SELECT d.*,i.manifest,i.manifest_digest,i.image_digest FROM deployments d JOIN installations i ON i.id=d.installation_id WHERE d.id=$1",&[&deployment]).await? else {
         probes.remove(&deployment);
         return Ok(());

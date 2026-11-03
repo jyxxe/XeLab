@@ -70,6 +70,7 @@ pub fn audit_resource(
         "createApiKey" | "rotateApiKey" => Some(("credential", &response["credential"]["id"])),
         "createGroup" => Some(("group", &response["id"])),
         "createVolume" => Some(("volume", &response["resource_id"])),
+        "createBackup" => Some(("backup", &response["resource_id"])),
         "createSecret" => Some(("secret", &response["id"])),
         "bindSecret" => Some(("secret", &response["spec"]["secret_id"])),
         _ => None,
@@ -90,6 +91,7 @@ pub fn audit_resource(
         ("operation_id", "operation"),
         ("secret_id", "secret"),
         ("volume_id", "volume"),
+        ("backup_id", "backup"),
     ] {
         if let Some(id) = p.get(parameter) {
             return Resource::new(kind, id, None).json();
@@ -1334,6 +1336,7 @@ pub(crate) async fn list(
         "listRoles" => ("role_definitions", "Role", "", ""),
         "listPermissions" => ("permission_definitions", "PermissionDefinition", "", ""),
         "listVolumes" => ("kernel_volumes", "Volume", "volume.read", "volume"),
+        "listBackups" => ("backups", "Backup", "backup.read", "backup"),
         "listSecrets" => ("secrets", "Secret", "secret.metadata.read", "secret"),
         "listSecretBindings" => ("secret_bindings", "SecretBinding", "secret.bind", "secret"),
         _ => return Err(Error::not_found()),
@@ -1449,6 +1452,7 @@ pub(crate) async fn list(
                 }
                 Resource::new("secret", secret, Some(row.get(0)))
             }
+            "listBackups" => Resource::new(kind, object, Some(id(&v, "created_by")?)),
             _ => Resource::new(kind, object, Some(id(&v, "owner_id")?)),
         };
         let visible = auth::rules_allow(&available, action, &resource, ctx.peer)

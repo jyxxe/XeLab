@@ -27,7 +27,8 @@ const PART: usize = 8 * 1024 * 1024;
 const MAX_ARCHIVE: u64 = 64 * 1024 * 1024 * 1024;
 const MAX_CIPHER: u64 = MAX_ARCHIVE + MAX_ARCHIVE / 65536 * 20 + 1024;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Object {
     pub backup: Uuid,
     pub object: Uuid,
@@ -51,12 +52,22 @@ impl Object {
         Ok(())
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Verified {
     pub plaintext: backup_crypto::Summary,
     pub ciphertext: backup_crypto::Summary,
     pub archive: archive::Summary,
     pub off_host: bool,
+}
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SavedUpload {
+    pub id: String,
+    pub etags: Vec<String>,
+    pub plaintext: backup_crypto::Summary,
+    pub ciphertext: backup_crypto::Summary,
+    pub archive: archive::Summary,
 }
 pub struct Transfer<T> {
     result: oneshot::Receiver<Result<T>>,
@@ -71,15 +82,77 @@ impl<T> Transfer<T> {
 #[derive(Clone)]
 pub struct Pool {
     permits: Arc<Semaphore>,
+    journal: Option<Arc<dyn Journal>>,
+}
+#[tonic::async_trait]
+pub trait Journal: Send + Sync {
+    /// Persist exact hashes and multipart identities before completion. Returning
+    /// an error prevents completion, including when authorization was withdrawn.
+    async fn prepared(
+        &self,
+        object: Object,
+        upload: &str,
+        etags: &[String],
+        plaintext: &backup_crypto::Summary,
+        ciphertext: &backup_crypto::Summary,
+        archive: &archive::Summary,
+    ) -> Result<()>;
 }
 impl Default for Pool {
     fn default() -> Self {
         Self {
             permits: Arc::new(Semaphore::new(2)),
+            journal: None,
         }
     }
 }
 impl Pool {
+    pub fn with_journal(journal: Arc<dyn Journal>) -> Self {
+        Self {
+            journal: Some(journal),
+            ..Self::default()
+        }
+    }
+    /// Resume only a fully persisted preparation. Completion may already have
+    /// succeeded; exact GET+AEAD comparison remains mandatory in either case.
+    pub fn recover(
+        &self,
+        client: Arc<s3::Client>,
+        object: Object,
+        master: Zeroizing<[u8; 32]>,
+        saved: SavedUpload,
+        timeout: Duration,
+    ) -> Result<Transfer<Verified>> {
+        object.validate()?;
+        let end = deadline(timeout)?;
+        if saved.id.is_empty()
+            || saved.id.len() > 4096
+            || saved.etags.is_empty()
+            || saved.etags.len() > 10000
+            || saved
+                .etags
+                .iter()
+                .any(|v| v.is_empty() || v.len() > 256 || !v.is_ascii())
+            || saved.plaintext.bytes > object.maximum_archive
+            || saved.ciphertext.bytes > MAX_CIPHER
+            || saved.archive.data_bytes > object.maximum_data
+            || saved.archive.entries > 65536
+        {
+            return Err(Error::invalid("Invalid saved backup preparation"));
+        }
+        let permit = self
+            .permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Error::exhausted())?;
+        let (sender, result) = oneshot::channel();
+        tokio::spawn(async move {
+            let _permit = permit;
+            let value = finalize(&client, object, &master, saved, end).await;
+            let _ = sender.send(value);
+        });
+        Ok(Transfer { result })
+    }
     /// `upload` must already be saved in the durable job. Sources must remain
     /// stopped and fenced until wait completes, including after HTTP cancellation.
     pub fn upload(
@@ -102,9 +175,11 @@ impl Pool {
             .try_acquire_owned()
             .map_err(|_| Error::exhausted())?;
         let (sender, result) = oneshot::channel();
+        let journal = self.journal.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            let value = upload_inner(client, source, object, master, &upload, deadline).await;
+            let value =
+                upload_inner(client, source, object, master, &upload, deadline, journal).await;
             let _ = sender.send(value);
         });
         Ok(Transfer { result })
@@ -296,6 +371,7 @@ async fn upload_inner(
     master: Zeroizing<[u8; 32]>,
     upload: &str,
     end: Instant,
+    journal: Option<Arc<dyn Journal>>,
 ) -> Result<Verified> {
     let canceled = Arc::new(AtomicBool::new(false));
     let (writer, reader) = UnixStream::pair()?;
@@ -363,18 +439,52 @@ async fn upload_inner(
             return Err(error);
         }
     };
-    let completion = within(end, client.complete(&key, upload, &parts)).await;
+    if let Some(journal) = journal {
+        if let Err(error) = within(
+            end,
+            journal.prepared(object, upload, &parts, &plaintext, &ciphertext, &archive),
+        )
+        .await
+        {
+            let _ = tokio::time::timeout(Duration::from_secs(5), client.abort(&key, upload)).await;
+            return Err(error);
+        }
+    }
+    finalize(
+        &client,
+        object,
+        &master,
+        SavedUpload {
+            id: upload.to_owned(),
+            etags: parts,
+            plaintext,
+            ciphertext,
+            archive,
+        },
+        end,
+    )
+    .await
+}
+async fn finalize(
+    client: &s3::Client,
+    object: Object,
+    master: &[u8; 32],
+    saved: SavedUpload,
+    end: Instant,
+) -> Result<Verified> {
+    let key = object.key();
+    let completion = within(end, client.complete(&key, &saved.id, &saved.etags)).await;
     // Completion errors are ambiguous. Only exact GET+AEAD verification can
     // recover one; no overwrite or deletion of a possibly published object.
-    let verify = verify_remote(&client, object, &master, &ciphertext, end).await;
+    let verify = verify_remote(client, object, master, &saved.ciphertext, end).await;
     let verified = match verify {
-        Ok(value) if value == plaintext => value,
+        Ok(value) if value == saved.plaintext => value,
         _ => return Err(completion.err().unwrap_or_else(stopped)),
     };
     Ok(Verified {
         plaintext: verified,
-        ciphertext,
-        archive,
+        ciphertext: saved.ciphertext,
+        archive: saved.archive,
         off_host: client.off_host(),
     })
 }
@@ -454,11 +564,35 @@ async fn restore_inner(
     expected: Verified,
     end: Instant,
 ) -> Result<Verified> {
+    let written = target_pass(&client, target.clone(), object, &master, end, false).await?;
+    if !same_data(&written, &expected) {
+        return Err(stopped());
+    }
+    // Independently read the actual restored bytes, holes and metadata before
+    // returning a publishable result. fsync alone is not a content comparison.
+    let verified = target_pass(&client, target, object, &master, end, true).await?;
+    if !same_data(&verified, &expected) {
+        return Err(stopped());
+    }
+    Ok(verified)
+}
+fn same_data(a: &Verified, b: &Verified) -> bool {
+    a.plaintext == b.plaintext && a.ciphertext == b.ciphertext && a.archive == b.archive
+}
+async fn target_pass(
+    client: &s3::Client,
+    target: PathBuf,
+    object: Object,
+    master: &[u8; 32],
+    end: Instant,
+    verify: bool,
+) -> Result<Verified> {
     let canceled = Arc::new(AtomicBool::new(false));
     let (network_writer, encrypted_reader) = download_pipe(end, canceled.clone())?;
     let (plain_writer, plain_reader) = UnixStream::pair()?;
     let plain_writer = Pipe::new(plain_writer, end, canceled.clone())?;
     let mut plain_reader = Pipe::new(plain_reader, end, canceled.clone())?;
+    let master = Zeroizing::new(*master);
     let decrypt = tokio::task::spawn_blocking(move || {
         backup_crypto::open(
             encrypted_reader,
@@ -470,14 +604,23 @@ async fn restore_inner(
         )
     });
     let extract = tokio::task::spawn_blocking(move || {
-        archive::unpack(
-            &target,
-            &mut plain_reader,
-            object.volume,
-            object.maximum_data,
-        )
+        if verify {
+            archive::verify(
+                &target,
+                &mut plain_reader,
+                object.volume,
+                object.maximum_data,
+            )
+        } else {
+            archive::unpack(
+                &target,
+                &mut plain_reader,
+                object.volume,
+                object.maximum_data,
+            )
+        }
     });
-    let ciphertext = download(&client, &object.key(), network_writer, end).await;
+    let ciphertext = download(client, &object.key(), network_writer, end).await;
     if ciphertext.is_err() {
         canceled.store(true, Ordering::Release);
     }
@@ -492,12 +635,6 @@ async fn restore_inner(
         archive: archive?,
         off_host: client.off_host(),
     };
-    if actual.plaintext != expected.plaintext
-        || actual.ciphertext != expected.ciphertext
-        || actual.archive != expected.archive
-    {
-        return Err(stopped());
-    }
     Ok(actual)
 }
 
@@ -518,6 +655,120 @@ mod tests {
             maximum_data: 32 * 1024 * 1024,
             maximum_archive: 33 * 1024 * 1024,
         }
+    }
+    #[derive(Default)]
+    struct TestJournal {
+        saved: std::sync::Mutex<Option<SavedUpload>>,
+        reject: AtomicBool,
+    }
+    #[tonic::async_trait]
+    impl Journal for TestJournal {
+        async fn prepared(
+            &self,
+            _object: Object,
+            upload: &str,
+            etags: &[String],
+            plaintext: &backup_crypto::Summary,
+            ciphertext: &backup_crypto::Summary,
+            archive: &archive::Summary,
+        ) -> Result<()> {
+            *self.saved.lock().unwrap() = Some(SavedUpload {
+                id: upload.into(),
+                etags: etags.to_vec(),
+                plaintext: plaintext.clone(),
+                ciphertext: ciphertext.clone(),
+                archive: archive.clone(),
+            });
+            if self.reject.load(Ordering::SeqCst) {
+                return Err(Error::denied());
+            }
+            Ok(())
+        }
+    }
+    #[tokio::test]
+    async fn actual_s3_prepared_journal_blocks_completion_and_recovers_lost_success() {
+        let Some((client, root)) = s3::tests::fixture().await else {
+            return;
+        };
+        let client = Arc::new(client);
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("payload"), b"durable backup point").unwrap();
+        let journal = Arc::new(TestJournal::default());
+        let pool = Pool::with_journal(journal.clone());
+        let good = object();
+        let upload = client.initiate(&good.key()).await.unwrap();
+        let verified = pool
+            .upload(
+                client.clone(),
+                source.clone(),
+                good,
+                Zeroizing::new([16; 32]),
+                upload,
+                Duration::from_secs(30),
+            )
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        let saved = journal.saved.lock().unwrap().clone().unwrap();
+        // Complete now reports NoSuchUpload, as after a lost response or daemon
+        // restart. Exact readback recovers the already published object.
+        assert_eq!(
+            pool.recover(
+                client.clone(),
+                good,
+                Zeroizing::new([16; 32]),
+                saved.clone(),
+                Duration::from_secs(30)
+            )
+            .unwrap()
+            .wait()
+            .await
+            .unwrap(),
+            verified
+        );
+        let mut wrong = saved;
+        wrong.ciphertext.digest = format!("sha256:{}", "0".repeat(64));
+        assert!(pool
+            .recover(
+                client.clone(),
+                good,
+                Zeroizing::new([16; 32]),
+                wrong,
+                Duration::from_secs(30)
+            )
+            .unwrap()
+            .wait()
+            .await
+            .is_err());
+        journal.reject.store(true, Ordering::SeqCst);
+        let denied = Object {
+            object: Uuid::new_v4(),
+            ..good
+        };
+        let upload = client.initiate(&denied.key()).await.unwrap();
+        assert!(pool
+            .upload(
+                client.clone(),
+                source,
+                denied,
+                Zeroizing::new([16; 32]),
+                upload,
+                Duration::from_secs(30)
+            )
+            .unwrap()
+            .wait()
+            .await
+            .is_err());
+        assert!(client.get(&denied.key()).await.is_err());
+        assert!(client
+            .pending_uploads(&denied.key())
+            .await
+            .unwrap()
+            .0
+            .is_empty());
+        s3::tests::cleanup(&client, &[good.key()]).await;
     }
     #[tokio::test]
     async fn actual_s3_archive_encryption_readback_restore_and_failed_producer() {

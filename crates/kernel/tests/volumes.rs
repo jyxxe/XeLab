@@ -73,6 +73,13 @@ impl Fixture {
         }
         value["security"]["workload_ca_cert_file"] = json!(root.path().join("ca.crt"));
         value["security"]["workload_ca_key_file"] = json!(root.path().join("ca.key"));
+        value["security"]["master_key_file"] = json!(root.path().join("master.key"));
+        fs::write(root.path().join("master.key"), [31; 32]).unwrap();
+        fs::set_permissions(
+            root.path().join("master.key"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
         let ca_key = rcgen::KeyPair::generate().unwrap();
         let mut params = rcgen::CertificateParams::new(vec!["volume-test-ca".into()]).unwrap();
         params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -261,6 +268,11 @@ async fn actual_volume_operations_recover_enforce_capacity_and_fence_writers() {
     assert_eq!(unsafe { libc::geteuid() }, 0);
     assert_eq!(std::env::var("XELAB_XFS_TEST").unwrap(), "1");
     let f = Fixture::new(true).await.unwrap();
+    f.app.runtime.retain_daemon_host_lease().unwrap();
+    assert!(
+        f.app.runtime.clone().host_lease().is_err(),
+        "the daemon lease survives local runtime values until this isolated test process exits"
+    );
     let c = f.app.db.connect().await.unwrap();
     let created = f
         .api("createVolume", None, spec(), "create", None, None)
@@ -617,6 +629,23 @@ async fn actual_volume_operations_recover_enforce_capacity_and_fence_writers() {
     );
     // Stop removed the actual task and container; only now transfer the writer.
     assert!(!f.app.runtime.inventory().await.unwrap().contains(&i));
+    // Actual signed workload lifecycle, not a simulated Drain response. Keep
+    // cloud placement outside this owned-host component test.
+    f.app
+        .runtime
+        .ensure(
+            i,
+            d,
+            g,
+            &manifest,
+            &image,
+            &artifact.image_digest,
+            &limits,
+            &readonly,
+        )
+        .await
+        .unwrap();
+    backup_freeze_phase(&f, d, i, g, id, installation, &data).await;
     let mut dbc = f.app.db.connect().await.unwrap();
     let tx = dbc.transaction().await.unwrap();
     volumes::release_stopped(&tx, Some(i)).await.unwrap();
@@ -708,4 +737,198 @@ async fn probe(f: &Fixture, instance: Uuid, mode: &str) {
     assert!(String::from_utf8(out)
         .unwrap()
         .contains(&format!("volume-{mode}-verified")));
+}
+
+async fn backup_freeze_phase(
+    f: &Fixture,
+    deployment: Uuid,
+    instance: Uuid,
+    generation: i64,
+    volume: Uuid,
+    installation: Uuid,
+    data: &std::path::Path,
+) {
+    use xelab_kernel::{
+        backups, controller,
+        policy::Policy,
+        rpc::{self, plugin_lifecycle_client::PluginLifecycleClient},
+        tls,
+    };
+    let mut channel = None;
+    for _ in 0..40 {
+        if let Ok(value) = tls::channel(
+            &f.app.config,
+            instance,
+            generation,
+            &f.app.runtime.address(instance).unwrap(),
+        )
+        .await
+        {
+            channel = Some(value);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let mut client =
+        PluginLifecycleClient::new(channel.expect("real volume workload TLS listener"));
+    let described = client
+        .describe(rpc::DescribeRequest {
+            context: Some(controller::context(None)),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let mut c = f.app.db.connect().await.unwrap();
+    let installed = c
+        .query_one(
+            "SELECT image_digest,manifest_digest,manifest FROM installations WHERE id=$1",
+            &[&installation],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        described.manifest_digest,
+        installed.get::<_, String>("manifest_digest")
+    );
+    let config = b"{}".to_vec();
+    let initialized = client
+        .initialize(rpc::InitializeRequest {
+            context: Some(controller::context(None)),
+            deployment_id: deployment.to_string(),
+            instance_id: instance.to_string(),
+            generation: generation as u64,
+            config_json: config.clone(),
+            config_digest: contracts::digest(&config),
+            approval_revision: 3,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(initialized.initialized);
+    assert_eq!(initialized.observed_generation, generation as u64);
+    let health = client
+        .get_health(rpc::HealthRequest {
+            context: Some(controller::context(None)),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(health.alive && health.capabilities.iter().all(|v| v.ready));
+    let before = fs::read(data.join("sentinel")).unwrap();
+    let tx = c.transaction().await.unwrap();
+    let credential: Uuid = tx
+        .query_one(
+            "SELECT id FROM credentials WHERE owner_id=$1 AND kind='session' AND status='active'",
+            &[&f.owner],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    f.app
+        .auth
+        .authenticate(&tx, &f.token, "127.0.0.1".parse().unwrap(), Uuid::new_v4())
+        .await
+        .unwrap();
+    let paths = Policy::new(&tx, "127.0.0.1".parse().unwrap())
+        .credential(credential, 0)
+        .await
+        .unwrap();
+    let spec: Value = tx
+        .query_one(
+            "SELECT spec FROM deployments WHERE id=$1 FOR UPDATE",
+            &[&deployment],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    tx.execute(
+        "UPDATE instances SET phase='ready',health='healthy' WHERE id=$1",
+        &[&instance],
+    )
+    .await
+    .unwrap();
+    tx.execute(
+        "UPDATE deployments SET phase='ready',observed_generation=$2 WHERE id=$1",
+        &[&deployment, &generation],
+    )
+    .await
+    .unwrap();
+    let repository = Uuid::new_v4();
+    tx.execute("INSERT INTO backup_repositories(id,location,region,state) VALUES($1,'s3://test-only-freeze/node/','us-east-1','preparing')",&[&repository]).await.unwrap();
+    let backup = Uuid::new_v4();
+    let operation =
+        xelab_kernel::db::operation(&tx, f.owner, "createBackup", Some(backup.to_string()))
+            .await
+            .unwrap();
+    tx.execute("INSERT INTO backups(id,deployment_id,created_by,volume_ids,state,off_host,created_at,updated_at) VALUES($1,$2,$3,$4,'creating',false,now(),now())",&[&backup,&deployment,&f.owner,&json!([volume])]).await.unwrap();
+    let metadata = json!({"id":installation,"image_digest":installed.get::<_,String>("image_digest"),"manifest_digest":installed.get::<_,String>("manifest_digest"),"manifest":installed.get::<_,Value>("manifest")});
+    tx.execute("INSERT INTO storage_recovery_jobs(operation_id,kind,backup_id,deployment_id,repository_id,credential_id,subject_id,peer,authority,state,original_spec,installation_digest,installation_metadata,instances,manifest_object_id,master_key_id) VALUES($1,'backup',$2,$3,$4,$5,$6,'127.0.0.1',$7,'freezing',$8,$9,$10,$11,$12,$13)",&[&operation,&backup,&deployment,&repository,&credential,&f.owner,&serde_json::to_value(paths).unwrap(),&spec,&installed.get::<_,String>("image_digest"),&metadata,&json!([{"id":instance,"generation":generation}]),&Uuid::new_v4(),&contracts::digest(&[31;32])]).await.unwrap();
+    tx.execute(
+        "INSERT INTO deployment_storage_holds(deployment_id,operation_id) VALUES($1,$2)",
+        &[&deployment, &operation],
+    )
+    .await
+    .unwrap();
+    tx.execute(
+        "INSERT INTO volume_holds(volume_id,operation_id,kind) VALUES($1,$2,'backup')",
+        &[&volume, &operation],
+    )
+    .await
+    .unwrap();
+    let v = tx
+        .query_one(
+            "SELECT spec,capacity_bytes FROM volumes WHERE id=$1",
+            &[&volume],
+        )
+        .await
+        .unwrap();
+    tx.execute("INSERT INTO backup_job_volumes(operation_id,source_volume_id,object_id,state,volume_spec,capacity_bytes) VALUES($1,$2,$3,'pending',$4,$5)",&[&operation,&volume,&Uuid::new_v4(),&v.get::<_,Value>(0),&v.get::<_,i64>(1)]).await.unwrap();
+    let mut disabled = spec;
+    disabled["enabled"] = json!(false);
+    tx.execute(
+        "UPDATE deployments SET spec=$2,phase='draining' WHERE id=$1",
+        &[&deployment, &disabled],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let worker = tokio::spawn(backups::run(f.app.clone()));
+    let mut terminal = false;
+    for _ in 0..120 {
+        let row = c
+            .query_one(
+                "SELECT state,stopped_at FROM storage_recovery_jobs WHERE operation_id=$1",
+                &[&operation],
+            )
+            .await
+            .unwrap();
+        if row.get::<_, String>("state") == "failed" {
+            assert!(row.get::<_,Option<chrono::DateTime<chrono::Utc>>>("stopped_at").is_some(),"signed Drain/stop/sync phase must precede the intentionally unconfigured off-host backend");
+            terminal = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    worker.abort();
+    let _ = worker.await;
+    assert!(terminal, "backup freeze phase did not settle");
+    assert!(!f.app.runtime.inventory().await.unwrap().contains(&instance));
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM volume_attachments WHERE instance_id=$1",
+            &[&instance]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        0
+    );
+    assert_eq!(fs::read(data.join("sentinel")).unwrap(), before);
+    let b = c
+        .query_one("SELECT state,off_host FROM backups WHERE id=$1", &[&backup])
+        .await
+        .unwrap();
+    assert_eq!(b.get::<_, String>(0), "failed");
+    assert!(!b.get::<_, bool>(1));
+    println!("signed volume Drain, stop proof, sync and durable backup intent verified; off-host backend intentionally unavailable");
 }

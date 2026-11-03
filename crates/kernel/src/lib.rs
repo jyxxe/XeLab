@@ -2,6 +2,8 @@ pub mod admission;
 pub mod api;
 pub mod artifact;
 pub mod auth;
+pub mod backup_repository;
+pub mod backups;
 pub mod blobs;
 pub mod broker;
 pub mod config;

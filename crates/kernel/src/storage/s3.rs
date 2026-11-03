@@ -29,6 +29,7 @@ impl Drop for CredentialFile {
         }
     }
 }
+#[derive(Clone)]
 pub struct Credentials {
     access: String,
     secret: Zeroizing<String>,
@@ -281,6 +282,22 @@ pub struct Client {
     http: reqwest::Client,
 }
 impl Client {
+    pub fn scoped(&self, prefix: &str) -> Result<Self> {
+        self.location.check_key(prefix)?;
+        let mut location = self.location.clone();
+        location.prefix = format!("{}{prefix}/", location.prefix);
+        if location.prefix.len() > 512 {
+            return Err(Error::invalid("Managed S3 prefix is too long"));
+        }
+        Ok(Self {
+            location,
+            credentials: self.credentials.clone(),
+            http: self.http.clone(),
+        })
+    }
+    pub fn reference(&self, key: &str) -> Result<String> {
+        self.location.reference(key)
+    }
     pub fn new(location: Location, credentials: Credentials) -> Result<Self> {
         let mut http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -426,11 +443,19 @@ impl Client {
         Ok(())
     }
     pub async fn get(&self, key: &str) -> Result<reqwest::Response> {
+        self.get_optional(key)
+            .await?
+            .ok_or_else(|| Error::unavailable("Backup object is missing"))
+    }
+    pub async fn get_optional(&self, key: &str) -> Result<Option<reqwest::Response>> {
         let response = self.send("GET", Some(key), &[], Vec::new(), &[]).await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
         if !response.status().is_success() {
             return Err(Error::unavailable("Backup object read failed"));
         }
-        Ok(response)
+        Ok(Some(response))
     }
     pub async fn initiate(&self, key: &str) -> Result<String> {
         #[derive(Deserialize)]
@@ -460,6 +485,64 @@ impl Client {
             return Err(Error::unavailable("Invalid multipart identity"));
         }
         Ok(value.id)
+    }
+    /// One bounded reconciliation page, scoped to exactly the caller's durable
+    /// object key. Prefix neighbours are never returned for abortion.
+    pub async fn pending_uploads(&self, key: &str) -> Result<(Vec<String>, bool)> {
+        self.location.check_key(key)?;
+        let full = format!("{}{key}", self.location.prefix);
+        let response = self
+            .send(
+                "GET",
+                None,
+                &[
+                    ("uploads".into(), String::new()),
+                    ("prefix".into(), full.clone()),
+                    ("max-uploads".into(), "16".into()),
+                ],
+                Vec::new(),
+                &[],
+            )
+            .await?;
+        if !response.status().is_success() {
+            return Err(Error::unavailable(
+                "Backup multipart inventory is unavailable",
+            ));
+        }
+        #[derive(Deserialize)]
+        struct Upload {
+            #[serde(rename = "Key")]
+            key: String,
+            #[serde(rename = "UploadId")]
+            id: String,
+        }
+        #[derive(Deserialize)]
+        struct Listed {
+            #[serde(rename = "Upload", default)]
+            uploads: Vec<Upload>,
+            #[serde(rename = "IsTruncated")]
+            truncated: bool,
+        }
+        let bytes = bounded(response, CONTROL_LIMIT).await?;
+        let listed: Listed = quick_xml::de::from_reader(bytes.as_slice())
+            .map_err(|_| Error::unavailable("Invalid multipart inventory"))?;
+        if listed.uploads.len() > 16 {
+            return Err(Error::exhausted());
+        }
+        let mut ids = Vec::new();
+        for upload in listed.uploads {
+            if upload.key != full {
+                continue;
+            }
+            if upload.id.is_empty()
+                || upload.id.len() > 4096
+                || upload.id.bytes().any(|b| b.is_ascii_control())
+            {
+                return Err(Error::unavailable("Invalid multipart identity"));
+            }
+            ids.push(upload.id);
+        }
+        Ok((ids, listed.truncated))
     }
     pub async fn part(
         &self,
@@ -584,7 +667,7 @@ pub async fn bounded(response: reqwest::Response, maximum: usize) -> Result<Vec<
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use uuid::Uuid;
@@ -610,7 +693,7 @@ pub(super) mod tests {
         client.create_bucket().await.unwrap();
         Some((client, root))
     }
-    pub async fn cleanup(client: &Client, keys: &[String]) {
+    pub async fn remove(client: &Client, keys: &[String]) {
         for key in keys {
             assert!(client
                 .send("DELETE", Some(key), &[], Vec::new(), &[])
@@ -619,6 +702,9 @@ pub(super) mod tests {
                 .status()
                 .is_success());
         }
+    }
+    pub async fn cleanup(client: &Client, keys: &[String]) {
+        remove(client, keys).await;
         assert!(client
             .send("DELETE", None, &[], Vec::new(), &[])
             .await
@@ -811,12 +897,28 @@ pub(super) mod tests {
         );
         let pending_key = format!("{backup}/{}.sealed", Uuid::new_v4());
         let upload = client.initiate(&pending_key).await.unwrap();
+        let neighbour = format!("{pending_key}.other");
+        let neighbour_upload = client.initiate(&neighbour).await.unwrap();
+        let listed = client.pending_uploads(&pending_key).await.unwrap();
+        assert!(!listed.1);
+        assert_eq!(listed.0, vec![upload.clone()]);
         client
             .part(&pending_key, &upload, 1, vec![0; 5 * 1024 * 1024])
             .await
             .unwrap();
         client.abort(&pending_key, &upload).await.unwrap();
         client.abort(&pending_key, &upload).await.unwrap();
+        assert!(client
+            .pending_uploads(&pending_key)
+            .await
+            .unwrap()
+            .0
+            .is_empty());
+        assert_eq!(
+            client.pending_uploads(&neighbour).await.unwrap().0,
+            vec![neighbour_upload.clone()]
+        );
+        client.abort(&neighbour, &neighbour_upload).await.unwrap();
         assert!(client.get(&pending_key).await.is_err());
         for key in [&key, &large_key] {
             assert!(client

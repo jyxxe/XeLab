@@ -16,7 +16,8 @@ const HEADER: usize = 88;
 const CHUNK: usize = 65536;
 const FINAL: u32 = 1 << 31;
 const MAX_RECORDS: u64 = u32::MAX as u64;
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Summary {
     pub bytes: u64,
     pub digest: String,
