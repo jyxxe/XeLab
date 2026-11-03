@@ -29,6 +29,12 @@ use zeroize::Zeroize;
 
 const MAX_INSTANCES: usize = 512;
 const MAX_VOLUMES: i64 = 16;
+
+#[path = "offline_workspace.rs"]
+pub mod workspace;
+
+#[path = "offline_backup.rs"]
+pub mod backup;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstallationImage {

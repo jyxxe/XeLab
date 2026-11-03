@@ -1093,9 +1093,11 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         !app.runtime.inventory().await.unwrap().is_empty(),
         "a rejected maintenance request must leave the live source alone"
     );
-    let offline = xelab_kernel::offline::Session::open(offline_config, true)
-        .await
-        .unwrap();
+    let offline = Arc::new(
+        xelab_kernel::offline::Session::open(offline_config, true)
+            .await
+            .unwrap(),
+    );
     assert!(
         db.leader().await.is_err(),
         "offline session owns the database"
@@ -1120,6 +1122,149 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     assert_eq!(summary.bytes, metadata.len() as u64);
     assert!(summary.rows > 0);
     println!("Offline source: real signed OCI Drain/stop, exclusive leases, image-index verification and consistent metadata export passed (not off-host acceptance)");
+    drop(frozen);
+    // Exercise the complete capture driver against the CI's real local S3
+    // fixture. Its evidence remains false; no production endpoint override.
+    use xelab_kernel::{
+        backup_repository::Repository,
+        storage::{
+            backup_transfer::{self, raw},
+            metadata_snapshot, s3,
+        },
+    };
+    let endpoint =
+        std::env::var("XELAB_TEST_S3_ENDPOINT").expect("real isolated test object store");
+    let bucket = format!("xelab-platform-capture-{}", Uuid::new_v4().simple());
+    let location = s3::Location::aws(&format!("s3://{bucket}/source/"), "us-east-1")
+        .unwrap()
+        .compatible(&endpoint)
+        .unwrap();
+    let credentials = root.join("offline-s3.json");
+    fs::write(
+        &credentials,
+        b"{\"access_key_id\":\"xelab-test\",\"secret_access_key\":\"test-only-backup-password\"}",
+    )
+    .unwrap();
+    fs::set_permissions(&credentials, fs::Permissions::from_mode(0o600)).unwrap();
+    let client =
+        Arc::new(s3::Client::new(location, s3::Credentials::load(&credentials).unwrap()).unwrap());
+    client.create_bucket().await.unwrap();
+    let repo = Repository {
+        id: Uuid::new_v4(),
+        objects: client.clone(),
+    };
+    let receipt = xelab_kernel::offline::backup::capture(
+        offline.clone(),
+        repo,
+        zeroize::Zeroizing::new([42; 32]),
+    )
+    .await
+    .unwrap();
+    assert!(!receipt.off_host);
+    let repo = Repository {
+        id: receipt.repository_id,
+        objects: client.clone(),
+    };
+    let value = repo
+        .read_manifest(
+            receipt.backup_id,
+            receipt.manifest_object,
+            &[42; 32],
+            &receipt.manifest_digest,
+        )
+        .await
+        .unwrap();
+    let manifest: xelab_kernel::offline::backup::Manifest = serde_json::from_value(value).unwrap();
+    assert_eq!(manifest.metadata_summary.schema_version, 9);
+    assert!(manifest.metadata_summary.rows > 0);
+    assert!(!manifest.installations.is_empty());
+    assert!(manifest.images.is_some());
+    assert!(!manifest.off_host);
+    // Verify the actual encrypted native stream again on a fresh private file.
+    let private = tempfile::NamedTempFile::new_in(root).unwrap();
+    let target = raw::Target::new(private.reopen().unwrap()).unwrap();
+    let pool = backup_transfer::Pool::default().raw(None);
+    let restored = pool
+        .download_file(
+            client.clone(),
+            target,
+            raw::Object {
+                backup: receipt.backup_id,
+                object: manifest.metadata.object,
+                maximum_bytes: manifest.metadata.plaintext.bytes,
+            },
+            zeroize::Zeroizing::new([42; 32]),
+            raw::Expected {
+                plaintext: manifest.metadata.plaintext.clone(),
+                ciphertext: manifest.metadata.ciphertext.clone(),
+            },
+            Duration::from_secs(300),
+        )
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    assert!(!restored.verified.off_host);
+    admin
+        .batch_execute("CREATE DATABASE xelab_oci_metadata_readback")
+        .await
+        .unwrap();
+    let recovered = Db::new(format!("{base} dbname=xelab_oci_metadata_readback")).unwrap();
+    recovered.migrate().await.unwrap();
+    let mut restored_client = recovered.connect().await.unwrap();
+    let recovery = Uuid::new_v4();
+    restored_client.execute("INSERT INTO platform_recovery_state(recovery_id,backup_id,phase) VALUES($1,$2,'importing')",&[&recovery,&receipt.backup_id]).await.unwrap();
+    let mut metadata_file = tokio::fs::File::from_std(restored.file);
+    metadata_snapshot::import(
+        &mut restored_client,
+        &mut metadata_file,
+        &manifest.metadata_summary,
+        recovery,
+        owner,
+        "new offline recovery acceptance password",
+    )
+    .await
+    .unwrap();
+    assert!(
+        recovered.check().await.is_err(),
+        "physical recovery is still incomplete; metadata import must not open the gate"
+    );
+    let rows = restored_client
+        .query("SELECT id,size_bytes,digest FROM blobs ORDER BY id", &[])
+        .await
+        .unwrap();
+    assert_eq!(rows.len() as u64, manifest.blob_count);
+    for row in rows {
+        let id: Uuid = row.get("id");
+        let bytes: i64 = row.get("size_bytes");
+        let digest: String = row.get("digest");
+        let private = tempfile::NamedTempFile::new_in(root).unwrap();
+        let restored = pool
+            .download_file(
+                client.clone(),
+                raw::Target::new(private.reopen().unwrap()).unwrap(),
+                raw::Object {
+                    backup: receipt.backup_id,
+                    object: id,
+                    maximum_bytes: bytes as u64,
+                },
+                zeroize::Zeroizing::new([42; 32]),
+                raw::Expected {
+                    plaintext: xelab_kernel::storage::backup_crypto::Summary {
+                        bytes: bytes as u64,
+                        digest,
+                    },
+                    ciphertext: None,
+                },
+                Duration::from_secs(300),
+            )
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert!(!restored.verified.off_host);
+    }
+    println!("Platform source capture: native metadata, actual OCI and exact Blob objects uploaded and remotely verified; compatible fixture off_host=false (not whole-host restore acceptance)");
 }
 
 fn counter(path: &std::path::Path, name: &str) -> u64 {
