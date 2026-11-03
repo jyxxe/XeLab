@@ -75,9 +75,12 @@ pub async fn invoke(
         return Err(Error::conflict("Capability digest differs"));
     }
     let definition: Value = cap.get("spec");
-    if definition["side_effect"] != "none" {
+    if !matches!(
+        definition["side_effect"].as_str(),
+        Some("none" | "idempotent")
+    ) {
         return Err(Error::invalid(
-            "Side-effecting capabilities are not enabled in M1",
+            "This call profile requires supported idempotent semantics",
         ));
     }
     let bytes = serde_json::to_vec(&input["input"])?;
@@ -96,6 +99,26 @@ pub async fn invoke(
     let instance: Uuid = row.get("id");
     let generation: i64 = row.get("generation");
     let manifest: Value = row.get("manifest");
+    if definition["side_effect"] == "idempotent" {
+        crate::artifact::validate_runtime_profile(&manifest)?;
+        if manifest["data_schema_version"] == "none"
+            || !manifest["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|cap| {
+                    cap["contract"] == *contract
+                        && cap["side_effect"] == "idempotent"
+                        && ["input_schema", "output_schema", "stream_item_schema"]
+                            .iter()
+                            .all(|field| cap[*field] == definition[*field])
+                })
+        {
+            return Err(Error::invalid(
+                "Idempotent data writes require the verified versioned plugin profile",
+            ));
+        }
+    }
     if manifest["business_entry"] == "skill_required" {
         return Err(Error::denied());
     }
@@ -285,3 +308,7 @@ pub async fn invoke(
     tx.commit().await?;
     result.map_err(|e| e.with_resource(call))
 }
+
+#[cfg(test)]
+#[path = "broker_schema_tests.rs"]
+mod schema_tests;

@@ -30,7 +30,7 @@ pub(crate) async fn installation(
 ) -> Result<Value> {
     let row=c.query_opt("SELECT i.* FROM installations i JOIN publishers p ON p.id=i.publisher_id WHERE i.id=$1 AND i.state='installed' AND p.status='trusted' FOR SHARE OF i,p",&[&installation]).await?.ok_or_else(||Error::conflict("Upgrade installation is not currently trusted"))?;
     let value = metadata(&row);
-    artifact::validate_profile(&value["manifest"])?;
+    artifact::validate_runtime_profile(&value["manifest"])?;
     if ["publisher_id", "plugin_id", "version"]
         .iter()
         .any(|field| value[*field] != value["manifest"][*field])

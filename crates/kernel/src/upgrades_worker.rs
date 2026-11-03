@@ -164,7 +164,7 @@ pub(crate) async fn artifact(app: &App, target: &Value) -> Result<Artifact> {
             "Actual upgrade artifact differs from admitted target",
         ));
     }
-    artifact::validate_profile(&manifest)?;
+    artifact::validate_runtime_profile(&manifest)?;
     Ok(Artifact {
         image: image.to_owned(),
         image_digest: digest.to_owned(),
