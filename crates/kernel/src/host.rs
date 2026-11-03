@@ -71,6 +71,8 @@ fn parse_identity(uri: &str) -> std::result::Result<Workload, Status> {
 pub struct Host {
     pub app: Arc<App>,
     leases: Arc<tokio::sync::Semaphore>,
+    blobs: Arc<tokio::sync::Semaphore>,
+    uploads: Arc<tokio::sync::Semaphore>,
 }
 #[tonic::async_trait]
 impl HostService for Host {
@@ -216,19 +218,51 @@ impl HostService for Host {
     }
     async fn read_blob(
         &self,
-        _: Request<rpc::ReadBlobRequest>,
+        request: Request<rpc::ReadBlobRequest>,
     ) -> std::result::Result<Response<Self::ReadBlobStream>, Status> {
-        Err(Status::unimplemented(
-            "Method is unavailable in this kernel profile",
-        ))
+        let deadline = crate::host_blobs::transport_deadline(&request)
+            .map_err(crate::host_blobs::rpc_error)?;
+        let identity = workload(&request).map_err(crate::host_blobs::rpc_error)?;
+        let permit = self.blobs.clone().try_acquire_owned().map_err(|_| {
+            crate::host_blobs::rpc_error(Status::resource_exhausted(
+                "Blob read capacity is unavailable",
+            ))
+        })?;
+        let workload = crate::host_blobs::Workload {
+            instance: identity.instance,
+            generation: identity.generation,
+        };
+        crate::host_blobs::read(
+            self.app.clone(),
+            workload,
+            request.into_inner(),
+            permit,
+            deadline,
+        )
+        .await
+        .map(Response::new)
+        .map_err(crate::host_blobs::rpc_error)
     }
     async fn write_blob(
         &self,
-        _: Request<tonic::Streaming<rpc::WriteBlobRequest>>,
+        request: Request<tonic::Streaming<rpc::WriteBlobRequest>>,
     ) -> std::result::Result<Response<rpc::BlobReference>, Status> {
-        Err(Status::unimplemented(
-            "Method is unavailable in this kernel profile",
-        ))
+        let deadline = crate::host_blobs::transport_deadline(&request)
+            .map_err(crate::host_blobs::rpc_error)?;
+        let identity = workload(&request).map_err(crate::host_blobs::rpc_error)?;
+        let workload = crate::host_blobs::Workload {
+            instance: identity.instance,
+            generation: identity.generation,
+        };
+        let permit = self.uploads.clone().try_acquire_owned().map_err(|_| {
+            crate::host_blobs::rpc_error(Status::resource_exhausted(
+                "Blob worker capacity is unavailable",
+            ))
+        })?;
+        crate::host_blobs::write(&self.app, workload, request.into_inner(), permit, deadline)
+            .await
+            .map(Response::new)
+            .map_err(crate::host_blobs::rpc_error)
     }
 }
 
@@ -291,13 +325,15 @@ pub async fn serve(app: Arc<App>) -> Result<()> {
     let service = HostServiceServer::new(Host {
         app: app.clone(),
         leases: Arc::new(tokio::sync::Semaphore::new(32)),
+        blobs: Arc::new(tokio::sync::Semaphore::new(16)),
+        uploads: Arc::new(tokio::sync::Semaphore::new(4)),
     })
-    .max_decoding_message_size(65536)
+    .max_decoding_message_size(270336)
     .max_encoding_message_size(131072);
     let stop = app.clone();
     tonic::transport::Server::builder()
         .concurrency_limit_per_connection(16)
-        .timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(300))
         .add_service(service)
         .serve_with_incoming_shutdown(incoming, async move {
             while !stop.shutdown.load(Ordering::SeqCst) && !stop.leader.is_closed() {

@@ -13,13 +13,15 @@
 | 执行 | containerd/runc 真容器；cgroups v2 CPU/内存/PID；只读根目录、受限 tmpfs、无 Linux capabilities、隔离网络、工作负载 mTLS | 外网/代理、HostService 其他方法、GPU、微插件/MPR、Extension Plugin |
 | 调用 | 普通插件直接、非流式、`side_effect=none` 调用；固定契约/可选固定部署；有界并发；树配额及密钥链累计调用上限；幂等记录；未知结果查询；异常调用停止确认后回收 | 等待队列、流、非纯调用、调用取消、Skill、Workflow、Batch、Schedule、Event |
 | 持久卷 | 独立 XFS 硬配额、容量预留、恢复 worker、实际计数、单写者 fence、OCI 挂载 | 多副本应用行为、数据 Schema 迁移、全平台恢复 |
-| Blob | 不可变二进制上传/下载、摘要/长度校验、pin/TTL、可恢复清理、HTTPS CLI | HostService Blob RPC、全平台备份恢复 |
+| Blob | 不可变二进制上传/下载、摘要/长度校验、pin/TTL、可恢复清理、HTTPS CLI | 全平台备份恢复 |
 | Secret | AES-256-GCM 托管、元数据 API、轮换/撤销、部署绑定、工作负载 mTLS 租约 | 主密钥轮换、备份恢复 |
 | 运维 | HTTPS 管理 API、通用 CLI、探针、结构化错误日志、数据库审计、故障恢复测试 | WebUI、UDS 控制通道、指标/Tracing 导出、自动备份、数据与 AI 平台 |
 
 只接受单副本、无依赖、无宿主权限申请、无 UI/路由、无扩展点的普通插件；允许受控持久卷，但 data_schema_version 仍须为 none，数据迁移单独交付。业务 Schema 必须自包含；本版拒绝 `$ref/$id` 等引用，避免联网或读取宿主文件。并发池满时立即拒绝，不静默排队。未实现的管理操作返回明确错误，不返回模拟成功。
 
 配置仍使用现有 `kernel.toml`；`unix_socket`、备份 URI 和 UI Gateway 在此子集中不提供对应服务。不要仅因配置被接受而认为这些能力已经启用。
+
+工作负载 Blob 代理、显式批准与固定输入白名单见 [M2 Host Blob](../../docs/implementation/m2-host-blobs.md)。
 
 ## 构建与主机要求
 
@@ -47,7 +49,7 @@ cargo fmt --all -- --check
 
 ```bash
 xelabctl validate-config --config /etc/xelab/kernel.toml
-xelabctl migrate --config /etc/xelab/kernel.toml --target 5
+xelabctl migrate --config /etc/xelab/kernel.toml --target 6
 xelabctl bootstrap --config /etc/xelab/kernel.toml --owner-name admin
 xelabd --config /etc/xelab/kernel.toml
 ```
@@ -153,7 +155,7 @@ CI 另在一次性 Linux 主机运行 `tests/oci.rs`：真实 containerd + Rust/
 - 自授 Grant 证明签发权限时，忽略同账户其他非引导自授绑定，只使用独立来源（外部 Grant、父级继承或初始 Owner）。这些自授绑定仍在最外层保留权限/来源记录；撤销独立来源后不能互相维持权限。此优化针对同账户自授，其他来源图仍受现有深度/路径边界限制。
 - 控制器启用与停用清理分别保存 `(created_at,id)` 游标与上界，每轮各最多 16 项，并在项间检查 250 ms 时间片。Probe 按实例代次复用、分批回收；已清理禁用记录不反复协调。完整行为、回归与单项延迟限制见 [Controller 稳定化](../../docs/implementation/m1-acceptance.md#controller-稳定化pr-4-遗留项)。
 
-升级前备份并停机，执行上面的 `--target 5` 后再启动。旧二进制拒绝 v5 元数据，不能直接回退。v1 已有的凭证/账户派生调用继续计入预算；旧版本未记录的实际 Grant 来源无法事后精确重建，因此已有受此漏洞影响的限次来源 Key 应在升级时撤销后重新签发，不把旧账本当成完整历史计费证据。
+升级前备份并停机，执行上面的 `--target 6` 后再启动。旧二进制拒绝 v6 元数据，不能直接回退。v1 已有的凭证/账户派生调用继续计入预算；旧版本未记录的实际 Grant 来源无法事后精确重建，因此已有受此漏洞影响的限次来源 Key 应在升级时撤销后重新签发，不把旧账本当成完整历史计费证据。
 
 ## M2 存储后端预检
 

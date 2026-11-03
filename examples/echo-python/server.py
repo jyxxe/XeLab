@@ -14,6 +14,8 @@ from xelab.v1 import lifecycle_pb2 as life
 from xelab.v1 import lifecycle_pb2_grpc as lifecycle
 from xelab.v1 import capability_pb2 as cap
 from xelab.v1 import capability_pb2_grpc as capability
+from xelab.v1 import host_pb2 as host
+from xelab.v1 import host_pb2_grpc as host_service
 
 
 def digest(raw):
@@ -91,13 +93,38 @@ class Echo(lifecycle.PluginLifecycleServicer, capability.CapabilityServiceServic
                         result[key] = value
                     return result
                 value = json.loads(request.input_json, object_pairs_hook=unique)
-                if (not isinstance(value, dict) or set(value) != {"message"}
-                        or not isinstance(value["message"], str) or len(value["message"]) > 1024):
+                blob_contract = self.contract.name == "org.xelab.echo-blobs"
+                allowed = {"message", "blob_id", "export"} if blob_contract else {"message"}
+                if (not isinstance(value, dict) or not set(value).issubset(allowed)
+                        or "message" not in value or not isinstance(value["message"], str) or len(value["message"]) > 1024):
                     raise ValueError("invalid echo input")
             except (ValueError, UnicodeDecodeError):
                 context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Input does not match contract")
-            output = json.dumps({"message": value["message"]}, ensure_ascii=False,
-                                separators=(",", ":")).encode()
+            result = {"message": value["message"]}
+            if blob_contract and ("blob_id" in value or value.get("export")):
+                identity = pathlib.Path("/run/xelab/identity")
+                credentials = grpc.ssl_channel_credentials((identity / "ca.crt").read_bytes(), (identity / "tls.key").read_bytes(), (identity / "tls.crt").read_bytes())
+                endpoint = os.environ["XELAB_HOST_RPC_ENDPOINT"].removeprefix("https://")
+                with grpc.secure_channel(endpoint, credentials, options=[("grpc.ssl_target_name_override", "kernel.xelab.local")]) as channel:
+                    proxy = host_service.HostServiceStub(channel)
+                    if "blob_id" in value:
+                        chunks = proxy.ReadBlob(host.ReadBlobRequest(context=request.context, blob_id=value["blob_id"]), timeout=5)
+                        sha = hashlib.sha256()
+                        offset = 0
+                        for chunk in chunks:
+                            if chunk.offset != offset or len(chunk.data) > 262144:
+                                context.abort(grpc.StatusCode.DATA_LOSS, "Invalid Blob stream")
+                            sha.update(chunk.data)
+                            offset += len(chunk.data)
+                        result["source_digest"] = "sha256:" + sha.hexdigest()
+                    if value.get("export"):
+                        data = value["message"].encode()
+                        frames = [host.WriteBlobRequest(header=host.WriteBlobHeader(context=request.context, content_type="text/plain", size_bytes=len(data), digest=digest(data)))]
+                        if data:
+                            frames.append(host.WriteBlobRequest(data=host.BlobChunk(offset=0, data=data)))
+                        reference = proxy.WriteBlob(iter(frames), timeout=5)
+                        result["blob"] = {"blob_id": reference.blob_id, "size_bytes": reference.size_bytes, "digest": reference.digest}
+            output = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode()
             response = cap.InvokeResponse(call_id=request.call_id, output_json=output,
                                           output_digest=digest(output))
             if len(self.results) >= 1024:

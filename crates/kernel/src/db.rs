@@ -12,12 +12,14 @@ const CALL_CHARGES: &str = include_str!("../migrations/0002_call_credential_char
 const SECRET_AUTHORITY: &str = include_str!("../migrations/0003_secret_authority.sql");
 const BLOB_DELETIONS: &str = include_str!("../migrations/0004_blob_deletions.sql");
 const VOLUME_SERVICE: &str = include_str!("../migrations/0005_volume_service.sql");
-const MIGRATIONS: [&str; 5] = [
+const HOST_BLOB: &str = include_str!("../migrations/0006_host_blob.sql");
+const MIGRATIONS: [&str; 6] = [
     BASELINE,
     CALL_CHARGES,
     SECRET_AUTHORITY,
     BLOB_DELETIONS,
     VOLUME_SERVICE,
+    HOST_BLOB,
 ];
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 pub const LEADER_LOCK: i64 = 0x58454c41424d3101;

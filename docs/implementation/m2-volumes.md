@@ -37,7 +37,7 @@ DeploymentSpec.volume_ids 必须与签名清单的卷别名一一对应，scope�
 内部 schema 版本增加至 5，新增 0005_volume_service.sql，保留原始规格 SQL 及 v1～v4 校验和。升级须先停机并备份元数据及存储身份，再执行：
 
 ```sh
-xelabctl migrate --config /etc/xelab/kernel.toml --target 5
+xelabctl migrate --config /etc/xelab/kernel.toml --target 6
 ```
 
 不自动迁移、不降级。旧二进制拒绝新内部版本。M1 无卷部署不需要预先配置 XFS 挂载。
