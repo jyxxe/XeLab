@@ -79,7 +79,7 @@ CLI 流式读取普通文件并生成长度/摘要；二进制上传不接受未
 升级前停机备份 PostgreSQL、独立保护主密钥及 Blob 内容，执行：
 
 ```sh
-xelabctl migrate --config /etc/xelab/kernel.toml --target 4
+xelabctl migrate --config /etc/xelab/kernel.toml --target 5
 ```
 
 v4 添加内部删除意图/存储根注册表、过期/检查点索引和非负 pin 约束，原始 metadata.sql

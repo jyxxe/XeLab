@@ -43,6 +43,29 @@ fn enforced_projects_survive_reopen_isolate_usage_and_fail_closed() {
         ProjectStore::open(&root).is_err(),
         "exclusive backend ownership"
     );
+    assert!(
+        store.verify_mount_root().is_err(),
+        "a second host mount aliases this project namespace"
+    );
+    assert!(std::process::Command::new("umount")
+        .arg(&readonly)
+        .status()
+        .unwrap()
+        .success());
+    store.verify_mount_root().unwrap();
+    let namespace = Uuid::new_v4();
+    store
+        .namespace_identity(status.filesystem_uuid, namespace, true)
+        .unwrap();
+    store
+        .namespace_identity(status.filesystem_uuid, namespace, false)
+        .unwrap();
+    assert!(store
+        .namespace_identity(Uuid::new_v4(), namespace, false)
+        .is_err());
+    assert!(store
+        .namespace_identity(status.filesystem_uuid, Uuid::new_v4(), true)
+        .is_err());
     let a = Uuid::new_v4();
     let b = Uuid::new_v4();
     let limits = Limits {
@@ -157,6 +180,92 @@ fn enforced_projects_survive_reopen_isolate_usage_and_fail_closed() {
     assert!(check(&root).is_err());
     assert!(store.inspect(b, 1002).is_err());
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    // Persisted creating intents recover on either side of quota/attribute
+    // assignment. The service must supply these identities before publication.
+    let recovered = Uuid::new_v4();
+    let recovered_root = root.join(recovered.to_string());
+    fs::create_dir(&recovered_root).unwrap();
+    fs::set_permissions(&recovered_root, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(
+        store
+            .recover_create(recovered, 1006, limits)
+            .unwrap()
+            .limits,
+        limits
+    );
+    store.prepare_data(recovered, 1006).unwrap();
+    let data_path = store.data_path(recovered, 1006).unwrap();
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!(fs::metadata(&recovered_root).unwrap().uid(), 0);
+    assert_eq!(fs::metadata(&data_path).unwrap().uid(), 65532);
+    fs::write(data_path.join("retained"), b"persistent bytes").unwrap();
+    assert_eq!(
+        store
+            .recover_create(recovered, 1006, limits)
+            .unwrap()
+            .limits,
+        limits
+    );
+    assert_eq!(
+        fs::read(data_path.join("retained")).unwrap(),
+        b"persistent bytes"
+    );
+    assert!(store.recover_create(recovered, 1006, larger).is_err());
+    let victim = accounting.join("outside-volume");
+    fs::write(&victim, b"not deleted").unwrap();
+    symlink(&victim, data_path.join("escape")).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !store.remove_data(recovered, 1006).unwrap() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(fs::read(&victim).unwrap(), b"not deleted");
+    assert!(store.create(Uuid::new_v4(), 1006, limits).is_err());
+    let reserved = Uuid::new_v4();
+    let reserved_root = root.join(reserved.to_string());
+    fs::create_dir(&reserved_root).unwrap();
+    fs::set_permissions(&reserved_root, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(std::process::Command::new("xfs_quota")
+        .args([
+            "-x",
+            "-c",
+            "limit -p bhard=4m bsoft=4m ihard=64 isoft=64 1007"
+        ])
+        .arg(&root)
+        .status()
+        .unwrap()
+        .success());
+    assert_eq!(
+        store.recover_create(reserved, 1007, limits).unwrap().limits,
+        limits
+    );
+    let unknown = Uuid::new_v4();
+    let unknown_root = root.join(unknown.to_string());
+    fs::create_dir(&unknown_root).unwrap();
+    fs::set_permissions(&unknown_root, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(unknown_root.join("unknown"), b"not owned by an intent").unwrap();
+    assert!(store.recover_create(unknown, 1008, limits).is_err());
+    assert_eq!(
+        fs::read(unknown_root.join("unknown")).unwrap(),
+        b"not owned by an intent"
+    );
+    let marker = root.join(".xelab-volume-root");
+    let marker_bytes = fs::read(&marker).unwrap();
+    fs::remove_file(&marker).unwrap();
+    assert!(store
+        .namespace_identity(status.filesystem_uuid, namespace, false)
+        .is_err());
+    assert!(
+        store
+            .namespace_identity(status.filesystem_uuid, namespace, true)
+            .is_err(),
+        "a filesystem with existing quota identities cannot be freshly adopted"
+    );
+    fs::write(&marker, marker_bytes).unwrap();
+    fs::set_permissions(&marker, fs::Permissions::from_mode(0o600)).unwrap();
+    store
+        .namespace_identity(status.filesystem_uuid, namespace, false)
+        .unwrap();
     // A backend opened before enforcement is disabled must fail subsequent work.
     assert!(std::process::Command::new("xfs_quota")
         .args(["-x", "-c", "disable -p"])

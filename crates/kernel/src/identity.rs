@@ -69,6 +69,7 @@ pub fn audit_resource(
         "createChildAccount" => Some(("account", &response["account"]["id"])),
         "createApiKey" | "rotateApiKey" => Some(("credential", &response["credential"]["id"])),
         "createGroup" => Some(("group", &response["id"])),
+        "createVolume" => Some(("volume", &response["resource_id"])),
         "createSecret" => Some(("secret", &response["id"])),
         "bindSecret" => Some(("secret", &response["spec"]["secret_id"])),
         _ => None,
@@ -88,6 +89,7 @@ pub fn audit_resource(
         ("instance_id", "instance"),
         ("operation_id", "operation"),
         ("secret_id", "secret"),
+        ("volume_id", "volume"),
     ] {
         if let Some(id) = p.get(parameter) {
             return Resource::new(kind, id, None).json();
@@ -1331,6 +1333,7 @@ pub(crate) async fn list(
         "listAuditEvents" => ("audit_events", "AuditEvent", "audit.read", "audit"),
         "listRoles" => ("role_definitions", "Role", "", ""),
         "listPermissions" => ("permission_definitions", "PermissionDefinition", "", ""),
+        "listVolumes" => ("kernel_volumes", "Volume", "volume.read", "volume"),
         "listSecrets" => ("secrets", "Secret", "secret.metadata.read", "secret"),
         "listSecretBindings" => ("secret_bindings", "SecretBinding", "secret.bind", "secret"),
         _ => return Err(Error::not_found()),

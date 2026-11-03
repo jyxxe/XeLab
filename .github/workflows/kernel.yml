@@ -57,6 +57,14 @@ jobs:
           test -n "$digest"
           sudo ctr -n xelab-ci images tag docker.io/xelab-ci/echo-python:test "docker.io/xelab-ci/echo-python@$digest"
           echo "XELAB_TEST_PYTHON_IMAGE=docker.io/xelab-ci/echo-python@$digest" >> "$GITHUB_ENV"
+          python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output examples/generated-volume --implementation python --volume-access rw
+          docker build -t docker.io/xelab-ci/volume:test --build-arg ARTIFACT_DIR=examples/generated-volume -f examples/echo-python/Dockerfile .
+          docker save docker.io/xelab-ci/volume:test -o examples/generated-volume/volume.tar
+          sudo ctr -n xelab-ci images import examples/generated-volume/volume.tar
+          digest=$(sudo ctr -n xelab-ci images list | awk '$1=="docker.io/xelab-ci/volume:test" {print $3}')
+          test -n "$digest"
+          sudo ctr -n xelab-ci images tag docker.io/xelab-ci/volume:test "docker.io/xelab-ci/volume@$digest"
+          echo "XELAB_TEST_VOLUME_IMAGE=docker.io/xelab-ci/volume@$digest" >> "$GITHUB_ENV"
       - name: Real OCI API lifecycle and recovery
         env:
           XELAB_OCI_TEST: "1"
@@ -78,7 +86,9 @@ jobs:
           import glob, os, subprocess
           binaries=[p for p in glob.glob("target/debug/deps/xfs-*") if os.path.isfile(p) and os.access(p,os.X_OK)]
           assert len(binaries)==1,binaries
-          subprocess.run(["sudo","env","XELAB_XFS_TEST=1","bash","tools/test-xfs.sh","--isolated-test-host",binaries[0]],check=True)
+          volumes=[p for p in glob.glob("target/debug/deps/volumes-*") if os.path.isfile(p) and os.access(p,os.X_OK)]
+          assert len(volumes)==1,volumes
+          subprocess.run(["sudo","--preserve-env=XELAB_TEST_DATABASE_URL,XELAB_TEST_VOLUME_IMAGE","env","XELAB_XFS_TEST=1","bash","tools/test-xfs.sh","--isolated-test-host",binaries[0],volumes[0]],check=True)
           PYTEST
       - name: Lints
         if: always()

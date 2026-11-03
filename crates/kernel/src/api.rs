@@ -273,6 +273,9 @@ async fn dispatch(
             contracts::validate_business(&parameter["schema"], &json!(value))?;
         }
     }
+    if name == "deleteVolume" {
+        crate::volumes::confirm_delete(&params, uri.query().unwrap_or(""))?;
+    }
     if name == "activateAccount" {
         let mut c = app.db.connect().await?;
         let tx = c.transaction().await?;
@@ -390,6 +393,8 @@ async fn dispatch(
     let execution=async {
     let result = if identity::handles(name) {
         identity::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
+    } else if crate::volumes::handles(name) {
+        crate::volumes::execute(&tx,app,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("" )).await?
     } else if secrets::handles(name) {
         secrets::execute(&tx,&app.config,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
     } else {match name {
@@ -459,6 +464,7 @@ async fn dispatch(
                 manifest_digest: r.get("manifest_digest"),
             };
             artifact.validate_deployment(&body)?;
+            crate::volumes::validate_selection(&tx,&ctx,&body,&artifact.manifest).await?;
             let mut spec = body.clone();
             spec["enabled"] = json!(false);
             if spec.get("replicas").is_none() {
@@ -493,6 +499,7 @@ async fn dispatch(
             (body.clone(), 200)
         }
         "setDeploymentEnabled" => {
+            tx.query_one("SELECT id FROM node_budget FOR UPDATE",&[]).await?;
             let id = path_id(&params, "deployment_id")?;
             let row = tx
                 .query_one("SELECT * FROM deployments WHERE id=$1 FOR UPDATE", &[&id])
@@ -508,6 +515,8 @@ async fn dispatch(
                 if tx.query_one("SELECT count(*) FROM instances WHERE deployment_id=$1 AND phase<>'stopped'",&[&id]).await?.get::<_,i64>(0)>0{return Err(Error::conflict("Previous instances have not drained"));}
                 let instance = Uuid::new_v4();
                 let generation = row.get::<_, i64>("revision") + 1;
+                let manifest:Value=tx.query_one("SELECT manifest FROM installations WHERE id=$1",&[&row.get::<_,Uuid>("installation_id")]).await?.get(0);
+                crate::volumes::approve_mounts(&tx,&ctx,id,generation,&spec,&manifest).await?;
                 tx.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,created_at,updated_at) VALUES($1,$2,$3,0,'pending','unknown',$4,now(),now())",&[&instance,&id,&generation,&spec["limits"]]).await?;
             }
             spec["enabled"] = json!(enabled);
@@ -679,6 +688,9 @@ async fn authorize_operation(
     }
     if secrets::handles(name) {
         return secrets::authorize(c, ctx, name, params, body).await;
+    }
+    if crate::volumes::handles(name) {
+        return crate::volumes::authorize(c, ctx, name, params).await;
     }
     if name == "installPlugin" {
         // Stage/verify the signed artifact first. Only its verified manifest can

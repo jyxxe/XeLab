@@ -11,7 +11,7 @@ def encoded(value):
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
-def build(root, publisher, platform="linux/amd64", implementation="rust", request_secret=False):
+def build(root, publisher, platform="linux/amd64", implementation="rust", request_secret=False, volume_access=None):
     publisher = str(uuid.UUID(publisher))
     schema = {"type": "object", "properties": {"message": {"type": "string", "maxLength": 1024}}, "required": ["message"], "additionalProperties": False}
     name, version = "org.xelab.echo", "1.0.0"
@@ -37,6 +37,8 @@ def build(root, publisher, platform="linux/amd64", implementation="rust", reques
     }
     if request_secret:
         manifest["requested_rules"] = [{"rule": {"action": "secret.use", "resource": {"kind": "secret", "match": "all"}}, "required": False}]
+    if volume_access:
+        manifest["volumes"] = [{"name": "data", "mount_path": "/data", "access": volume_access, "scope": "deployment", "minimum_bytes": 1048576}]
     (root / "xelab" / "plugin.json").write_bytes(encoded(manifest))
     return manifest
 
@@ -48,6 +50,7 @@ if __name__ == "__main__":
     parser.add_argument("--platform", choices=["linux/amd64", "linux/arm64"], default="linux/amd64")
     parser.add_argument("--implementation", choices=["rust", "python"], default="rust")
     parser.add_argument("--request-secret", action="store_true", help="Enable the explicit Secret lease acceptance probe")
+    parser.add_argument("--volume-access", choices=["ro", "rw"], help="Enable explicit persistent-volume acceptance")
     args = parser.parse_args()
-    build(args.output, args.publisher_id, args.platform, args.implementation, args.request_secret)
+    build(args.output, args.publisher_id, args.platform, args.implementation, args.request_secret, args.volume_access)
 

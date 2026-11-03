@@ -509,6 +509,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
             &python_image,
             python_digest,
             &limits,
+            &[],
         )
         .await
         .unwrap();

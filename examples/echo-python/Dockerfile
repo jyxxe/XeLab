@@ -8,7 +8,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 python3
 COPY --from=bindings /bindings /opt/plugin
 COPY examples/echo-python/server.py /opt/plugin/server.py
 COPY examples/echo-python/lease_probe.py /opt/plugin/lease_probe.py
-COPY examples/generated-python/xelab /xelab
+ARG ARTIFACT_DIR=examples/generated-python
+COPY ${ARTIFACT_DIR}/xelab /xelab
+COPY examples/echo-python/volume_probe.py /opt/plugin/volume_probe.py
+RUN mkdir -m 755 /data
 ENV PYTHONDONTWRITEBYTECODE=1
 USER 65532:65532
 ENTRYPOINT ["/usr/bin/python3", "/opt/plugin/server.py"]

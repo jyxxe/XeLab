@@ -202,11 +202,22 @@ async fn tick(app: &App, first: bool, state: &mut ControllerState) -> Result<()>
         .await?;
         // A new controller must fence every old process before returning call slots.
         // Stable instance IDs and their resource reservations survive this restart.
-        for id in app.runtime.inventory().await? {
+        let mut old: std::collections::BTreeSet<Uuid> =
+            app.runtime.inventory().await?.into_iter().collect();
+        // A lost container record does not prove that its old cgroup is empty.
+        // Every durable attachment also needs an explicit stop proof.
+        old.extend(
+            c.query("SELECT DISTINCT instance_id FROM volume_attachments", &[])
+                .await?
+                .into_iter()
+                .map(|r| r.get::<_, Uuid>(0)),
+        );
+        for id in old {
             app.runtime.stop(id).await?;
         }
         let tx = c.transaction().await?;
         db::call_lock(&tx).await?;
+        crate::volumes::release_stopped(&tx, None).await?;
         tx.execute(
             "UPDATE calls SET state='unknown',error=$1 WHERE state IN ('accepted','running')",
             &[&Error::new(
@@ -511,6 +522,7 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
             tx.query_one("SELECT id FROM node_budget FOR UPDATE", &[])
                 .await?;
             tx.execute("UPDATE instances SET phase='stopped',health='unknown',updated_at=now(),revision=revision+1 WHERE id=$1",&[&id]).await?;
+            crate::volumes::release_stopped(&tx, Some(id)).await?;
             admission::release_stopped(&tx, id).await?;
             tx.commit().await?;
         }
@@ -541,6 +553,22 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
     probe.bind(id, generation);
     let limits: Value = i.get("limits");
     let running = app.runtime.running(id).await?;
+    let mounts = match crate::volumes::mounts(app, deployment, id, generation, &manifest).await {
+        Ok(mounts) => mounts,
+        Err(error) => {
+            app.runtime.stop(id).await?;
+            let mut dbc = app.db.connect().await?;
+            let tx = dbc.transaction().await?;
+            crate::volumes::release_stopped(&tx, Some(id)).await?;
+            tx.execute(
+                "UPDATE provider_records SET availability='unavailable' WHERE instance_id=$1",
+                &[&id],
+            )
+            .await?;
+            tx.commit().await?;
+            return Err(error);
+        }
+    };
     if running
         && probe
             .next
@@ -584,7 +612,9 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
     }
     let obs = app
         .runtime
-        .ensure(id, deployment, generation, &manifest, &image, &sha, &limits)
+        .ensure(
+            id, deployment, generation, &manifest, &image, &sha, &limits, &mounts,
+        )
         .await?;
     if !obs.running {
         return Err(Error::unavailable("OCI task is not running"));
@@ -663,6 +693,8 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
     };
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
+    db::auth_lock(&tx, false).await?;
+    crate::volumes::check_approval(&tx, app, deployment, generation, &spec, &manifest).await?;
     let current = tx
         .query_one(
             "SELECT spec,approval,archived_at FROM deployments WHERE id=$1 FOR UPDATE",

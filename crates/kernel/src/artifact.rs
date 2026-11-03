@@ -120,7 +120,6 @@ pub fn validate_profile(manifest: &Value) -> Result<()> {
     validate("Manifest", manifest)?;
     for field in [
         "dependencies",
-        "volumes",
         "routes",
         "event_topics",
         "skills",
@@ -130,7 +129,7 @@ pub fn validate_profile(manifest: &Value) -> Result<()> {
             .get(field)
             .is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))
         {
-            return Err(Error::invalid("This M1 profile supports only stateless ordinary plugins without dependencies, proxy rules, UI, volumes or extensions"));
+            return Err(Error::invalid("This ordinary-plugin profile does not support dependencies, proxy rules, UI or extensions"));
         }
     }
     if manifest
@@ -151,6 +150,7 @@ pub fn validate_profile(manifest: &Value) -> Result<()> {
             "This profile permits only optional unconditional secret.use workload requests",
         ));
     }
+    crate::volumes::validate_mounts(manifest)?;
     if manifest["data_schema_version"] != "none"
         || manifest
             .get("business_entry")
@@ -262,12 +262,8 @@ impl Artifact {
     }
     pub fn validate_deployment(&self, spec: &Value) -> Result<()> {
         validate("DeploymentSpec", spec)?;
-        if spec["replicas"].as_u64().unwrap_or(1) != 1
-            || !spec["volume_ids"].as_array().unwrap().is_empty()
-        {
-            return Err(Error::invalid(
-                "M1 requires one stateless replica without volumes",
-            ));
+        if spec["replicas"].as_u64().unwrap_or(1) != 1 {
+            return Err(Error::invalid("This runtime profile requires one replica"));
         }
         for field in ["cpu_millis", "memory_bytes", "ephemeral_bytes", "pids"] {
             if spec["limits"][field].as_u64() < self.manifest["minimum_resources"][field].as_u64() {
