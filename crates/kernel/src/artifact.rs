@@ -120,7 +120,6 @@ pub fn validate_profile(manifest: &Value) -> Result<()> {
     validate("Manifest", manifest)?;
     for field in [
         "dependencies",
-        "requested_rules",
         "volumes",
         "routes",
         "event_topics",
@@ -133,6 +132,24 @@ pub fn validate_profile(manifest: &Value) -> Result<()> {
         {
             return Err(Error::invalid("This M1 profile supports only stateless ordinary plugins without dependencies, proxy rules, UI, volumes or extensions"));
         }
+    }
+    if manifest
+        .get("requested_rules")
+        .and_then(Value::as_array)
+        .is_some_and(|rules| {
+            rules.iter().any(|r| {
+                r["required"] != false
+                    || r["rule"]["action"] != "secret.use"
+                    || r["rule"]["resource"]["kind"] != "secret"
+                    || r["rule"]
+                        .get("conditions")
+                        .is_some_and(|v| !v.as_object().is_some_and(serde_json::Map::is_empty))
+            })
+        })
+    {
+        return Err(Error::invalid(
+            "This profile permits only optional unconditional secret.use workload requests",
+        ));
     }
     if manifest["data_schema_version"] != "none"
         || manifest
@@ -265,6 +282,25 @@ impl Artifact {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn optional_secret_requests_use_the_manifest_permission_request_contract() {
+        let manifest: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/secret-manifest.json")).unwrap();
+        validate_profile(&manifest).unwrap();
+        let mut required = manifest.clone();
+        required["requested_rules"][0]["required"] = json!(true);
+        assert!(
+            validate_profile(&required).is_err(),
+            "required requests cannot bypass explicit binding readiness"
+        );
+        let mut malformed = manifest.clone();
+        malformed["requested_rules"][0] = manifest["requested_rules"][0]["rule"].clone();
+        assert!(validate_profile(&malformed).is_err());
+        let mut broader = manifest.clone();
+        broader["requested_rules"][0]["rule"]["action"] = json!("blob.read");
+        assert!(validate_profile(&broader).is_err());
+    }
+
     use super::*;
     use serde_json::json;
     #[test]

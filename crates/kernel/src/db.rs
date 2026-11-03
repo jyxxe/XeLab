@@ -9,6 +9,9 @@ use uuid::Uuid;
 
 pub const BASELINE: &str = include_str!("../../../docs/contracts/metadata.sql");
 const CALL_CHARGES: &str = include_str!("../migrations/0002_call_credential_charges.sql");
+const SECRET_AUTHORITY: &str = include_str!("../migrations/0003_secret_authority.sql");
+const MIGRATIONS: [&str; 3] = [BASELINE, CALL_CHARGES, SECRET_AUTHORITY];
+pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 pub const LEADER_LOCK: i64 = 0x58454c41424d3101;
 
 #[derive(Clone)]
@@ -76,11 +79,11 @@ impl Db {
             .query_one("SELECT max(version) FROM schema_migrations", &[])
             .await?
             .get(0);
-        if version == 1 {
-            tx.batch_execute(CALL_CHARGES).await?;
+        for (offset, sql) in MIGRATIONS.iter().enumerate().skip(version as usize) {
+            tx.batch_execute(sql).await?;
             tx.execute(
-                "INSERT INTO schema_migrations(version,checksum,applied_at) VALUES(2,$1,now())",
-                &[&digest(CALL_CHARGES.as_bytes())],
+                "INSERT INTO schema_migrations(version,checksum,applied_at) VALUES($1,$2,now())",
+                &[&((offset + 1) as i64), &digest(sql.as_bytes())],
             )
             .await?;
         }
@@ -114,13 +117,12 @@ async fn verify_migrations(c: &impl GenericClient, latest: bool) -> Result<()> {
         )
         .await?;
     if r.is_empty()
-        || r.len() > 2
-        || (latest && r.len() != 2)
-        || r[0].get::<_, i64>(0) != 1
-        || r[0].get::<_, String>(1) != digest(BASELINE.as_bytes())
-        || (r.len() == 2
-            && (r[1].get::<_, i64>(0) != 2
-                || r[1].get::<_, String>(1) != digest(CALL_CHARGES.as_bytes())))
+        || r.len() > MIGRATIONS.len()
+        || (latest && r.len() != MIGRATIONS.len())
+        || r.iter().enumerate().any(|(i, row)| {
+            row.get::<_, i64>(0) != (i + 1) as i64
+                || row.get::<_, String>(1) != digest(MIGRATIONS[i].as_bytes())
+        })
     {
         return Err(Error::conflict(
             "Metadata migration version or checksum differs",

@@ -9,6 +9,7 @@ use crate::{
     error::{Error, Result},
     identity,
     runtime::Runtime,
+    secrets,
 };
 use axum::{
     body::{to_bytes, Body},
@@ -310,7 +311,7 @@ async fn dispatch(
     let mutating = matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
     db::auth_lock(
         &tx,
-        (mutating && identity::handles(name)) || name == "getQuota",
+        (mutating && (identity::handles(name) || secrets::handles(name))) || name == "getQuota",
     )
     .await?;
     let ctx = app
@@ -325,7 +326,10 @@ async fn dispatch(
     let canonical = serde_json::to_vec(
         &json!({"body":body,"if_match":headers.get("if-match").and_then(|v|v.to_str().ok())}),
     )?;
-    let fingerprint = if identity::sensitive(name) || name == "changePassword" {
+    let fingerprint = if identity::sensitive(name)
+        || name == "changePassword"
+        || secrets::writes_value(name)
+    {
         contracts::digest(&app.auth.token_digest(
             std::str::from_utf8(&canonical).map_err(|_| Error::invalid("Invalid fingerprint"))?,
         ))
@@ -368,6 +372,8 @@ async fn dispatch(
     let execution=async {
     let result = if identity::handles(name) {
         identity::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
+    } else if secrets::handles(name) {
+        secrets::execute(&tx,&app.config,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
     } else {match name {
         "getCall" => {
             let call = path_id(&params, "call_id")?;
@@ -652,6 +658,9 @@ async fn authorize_operation(
 ) -> Result<()> {
     if identity::handles(name) {
         return identity::authorize(c, ctx, name, params, body).await;
+    }
+    if secrets::handles(name) {
+        return secrets::authorize(c, ctx, name, params, body).await;
     }
     if name == "installPlugin" {
         // Stage/verify the signed artifact first. Only its verified manifest can

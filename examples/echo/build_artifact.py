@@ -11,7 +11,7 @@ def encoded(value):
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
-def build(root, publisher, platform="linux/amd64", implementation="rust"):
+def build(root, publisher, platform="linux/amd64", implementation="rust", request_secret=False):
     publisher = str(uuid.UUID(publisher))
     schema = {"type": "object", "properties": {"message": {"type": "string", "maxLength": 1024}}, "required": ["message"], "additionalProperties": False}
     name, version = "org.xelab.echo", "1.0.0"
@@ -35,6 +35,8 @@ def build(root, publisher, platform="linux/amd64", implementation="rust"):
         "data_schema_version": "none", "upgrade_strategy": "recreate", "business_entry": "direct",
         "concurrency": {"max_active_requests": 4, "max_queue_requests": 0, "queue_timeout_ms": 100},
     }
+    if request_secret:
+        manifest["requested_rules"] = [{"rule": {"action": "secret.use", "resource": {"kind": "secret", "match": "all"}}, "required": False}]
     (root / "xelab" / "plugin.json").write_bytes(encoded(manifest))
     return manifest
 
@@ -45,6 +47,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=pathlib.Path, default=pathlib.Path("examples/generated"))
     parser.add_argument("--platform", choices=["linux/amd64", "linux/arm64"], default="linux/amd64")
     parser.add_argument("--implementation", choices=["rust", "python"], default="rust")
+    parser.add_argument("--request-secret", action="store_true", help="Enable the explicit Secret lease acceptance probe")
     args = parser.parse_args()
-    build(args.output, args.publisher_id, args.platform, args.implementation)
+    build(args.output, args.publisher_id, args.platform, args.implementation, args.request_secret)
 

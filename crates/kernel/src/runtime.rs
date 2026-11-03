@@ -197,7 +197,97 @@ impl Runtime {
             root.join("plugins/cgroup.subtree_control"),
             "+cpu +memory +pids",
         )?;
-        // No writable persistent volumes are admitted in M1; temporary writes use bounded tmpfs.
+        self.prepare_host_service_network().await?;
+        // Temporary writes use bounded tmpfs.
+        Ok(())
+    }
+    pub async fn prepare_host_service_network(&self) -> Result<()> {
+        let rpc: std::net::SocketAddr = self
+            .config
+            .text("server", "host_rpc_listen")
+            .parse()
+            .map_err(|_| Error::invalid("Invalid HostService address"))?;
+        let net: ipnet::Ipv4Net = self
+            .config
+            .text("runtime", "network_cidr")
+            .parse()
+            .map_err(|_| Error::invalid("Invalid plugin network"))?;
+        if rpc.ip() != std::net::IpAddr::V4(Ipv4Addr::from(u32::from(net.network()) + 1)) {
+            return Err(Error::invalid(
+                "HostService must use the first plugin network host address",
+            ));
+        }
+        let links = strict_json(
+            &command(
+                "ip",
+                &strs(&["-j", "-d", "link", "show"]),
+                Duration::from_secs(10),
+            )
+            .await?,
+            2097152,
+        )?;
+        if let Some(link) = links
+            .as_array()
+            .and_then(|links| links.iter().find(|link| link["ifname"] == "xh-rpc"))
+        {
+            if link["linkinfo"]["info_kind"] != "dummy"
+                || link["ifalias"] != "xelab-host-service-v1"
+            {
+                return Err(Error::conflict(
+                    "HostService network interface is not managed by XeLab",
+                ));
+            }
+        } else {
+            command(
+                "ip",
+                &strs(&["link", "add", "xh-rpc", "type", "dummy"]),
+                Duration::from_secs(10),
+            )
+            .await?;
+            command(
+                "ip",
+                &strs(&["link", "set", "xh-rpc", "alias", "xelab-host-service-v1"]),
+                Duration::from_secs(10),
+            )
+            .await?;
+        }
+        let addresses = strict_json(
+            &command(
+                "ip",
+                &strs(&["-j", "address", "show", "dev", "xh-rpc"]),
+                Duration::from_secs(10),
+            )
+            .await?,
+            2097152,
+        )?;
+        let addresses = addresses[0]["addr_info"]
+            .as_array()
+            .ok_or_else(|| Error::unavailable("Invalid HostService network"))?;
+        if addresses.iter().any(|a| {
+            a["family"] == "inet" && (a["local"] != rpc.ip().to_string() || a["prefixlen"] != 32)
+        }) {
+            return Err(Error::conflict("HostService network address differs"));
+        }
+        if !addresses.iter().any(|a| a["local"] == rpc.ip().to_string()) {
+            command(
+                "ip",
+                &strs(&[
+                    "address",
+                    "add",
+                    &format!("{}/32", rpc.ip()),
+                    "dev",
+                    "xh-rpc",
+                ]),
+                Duration::from_secs(10),
+            )
+            .await?;
+        }
+        command(
+            "ip",
+            &strs(&["link", "set", "xh-rpc", "up"]),
+            Duration::from_secs(10),
+        )
+        .await?;
         Ok(())
     }
     pub async fn verify_image(&self, image: &str, expected: &str) -> Result<()> {
@@ -286,7 +376,7 @@ impl Runtime {
                     }
                 }
             }
-            let slot = (0..slots)
+            let slot = (1..slots)
                 .find(|n| !used.contains(n))
                 .ok_or_else(Error::exhausted)?;
             let hostip = Ipv4Addr::from(base + slot * 4 + 1).to_string();
@@ -339,7 +429,7 @@ impl Runtime {
             .text("server", "host_rpc_listen")
             .parse()
             .unwrap();
-        let nft=format!("table inet xl_{} {{\n chain ingress {{ type filter hook input priority -20; policy accept; iifname \"{host}\" ct state established,related accept; iifname \"{host}\" drop; }}\n chain transit {{ type filter hook forward priority -20; policy accept; iifname \"{host}\" drop; oifname \"{host}\" drop; }}\n}}\n",&short[..16]);
+        let nft=format!("table inet xl_{} {{\n chain ingress {{ type filter hook input priority -20; policy accept; iifname \"{host}\" ct state established,related accept; iifname \"{host}\" ip saddr {p} ip daddr {} tcp dport {} accept; iifname \"{host}\" drop; }}\n chain transit {{ type filter hook forward priority -20; policy accept; iifname \"{host}\" drop; oifname \"{host}\" drop; }}\n}}\n",&short[..16],rpc.ip(),rpc.port());
         let nftfile = dir.join("network.nft");
         tls::atomic_file(&nftfile, nft.as_bytes(), 0o600)?;
         command(

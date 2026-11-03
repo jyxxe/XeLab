@@ -8,9 +8,11 @@ pub mod contracts;
 pub mod controller;
 pub mod db;
 pub mod error;
+pub mod host;
 pub mod identity;
 pub mod policy;
 pub mod runtime;
+pub mod secrets;
 pub mod storage;
 pub mod tls;
 

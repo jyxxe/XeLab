@@ -67,6 +67,14 @@ async fn start(args: Args) -> Result<()> {
         shutdown: AtomicBool::new(false),
     });
     let worker = tokio::spawn(controller::run(app.clone()));
+    let host_app = app.clone();
+    let host_worker = tokio::spawn(async move {
+        if xelab_kernel::host::serve(host_app.clone()).await.is_err() {
+            tracing::error!(reason_code = "HOST_SERVICE_STOPPED");
+            host_app.ready.store(false, Ordering::SeqCst);
+            host_app.shutdown.store(true, Ordering::SeqCst);
+        }
+    });
     let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(
         config.text("server", "tls_cert_file"),
         config.text("server", "tls_key_file"),
@@ -78,7 +86,7 @@ async fn start(args: Args) -> Result<()> {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            if monitor_app.leader.is_closed() {
+            if monitor_app.leader.is_closed() || monitor_app.shutdown.load(Ordering::SeqCst) {
                 monitor_app.ready.store(false, Ordering::SeqCst);
                 monitor_app.shutdown.store(true, Ordering::SeqCst);
                 monitor_handle.graceful_shutdown(Some(std::time::Duration::from_secs(1)));
@@ -106,6 +114,7 @@ async fn start(args: Args) -> Result<()> {
         .await?;
     app.shutdown.store(true, Ordering::SeqCst);
     worker.abort();
+    host_worker.abort();
     if let Ok(c) = app.db.connect().await {
         let _ = c
             .execute("UPDATE node_budget SET admission_enabled=false", &[])
