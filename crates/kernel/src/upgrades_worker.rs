@@ -125,8 +125,7 @@ async fn freeze(app: &App, row: &Row) -> Result<()> {
     tx.commit().await?;
     Ok(())
 }
-async fn artifact(app: &App, row: &Row) -> Result<Artifact> {
-    let target: Value = row.get("target_metadata");
+pub(crate) async fn artifact(app: &App, target: &Value) -> Result<Artifact> {
     let digest = target["image_digest"]
         .as_str()
         .ok_or_else(|| Error::conflict("Missing upgrade image digest"))?;
@@ -435,7 +434,7 @@ async fn process(app: &App, operation: Uuid, fence: &db::DeploymentFence) -> Res
     ) {
         return Err(Error::conflict("Unsupported upgrade execution phase"));
     }
-    let artifact = artifact(app, &row).await?;
+    let artifact = artifact(app, &row.get("target_metadata")).await?;
     volume_group::clone_group(app, &row).await?;
     check(app, operation).await?;
     let health = probe(app, &row, &artifact).await?;

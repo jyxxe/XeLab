@@ -571,6 +571,9 @@ async fn dispatch(
             tx.execute("UPDATE deployments SET spec=$2,phase=$3,revision=revision+1,updated_at=now() WHERE id=$1",&[&id,&spec,&phase]).await?;
             if bootstrapping {
                 let admitted = tx.query_one("SELECT j.*,host(j.peer) AS approved_peer FROM volume_schema_jobs j WHERE operation_id=$1", &[&op]).await?;
+                // The same budget transaction first publishes the enabled
+                // intent; reserve() rejects an instance of a disabled intent.
+                crate::admission::reserve(&tx,admitted.get("instance_id")).await?;
                 crate::schema_jobs::revalidate(&tx,app,&admitted).await?;
             }
             if !enabled {

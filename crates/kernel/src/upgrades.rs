@@ -18,6 +18,7 @@ use uuid::Uuid;
 mod volume_group;
 #[path = "upgrades_worker.rs"]
 mod worker;
+pub(crate) use worker::artifact;
 pub use worker::run;
 
 fn metadata(row: &Row) -> Value {

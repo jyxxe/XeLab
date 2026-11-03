@@ -13,6 +13,10 @@ use std::sync::atomic::Ordering;
 use tokio_postgres::{GenericClient, Row};
 use uuid::Uuid;
 
+#[path = "schema_jobs_worker.rs"]
+mod worker;
+pub use worker::run;
+
 pub(crate) struct Admission {
     original: Value,
     installation: Value,
@@ -214,7 +218,6 @@ pub(crate) async fn reserve(
         &[&deployment, &operation],
     )
     .await?;
-    crate::admission::reserve(c, instance).await?;
     Ok(())
 }
 
