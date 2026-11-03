@@ -149,6 +149,12 @@ jobs:
           python3 -m venv /tmp/xelab-docs
           /tmp/xelab-docs/bin/pip install -r docs/tools/requirements.txt
           /tmp/xelab-docs/bin/python docs/tools/validate_docs.py --strict
+      - name: Reference business migration files and mTLS protocol
+        run: |
+          migration_reference_root=$(mktemp -d "${RUNNER_TEMP}/xelab-migration-proto.XXXXXXXX")
+          trap 'rm -rf -- "$migration_reference_root"' EXIT
+          /tmp/xelab-docs/bin/python -m grpc_tools.protoc -I docs/contracts/proto --python_out="$migration_reference_root" --grpc_python_out="$migration_reference_root" docs/contracts/proto/xelab/v1/common.proto docs/contracts/proto/xelab/v1/lifecycle.proto docs/contracts/proto/xelab/v1/capability.proto docs/contracts/proto/xelab/v1/host.proto docs/contracts/proto/xelab/v1/migration.proto
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$migration_reference_root:examples/echo-python" /tmp/xelab-docs/bin/python -m unittest discover -s examples/echo-python -p 'test_migration_*.py' -v
       - name: Lints
         if: always()
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
