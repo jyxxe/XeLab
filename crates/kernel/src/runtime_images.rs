@@ -197,6 +197,19 @@ impl Runtime {
     /// Failure leaves that unpublished namespace for the coordinator to inspect;
     /// it never deletes shared containerd content or publishes a deployment.
     pub async fn import_images(&self, file: &mut File, expected: &ImageArchive) -> Result<()> {
+        self.import_images_inner(file, expected, false).await
+    }
+    /// Retry only an unpublished namespace containing an admitted subset. The
+    /// full archive and every target blob/name are verified again after import.
+    pub async fn resume_images(&self, file: &mut File, expected: &ImageArchive) -> Result<()> {
+        self.import_images_inner(file, expected, true).await
+    }
+    async fn import_images_inner(
+        &self,
+        file: &mut File,
+        expected: &ImageArchive,
+        resume: bool,
+    ) -> Result<()> {
         require_host_admin()?;
         references(&expected.images)?;
         if expected.bytes == 0 || expected.bytes > MAX_BYTES {
@@ -209,11 +222,17 @@ impl Runtime {
         }
         let mut process: Option<Child> = None;
         let work = async {
+            let actual = self.image_inventory().await?;
+            let wanted: BTreeMap<_, _> = expected
+                .images
+                .iter()
+                .map(|s| Ok((s.clone(), artifact::image_ref(s)?.to_owned())))
+                .collect::<Result<_>>()?;
             if !self.inventory().await?.is_empty()
-                || !String::from_utf8(self.ctr(&strs(&["images", "list", "--quiet"])).await?)
-                    .map_err(|_| Error::unavailable("Invalid image inventory"))?
-                    .trim()
-                    .is_empty()
+                || (!resume && !actual.is_empty())
+                || actual
+                    .iter()
+                    .any(|(name, digest)| wanted.get(name) != Some(digest))
             {
                 return Err(Error::conflict(
                     "Image recovery requires an empty dedicated namespace",
@@ -274,64 +293,128 @@ impl Runtime {
                 let _ = child.wait().await;
                 return Err(error);
             }
-            for image in &expected.images {
-                self.verify_image(image, artifact::image_ref(image)?)
-                    .await?;
-            }
-            // Namespace isolation does not imply a fresh content store. Verify
-            // actual stored config/layer bytes, including already present blobs.
-            for (digest, bytes) in inventory {
-                process =
-                    Some(self.image_command(&strs(&["content", "get", &digest]), Stdio::null())?);
-                let child = process.as_mut().unwrap();
-                let mut stdout = child
-                    .stdout
-                    .take()
-                    .ok_or_else(|| Error::unavailable("Restored content output is unavailable"))?;
-                let actual = copy_bounded(&mut stdout, &mut tokio::io::sink(), bytes).await?;
-                if !child.wait().await?.success() || actual != (bytes, digest) {
-                    return Err(Error::conflict(
-                        "Restored OCI content does not match its verified archive",
-                    ));
-                }
-            }
-            let listed = String::from_utf8(self.ctr(&strs(&["images", "list"])).await?)
-                .map_err(|_| Error::unavailable("Invalid restored image inventory"))?;
-            let mut lines = listed.lines().filter(|s| !s.trim().is_empty());
-            let header: Vec<_> = lines
-                .next()
-                .ok_or_else(|| Error::unavailable("Missing image inventory header"))?
-                .split_whitespace()
-                .collect();
-            if header.len() < 3 || header[..3] != ["REF", "TYPE", "DIGEST"] {
-                return Err(Error::unavailable("Unexpected image inventory format"));
-            }
-            let mut actual = BTreeMap::new();
-            for line in lines {
-                let fields: Vec<_> = line.split_whitespace().collect();
-                if fields.len() < 3
-                    || actual
-                        .insert(fields[0].to_owned(), fields[2].to_owned())
-                        .is_some()
-                {
-                    return Err(Error::conflict("Restored image inventory is invalid"));
-                }
-            }
-            let wanted: BTreeMap<_, _> = expected
-                .images
-                .iter()
-                .map(|s| Ok((s.clone(), artifact::image_ref(s)?.to_owned())))
-                .collect::<Result<_>>()?;
-            if actual != wanted {
-                return Err(Error::conflict(
-                    "Restored image names or digests differ from the admitted set",
-                ));
-            }
+            self.verify_target_images(expected, inventory, &mut process)
+                .await?;
             Ok(())
         };
         let result = tokio::time::timeout(DEADLINE, work)
             .await
             .map_err(|_| Error::unavailable("Image import exceeded its deadline"));
+        match result {
+            Ok(Ok(())) => Ok(()),
+            other => {
+                if let Some(child) = process.as_mut() {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                }
+                other?
+            }
+        }
+    }
+
+    async fn verify_target_images(
+        &self,
+        expected: &ImageArchive,
+        inventory: BTreeMap<String, u64>,
+        process: &mut Option<Child>,
+    ) -> Result<()> {
+        for image in &expected.images {
+            self.verify_image(image, artifact::image_ref(image)?)
+                .await?;
+        }
+        // Namespace isolation does not imply a fresh content store. Verify
+        // actual stored config/layer bytes, including already present blobs.
+        for (digest, bytes) in inventory {
+            *process =
+                Some(self.image_command(&strs(&["content", "get", &digest]), Stdio::null())?);
+            let child = process.as_mut().unwrap();
+            let mut stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| Error::unavailable("Restored content output is unavailable"))?;
+            let actual = copy_bounded(&mut stdout, &mut tokio::io::sink(), bytes).await?;
+            if !child.wait().await?.success() || actual != (bytes, digest) {
+                return Err(Error::conflict(
+                    "Restored OCI content does not match its verified archive",
+                ));
+            }
+        }
+        let actual = self.image_inventory().await?;
+        let wanted: BTreeMap<_, _> = expected
+            .images
+            .iter()
+            .map(|s| Ok((s.clone(), artifact::image_ref(s)?.to_owned())))
+            .collect::<Result<_>>()?;
+        if actual != wanted {
+            return Err(Error::conflict(
+                "Restored image names or digests differ from the admitted set",
+            ));
+        }
+        Ok(())
+    }
+    async fn image_inventory(&self) -> Result<BTreeMap<String, String>> {
+        let listed = String::from_utf8(self.ctr(&strs(&["images", "list"])).await?)
+            .map_err(|_| Error::unavailable("Invalid restored image inventory"))?;
+        let mut lines = listed.lines().filter(|s| !s.trim().is_empty());
+        let header: Vec<_> = lines
+            .next()
+            .ok_or_else(|| Error::unavailable("Missing image inventory header"))?
+            .split_whitespace()
+            .collect();
+        if header.len() < 3 || header[..3] != ["REF", "TYPE", "DIGEST"] {
+            return Err(Error::unavailable("Unexpected image inventory format"));
+        }
+        let mut actual = BTreeMap::new();
+        for line in lines {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            if fields.len() < 3
+                || actual
+                    .insert(fields[0].to_owned(), fields[2].to_owned())
+                    .is_some()
+            {
+                return Err(Error::conflict("Restored image inventory is invalid"));
+            }
+        }
+        Ok(actual)
+    }
+    /// Recheck an already imported private namespace after interruption. This
+    /// reads all target CAS bytes and the exact inventory, without adding names.
+    pub async fn verify_restored_images(
+        &self,
+        file: &mut File,
+        expected: &ImageArchive,
+    ) -> Result<()> {
+        require_host_admin()?;
+        references(&expected.images)?;
+        let before = file.metadata().await?;
+        file_is_private(&before)?;
+        if expected.bytes == 0 || expected.bytes > MAX_BYTES || before.len() != expected.bytes {
+            return Err(Error::invalid("Invalid retained OCI archive length"));
+        }
+        let mut process: Option<Child> = None;
+        let work = async {
+            if !self.inventory().await?.is_empty() {
+                return Err(Error::conflict(
+                    "Recovery namespace contains running containers",
+                ));
+            }
+            file.rewind().await?;
+            let actual = copy_bounded(file, &mut tokio::io::sink(), expected.bytes).await?;
+            if actual != (expected.bytes, expected.sha256.clone()) {
+                return Err(Error::invalid("Retained OCI archive differs"));
+            }
+            file.rewind().await?;
+            let inventory = oci_tar::verify(file, &expected.images, expected.bytes).await?;
+            self.verify_target_images(expected, inventory, &mut process)
+                .await?;
+            if !same_file(&before, &file.metadata().await?) {
+                return Err(Error::conflict("Retained OCI archive changed"));
+            }
+            Ok(())
+        };
+        let result = tokio::time::timeout(DEADLINE, work)
+            .await
+            .map_err(|_| Error::unavailable("Restored OCI verification exceeded its deadline"));
         match result {
             Ok(Ok(())) => Ok(()),
             other => {
@@ -396,6 +479,12 @@ mod tests {
         assert!(
             std::mem::size_of_val(&imported) < 32768,
             "import future must not embed streaming buffers"
+        );
+        drop(imported);
+        let verified = runtime.verify_restored_images(&mut file, &expected);
+        assert!(
+            std::mem::size_of_val(&verified) < 32768,
+            "verification future must not embed streaming buffers"
         );
     }
 }

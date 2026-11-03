@@ -43,6 +43,21 @@ enum Cmd {
         #[arg(long, conflicts_with = "resume")]
         cleanup_failed: Option<uuid::Uuid>,
     },
+    /// Restore a complete platform into a fresh, exclusively owned target.
+    PlatformRestore {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        receipt_file: PathBuf,
+        #[arg(long)]
+        owner_id: uuid::Uuid,
+        /// Independently fence the old host before using this target.
+        #[arg(long)]
+        source_host_fenced: bool,
+        /// Continue the exact UUID saved in the private target recovery journal.
+        #[arg(long)]
+        resume: Option<uuid::Uuid>,
+    },
     Migrate {
         #[arg(long)]
         config: PathBuf,
@@ -151,6 +166,38 @@ async fn run(args: Args) -> Result<()> {
                 None => xelab_kernel::offline::backup::create(config, true).await?,
             };
             println!("{}", serde_json::to_string(&receipt)?);
+        }
+        Cmd::PlatformRestore {
+            config,
+            receipt_file,
+            owner_id,
+            source_host_fenced,
+            resume,
+        } => {
+            require_host_admin()?;
+            if !source_host_fenced {
+                return Err(Error::invalid(
+                    "Platform recovery requires the source host to be fenced",
+                ));
+            }
+            let receipt = read_private(&receipt_file, 1024 * 1024)?;
+            let receipt = serde_json::from_value(strict_json(&receipt, 1024 * 1024)?)?;
+            let password = zeroize::Zeroizing::new(
+                String::from_utf8(read_body("-", 1024)?)
+                    .map_err(|_| Error::invalid("Password must be UTF-8"))?
+                    .trim_end_matches(['\r', '\n'])
+                    .to_owned(),
+            );
+            let result = xelab_kernel::offline::restore::run(
+                Config::load(&config)?,
+                receipt,
+                true,
+                resume,
+                owner_id,
+                password,
+            )
+            .await?;
+            println!("{}", serde_json::to_string(&result)?);
         }
         Cmd::Migrate { config, target } => {
             require_host_admin()?;

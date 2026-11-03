@@ -71,6 +71,36 @@ pub struct Receipt {
     pub manifest_digest: String,
     pub off_host: bool,
 }
+impl Manifest {
+    pub(crate) fn validate_receipt(&self, receipt: &Receipt, key: &str) -> Result<()> {
+        if self.backup_id != receipt.backup_id
+            || self.repository_id != receipt.repository_id
+            || self.master_key_reference != key
+            || self.off_host != receipt.off_host
+            || !valid_digest(&receipt.manifest_digest)
+        {
+            return Err(Error::conflict(
+                "Platform manifest differs from its recovery receipt or key",
+            ));
+        }
+        let state = State {
+            manifest: self.clone(),
+            manifest_object: receipt.manifest_object,
+            manifest_digest: Some(receipt.manifest_digest.clone()),
+        };
+        state.validate(
+            &Header {
+                format: 1,
+                snapshot: receipt.backup_id,
+                repository: receipt.repository_id,
+                master_key_reference: key.to_owned(),
+                phase: "succeeded".into(),
+                context: Value::Null,
+            },
+            true,
+        )
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct State {

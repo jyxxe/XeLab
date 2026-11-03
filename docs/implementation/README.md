@@ -16,6 +16,7 @@
 - [M2 离线源冻结与元数据导出](m2-offline-source.md)
 - [M2 原始文件加密传输与落盘复核](m2-raw-backups.md)
 - [M2 全平台离线源备份与持久对象日志](m2-platform-backups.md)
+- [M2 全平台目标恢复、物理重建与门禁](m2-platform-restores.md)
 - [M2-A XFS 硬配额后端](m2-storage.md)
 - [RUN-03 独占宿主测试工具与执行手册](run03-host.md)（真实验收待执行）
 - [契约优先级、变更与文档维护](change-policy.md)
