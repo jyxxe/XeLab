@@ -389,9 +389,19 @@ impl Orphan {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn writable_ancestor_cannot_be_hidden_by_a_private_leaf() {
+        let root = tempfile::tempdir_in("/tmp").unwrap();
+        let unsafe_parent = root.path().join("writable");
+        let leaf = unsafe_parent.join("private");
+        std::fs::create_dir_all(&leaf).unwrap();
+        std::fs::set_permissions(&leaf, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&unsafe_parent, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(Store::open(&leaf).is_err());
+    }
     #[tokio::test]
     async fn private_objects_publish_once_and_reject_links_or_corruption() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
         let store = Store::open(dir.path()).unwrap();
         let id = Uuid::new_v4();
         let mut staged = store.stage(3).unwrap();
@@ -424,7 +434,7 @@ mod tests {
     }
     #[tokio::test]
     async fn unpublished_upload_drop_removes_only_its_private_temporary_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
         let store = Store::open(dir.path()).unwrap();
         {
             let _upload = store.stage(0).unwrap();
