@@ -22,6 +22,141 @@ use xelab_kernel::{
 };
 
 const PASSWORD: &str = "correct horse acceptance password";
+
+#[tokio::test]
+async fn publisher_retrust_preserves_identity_and_requires_existing_object_authority() {
+    use ed25519_dalek::{pkcs8::EncodePublicKey, SigningKey};
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let pem = SigningKey::from_bytes(&[7; 32])
+        .verifying_key()
+        .to_public_key_pem(Default::default())
+        .unwrap();
+    let body = json!({"name":"reviewed publisher","key_id":"reviewed-key","public_key_pem":pem});
+    // A creation-only selector grants a proposed owner, not an unowned existing
+    // publisher. A cached 201 still checks the original creation permission.
+    let creation_key = f.key(f.owner, &f.token, json!({"mode":"selected","rules":[{"action":"publisher.trust","resource":{"kind":"publisher","match":"owned_by","owner_id":f.owner}}]})).await;
+    let creation_token = creation_key["secret"].as_str().unwrap();
+    let created = api(
+        &f.router,
+        "trustPublisher",
+        &[],
+        Some(creation_token),
+        body.clone(),
+        "create-publisher",
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(created.0, 201, "{}", created.1);
+    let publisher = contracts::id(&created.1, "id").unwrap();
+    let replay = api(
+        &f.router,
+        "trustPublisher",
+        &[],
+        Some(creation_token),
+        body.clone(),
+        "create-publisher",
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(replay.0, 201, "{}", replay.1);
+    assert_eq!(replay.1, created.1);
+    assert_eq!(
+        f.call("trustPublisher", &[], creation_token, body.clone(), None)
+            .await
+            .0,
+        403
+    );
+    let c = f.db.connect().await.unwrap();
+    let installation = Uuid::new_v4();
+    let deployment = Uuid::new_v4();
+    c.execute("INSERT INTO installations(id,plugin_id,version,publisher_id,image_digest,manifest_digest,manifest,state,created_at,updated_at) VALUES($1,'org.xelab.trust-fixture','1.0.0',$2,'fixture','fixture','{}','installed',now(),now())", &[&installation,&publisher]).await.unwrap();
+    c.execute("INSERT INTO deployments(id,owner_id,installation_id,spec,phase,created_at,updated_at) VALUES($1,$2,$3,'{\"enabled\":false}','disabled',now(),now())", &[&deployment,&f.owner,&installation]).await.unwrap();
+    let revoked = f
+        .call(
+            "revokePublisher",
+            &[("publisher_id", publisher.to_string())],
+            &f.token,
+            Value::Null,
+            Some(1),
+        )
+        .await;
+    assert_eq!(revoked.0, 204, "{}", revoked.1);
+    let scoped = f.key(f.owner, &f.token, json!({"mode":"selected","rules":[{"action":"publisher.trust","resource":{"kind":"publisher","match":"ids","ids":[publisher]}}]})).await;
+    let token = scoped["secret"].as_str().unwrap();
+    for field in ["public_key_pem", "name"] {
+        let mut different = body.clone();
+        different[field] = if field == "name" {
+            json!("changed identity")
+        } else {
+            json!(SigningKey::from_bytes(&[8; 32])
+                .verifying_key()
+                .to_public_key_pem(Default::default())
+                .unwrap())
+        };
+        let refused = f.call("trustPublisher", &[], token, different, None).await;
+        assert_eq!(refused.0, 409, "{}", refused.1);
+    }
+    let restored = api(
+        &f.router,
+        "trustPublisher",
+        &[],
+        Some(token),
+        body.clone(),
+        "explicit-retrust",
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(restored.0, 200, "{}", restored.1);
+    assert_eq!(restored.1["id"], created.1["id"]);
+    assert_eq!(restored.1["created_at"], created.1["created_at"]);
+    assert_eq!(restored.1["revision"], 3);
+    assert_eq!(restored.1["status"], "trusted");
+    let repeated = api(
+        &f.router,
+        "trustPublisher",
+        &[],
+        Some(token),
+        body.clone(),
+        "explicit-retrust",
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(repeated.0, 200, "{}", repeated.1);
+    assert_eq!(repeated.1, restored.1);
+    let state = c.query_one("SELECT i.publisher_id,d.spec,d.phase,(SELECT count(*) FROM publishers) AS n FROM installations i JOIN deployments d ON d.installation_id=i.id WHERE i.id=$1", &[&installation]).await.unwrap();
+    assert_eq!(state.get::<_, Uuid>("publisher_id"), publisher);
+    assert_eq!(state.get::<_, i64>("n"), 1);
+    assert_eq!(state.get::<_, Value>("spec")["enabled"], false);
+    assert_eq!(state.get::<_, String>("phase"), "disabled");
+    c.execute(
+        "UPDATE credentials SET status='revoked' WHERE id=$1",
+        &[&contracts::id(&scoped["credential"], "id").unwrap()],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        api(
+            &f.router,
+            "trustPublisher",
+            &[],
+            Some(token),
+            body,
+            "explicit-retrust",
+            None,
+            ""
+        )
+        .await
+        .0,
+        401
+    );
+}
+
 struct Fixture {
     db: Db,
     router: Router,
