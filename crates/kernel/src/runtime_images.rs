@@ -144,7 +144,15 @@ impl Runtime {
                 .stdout
                 .take()
                 .ok_or_else(|| Error::unavailable("Image export output is unavailable"))?;
-            let (bytes, sha256) = copy_bounded(&mut stdout, file, maximum).await?;
+            let (bytes, sha256) =
+                copy_bounded(&mut stdout, file, maximum)
+                    .await
+                    .map_err(|mut error| {
+                        if error.code == "RESOURCE_EXHAUSTED" {
+                            error.message = "Image export exceeded its admitted byte limit";
+                        }
+                        error
+                    })?;
             if bytes == 0 || !child.wait().await?.success() {
                 return Err(Error::unavailable("Image export did not complete"));
             }
@@ -154,7 +162,14 @@ impl Runtime {
                 return Err(Error::conflict("Image archive file changed"));
             }
             file.rewind().await?;
-            oci_tar::verify(file, images, bytes).await?;
+            oci_tar::verify(file, images, bytes)
+                .await
+                .map_err(|mut error| {
+                    if error.code == "RESOURCE_EXHAUSTED" {
+                        error.message = "OCI archive exceeds its entry or metadata bounds";
+                    }
+                    error
+                })?;
             for image in images {
                 self.verify_image(image, artifact::image_ref(image)?)
                     .await?;
