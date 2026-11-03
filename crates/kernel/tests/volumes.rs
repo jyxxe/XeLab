@@ -30,6 +30,8 @@ use xelab_kernel::{
 };
 #[path = "support/schema_bootstrap.rs"]
 mod schema_bootstrap;
+#[path = "support/schema_same_format.rs"]
+mod schema_same_format;
 #[path = "support/volume_upgrades.rs"]
 mod volume_upgrades;
 struct Fixture {

@@ -42,9 +42,7 @@ pub(crate) async fn installation(
     Ok(value)
 }
 fn same_schema(source: &Value, target: &Value) -> Result<()> {
-    if source["manifest"]["data_schema_version"] != "none"
-        || target["manifest"]["data_schema_version"] != "none"
-    {
+    if source["manifest"]["data_schema_version"] != target["manifest"]["data_schema_version"] {
         return Err(Error::conflict(
             "Schema-changing upgrade requires the durable DataMigration worker",
         ));

@@ -136,13 +136,17 @@ async fn reap(f: &Fixture, scratch: Uuid) {
     panic!("detached schema scratch was not physically reclaimed");
 }
 
-pub async fn exercise(f: &Fixture, publisher: Uuid) {
+pub(super) async fn register(
+    f: &Fixture,
+    publisher: Uuid,
+    variant: &str,
+    variable: &str,
+) -> (Uuid, Value, String) {
     assert_eq!(unsafe { libc::geteuid() }, 0);
     assert_eq!(std::env::var("XELAB_XFS_TEST").unwrap(), "1");
     let c = f.app.db.connect().await.unwrap();
-    let image =
-        std::env::var("XELAB_TEST_SCHEMA_IMAGE").expect("CI-imported versioned reference image");
-    let raw = fs::read("examples/generated-schema/xelab/plugin.json").unwrap();
+    let image = std::env::var(variable).expect("CI-imported versioned reference image");
+    let raw = fs::read(format!("examples/generated-{variant}/xelab/plugin.json")).unwrap();
     let manifest: Value = serde_json::from_slice(&raw).unwrap();
     assert_eq!(manifest["data_schema_version"], "1");
     assert_eq!(manifest["publisher_id"], publisher.to_string());
@@ -180,7 +184,7 @@ pub async fn exercise(f: &Fixture, publisher: Uuid) {
     for cap in manifest["capabilities"].as_array().unwrap() {
         let contract = &cap["contract"];
         c.execute(
-            "INSERT INTO capability_contracts(name,version,schema_digest,spec) VALUES($1,$2,$3,$4)",
+            "INSERT INTO capability_contracts(name,version,schema_digest,spec) VALUES($1,$2,$3,$4) ON CONFLICT(name,version) DO NOTHING",
             &[
                 &contract["name"].as_str().unwrap(),
                 &contract["version"].as_str().unwrap(),
@@ -190,6 +194,21 @@ pub async fn exercise(f: &Fixture, publisher: Uuid) {
         )
         .await
         .unwrap();
+        let registered = c
+            .query_one(
+                "SELECT schema_digest,spec FROM capability_contracts WHERE name=$1 AND version=$2",
+                &[
+                    &contract["name"].as_str().unwrap(),
+                    &contract["version"].as_str().unwrap(),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            registered.get::<_, String>("schema_digest"),
+            contract["schema_digest"].as_str().unwrap()
+        );
+        assert_eq!(registered.get::<_, Value>("spec"), *cap);
     }
     tls::atomic_file(
         &f.app
@@ -202,6 +221,13 @@ pub async fn exercise(f: &Fixture, publisher: Uuid) {
         0o600,
     )
     .unwrap();
+    (installation, manifest, manifest_digest)
+}
+
+pub async fn exercise(f: &Fixture, publisher: Uuid) {
+    let c = f.app.db.connect().await.unwrap();
+    let (installation, manifest, manifest_digest) =
+        register(f, publisher, "schema", "XELAB_TEST_SCHEMA_IMAGE").await;
     f.app.shutdown.store(false, Ordering::SeqCst);
     f.app.ready.store(false, Ordering::SeqCst);
     let controller = tokio::spawn(controller::run(f.app.clone()));
@@ -367,6 +393,8 @@ pub async fn exercise(f: &Fixture, publisher: Uuid) {
     assert_eq!(actual["schema"], "1");
     assert_eq!(actual["items"].as_array().unwrap().len(), 1);
     assert_eq!(actual["items"][0]["id"], called.1["call_id"]);
+    let upgrade_supervisor =
+        super::schema_same_format::exercise(f, publisher, installation, deployment, business).await;
     let before = current(f, deployment).await;
     let disabled = f
         .api(
@@ -442,5 +470,6 @@ pub async fn exercise(f: &Fixture, publisher: Uuid) {
     f.app.shutdown.store(true, Ordering::SeqCst);
     controller.await.unwrap();
     supervisor.await.unwrap();
+    upgrade_supervisor.await.unwrap();
     println!("Schema bootstrap: actual signed OCI and XFS empty-volume proof, RO Plan/Verify, one initialized format, healthy scratch-detached publication, real idempotent business write, physical scratch reclamation and nonempty-source refusal; internal registration, public installation closed, not RUN-03/off-host acceptance");
 }
