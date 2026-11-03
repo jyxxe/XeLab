@@ -4,6 +4,12 @@ use super::*;
 use crate::storage::s3;
 use serde_json::json;
 use std::{io::Write, os::unix::fs::PermissionsExt};
+fn private_root() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in("/tmp")
+        .unwrap()
+}
 
 fn state(repository: Uuid, backup: Uuid, key: &[u8; 32], bytes: &[u8]) -> State {
     State {
@@ -123,7 +129,7 @@ fn source_checkpoint_validation_rejects_inconsistent_recovery_sets() {
 }
 #[tokio::test]
 async fn real_file_journal_and_s3_publish_only_complete_set_and_recover_without_source() {
-    let root = tempfile::tempdir().unwrap();
+    let root = private_root();
     let Some(session) = session(root.path()).await else {
         return;
     };
@@ -257,7 +263,7 @@ async fn real_file_journal_and_s3_publish_only_complete_set_and_recover_without_
 }
 #[tokio::test]
 async fn exact_failed_upload_cleanup_finds_lost_initiation_and_preserves_neighbours() {
-    let root = tempfile::tempdir().unwrap();
+    let root = private_root();
     let Some(session) = session(root.path()).await else {
         return;
     };

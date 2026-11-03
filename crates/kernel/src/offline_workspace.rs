@@ -561,6 +561,13 @@ impl backup_transfer::Journal for ObjectJournal {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::os::unix::fs::PermissionsExt;
+    fn private_root() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in("/tmp")
+            .unwrap()
+    }
     fn header() -> Header {
         Header {
             format: 1,
@@ -579,7 +586,7 @@ mod tests {
     }
     #[test]
     fn actual_private_journal_recovers_exact_preparations_without_overwriting_other_sessions() {
-        let root = tempfile::tempdir().unwrap();
+        let root = private_root();
         let fd = File::open(root.path()).unwrap();
         let header = header();
         let workspace = Workspace::create(&fd, header.clone()).unwrap();
@@ -673,8 +680,8 @@ mod tests {
     }
     #[test]
     fn private_journal_refuses_symlinks_and_torn_json() {
-        let root = tempfile::tempdir().unwrap();
-        let other = tempfile::tempdir().unwrap();
+        let root = private_root();
+        let other = private_root();
         let fd = File::open(root.path()).unwrap();
         std::os::unix::fs::symlink(other.path(), root.path().join(".platform-backups")).unwrap();
         assert!(Workspace::create(&fd, header()).is_err());
