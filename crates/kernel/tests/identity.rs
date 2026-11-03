@@ -60,6 +60,7 @@ impl Fixture {
             leader: Arc::new(db.leader().await.unwrap()),
             ready: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
+            blob_uploads: tokio::sync::Semaphore::new(4),
         });
         let router = router(app);
         let result = api(

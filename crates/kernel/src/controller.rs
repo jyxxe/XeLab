@@ -773,6 +773,7 @@ mod pagination_tests {
             leader: Arc::new(db.leader().await.unwrap()),
             ready: std::sync::atomic::AtomicBool::new(false),
             shutdown: std::sync::atomic::AtomicBool::new(false),
+            blob_uploads: tokio::sync::Semaphore::new(4),
         };
         let mut state = ControllerState::default();
         // Losing an instance intent must also discard its obsolete probe.

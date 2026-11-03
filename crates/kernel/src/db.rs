@@ -10,7 +10,8 @@ use uuid::Uuid;
 pub const BASELINE: &str = include_str!("../../../docs/contracts/metadata.sql");
 const CALL_CHARGES: &str = include_str!("../migrations/0002_call_credential_charges.sql");
 const SECRET_AUTHORITY: &str = include_str!("../migrations/0003_secret_authority.sql");
-const MIGRATIONS: [&str; 3] = [BASELINE, CALL_CHARGES, SECRET_AUTHORITY];
+const BLOB_DELETIONS: &str = include_str!("../migrations/0004_blob_deletions.sql");
+const MIGRATIONS: [&str; 4] = [BASELINE, CALL_CHARGES, SECRET_AUTHORITY, BLOB_DELETIONS];
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 pub const LEADER_LOCK: i64 = 0x58454c41424d3101;
 

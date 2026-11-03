@@ -25,13 +25,14 @@ futures-util = "0.3"
 tokio-rustls = "0.26"
 rustls-pemfile = "2"
 rcgen = { version = "0.13", features = ["x509-parser"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["net"] }
+tokio-util = { version = "0.7", features = ["io"] }
 tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-serde_json-1", "with-chrono-0_4"] }
 toml = "0.8"
 time = "0.3"

@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use std::{
-    io::{self, Read},
+    io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -51,6 +51,9 @@ enum Cmd {
         ca_file: Option<PathBuf>,
         #[arg(long)]
         body_file: Option<String>,
+        /// Atomically publish a verified Blob download without overwriting files.
+        #[arg(long)]
+        output_file: Option<PathBuf>,
         #[arg(long = "path")]
         path: Vec<String>,
         #[arg(long = "query")]
@@ -151,6 +154,7 @@ async fn run(args: Args) -> Result<()> {
             token_file,
             ca_file,
             body_file,
+            output_file,
             path,
             query,
             if_match,
@@ -211,7 +215,56 @@ async fn run(args: Args) -> Result<()> {
                     .map_err(|_| Error::invalid("Invalid token file"))?;
                 request = request.bearer_auth(token.trim());
             }
-            if let Some(path) = body_file {
+            if operation_id == "downloadBlob" && output_file.is_none() {
+                return Err(Error::invalid("downloadBlob requires --output-file"));
+            }
+            if operation_id != "downloadBlob" && output_file.is_some() {
+                return Err(Error::invalid(
+                    "--output-file is supported only for downloadBlob",
+                ));
+            }
+            if operation_id == "uploadBlob" {
+                let path = body_file
+                    .ok_or_else(|| Error::invalid("uploadBlob requires a regular --body-file"))?;
+                if path == "-" {
+                    return Err(Error::invalid(
+                        "Binary upload requires a regular file with known length",
+                    ));
+                }
+                let mut file = std::fs::File::open(&path)?;
+                let meta = file.metadata()?;
+                if !meta.is_file() || meta.len() > 67108864 {
+                    return Err(Error::invalid(
+                        "Blob upload requires a file of at most 64 MiB",
+                    ));
+                }
+                use sha2::{Digest, Sha256};
+                let mut hash = Sha256::new();
+                let mut buffer = [0u8; 65536];
+                let mut count = 0u64;
+                loop {
+                    let n = file.read(&mut buffer)?;
+                    if n == 0 {
+                        break;
+                    }
+                    count += n as u64;
+                    if count > meta.len() {
+                        return Err(Error::conflict("Blob upload file changed"));
+                    }
+                    hash.update(&buffer[..n]);
+                }
+                if count != meta.len() {
+                    return Err(Error::conflict("Blob upload file changed"));
+                }
+                file.seek(SeekFrom::Start(0))?;
+                request = request
+                    .header("content-type", "application/octet-stream")
+                    .header("content-length", count)
+                    .header("x-content-sha256", format!("sha256:{:x}", hash.finalize()))
+                    .body(reqwest::Body::wrap_stream(
+                        tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(file)),
+                    ));
+            } else if let Some(path) = body_file {
                 let bytes = read_body(&path, 4194304)?;
                 strict_json(&bytes, 4194304)?;
                 request = request
@@ -236,6 +289,11 @@ async fn run(args: Args) -> Result<()> {
                 Error::unavailable("HTTP request failed; operation outcome may need inspection")
             })?;
             let status = response.status();
+            if status.is_success() && operation_id == "downloadBlob" {
+                let value = download(response, output_file.as_deref().unwrap()).await?;
+                println!("{}", serde_json::to_string(&value)?);
+                return Ok(());
+            }
             if response.content_length().is_some_and(|n| n > 16777216) {
                 return Err(Error::invalid("HTTP response exceeds its limit"));
             }
@@ -264,4 +322,66 @@ async fn run(args: Args) -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn download(mut response: reqwest::Response, path: &Path) -> Result<Value> {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::OpenOptionsExt;
+    use tokio::io::AsyncWriteExt;
+    let expected = response
+        .headers()
+        .get("x-content-sha256")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| v.len() == 71 && v.starts_with("sha256:"))
+        .ok_or_else(|| Error::invalid("Blob response digest is missing"))?
+        .to_string();
+    let size = response
+        .content_length()
+        .filter(|n| *n <= 67108864)
+        .ok_or_else(|| Error::invalid("Blob response length is invalid"))?;
+    let temp = path.with_extension(format!("xelab-{}", uuid::Uuid::new_v4()));
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&temp)?;
+    let result = async {
+        let mut file = tokio::fs::File::from_std(file);
+        let mut count = 0u64;
+        let mut hash = Sha256::new();
+        while let Some(bytes) = response
+            .chunk()
+            .await
+            .map_err(|_| Error::unavailable("Blob download was interrupted"))?
+        {
+            count += bytes.len() as u64;
+            if count > size {
+                return Err(Error::invalid("Blob response length differs"));
+            }
+            hash.update(&bytes);
+            file.write_all(&bytes).await?;
+        }
+        if count != size || format!("sha256:{:x}", hash.finalize()) != expected {
+            return Err(Error::invalid("Blob response length or digest differs"));
+        }
+        file.sync_all().await?;
+        drop(file);
+        // hard_link fails if the destination exists, including a symlink. Both
+        // files are on the same filesystem, so publication is atomic.
+        std::fs::hard_link(&temp, path)?;
+        std::fs::File::open(
+            path.parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new(".")),
+        )?
+        .sync_all()?;
+        Ok(json!({"download":"verified","size_bytes":count,"digest":expected}))
+    }
+    .await;
+    let cleanup = std::fs::remove_file(&temp);
+    if cleanup.is_err() && result.is_ok() {
+        return Err(Error::unavailable("Blob download cleanup failed"));
+    }
+    result
 }
