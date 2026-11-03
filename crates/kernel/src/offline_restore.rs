@@ -91,7 +91,12 @@ impl Target {
                     "Platform recovery requires a fresh private storage root",
                 ));
             }
-            let store = crate::storage::xfs::ProjectStore::open(&entry.path())?;
+            // read_dir on the pinned descriptor yields /proc/self/fd/... entry
+            // paths. The XFS backend deliberately rejects that proc symlink;
+            // pass the configured absolute path so it can verify every ancestor.
+            let store = crate::storage::xfs::ProjectStore::open(
+                &self.session.runtime.config.root().join("volumes"),
+            )?;
             store.verify_mount_root()?;
             let filesystem = store.status()?.filesystem_uuid;
             if self
