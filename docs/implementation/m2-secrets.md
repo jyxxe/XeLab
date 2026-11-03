@@ -23,7 +23,8 @@ bindSecret、listSecretBindings、getSecretBinding、revokeSecretBinding。API �
   解密缓冲在释放时清零。
 - 轮换递增 version/revision；撤销后不能用 rotateSecret 恢复。绑定必须
   同时取得指定 Secret 的 secret.bind 和目标部署的 plugin.permission.grant。
-  插件签名清单还须明确请求匹配的 secret.use；不接受其他宿主代理权限。
+  插件签名清单还须以既有 PermissionRequest 结构明确请求匹配的 secret.use；
+  当前仅支持 required=false 的可选申请，不接受其他宿主代理权限。
 - 当前配置仅支持一个活动主密钥；Secret 轮换与主密钥轮换是两种操作。
   禁止直接替换主密钥文件，已有密文将不能解密。主密钥跨版本重加密尚未提供。
 

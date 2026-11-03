@@ -36,7 +36,7 @@ def build(root, publisher, platform="linux/amd64", implementation="rust", reques
         "concurrency": {"max_active_requests": 4, "max_queue_requests": 0, "queue_timeout_ms": 100},
     }
     if request_secret:
-        manifest["requested_rules"] = [{"action": "secret.use", "resource": {"kind": "secret", "match": "all"}}]
+        manifest["requested_rules"] = [{"rule": {"action": "secret.use", "resource": {"kind": "secret", "match": "all"}}, "required": False}]
     (root / "xelab" / "plugin.json").write_bytes(encoded(manifest))
     return manifest
 

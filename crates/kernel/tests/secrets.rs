@@ -188,7 +188,11 @@ impl Fixture {
         let deployment = Uuid::new_v4();
         let instance = Uuid::new_v4();
         c.execute("INSERT INTO publishers(id,name,key_id,public_key_pem,status,created_at,updated_at) VALUES($1,'fixture','fixture','fixture','trusted',now(),now())",&[&publisher]).await.unwrap();
-        c.execute("INSERT INTO installations(id,plugin_id,version,publisher_id,image_digest,manifest_digest,manifest,state,created_at,updated_at) VALUES($1,'org.xelab.secret-test','1.0.0',$2,'fixture','fixture',$3,'installed',now(),now())",&[&installation,&publisher,&json!({"requested_rules":[{"action":"secret.use","resource":{"kind":"secret","match":"all"}}]})]).await.unwrap();
+        let mut manifest: Value =
+            serde_json::from_str(include_str!("fixtures/secret-manifest.json")).unwrap();
+        manifest["publisher_id"] = json!(publisher);
+        xelab_kernel::artifact::validate_profile(&manifest).unwrap();
+        c.execute("INSERT INTO installations(id,plugin_id,version,publisher_id,image_digest,manifest_digest,manifest,state,created_at,updated_at) VALUES($1,'org.xelab.echo-python','1.0.0',$2,'fixture','fixture',$3,'installed',now(),now())",&[&installation,&publisher,&manifest]).await.unwrap();
         c.execute("INSERT INTO deployments(id,owner_id,installation_id,spec,phase,created_at,updated_at) VALUES($1,$2,$3,$4,'ready',now(),now())",&[&deployment,&owner,&installation,&json!({"enabled":true})]).await.unwrap();
         c.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,runtime_id,created_at,updated_at) VALUES($1,$2,7,0,'ready','alive','{}',$3,now(),now())",&[&instance,&deployment,&instance.to_string()]).await.unwrap();
         (deployment, instance)

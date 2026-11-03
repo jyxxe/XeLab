@@ -356,12 +356,19 @@ pub async fn execute(
 }
 
 fn requested_use(manifest: &Value, secret: Uuid, owner: Uuid, peer: std::net::IpAddr) -> bool {
-    auth::rules_allow(
-        manifest.get("requested_rules").unwrap_or(&Value::Null),
-        "secret.use",
-        &Resource::new("secret", secret, Some(owner)),
-        peer,
-    )
+    manifest
+        .get("requested_rules")
+        .and_then(Value::as_array)
+        .is_some_and(|requests| {
+            requests.iter().any(|request| {
+                auth::rules_allow(
+                    &json!([request["rule"]]),
+                    "secret.use",
+                    &Resource::new("secret", secret, Some(owner)),
+                    peer,
+                )
+            })
+        })
 }
 
 /// The caller derives identity from a CA-verified client leaf, never RpcContext.
