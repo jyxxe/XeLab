@@ -422,7 +422,7 @@ async fn actual_volume_operations_recover_enforce_capacity_and_fence_writers() {
         &f.app.config.root().join("kernel-identity"),
     )
     .unwrap();
-    let deployspec = json!({"installation_id":installation,"config":{},"limits":{"cpu_millis":100,"memory_bytes":67108864,"ephemeral_bytes":1048576,"pids":64},"replicas":1,"enabled":false,"volume_ids":[id]});
+    let deployspec = json!({"installation_id":installation,"display_name":"volume fixture","config":{},"limits":{"cpu_millis":100,"memory_bytes":67108864,"ephemeral_bytes":1048576,"pids":64},"replicas":1,"enabled":false,"volume_ids":[id]});
     let child = f
         .api(
             "createChildAccount",
@@ -479,13 +479,24 @@ async fn actual_volume_operations_recover_enforce_capacity_and_fence_writers() {
             .await;
         assert_eq!(created.0, 202, "{}", created.1);
         let d: Uuid = created.1["resource_id"].as_str().unwrap().parse().unwrap();
+        let approved = f
+            .api(
+                "approvePlugin",
+                Some(d),
+                json!({"rules":[],"egress":[]}),
+                &format!("approve{n}"),
+                Some(1),
+                None,
+            )
+            .await;
+        assert_eq!(approved.0, 200, "{}", approved.1);
         let enabled = f
             .api(
                 "setDeploymentEnabled",
                 Some(d),
                 json!({"enabled":true}),
                 &format!("enable{n}"),
-                Some(1),
+                Some(2),
                 None,
             )
             .await;
