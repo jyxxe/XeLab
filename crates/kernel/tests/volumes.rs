@@ -268,6 +268,11 @@ async fn actual_volume_operations_recover_enforce_capacity_and_fence_writers() {
     assert_eq!(unsafe { libc::geteuid() }, 0);
     assert_eq!(std::env::var("XELAB_XFS_TEST").unwrap(), "1");
     let f = Fixture::new(true).await.unwrap();
+    f.app.runtime.retain_daemon_host_lease().unwrap();
+    assert!(
+        f.app.runtime.clone().host_lease().is_err(),
+        "the daemon lease survives local runtime values until this isolated test process exits"
+    );
     let c = f.app.db.connect().await.unwrap();
     let created = f
         .api("createVolume", None, spec(), "create", None, None)
