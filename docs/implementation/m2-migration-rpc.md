@@ -47,7 +47,8 @@ Apply/Verify 只有在 plan_id 精确匹配、succeeded=true、error 缺失且 o
 
 这是协议层组件验证，不是实际 OCI 迁移、只读挂载、授权围栏、可用备份或升级切流证据。
 RPC 传输组件本身不创建 SQL 状态或公开接口。当前开发分支另有
-[初始化监督器](m2-schema-bootstrap.md)和未发布 Schema 12，非 `none` 入口仍关闭；
+[初始化监督器](m2-schema-bootstrap.md)及追加的
+[Schema 13 备份登记组件](m2-format-backups.md)，非 `none` 安装入口仍关闭；
 这些新增代码尚不能作为完整格式迁移的验收证明。
 
 ## 业务格式参考服务

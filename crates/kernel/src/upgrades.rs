@@ -14,6 +14,8 @@ use std::sync::atomic::Ordering;
 use tokio_postgres::{GenericClient, Row};
 use uuid::Uuid;
 
+#[path = "upgrades_backups.rs"]
+pub mod migration_backup;
 #[path = "upgrades_volumes.rs"]
 mod volume_group;
 #[path = "upgrades_worker.rs"]

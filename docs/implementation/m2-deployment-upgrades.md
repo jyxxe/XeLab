@@ -92,7 +92,9 @@ plugin.json 均重新核对登记摘要；原安装已验证的签名不会被�
 格式绑定使用初始化组件追加的 Schema 12；同格式继承本身不追加或改写 SQL。
 既有迁移原文与校验和保持不变。
 部署占用仍以 Operation 为身份，现同时引用备份/恢复或升级任务。停机、核实备份并
-确认无未完成任务后，显式执行 `xelabctl migrate --config /etc/xelab/kernel.toml --target 12`。
+确认无未完成任务后，显式执行 `xelabctl migrate --config /etc/xelab/kernel.toml --target 13`。
+格式迁移的备份登记字段随[登记组件](m2-format-backups.md)追加 Schema 13；
+该组件尚未接通格式变化执行器，同格式继承仍不依赖格式转换。
 旧二进制拒绝不匹配的内部版本。原生离线快照仍要求同 PostgreSQL 主版本和精确迁移布局；旧版本
 快照应使用匹配的可信恢复程序，不能用本迁移伪装跨版本物理恢复。
 
