@@ -193,13 +193,29 @@ async fn actual_private_restore_allocator_and_verified_files() {
     let mut full = false;
     for _ in 0..256 {
         if let Err(error) = file.write_all(&[0; 65536]) {
-            assert_eq!(error.raw_os_error(), Some(libc::EDQUOT));
+            assert!(matches!(
+                error.raw_os_error(),
+                Some(libc::EDQUOT) | Some(libc::ENOSPC)
+            ));
             full = true;
             break;
         }
     }
     assert!(full, "new restore project must enforce its actual quota");
+    assert!(file.metadata().unwrap().len() > 0 && file.metadata().unwrap().len() <= capacity);
+    if let Err(error) = file.sync_all() {
+        assert!(matches!(
+            error.raw_os_error(),
+            Some(libc::EDQUOT) | Some(libc::ENOSPC)
+        ));
+    }
     drop(file);
+    let store = ProjectStore::open(&app.config.root().join("volumes")).unwrap();
+    let actual = store.inspect(fresh, target.project_id).unwrap();
+    assert_eq!(actual.limits.capacity_bytes, capacity);
+    assert!(actual.used_bytes > 0 && actual.used_bytes <= capacity);
+    assert!(store.available_bytes().unwrap()>64*1024*1024,"the fresh filesystem still has ample space; ENOSPC here is a project-quota allocation refusal");
+    drop(store);
     let public = c
         .query_one(
             "SELECT write_fence,state FROM volumes WHERE id=$1",
