@@ -8,8 +8,13 @@ go_version=1.24.13
 go_sha=1fc94b57134d51669c72173ad5d49fd62afb0f1db9bf3f798fd98ee423f8d730
 minio_commit=0d7408fc9969caf07de6a8c3a84f9fbb10a6739e
 test "$(uname -m)" = x86_64
-curl --proto '=https' --tlsv1.2 --fail --location --retry 3 --max-time 180 \
-  "https://go.dev/dl/go${go_version}.linux-amd64.tar.gz" -o "$fixture_root/go.tar.gz"
+if ! curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location --retry 3 --max-time 180 \
+  "https://go.dev/dl/go${go_version}.linux-amd64.tar.gz" -o "$fixture_root/go.tar.gz"; then
+  # Same pinned official bytes and SHA-256; tolerate the redirect service being
+  # unavailable without silently changing the compiler or artifact source.
+  curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location --retry 3 --max-time 180 \
+    "https://dl.google.com/go/go${go_version}.linux-amd64.tar.gz" -o "$fixture_root/go.tar.gz"
+fi
 echo "$go_sha  $fixture_root/go.tar.gz" | sha256sum --check --status
 tar -xzf "$fixture_root/go.tar.gz" -C "$fixture_root"
 git init -q "$fixture_root/source"
