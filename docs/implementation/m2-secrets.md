@@ -26,7 +26,8 @@ bindSecret、listSecretBindings、getSecretBinding、revokeSecretBinding。API �
   插件签名清单还须以既有 PermissionRequest 结构明确请求匹配的 secret.use；
   当前仅支持 required=false 的可选申请，不接受其他宿主代理权限。
 - 当前配置仅支持一个活动主密钥；Secret 轮换与主密钥轮换是两种操作。
-  禁止直接替换主密钥文件，已有密文将不能解密。主密钥跨版本重加密尚未提供。
+  禁止直接替换主密钥文件，已有密文将不能解密；发现与历史记录不同的主密钥时，
+  创建/轮换也拒绝，防止静默写出混合主密钥的数据。主密钥跨版本重加密尚未提供。
 
 ## HostService.LeaseSecret
 

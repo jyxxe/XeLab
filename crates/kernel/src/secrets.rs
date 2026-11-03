@@ -267,6 +267,17 @@ pub async fn execute(
                 return Err(Error::invalid("Secret expiry must be in the future"));
             }
             let key = MasterKey::load(config)?;
+            if c.query_opt(
+                "SELECT id FROM secrets WHERE encryption_key_id<>$1 LIMIT 1",
+                &[&key.id],
+            )
+            .await?
+            .is_some()
+            {
+                return Err(Error::unavailable(
+                    "Configured master key differs from existing Secrets",
+                ));
+            }
             let secret = if name == "createSecret" {
                 Uuid::new_v4()
             } else {
