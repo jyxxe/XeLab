@@ -436,7 +436,7 @@ async fn actual_volume_operations_recover_enforce_capacity_and_fence_writers() {
         &f.app.config.root().join("kernel-identity"),
     )
     .unwrap();
-    let deployspec = json!({"installation_id":installation,"display_name":"volume fixture","config":{},"limits":{"cpu_millis":100,"memory_bytes":67108864,"ephemeral_bytes":1048576,"pids":64},"replicas":1,"enabled":false,"volume_ids":[id]});
+    let deployspec = json!({"installation_id":installation,"display_name":"volume fixture","config":{},"limits":{"cpu_millis":100,"memory_bytes":134217728,"ephemeral_bytes":1048576,"pids":64},"replicas":1,"enabled":false,"volume_ids":[id]});
     let child = f
         .api(
             "createChildAccount",
@@ -550,6 +550,7 @@ async fn actual_volume_operations_recover_enforce_capacity_and_fence_writers() {
         .unwrap();
     probe(&f, i, "fill").await;
     f.app.runtime.stop(i).await.unwrap();
+    f.app.runtime.stop(i).await.unwrap(); // Confirm cleanup is idempotent before releasing the attachment.
     let mut dbc = f.app.db.connect().await.unwrap();
     let tx = dbc.transaction().await.unwrap();
     volumes::release_stopped(&tx, Some(i)).await.unwrap();

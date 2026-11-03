@@ -28,7 +28,7 @@ DeploymentSpec.volume_ids 必须与签名清单的卷别名一一对应，scope�
 
 挂载使用 bind、nosuid、nodev、noexec 和明确的 ro/rw 标志；容器无 capabilities，seccomp 拒绝 quotactl、quotactl_fd 及清除 project 继承标记的 FSSETXATTR/SETFLAGS ioctl，包括 ioctl 高位被内核截断的变体。只暴露 data 子目录，不向插件暴露 namespace 标记或父目录。
 
-禁用部署或全局启动恢复只有在 Runtime.stop 证实 task 退出、容器删除、cgroup 无进程后才释放附件。故障启动保留附件，下一次恢复仍使用原 fence；单凭进程观测或 SQL phase 不能把写入权交给另一个实例。禁用、程序卸载和容器重建均不删除卷。
+禁用部署或全局启动恢复只有在 Runtime.stop 证实 task 退出且记录移除、容器删除、cgroup 及其子组无进程后才释放附件。停止和网络清理按实际资源消失核实，不能因一次删除命令返回成功就放行；重复清理仍需通过相同检查。故障启动保留附件，下一次恢复仍使用原 fence；单凭进程观测或 SQL phase 不能把写入权交给另一个实例。禁用、程序卸载和容器重建均不删除卷。
 
 显式删除另需 volume.delete、If-Match，并要求 `confirm_volume_id` 精确等于路径 UUID。确认值在幂等重放之前校验。仍有 attachment 或 backup/restore/migration hold 时返回 409。
 
