@@ -133,13 +133,15 @@ pub async fn exercise(f: &Fixture, source: Uuid, publisher: Uuid, volume_operati
         )
         .await;
     assert_eq!(approved.0, 200, "{}", approved.1);
+    // approvePlugin returns its approval body, not a Deployment revision.
+    let approved_deployment = current(f, deployment).await;
     let enabled = f
         .api(
             "setDeploymentEnabled",
             Some(deployment),
             json!({"enabled":true}),
             "volume-upgrade-enable",
-            approved.1["revision"].as_i64(),
+            Some(approved_deployment["revision"].as_i64().unwrap()),
             None,
         )
         .await;
