@@ -14,6 +14,7 @@ pub mod error;
 pub mod host;
 pub mod host_blobs;
 pub mod identity;
+pub mod migration_rpc;
 pub mod offline;
 pub mod policy;
 pub mod recovery;

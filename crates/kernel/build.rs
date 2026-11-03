@@ -6,6 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             format!("{root}/xelab/v1/lifecycle.proto"),
             format!("{root}/xelab/v1/capability.proto"),
             format!("{root}/xelab/v1/host.proto"),
+            format!("{root}/xelab/v1/migration.proto"),
         ],
         &[root.to_string()],
     )?;

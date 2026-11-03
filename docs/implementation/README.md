@@ -20,5 +20,6 @@
 - [RUN-03 独占宿主测试工具与执行手册](run03-host.md)（真实验收待执行）
 - [契约优先级、变更与文档维护](change-policy.md)
 - [原计划迁移映射](migration-map.md)
+- [M2 迁移 RPC 传输组件](m2-migration-rpc.md)
 - [外部规范与实现依据](references.md)
 - [实施里程碑与接口落地](roadmap.md)
