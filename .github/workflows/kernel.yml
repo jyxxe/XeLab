@@ -33,8 +33,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Start isolated backup object store
         run: bash tools/start-test-s3.sh
-      - name: Compile and test
-        run: cargo test --workspace --all-targets --locked
+      - name: Compile all test targets
+        run: cargo test --workspace --all-targets --no-run --locked
       - name: Build reference plugin
         run: cargo build --workspace --bins --locked
       - name: Prepare real OCI test
@@ -75,6 +75,16 @@ jobs:
           test -n "$digest"
           sudo ctr -n xelab-ci images tag docker.io/xelab-ci/host-blob:test "docker.io/xelab-ci/host-blob@$digest"
           echo "XELAB_TEST_HOST_BLOB_IMAGE=docker.io/xelab-ci/host-blob@$digest" >> "$GITHUB_ENV"
+      # Validate new archive/import behavior before the longer controller sweep.
+      # The source daemon is read only; a second daemon owns a fresh content root.
+      - name: Real OCI archive and cold content-store recovery
+        run: |
+          python3 - <<'PYTEST'
+          import glob, os, subprocess
+          binaries=[p for p in glob.glob("target/debug/deps/image_archive-*") if os.path.isfile(p) and os.access(p,os.X_OK)]
+          assert len(binaries)==1,binaries
+          subprocess.run(["sudo","--preserve-env=XELAB_TEST_IMAGE,XELAB_TEST_PYTHON_IMAGE","env","XELAB_IMAGE_ARCHIVE_TEST=1",binaries[0],"--ignored","--nocapture"],check=True)
+          PYTEST
       - name: Real OCI API lifecycle and recovery
         env:
           XELAB_OCI_TEST: "1"
@@ -85,6 +95,8 @@ jobs:
           assert len(binaries)==1,binaries
           subprocess.run(["sudo","--preserve-env=XELAB_TEST_DATABASE_URL,XELAB_TEST_IMAGE,XELAB_TEST_PYTHON_IMAGE,XELAB_TEST_HOST_BLOB_IMAGE,XELAB_OCI_TEST",binaries[0],"--ignored","--nocapture"],check=True)
           PYTEST
+      - name: Full workspace regression
+        run: cargo test --workspace --all-targets --locked
       - name: Strict documentation validation
         run: |
           python3 -m venv /tmp/xelab-docs
