@@ -104,6 +104,26 @@ pub async fn channel(
     generation: i64,
     address: &str,
 ) -> Result<tonic::transport::Channel> {
+    channel_with_timeout(
+        config,
+        id,
+        generation,
+        address,
+        std::time::Duration::from_secs(30),
+    )
+    .await
+}
+
+pub(crate) async fn channel_with_timeout(
+    config: &Config,
+    id: Uuid,
+    generation: i64,
+    address: &str,
+    timeout: std::time::Duration,
+) -> Result<tonic::transport::Channel> {
+    if timeout.is_zero() || timeout > std::time::Duration::from_secs(3600) {
+        return Err(Error::invalid("Invalid workload channel deadline"));
+    }
     let identity = config.root().join("kernel-identity");
     let ca = fs::read(config.text("security", "workload_ca_cert_file"))?;
     let tls = tonic::transport::ClientTlsConfig::new()
@@ -118,7 +138,7 @@ pub async fn channel(
         .tls_config(tls)
         .map_err(|_| Error::unavailable("Invalid workload TLS configuration"))?
         .connect_timeout(std::time::Duration::from_secs(2))
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(timeout)
         .connect()
         .await
         .map_err(|_| Error::unavailable("Workload TLS connection failed"))
