@@ -603,17 +603,48 @@ impl Runtime {
             address: net["peer"].as_str().unwrap().to_owned(),
         })
     }
+    async fn task_present(&self, id: Uuid) -> Result<bool> {
+        let raw = self.ctr(&strs(&["tasks", "list"])).await?;
+        let text =
+            std::str::from_utf8(&raw).map_err(|_| Error::unavailable("Invalid task inventory"))?;
+        let mut lines = text.lines().filter(|s| !s.trim().is_empty());
+        let header: Vec<_> = lines
+            .next()
+            .ok_or_else(|| Error::unavailable("Missing task inventory header"))?
+            .split_whitespace()
+            .collect();
+        if header.len() < 3 || header[..3] != ["TASK", "PID", "STATUS"] {
+            return Err(Error::unavailable("Invalid task inventory header"));
+        }
+        let mut found = false;
+        for line in lines {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            if fields.len() < 3 {
+                return Err(Error::unavailable("Invalid task inventory"));
+            }
+            let current: Uuid = fields[0]
+                .parse()
+                .map_err(|_| Error::unavailable("Invalid task identity"))?;
+            found |= current == id;
+        }
+        Ok(found)
+    }
     pub async fn stop(&self, id: Uuid) -> Result<()> {
-        if self.running(id).await? {
-            self.ctr(&strs(&[
-                "tasks",
-                "kill",
-                "--signal",
-                "SIGKILL",
-                "--all",
-                &id.to_string(),
-            ]))
-            .await?;
+        if self.running(id).await?
+            && self
+                .ctr(&strs(&[
+                    "tasks",
+                    "kill",
+                    "--signal",
+                    "SIGKILL",
+                    "--all",
+                    &id.to_string(),
+                ]))
+                .await
+                .is_err()
+            && self.running(id).await?
+        {
+            return Err(Error::unavailable("OCI stop signal is unconfirmed"));
         }
         for _ in 0..40 {
             if !self.running(id).await? {
@@ -624,39 +655,81 @@ impl Runtime {
         if self.running(id).await? {
             return Err(Error::unavailable("Runtime task has not stopped"));
         }
-        let _ = self.ctr(&strs(&["tasks", "delete", &id.to_string()])).await;
-        if self.inventory().await?.contains(&id) {
-            self.ctr(&strs(&["containers", "delete", &id.to_string()]))
-                .await?;
+        for _ in 0..20 {
+            if !self.task_present(id).await? {
+                break;
+            }
+            let _ = self.ctr(&strs(&["tasks", "delete", &id.to_string()])).await;
+            if !self.task_present(id).await? {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if self.task_present(id).await? {
+            return Err(Error::unavailable("OCI task removal is unconfirmed"));
+        }
+        if self.inventory().await?.contains(&id)
+            && self
+                .ctr(&strs(&["containers", "delete", &id.to_string()]))
+                .await
+                .is_err()
+            && self.inventory().await?.contains(&id)
+        {
+            return Err(Error::unavailable("OCI container removal is unconfirmed"));
+        }
+        if self.inventory().await?.contains(&id) || self.task_present(id).await? {
+            return Err(Error::unavailable("OCI task or container remains"));
         }
         let cg = Path::new("/sys/fs/cgroup/xelab/plugins").join(id.to_string());
-        if cg.exists()
-            && !fs::read_to_string(cg.join("cgroup.procs"))?
-                .trim()
-                .is_empty()
-        {
-            return Err(Error::unavailable(
-                "Runtime cgroup still contains processes",
-            ));
+        if cg.try_exists()? {
+            let proof = (|| -> Result<bool> {
+                let procs = fs::read_to_string(cg.join("cgroup.procs"))?;
+                let events = fs::read_to_string(cg.join("cgroup.events"))?;
+                Ok(procs.trim().is_empty()
+                    && events.lines().any(|line| {
+                        line.split_whitespace().collect::<Vec<_>>() == ["populated", "0"]
+                    }))
+            })();
+            match proof {
+                Ok(true) => (),
+                Ok(false) => {
+                    return Err(Error::unavailable(
+                        "Runtime cgroup still contains processes",
+                    ))
+                }
+                Err(error) if cg.try_exists()? => return Err(error),
+                Err(_) => (), // runc concurrently removed the now-empty group.
+            }
         }
         let short = id.simple().to_string();
         let ns = format!("xelab-{id}");
-        if Path::new("/run/netns").join(&ns).exists() {
-            command(
+        let namespace_path = Path::new("/run/netns").join(&ns);
+        if namespace_path.try_exists()? {
+            let _ = command(
                 "ip",
                 &strs(&["netns", "delete", &ns]),
                 Duration::from_secs(10),
             )
-            .await?;
+            .await;
         }
         let host = format!("xh{}", &short[..10]);
-        if Path::new("/sys/class/net").join(&host).exists() {
-            command(
+        let host_path = Path::new("/sys/class/net").join(&host);
+        if host_path.try_exists()? {
+            let _ = command(
                 "ip",
                 &strs(&["link", "delete", &host]),
                 Duration::from_secs(10),
             )
-            .await?;
+            .await;
+        }
+        for _ in 0..20 {
+            if !namespace_path.try_exists()? && !host_path.try_exists()? {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        if namespace_path.try_exists()? || host_path.try_exists()? {
+            return Err(Error::unavailable("OCI network cleanup is unconfirmed"));
         }
         let _ = command(
             "nft",
