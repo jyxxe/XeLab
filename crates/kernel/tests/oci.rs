@@ -1084,10 +1084,18 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         offline_value[section][key] = json!(path);
     }
-    let offline =
-        xelab_kernel::offline::Session::open(Config::from_value(offline_value).unwrap(), true)
-            .await
-            .unwrap();
+    let offline_config = Config::from_value(offline_value).unwrap();
+    match xelab_kernel::offline::Session::open(offline_config.clone(), false).await {
+        Err(error) => assert_eq!(error.status.as_u16(), 400),
+        Ok(_) => panic!("offline session accepted missing downtime authorization"),
+    }
+    assert!(
+        !app.runtime.inventory().await.unwrap().is_empty(),
+        "a rejected maintenance request must leave the live source alone"
+    );
+    let offline = xelab_kernel::offline::Session::open(offline_config, true)
+        .await
+        .unwrap();
     assert!(
         db.leader().await.is_err(),
         "offline session owns the database"
