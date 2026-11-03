@@ -31,6 +31,10 @@ async fn real_oci_archive_recovers_into_an_empty_independent_content_store() {
     value["storage"]["root_path"] = json!(root.path().join("platform"));
     value["runtime"]["namespace"] = json!("xelab-ci");
     let source = Runtime::new(Config::from_value(value.clone()).unwrap());
+    println!(
+        "Source containerd versions:\n{}",
+        String::from_utf8_lossy(&source.ctr(&["version".into()]).await.unwrap())
+    );
     let mut images = vec![
         std::env::var("XELAB_TEST_IMAGE").unwrap(),
         std::env::var("XELAB_TEST_PYTHON_IMAGE").unwrap(),
@@ -44,6 +48,21 @@ async fn real_oci_archive_recovers_into_an_empty_independent_content_store() {
         .export_images(&images, &mut archive, FIXTURE_LIMIT)
         .await;
     let staged = archive.metadata().await.unwrap().len();
+    if exported.is_err() {
+        let listing = std::process::Command::new("/usr/bin/tar")
+            .arg("-tvf")
+            .arg(named.path())
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
+        eprintln!(
+            "Independent tar reader status={}\n{}\n{}",
+            listing.status,
+            String::from_utf8_lossy(&listing.stdout),
+            String::from_utf8_lossy(&listing.stderr)
+        );
+    }
     assert!(
         exported.is_ok(),
         "OCI export failed: {exported:?}; staged_bytes={staged}; admitted_bytes={FIXTURE_LIMIT}"

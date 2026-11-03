@@ -132,7 +132,9 @@ impl Runtime {
             return Err(Error::conflict("Image archive output must be empty"));
         }
         file.rewind().await?;
-        let mut args = strs(&["images", "export", "--skip-manifest-json", "-"]);
+        // containerd 2.x defaults to the transfer API, whose progress also uses
+        // stdout. A binary archive needs the direct, synchronous local path.
+        let mut args = strs(&["images", "export", "--local", "--skip-manifest-json", "-"]);
         args.extend_from_slice(images);
         let mut process: Option<Child> = None;
         let work = async {
@@ -228,7 +230,7 @@ impl Runtime {
             oci_tar::verify(file, &expected.images, expected.bytes).await?;
             file.rewind().await?;
             process = Some(self.image_command(
-                &strs(&["images", "import", "--no-unpack", "-"]),
+                &strs(&["images", "import", "--local", "--no-unpack", "-"]),
                 Stdio::piped(),
             )?);
             let child = process.as_mut().unwrap();
