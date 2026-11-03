@@ -14,6 +14,7 @@
 - [M2 离线元数据库快照与恢复身份隔离](m2-platform-recovery.md)
 - [M2 实际 OCI 镜像归档与空内容库导入](m2-image-backups.md)
 - [M2 离线源冻结与元数据导出](m2-offline-source.md)
+- [M2 原始文件加密传输与落盘复核](m2-raw-backups.md)
 - [M2-A XFS 硬配额后端](m2-storage.md)
 - [RUN-03 独占宿主测试工具与执行手册](run03-host.md)（真实验收待执行）
 - [契约优先级、变更与文档维护](change-policy.md)

@@ -27,6 +27,9 @@ const PART: usize = 8 * 1024 * 1024;
 const MAX_ARCHIVE: u64 = 64 * 1024 * 1024 * 1024;
 const MAX_CIPHER: u64 = MAX_ARCHIVE + MAX_ARCHIVE / 65536 * 20 + 1024;
 
+#[path = "backup_raw.rs"]
+pub mod raw;
+
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Object {
@@ -566,20 +569,33 @@ async fn verify_remote(
     expected: &backup_crypto::Summary,
     end: Instant,
 ) -> Result<backup_crypto::Summary> {
+    verify_bytes(
+        client,
+        object.backup,
+        object.object,
+        object.maximum_archive,
+        master,
+        expected,
+        end,
+    )
+    .await
+}
+async fn verify_bytes(
+    client: &s3::Client,
+    backup: Uuid,
+    object: Uuid,
+    maximum: u64,
+    master: &[u8; 32],
+    expected: &backup_crypto::Summary,
+    end: Instant,
+) -> Result<backup_crypto::Summary> {
     let canceled = Arc::new(AtomicBool::new(false));
     let (writer, reader) = download_pipe(end, canceled.clone())?;
     let master = Zeroizing::new(*master);
     let decrypt = tokio::task::spawn_blocking(move || {
-        backup_crypto::open(
-            reader,
-            std::io::sink(),
-            &master,
-            object.backup,
-            object.object,
-            object.maximum_archive,
-        )
+        backup_crypto::open(reader, std::io::sink(), &master, backup, object, maximum)
     });
-    let downloaded = download(client, &object.key(), writer, end).await;
+    let downloaded = download(client, &format!("{backup}/{object}.sealed"), writer, end).await;
     if downloaded.is_err() {
         canceled.store(true, Ordering::Release);
     }
