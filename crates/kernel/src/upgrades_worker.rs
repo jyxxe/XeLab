@@ -113,6 +113,11 @@ async fn freeze(app: &App, row: &Row) -> Result<()> {
         tx.execute("UPDATE instances SET phase='stopped',health='unknown',runtime_id=NULL,revision=revision+1,updated_at=now() WHERE id=$1 AND deployment_id=$2",&[instance,&row.get::<_,Uuid>("deployment_id")]).await?;
         admission::release_stopped(&tx, *instance).await?;
     }
+    if row.get::<_, Value>("target_spec")["enabled"] == true {
+        // Transfer the released source budget while the same budget lock is
+        // held. Another deployment cannot consume it between stop and reserve.
+        admission::reserve(&tx, row.get("candidate_id")).await?;
+    }
     tx.execute("UPDATE deployment_upgrade_jobs SET state='stopped',updated_at=now() WHERE operation_id=$1 AND state='freezing'",&[&operation]).await?;
     tx.execute("UPDATE operations SET state='running',revision=revision+1,updated_at=now() WHERE id=$1 AND state='pending'",&[&operation]).await?;
     tx.commit().await?;

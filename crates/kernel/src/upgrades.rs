@@ -49,6 +49,70 @@ fn stateless(source: &Value, target: &Value, spec: &Value) -> Result<()> {
     }
     Ok(())
 }
+/// Shared by new requests AND idempotent replay. Replaying a stored Operation
+/// does not bypass any of the original composite resource permissions.
+pub async fn authorize(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    deployment: Uuid,
+    action: &str,
+    body: &Value,
+) -> Result<()> {
+    if !matches!(action, "plugin.upgrade" | "plugin.rollback") {
+        return Err(Error::invalid("Invalid upgrade action"));
+    }
+    let owner: Uuid = c
+        .query_opt(
+            "SELECT owner_id FROM deployments WHERE id=$1",
+            &[&deployment],
+        )
+        .await?
+        .ok_or_else(Error::not_found)?
+        .get(0);
+    if owner != ctx.subject {
+        return Err(Error::denied());
+    }
+    for required in [action, "plugin.read", "plugin.enable"] {
+        auth::authorize(
+            c,
+            ctx,
+            required,
+            &Resource::new("deployment", deployment, Some(owner)),
+        )
+        .await?;
+    }
+    let plugin: String = c
+        .query_opt(
+            "SELECT plugin_id FROM installations WHERE id=$1",
+            &[&id(body, "installation_id")?],
+        )
+        .await?
+        .ok_or_else(Error::not_found)?
+        .get(0);
+    auth::authorize(
+        c,
+        ctx,
+        "plugin.read",
+        &Resource::new("plugin", plugin, None),
+    )
+    .await?;
+    if body.get("backup_id").is_some() {
+        let backup = id(body, "backup_id")?;
+        let owner: Uuid = c
+            .query_opt("SELECT created_by FROM backups WHERE id=$1", &[&backup])
+            .await?
+            .ok_or_else(Error::not_found)?
+            .get(0);
+        auth::authorize(
+            c,
+            ctx,
+            "backup.read",
+            &Resource::new("backup", backup, Some(owner)),
+        )
+        .await?;
+    }
+    Ok(())
+}
 /// Caller owns an authorization-fenced transaction, including replay/ETag
 /// handling. No OCI or filesystem mutation occurs before its durable job/hold.
 pub async fn create(

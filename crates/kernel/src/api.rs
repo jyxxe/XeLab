@@ -701,6 +701,15 @@ async fn authorize_operation(
     if crate::backups::handles(name) {
         return crate::backups::authorize(c, ctx, name, params, body).await;
     }
+    if matches!(name, "upgradeDeployment" | "rollbackDeployment") {
+        let action = if name == "upgradeDeployment" {
+            "plugin.upgrade"
+        } else {
+            "plugin.rollback"
+        };
+        return crate::upgrades::authorize(c, ctx, path_id(params, "deployment_id")?, action, body)
+            .await;
+    }
     if name == "installPlugin" {
         // Stage/verify the signed artifact first. Only its verified manifest can
         // supply plugin_id; the worker authorizes that actual ID before commit.
@@ -775,12 +784,7 @@ async fn authorize_operation(
                 Resource::new("plugin", r.get::<_, String>(0), None),
             )
         }
-        "getDeployment"
-        | "setDeploymentEnabled"
-        | "approvePlugin"
-        | "getPluginApproval"
-        | "upgradeDeployment"
-        | "rollbackDeployment" => {
+        "getDeployment" | "setDeploymentEnabled" | "approvePlugin" | "getPluginApproval" => {
             let id = path_id(params, "deployment_id")?;
             let r = c
                 .query_opt("SELECT owner_id FROM deployments WHERE id=$1", &[&id])
@@ -788,8 +792,6 @@ async fn authorize_operation(
                 .ok_or_else(Error::not_found)?;
             (
                 match name {
-                    "upgradeDeployment" => "plugin.upgrade",
-                    "rollbackDeployment" => "plugin.rollback",
                     "setDeploymentEnabled" => "plugin.enable",
                     "approvePlugin" => "plugin.permission.grant",
                     _ => "plugin.read",

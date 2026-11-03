@@ -128,6 +128,34 @@ async fn actual_postgres_upgrade_admission_is_atomic_and_keeps_original_authorit
         revalidate(&c, app, &row).await.unwrap().subject,
         ctx.subject
     );
+    authorize(&c, &ctx, deployment, "plugin.upgrade", &body)
+        .await
+        .unwrap();
+    let revoked = c.transaction().await.unwrap();
+    db::auth_lock(&revoked, true).await.unwrap();
+    revoked
+        .execute(
+            "UPDATE grants SET status='revoked' WHERE subject_id=$1 AND scope->>'kind'='plugin'",
+            &[&ctx.subject],
+        )
+        .await
+        .unwrap();
+    auth::authorize(
+        &revoked,
+        &ctx,
+        "plugin.upgrade",
+        &Resource::new("deployment", deployment, Some(ctx.subject)),
+    )
+    .await
+    .unwrap();
+    assert!(
+        authorize(&revoked, &ctx, deployment, "plugin.upgrade", &body)
+            .await
+            .is_err(),
+        "replay must still check target plugin.read, even when deployment upgrade stays allowed"
+    );
+    assert!(revalidate(&revoked, app, &row).await.is_err());
+    revoked.rollback().await.unwrap();
     let tx = c.transaction().await.unwrap();
     assert!(create(
         &tx,
