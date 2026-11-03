@@ -991,6 +991,30 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
             .get::<_, i64>(0),
         0
     );
+    // Leave one real signed, initialized workload running for the host-admin
+    // offline freeze after the normal controller has relinquished leadership.
+    let current = api(
+        &router,
+        "getDeployment",
+        &params,
+        Some(token),
+        Value::Null,
+        "offline-source-current",
+        None,
+    )
+    .await;
+    let enable = api(
+        &router,
+        "setDeploymentEnabled",
+        &params,
+        Some(token),
+        json!({"enabled":true}),
+        "offline-source-enable",
+        current.1["revision"].as_i64(),
+    )
+    .await;
+    assert_eq!(enable.0, 202, "{}", enable.1);
+    operation(&router, enable.1["id"].as_str().unwrap(), token).await;
     let revoke = api(
         &router,
         "revokeSession",
@@ -1021,6 +1045,81 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     );
     app.shutdown.store(true, Ordering::SeqCst);
     worker.abort();
+    let _ = worker.await;
+    // The test's API App is deliberately still held by Router clones. Terminate
+    // its old leader only after stopping the controller, then exercise normal
+    // offline host/database lease acquisition with root-private credentials.
+    let pid: i32 = app
+        .leader
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    c.query_one("SELECT pg_terminate_backend($1)", &[&pid])
+        .await
+        .unwrap();
+    let mut offline_value = app.config.value.clone();
+    for (section, key, name, bytes) in [
+        (
+            "database",
+            "dsn_file",
+            "offline.dsn",
+            format!("{base} dbname=xelab_oci").into_bytes(),
+        ),
+        (
+            "security",
+            "token_hmac_key_file",
+            "offline.hmac",
+            vec![42; 32],
+        ),
+        (
+            "server",
+            "tls_key_file",
+            "offline-server.key",
+            leaf.serialize_pem().into_bytes(),
+        ),
+    ] {
+        let path = root.join(name);
+        fs::write(&path, bytes).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        offline_value[section][key] = json!(path);
+    }
+    let offline_config = Config::from_value(offline_value).unwrap();
+    match xelab_kernel::offline::Session::open(offline_config.clone(), false).await {
+        Err(error) => assert_eq!(error.status.as_u16(), 400),
+        Ok(_) => panic!("offline session accepted missing downtime authorization"),
+    }
+    assert!(
+        !app.runtime.inventory().await.unwrap().is_empty(),
+        "a rejected maintenance request must leave the live source alone"
+    );
+    let offline = xelab_kernel::offline::Session::open(offline_config, true)
+        .await
+        .unwrap();
+    assert!(
+        db.leader().await.is_err(),
+        "offline session owns the database"
+    );
+    let frozen = offline.freeze_source().await.unwrap();
+    assert!(!frozen.images().is_empty());
+    assert!(!frozen.stopped_lsn().is_empty());
+    assert!(frozen.volume_sources().await.unwrap().is_empty());
+    assert!(app.runtime.inventory().await.unwrap().is_empty());
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM instances WHERE phase<>'stopped' OR runtime_id IS NOT NULL",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        0
+    );
+    let mut metadata = Vec::new();
+    let summary = frozen.export_metadata(&mut metadata).await.unwrap();
+    assert_eq!(summary.bytes, metadata.len() as u64);
+    assert!(summary.rows > 0);
+    println!("Offline source: real signed OCI Drain/stop, exclusive leases, image-index verification and consistent metadata export passed (not off-host acceptance)");
 }
 
 fn counter(path: &std::path::Path, name: &str) -> u64 {
