@@ -15,11 +15,12 @@
 | 持久卷 | 独立 XFS 硬配额、容量预留、恢复 worker、实际计数、单写者 fence、OCI 挂载 | 多副本应用行为、数据 Schema 迁移、全平台恢复 |
 | Blob | 不可变二进制上传/下载、摘要/长度校验、pin/TTL、可恢复清理、HTTPS CLI | 全平台备份恢复 |
 | Secret | AES-256-GCM 托管、元数据 API、轮换/撤销、部署绑定、工作负载 mTLS 租约 | 主密钥轮换、备份恢复 |
+| 备份/恢复 | 部署级备份任务、验证后新卷切换；离线元数据数据流、空库导入与权限重置组件 | 全平台离线协调入口、Blob/镜像/卷整体重建、DataMigration、正式异机演练 |
 | 运维 | HTTPS 管理 API、通用 CLI、探针、结构化错误日志、数据库审计、故障恢复测试 | WebUI、UDS 控制通道、指标/Tracing 导出、自动备份、数据与 AI 平台 |
 
 只接受单副本、无依赖、无宿主权限申请、无 UI/路由、无扩展点的普通插件；允许受控持久卷，但 data_schema_version 仍须为 none，数据迁移单独交付。业务 Schema 必须自包含；本版拒绝 `$ref/$id` 等引用，避免联网或读取宿主文件。并发池满时立即拒绝，不静默排队。未实现的管理操作返回明确错误，不返回模拟成功。
 
-配置仍使用现有 `kernel.toml`；`unix_socket`、备份 URI 和 UI Gateway 在此子集中不提供对应服务。不要仅因配置被接受而认为这些能力已经启用。
+配置仍使用现有 `kernel.toml`；`unix_socket` 和 UI Gateway 在此子集中不提供对应服务。备份 URI 的标准 AWS 后端还需独立凭证、主密钥及仓库注册，见 [备份任务](../../docs/implementation/m2-backup-jobs.md)。不要仅因配置被接受而认为相关能力已经启用。
 
 工作负载 Blob 代理、显式批准与固定输入白名单见 [M2 Host Blob](../../docs/implementation/m2-host-blobs.md)。
 
