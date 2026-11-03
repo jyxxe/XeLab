@@ -19,6 +19,61 @@ use tokio_postgres::GenericClient;
 use uuid::Uuid;
 const ROOT_LOCK: i64 = 0x58454c564f4c5254;
 const TOMBSTONE: i64 = 65536;
+#[derive(serde::Serialize)]
+pub struct BackupSource {
+    pub id: Uuid,
+    pub spec: Value,
+    pub capacity_bytes: u64,
+    pub data_schema_version: Option<String>,
+    pub filesystem_uuid: Uuid,
+    pub project_id: u32,
+    #[serde(skip)]
+    pub path: std::path::PathBuf,
+}
+/// Paths are returned only for this job's durable holds and exact admitted
+/// namespace/quota. The worker must retain the holds until all reads settle.
+pub async fn backup_sources(app: &App, operation: Uuid, ids: &[Uuid]) -> Result<Vec<BackupSource>> {
+    let c = app.db.connect().await?;
+    let rows=c.query("SELECT a.*,r.filesystem_uuid,v.spec AS volume_spec FROM volume_allocations a JOIN volume_storage_root r ON r.id=a.root_id JOIN volumes v ON v.id=a.volume_id JOIN volume_holds h ON h.volume_id=a.volume_id WHERE a.volume_id=ANY($1) AND h.operation_id=$2 AND a.state='ready' AND r.state='ready' ORDER BY a.volume_id", &[&ids,&operation]).await?;
+    if rows.len() != ids.len() || rows.is_empty() || rows.len() > 16 {
+        return Err(Error::conflict("Backup source holds or allocations differ"));
+    }
+    let path = app.config.root().join("volumes");
+    blocking(move || {
+        let mut store = ProjectStore::open(&path)?;
+        let root: Uuid = rows[0].get("root_id");
+        let filesystem: Uuid = rows[0].get("filesystem_uuid");
+        store.namespace_identity(filesystem, root, false)?;
+        let mut sources = Vec::new();
+        for row in rows {
+            let volume: Uuid = row.get("volume_id");
+            let project = row.get::<_, i32>("project_id") as u32;
+            let limits = Limits {
+                capacity_bytes: row.get::<_, i64>("capacity_bytes") as u64,
+                inodes: row.get::<_, i64>("inode_limit") as u64,
+            };
+            if row.get::<_, Uuid>("root_id") != root
+                || row.get::<_, Uuid>("filesystem_uuid") != filesystem
+                || store.inspect(volume, project)?.limits != limits
+            {
+                return Err(Error::unavailable(
+                    "Backup source namespace or quota differs",
+                ));
+            }
+            sources.push(BackupSource {
+                id: volume,
+                spec: row.get("volume_spec"),
+                capacity_bytes: limits.capacity_bytes,
+                data_schema_version: row.get("data_schema_version"),
+                filesystem_uuid: filesystem,
+                project_id: project,
+                path: store.data_path(volume, project)?,
+            });
+        }
+        Ok(sources)
+    })
+    .await
+}
 #[derive(Clone, Copy)]
 struct Binding {
     id: Uuid,

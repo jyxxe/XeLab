@@ -9,6 +9,7 @@
 - [M2 工作负载 Blob RPC 与固定数据范围](m2-host-blobs.md)
 - [M2 单节点持久卷、恢复与挂载](m2-volumes.md)
 - [M2 备份归档、加密与对象传输底层](m2-backup-transfer.md)
+- [M2 持久备份任务与恢复校验](m2-backup-jobs.md)
 - [M2-A XFS 硬配额后端](m2-storage.md)
 - [RUN-03 独占宿主测试工具与执行手册](run03-host.md)（真实验收待执行）
 - [契约优先级、变更与文档维护](change-policy.md)

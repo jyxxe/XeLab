@@ -35,12 +35,16 @@ enum Kind {
     Symlink,
     Fifo,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Attribute {
     name: String,
     value: String,
 }
+
+#[path = "archive_verify.rs"]
+mod verification;
+pub use verification::verify;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Entry {
@@ -66,7 +70,8 @@ enum Record {
     Entry(Entry),
     End { entries: u32, data_bytes: u64 },
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Summary {
     pub entries: u32,
     pub data_bytes: u64,
@@ -783,6 +788,10 @@ mod tests {
             summary
         );
         assert_eq!(
+            verify(target.path(), &mut encoded.as_slice(), volume, 1048576).unwrap(),
+            summary
+        );
+        assert_eq!(
             fs::read(target.path().join("nested/payload")).unwrap(),
             b"payload"
         );
@@ -829,6 +838,31 @@ mod tests {
             .read_exact_at(&mut bytes, 1024 * 1024 * 1024)
             .unwrap();
         assert_eq!(bytes, [0; 4]);
+        // Nonzero bytes placed into an expected sparse hole must be detected
+        // even if the visible file size/mtime were restored after corruption.
+        let sparse_meta = restored.metadata().unwrap();
+        drop(restored);
+        let altered = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(target.path().join("sparse"))
+            .unwrap();
+        altered.write_all_at(b"bad", 1024 * 1024 * 1024).unwrap();
+        let stamps = [
+            libc::timespec {
+                tv_sec: sparse_meta.atime(),
+                tv_nsec: sparse_meta.atime_nsec(),
+            },
+            libc::timespec {
+                tv_sec: sparse_meta.mtime(),
+                tv_nsec: sparse_meta.mtime_nsec(),
+            },
+        ];
+        assert_eq!(
+            unsafe { libc::futimens(altered.as_raw_fd(), stamps.as_ptr()) },
+            0
+        );
+        assert!(verify(target.path(), &mut encoded.as_slice(), volume, 1048576).is_err());
     }
     #[test]
     fn malformed_or_incomplete_archives_cannot_escape_or_replace_existing_data() {

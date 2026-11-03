@@ -13,16 +13,114 @@ const SECRET_AUTHORITY: &str = include_str!("../migrations/0003_secret_authority
 const BLOB_DELETIONS: &str = include_str!("../migrations/0004_blob_deletions.sql");
 const VOLUME_SERVICE: &str = include_str!("../migrations/0005_volume_service.sql");
 const HOST_BLOB: &str = include_str!("../migrations/0006_host_blob.sql");
-const MIGRATIONS: [&str; 6] = [
+const BACKUP_JOBS: &str = include_str!("../migrations/0007_backup_jobs.sql");
+const MIGRATIONS: [&str; 7] = [
     BASELINE,
     CALL_CHARGES,
     SECRET_AUTHORITY,
     BLOB_DELETIONS,
     VOLUME_SERVICE,
     HOST_BLOB,
+    BACKUP_JOBS,
 ];
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 pub const LEADER_LOCK: i64 = 0x58454c41424d3101;
+
+/// Serialize a deployment's OCI mutations without holding an authorization
+/// transaction across RPC/disk work. Keep the owning connection until all
+/// mutations settle; dropping it releases this session lock.
+pub(crate) struct DeploymentFence {
+    _connection: Client,
+    _local: tokio::sync::OwnedMutexGuard<()>,
+    deployment: Uuid,
+}
+impl DeploymentFence {
+    pub(crate) fn protects(&self, deployment: Uuid) -> bool {
+        self.deployment == deployment
+    }
+}
+pub(crate) async fn deployment_fence(db: &Db, deployment: Uuid) -> Result<Option<DeploymentFence>> {
+    type LocalFences = std::collections::BTreeMap<Uuid, std::sync::Weak<tokio::sync::Mutex<()>>>;
+    static LOCAL: std::sync::OnceLock<std::sync::Mutex<LocalFences>> = std::sync::OnceLock::new();
+    let local = {
+        let mut guards = LOCAL
+            .get_or_init(Default::default)
+            .lock()
+            .map_err(|_| Error::unavailable("Runtime fence is unavailable"))?;
+        guards.retain(|_, guard| guard.strong_count() > 0);
+        match guards.get(&deployment).and_then(std::sync::Weak::upgrade) {
+            Some(guard) => guard,
+            None => {
+                let guard = Arc::new(tokio::sync::Mutex::new(()));
+                guards.insert(deployment, Arc::downgrade(&guard));
+                guard
+            }
+        }
+    };
+    let Ok(local) = local.try_lock_owned() else {
+        return Ok(None);
+    };
+    let c = db.connect().await?;
+    let name = format!("xelab/deployment-runtime/{deployment}");
+    let held: bool = c
+        .query_one(
+            "SELECT pg_try_advisory_lock(hashtextextended($1,0))",
+            &[&name],
+        )
+        .await?
+        .get(0);
+    Ok(held.then_some(DeploymentFence {
+        _connection: c,
+        _local: local,
+        deployment,
+    }))
+}
+
+#[cfg(test)]
+mod runtime_fence_tests {
+    use super::*;
+    #[tokio::test]
+    async fn actual_postgres_runtime_mutations_serialize_until_connection_release() {
+        let Ok(dsn) = std::env::var("XELAB_TEST_DATABASE_URL") else {
+            eprintln!("SKIPPED: runtime fence requires PostgreSQL");
+            return;
+        };
+        let db = Db::new(dsn).unwrap();
+        let deployment = Uuid::new_v4();
+        let first = deployment_fence(&db, deployment).await.unwrap().unwrap();
+        assert!(deployment_fence(&db, deployment).await.unwrap().is_none());
+        let unrelated = deployment_fence(&db, Uuid::new_v4())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!unrelated._connection.is_closed());
+        // PostgreSQL restarting must not unlock another task in this process
+        // while the old task is still completing an OCI mutation.
+        let pid: i32 = first
+            ._connection
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let admin = db.connect().await.unwrap();
+        admin
+            .query_one("SELECT pg_terminate_backend($1)", &[&pid])
+            .await
+            .unwrap();
+        assert!(deployment_fence(&db, deployment).await.unwrap().is_none());
+        drop(first);
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if deployment_fence(&db, deployment).await.unwrap().is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+}
 
 #[derive(Clone)]
 pub struct Db {
