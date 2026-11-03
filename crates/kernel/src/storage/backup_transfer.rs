@@ -210,6 +210,39 @@ impl Pool {
         });
         Ok(Transfer { result })
     }
+    /// Recheck a previously verified private allocation after daemon restart.
+    /// It is never unpacked over an existing tree or accepted from metadata alone.
+    pub fn verify_restored(
+        &self,
+        client: Arc<s3::Client>,
+        target: PathBuf,
+        object: Object,
+        master: Zeroizing<[u8; 32]>,
+        expected: Verified,
+        timeout: Duration,
+    ) -> Result<Transfer<Verified>> {
+        object.validate()?;
+        let end = deadline(timeout)?;
+        let permit = self
+            .permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Error::exhausted())?;
+        let (sender, result) = oneshot::channel();
+        tokio::spawn(async move {
+            let _permit = permit;
+            let value = async {
+                let actual = target_pass(&client, target, object, &master, end, true).await?;
+                if !same_data(&actual, &expected) {
+                    return Err(stopped());
+                }
+                Ok(actual)
+            }
+            .await;
+            let _ = sender.send(value);
+        });
+        Ok(Transfer { result })
+    }
 }
 fn deadline(timeout: Duration) -> Result<Instant> {
     if timeout.is_zero() || timeout > Duration::from_secs(3600) {

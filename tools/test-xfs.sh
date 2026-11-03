@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Destructive only to two newly created disposable loopback images.
+# Destructive only to newly created disposable loopback images.
 # Never run on production; does not accept a device or existing mount path.
 set -euo pipefail
-if [[ ${1:-} != --isolated-test-host || ${XELAB_XFS_TEST:-} != 1 || $EUID != 0 || ( $# != 2 && $# != 3 ) ]]; then
+if [[ ${1:-} != --isolated-test-host || ${XELAB_XFS_TEST:-} != 1 || $EUID != 0 || ( $# != 2 && $# != 3 && $# != 4 ) ]]; then
   echo 'Usage (isolated host only): XELAB_XFS_TEST=1 sudo -E bash tools/test-xfs.sh --isolated-test-host TEST_BINARY' >&2
   exit 2
 fi
@@ -25,7 +25,7 @@ cleanup() {
       exit 1
     fi
   done
-  for name in service/volumes readonly accounting enforced; do
+  for name in restore-service/volumes service/volumes readonly accounting enforced; do
     if mountpoint -q "$work/$name"; then
       if ! umount "$work/$name"; then
         echo "Cleanup failed: isolated test mount retained at $work/$name" >&2
@@ -33,8 +33,8 @@ cleanup() {
       fi
     fi
   done
-  rm -f -- "$work/enforced.img" "$work/accounting.img" "$work/service.img"
-  rm -rf --one-file-system -- "$work/service"
+  rm -f -- "$work/enforced.img" "$work/accounting.img" "$work/service.img" "$work/restore.img"
+  rm -rf --one-file-system -- "$work/service" "$work/restore-service"
   rmdir -- "$work/enforced" "$work/accounting" "$work/readonly" "$work"
   exit "$rc"
 }
@@ -54,7 +54,7 @@ export XELAB_XFS_ROOT="$work/enforced"
 export XELAB_XFS_ACCOUNTING_ROOT="$work/accounting"
 "$binary" --ignored --nocapture
 
-if [[ $# == 3 ]]; then
+if [[ $# -ge 3 ]]; then
   volume_binary=$(realpath -- "$3")
   test -x "$volume_binary"
   mkdir -m 700 "$work/service" "$work/service/volumes"
@@ -64,4 +64,16 @@ if [[ $# == 3 ]]; then
   chmod 700 "$work/service/volumes"
   export XELAB_VOLUME_TEST_ROOT="$work/service"
   "$volume_binary" --ignored --nocapture
+fi
+
+if [[ $# == 4 ]]; then
+  restore_binary=$(realpath -- "$4")
+  test -x "$restore_binary"
+  mkdir -m 700 "$work/restore-service" "$work/restore-service/volumes"
+  truncate -s 512M "$work/restore.img"
+  mkfs.xfs -q "$work/restore.img"
+  mount -o loop,prjquota,nosuid,nodev,noexec "$work/restore.img" "$work/restore-service/volumes"
+  chmod 700 "$work/restore-service/volumes"
+  export XELAB_RESTORE_TEST_ROOT="$work/restore-service"
+  "$restore_binary" --ignored --nocapture --exact volumes::restore_tests::actual_private_restore_allocator_and_verified_files
 fi

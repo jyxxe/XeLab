@@ -14,7 +14,8 @@ const BLOB_DELETIONS: &str = include_str!("../migrations/0004_blob_deletions.sql
 const VOLUME_SERVICE: &str = include_str!("../migrations/0005_volume_service.sql");
 const HOST_BLOB: &str = include_str!("../migrations/0006_host_blob.sql");
 const BACKUP_JOBS: &str = include_str!("../migrations/0007_backup_jobs.sql");
-const MIGRATIONS: [&str; 7] = [
+const RESTORE_VOLUMES: &str = include_str!("../migrations/0008_restore_volumes.sql");
+const MIGRATIONS: [&str; 8] = [
     BASELINE,
     CALL_CHARGES,
     SECRET_AUTHORITY,
@@ -22,6 +23,7 @@ const MIGRATIONS: [&str; 7] = [
     VOLUME_SERVICE,
     HOST_BLOB,
     BACKUP_JOBS,
+    RESTORE_VOLUMES,
 ];
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 pub const LEADER_LOCK: i64 = 0x58454c41424d3101;

@@ -286,6 +286,9 @@ pub async fn authorize(
     let resource = Resource::new("deployment", deployment, Some(ctx.subject));
     auth::authorize(c, ctx, "plugin.read", &resource).await?;
     auth::authorize(c, ctx, "plugin.enable", &resource).await?;
+    if name == "restoreBackup" {
+        crate::restores::authorize(c, ctx, id(body, "backup_id")?).await?;
+    }
     if name == "createBackup" {
         for value in body["volume_ids"]
             .as_array()
@@ -334,7 +337,8 @@ pub async fn execute(
             200,
         )),
         "createBackup" => create(c, app, ctx, body).await,
-        _ => Err(Error::unavailable("Restore workflow is not yet enabled")),
+        "restoreBackup" => crate::restores::create(c, app, ctx, body).await,
+        _ => Err(Error::not_found()),
     }
 }
 async fn create(
@@ -555,17 +559,60 @@ pub async fn revalidate(
         }
     }
     for volume in c.query("SELECT j.source_volume_id,v.owner_id,h.operation_id AS held_by FROM backup_job_volumes j JOIN volumes v ON v.id=j.source_volume_id LEFT JOIN volume_holds h ON h.volume_id=j.source_volume_id WHERE j.operation_id=$1",&[&operation]).await? {
-        if volume.get::<_,Option<Uuid>>("held_by")!=Some(operation) {return Err(Error::conflict("Recovery volume hold is missing"));}
+        if row.get::<_,String>("kind")=="backup" && volume.get::<_,Option<Uuid>>("held_by")!=Some(operation) {return Err(Error::conflict("Recovery volume hold is missing"));}
         if !auth::rules_allow(&available,"volume.read",&Resource::new("volume",volume.get::<_,Uuid>(0),Some(volume.get::<_,Uuid>(1))),peer) {return Err(Error::denied());}
+    }
+    if row.get::<_, String>("kind") == "restore" {
+        if !auth::rules_allow(
+            &available,
+            "volume.create",
+            &Resource::new("volume", "new", Some(ctx.subject)),
+            peer,
+        ) {
+            return Err(Error::denied());
+        }
+        let spec: Value = row.get("original_spec");
+        for value in spec["volume_ids"]
+            .as_array()
+            .ok_or_else(|| Error::conflict("Restore target volume group is invalid"))?
+        {
+            let volume: Uuid = value
+                .as_str()
+                .ok_or_else(|| Error::conflict("Invalid target volume"))?
+                .parse()
+                .map_err(|_| Error::conflict("Invalid target volume"))?;
+            let old=c.query_opt("SELECT v.owner_id,h.operation_id FROM volumes v JOIN volume_holds h ON h.volume_id=v.id WHERE v.id=$1",&[&volume]).await?.ok_or_else(||Error::conflict("Restore target hold is missing"))?;
+            if old.get::<_, Uuid>("operation_id") != operation
+                || old.get::<_, Uuid>("owner_id") != ctx.subject
+                || !auth::rules_allow(
+                    &available,
+                    "volume.read",
+                    &Resource::new("volume", volume, Some(ctx.subject)),
+                    peer,
+                )
+            {
+                return Err(Error::denied());
+            }
+        }
+        let valid: bool = c
+            .query_one(
+                "SELECT state='ready' AND off_host FROM backups WHERE id=$1",
+                &[&backup],
+            )
+            .await?
+            .get(0);
+        if !valid {
+            return Err(Error::conflict("Restore source is no longer ready"));
+        }
     }
     Ok(ctx)
 }
 
 #[cfg(test)]
 #[path = "backups_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
-async fn job(app: &App, operation: Uuid) -> Result<tokio_postgres::Row> {
+pub(crate) async fn job(app: &App, operation: Uuid) -> Result<tokio_postgres::Row> {
     app.db.connect().await?.query_one("SELECT j.*,host(j.peer) AS approved_peer,j.metadata_point::text AS metadata_reference FROM storage_recovery_jobs j WHERE operation_id=$1",&[&operation]).await.map_err(Into::into)
 }
 
@@ -647,8 +694,8 @@ async fn process(
     use crate::storage::backup_transfer::{Object, SavedUpload};
     use std::time::Duration;
     let row = job(app, operation).await?;
-    if row.get::<_, String>("kind") != "backup" {
-        return Err(Error::unavailable("Restore worker is not enabled"));
+    if row.get::<_, String>("kind") == "restore" {
+        return crate::restores::process(app, operation, fence, pool).await;
     }
     if row.get::<_, String>("state") == "freezing" {
         freeze(app, operation, fence).await?;
@@ -856,7 +903,7 @@ async fn process(
     db::complete(
         &tx,
         operation,
-        Ok(json!({"backup_id":backup,"deployment_resumed":resumed})),
+        Ok(json!({"backup_id":backup,"deployment_enable_scheduled":resumed})),
     )
     .await?;
     db::outbox(
@@ -884,7 +931,7 @@ async fn process(
     Ok(())
 }
 
-async fn resume(
+pub(crate) async fn resume(
     c: &(impl GenericClient + Sync),
     app: &App,
     ctx: &Context,
@@ -987,6 +1034,7 @@ async fn fail_stopped(
     tx.execute("UPDATE deployments SET spec=$2,phase='disabled',revision=revision+1,updated_at=now() WHERE id=$1",&[&deployment,&spec]).await?;
     tx.execute("UPDATE backups SET state='failed',revision=revision+1,updated_at=now() WHERE id=$1 AND state='creating'",&[&row.get::<_,Uuid>("backup_id")]).await?;
     tx.execute("UPDATE storage_recovery_jobs SET state='failed',failure=coalesce(failure,$2),updated_at=now() WHERE operation_id=$1",&[&operation,&error.detail()]).await?;
+    tx.execute("UPDATE volume_allocations a SET state='quarantined',updated_at=now() WHERE a.operation_id=$1 AND a.state IN ('restoring','restored') AND NOT EXISTS(SELECT 1 FROM volumes v WHERE v.id=a.volume_id)",&[&operation]).await?;
     tx.execute(
         "DELETE FROM volume_holds WHERE operation_id=$1",
         &[&operation],
