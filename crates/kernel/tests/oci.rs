@@ -127,7 +127,12 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         .unwrap();
     let db = Db::new(format!("{base} dbname=xelab_oci")).unwrap();
     db.migrate().await.unwrap();
-    let directory = tempfile::tempdir().unwrap().keep();
+    let directory = tempfile::Builder::new()
+        .prefix("xelab-oci-source-")
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir_in("/mnt")
+        .unwrap()
+        .keep();
     let root = directory.as_path();
     let key = KeyPair::generate().unwrap();
     let mut ca = CertificateParams::new(vec!["xelab-test-ca".into()]).unwrap();
