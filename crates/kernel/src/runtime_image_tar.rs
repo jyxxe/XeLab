@@ -255,7 +255,13 @@ pub(super) async fn verify(
             .find([':', '@'])
             .ok_or_else(|| Error::invalid("OCI image name has no immutable object"))?;
         let reference = path[start..].strip_prefix(':').unwrap_or(&path[start..]);
-        if root["annotations"]["org.opencontainers.image.ref.name"].as_str() != Some(reference) {
+        // New containerd releases use the full name for digest-only refs to
+        // satisfy OCI grammar; older versions used the object ("@sha256:...").
+        // A tag+digest continues to use its exact object in both versions.
+        let annotation = root["annotations"]["org.opencontainers.image.ref.name"].as_str();
+        if annotation != Some(reference)
+            && !(reference.starts_with('@') && annotation == Some(image))
+        {
             return Err(Error::invalid(
                 "OCI reference annotation differs from its full name",
             ));
@@ -377,6 +383,15 @@ mod tests {
         )
         .await
         .unwrap();
+        let current = rewrite_index(&with_alias, |index| {
+            for root in index["manifests"].as_array_mut().unwrap() {
+                root["annotations"]["org.opencontainers.image.ref.name"] =
+                    root["annotations"]["io.containerd.image.name"].clone();
+            }
+        });
+        verify(&mut current.as_slice(), &allowed, current.len() as u64)
+            .await
+            .unwrap();
         let duplicate = rewrite_index(&tar, |index| {
             let copy = index["manifests"][0].clone();
             index["manifests"].as_array_mut().unwrap().push(copy);
