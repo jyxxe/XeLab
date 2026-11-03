@@ -18,7 +18,8 @@ const RESTORE_VOLUMES: &str = include_str!("../migrations/0008_restore_volumes.s
 const PLATFORM_RECOVERY: &str = include_str!("../migrations/0009_platform_recovery.sql");
 const DEPLOYMENT_UPGRADES: &str = include_str!("../migrations/0010_deployment_upgrades.sql");
 const UPGRADE_VOLUME_CLONES: &str = include_str!("../migrations/0011_upgrade_volume_clones.sql");
-const MIGRATIONS: [&str; 11] = [
+const VOLUME_SCHEMA_JOBS: &str = include_str!("../migrations/0012_volume_schema_jobs.sql");
+const MIGRATIONS: [&str; 12] = [
     BASELINE,
     CALL_CHARGES,
     SECRET_AUTHORITY,
@@ -30,6 +31,7 @@ const MIGRATIONS: [&str; 11] = [
     PLATFORM_RECOVERY,
     DEPLOYMENT_UPGRADES,
     UPGRADE_VOLUME_CLONES,
+    VOLUME_SCHEMA_JOBS,
 ];
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 pub const LEADER_LOCK: i64 = 0x58454c41424d3101;

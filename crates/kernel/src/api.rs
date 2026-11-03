@@ -382,6 +382,9 @@ async fn dispatch(
                 if matches!(name, "upgradeDeployment" | "rollbackDeployment") {
                     crate::upgrades::authorize_replay(&tx, &ctx, id(&value, "id")?).await?;
                 }
+                if matches!(name,"setDeploymentEnabled"|"upgradeDeployment"|"rollbackDeployment") {
+                    crate::schema_jobs::authorize_replay(&tx, &ctx, id(&value, "id")?).await?;
+                }
                 return Ok((value, row.get::<_,i32>("response_status") as u16));
             }
             return Err(Error::conflict("Operation has no replayable response"));
@@ -530,8 +533,12 @@ async fn dispatch(
             (body.clone(), 200)
         }
         "setDeploymentEnabled" => {
-            tx.query_one("SELECT id FROM node_budget FOR UPDATE",&[]).await?;
             let id = path_id(&params, "deployment_id")?;
+            let bootstrap = if body["enabled"] == true {
+                crate::schema_jobs::preflight(&tx,app,&ctx,id).await?
+            } else { None };
+            let bootstrapping = bootstrap.is_some();
+            tx.query_one("SELECT id FROM node_budget FOR UPDATE",&[]).await?;
             let row = tx
                 .query_one("SELECT * FROM deployments WHERE id=$1 FOR UPDATE", &[&id])
                 .await?;
@@ -544,6 +551,10 @@ async fn dispatch(
                 let manifest:Value=tx.query_one("SELECT manifest FROM installations WHERE id=$1",&[&row.get::<_,Uuid>("installation_id")]).await?.get(0);
                 crate::host_blobs::check_approval(&tx,app,id,&manifest).await?;
             }
+            if bootstrap.is_some() && (!enabled || spec["enabled"] == true) {
+                return Err(Error::conflict("Schema bootstrap intent changed during preflight"));
+            }
+            let op = db::operation(&tx, ctx.subject, name, Some(id.to_string())).await?;
             if enabled && spec["enabled"] != true {
                 if tx.query_one("SELECT count(*) FROM instances WHERE deployment_id=$1 AND phase<>'stopped'",&[&id]).await?.get::<_,i64>(0)>0{return Err(Error::conflict("Previous instances have not drained"));}
                 let instance = Uuid::new_v4();
@@ -551,14 +562,20 @@ async fn dispatch(
                 let manifest:Value=tx.query_one("SELECT manifest FROM installations WHERE id=$1",&[&row.get::<_,Uuid>("installation_id")]).await?.get(0);
                 crate::volumes::approve_mounts(&tx,&ctx,id,generation,&spec,&manifest).await?;
                 tx.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,created_at,updated_at) VALUES($1,$2,$3,0,'pending','unknown',$4,now(),now())",&[&instance,&id,&generation,&spec["limits"]]).await?;
+                if let Some(admitted) = bootstrap {
+                    crate::schema_jobs::reserve(&tx,&ctx,id,op,instance,generation,admitted).await?;
+                }
             }
             spec["enabled"] = json!(enabled);
             let phase = if enabled { "reconciling" } else { "draining" };
             tx.execute("UPDATE deployments SET spec=$2,phase=$3,revision=revision+1,updated_at=now() WHERE id=$1",&[&id,&spec,&phase]).await?;
+            if bootstrapping {
+                let admitted = tx.query_one("SELECT j.*,host(j.peer) AS approved_peer FROM volume_schema_jobs j WHERE operation_id=$1", &[&op]).await?;
+                crate::schema_jobs::revalidate(&tx,app,&admitted).await?;
+            }
             if !enabled {
                 tx.execute("UPDATE provider_records SET availability='unavailable' WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)",&[&id]).await?;
             }
-            let op = db::operation(&tx, ctx.subject, name, Some(id.to_string())).await?;
             db::outbox(&tx, "deployment.changed", id, &json!({})).await?;
             (db::operation_value(&tx, op).await?, 202)
         }

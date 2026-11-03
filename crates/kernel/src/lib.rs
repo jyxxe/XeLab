@@ -20,6 +20,7 @@ pub mod policy;
 pub mod recovery;
 pub mod restores;
 pub mod runtime;
+pub(crate) mod schema_jobs;
 pub mod secrets;
 pub mod storage;
 pub mod tls;

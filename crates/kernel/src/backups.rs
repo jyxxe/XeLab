@@ -451,13 +451,35 @@ async fn create(
     )
     .await?;
     for volume in ids {
-        let row=c.query_opt("SELECT a.state,a.data_schema_version,v.spec,v.capacity_bytes FROM volume_allocations a JOIN volumes v ON v.id=a.volume_id WHERE a.volume_id=$1 FOR UPDATE OF a,v",&[&volume]).await?.ok_or_else(Error::not_found)?;
+        let row=c.query_opt("SELECT a.state,a.data_schema_version,a.schema_state,a.schema_plugin_id,a.schema_publisher_id,v.spec,v.capacity_bytes FROM volume_allocations a JOIN volumes v ON v.id=a.volume_id WHERE a.volume_id=$1 FOR UPDATE OF a,v",&[&volume]).await?.ok_or_else(Error::not_found)?;
         if row.get::<_, String>("state") != "ready"
+            || row.get::<_, String>("schema_state") == "initializing"
+            || (row
+                .get::<_, Option<String>>("data_schema_version")
+                .is_some_and(|v| v != "none")
+                && row.get::<_, String>("schema_state") != "verified")
             || row.get::<_, i64>("capacity_bytes") > 63 * 1024 * 1024 * 1024
         {
             return Err(Error::conflict(
                 "Backup volume allocation is not supported or ready",
             ));
+        }
+        let schema: Option<String> = row.get("data_schema_version");
+        if let Some(schema) = schema.filter(|v| v != "none") {
+            let manifest: Value = d.get("manifest");
+            if manifest["data_schema_version"] != schema
+                || row.get::<_, Option<String>>("schema_plugin_id").as_deref()
+                    != manifest["plugin_id"].as_str()
+                || row
+                    .get::<_, Option<Uuid>>("schema_publisher_id")
+                    .map(|id| id.to_string())
+                    .as_deref()
+                    != manifest["publisher_id"].as_str()
+            {
+                return Err(Error::conflict(
+                    "Backup business schema does not match its installation",
+                ));
+            }
         }
         if c.query_opt("SELECT i.id FROM volume_attachments a JOIN instances i ON i.id=a.instance_id WHERE a.volume_id=$1 AND i.deployment_id<>$2 LIMIT 1",&[&volume,&deployment]).await?.is_some() {return Err(Error::conflict("Volume has an attachment outside the consistency group"));}
         c.execute("INSERT INTO volume_holds(volume_id,operation_id,kind) VALUES($1,$2,'backup') ON CONFLICT DO NOTHING",&[&volume,&operation]).await?;

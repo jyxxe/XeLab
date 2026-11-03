@@ -718,7 +718,7 @@ impl ProjectStore {
         self.persist()?;
         Ok(())
     }
-    pub fn data_path(&self, volume: Uuid, id: u32) -> Result<std::path::PathBuf> {
+    fn data_directory(&self, volume: Uuid, id: u32) -> Result<File> {
         self.inspect(volume, id)?;
         let parent = self.dir(volume)?;
         let data = open_at(&parent, &CString::new("data").unwrap())?;
@@ -733,6 +733,21 @@ impl ProjectStore {
         {
             return Err(Error::unavailable("Volume data directory identity differs"));
         }
+        Ok(data)
+    }
+    /// Caller owns writer stop proofs and its volume hold. Usage counters alone
+    /// do not prove emptiness; inspect the exact verified data inode instead.
+    pub fn data_is_empty(&self, volume: Uuid, id: u32) -> Result<bool> {
+        let data = self.data_directory(volume, id)?;
+        Ok(
+            std::fs::read_dir(format!("/proc/self/fd/{}", data.as_raw_fd()))?
+                .next()
+                .transpose()?
+                .is_none(),
+        )
+    }
+    pub fn data_path(&self, volume: Uuid, id: u32) -> Result<std::path::PathBuf> {
+        self.data_directory(volume, id)?;
         let root = std::fs::read_link(format!("/proc/self/fd/{}", self.root.as_raw_fd()))?;
         Ok(root.join(volume.to_string()).join("data"))
     }
