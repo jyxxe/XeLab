@@ -85,6 +85,26 @@ async fn publisher_retrust_preserves_identity_and_requires_existing_object_autho
         )
         .await;
     assert_eq!(revoked.0, 204, "{}", revoked.1);
+    let historical = api(
+        &f.router,
+        "trustPublisher",
+        &[],
+        Some(creation_token),
+        body.clone(),
+        "create-publisher",
+        None,
+        "",
+    )
+    .await;
+    assert_eq!(historical.0, 201, "{}", historical.1);
+    assert_eq!(
+        c.query_one("SELECT status FROM publishers WHERE id=$1", &[&publisher])
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        "revoked",
+        "replaying creation returns its old response and must not revive trust"
+    );
     let scoped = f.key(f.owner, &f.token, json!({"mode":"selected","rules":[{"action":"publisher.trust","resource":{"kind":"publisher","match":"ids","ids":[publisher]}}]})).await;
     let token = scoped["secret"].as_str().unwrap();
     for field in ["public_key_pem", "name"] {
