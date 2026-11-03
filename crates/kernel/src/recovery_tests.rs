@@ -21,11 +21,27 @@ async fn gate(c: &tokio_postgres::Client, backup: Uuid) -> Uuid {
 
 #[tokio::test]
 async fn actual_postgres_reset_rejects_old_authority_and_anchors_only_fresh_owner() {
+    use ed25519_dalek::{pkcs8::EncodePublicKey, SigningKey};
     let Some(f) = Fixture::new().await else {
         return;
     };
     let mut c = f.app.db.connect().await.unwrap();
     let owner = owner(&c, f.backup).await;
+    let publisher: Uuid = c
+        .query_one("SELECT publisher_id FROM installations LIMIT 1", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let pem = SigningKey::from_bytes(&[7; 32])
+        .verifying_key()
+        .to_public_key_pem(Default::default())
+        .unwrap();
+    c.execute(
+        "UPDATE publishers SET public_key_pem=$2 WHERE id=$1",
+        &[&publisher, &pem],
+    )
+    .await
+    .unwrap();
     let peer: IpAddr = "127.0.0.1".parse().unwrap();
     let old = f
         .app
@@ -195,6 +211,61 @@ async fn actual_postgres_reset_rejects_old_authority_and_anchors_only_fresh_owne
     auth::authorize(&c, &new, "publisher.trust", &resource)
         .await
         .unwrap();
+    // Handler/metadata proof only: this test never promotes the incomplete
+    // physical recovery gate to Ready or claims an actual recovered daemon.
+    use axum::{
+        body::{to_bytes, Body},
+        extract::ConnectInfo,
+        http::Request,
+    };
+    use tower::ServiceExt;
+    let router = crate::api::router(f.app.clone());
+    let body = serde_json::json!({"name":"fixture","key_id":"backup-fixture","public_key_pem":pem});
+    for (token, expected) in [
+        (&f.token[..], 401u16),
+        (issued["access_token"].as_str().unwrap(), 200),
+    ] {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/platform/v1/publishers")
+            .header("authorization", format!("Bearer {token}"))
+            .header("idempotency-key", "explicit-recovery-retrust")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        request.extensions_mut().insert(ConnectInfo(
+            "127.0.0.1:30000".parse::<std::net::SocketAddr>().unwrap(),
+        ));
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status().as_u16(), expected);
+        if expected == 200 {
+            let value: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap())
+                    .unwrap();
+            assert_eq!(value["id"], serde_json::json!(publisher));
+            assert_eq!(value["status"], "trusted");
+        }
+    }
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM installations WHERE publisher_id=$1",
+            &[&publisher]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM deployments WHERE spec->>'enabled'='true'",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        0
+    );
 }
 
 #[tokio::test]

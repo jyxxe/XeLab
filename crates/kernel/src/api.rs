@@ -332,7 +332,8 @@ async fn dispatch(
     let mutating = matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
     db::auth_lock(
         &tx,
-        (mutating && (identity::handles(name) || secrets::handles(name))) || name == "getQuota",
+        (mutating && (identity::handles(name) || secrets::handles(name)))
+            || matches!(name, "getQuota" | "trustPublisher" | "revokePublisher"),
     )
     .await?;
     let ctx = app
@@ -371,7 +372,19 @@ async fn dispatch(
                 return Err(Error::new("ONE_TIME_RESPONSE_UNAVAILABLE","The one-time secret is unavailable; inspect the existing resource",StatusCode::CONFLICT).with_resource(row.get::<_,String>("resource_id")));
             }
             // Authentication has been rechecked; resource authorization is checked by the same dispatch before any replay below.
-            let response:Option<Value>=row.get("safe_response");if let Some(value)=response{authorize_operation(&tx,&ctx,name,&params,&body).await?;if matches!(name,"upgradeDeployment"|"rollbackDeployment"){crate::upgrades::authorize_replay(&tx,&ctx,id(&value,"id")?).await?;}return Ok((value,row.get::<_,i32>("response_status") as u16));}return Err(Error::conflict("Operation has no replayable response"));
+            let response: Option<Value> = row.get("safe_response");
+            if let Some(value) = response {
+                if name == "trustPublisher" && row.get::<_,i32>("response_status") == 201 {
+                    auth::authorize(&tx, &ctx, "publisher.trust", &Resource::new("publisher", "new", Some(ctx.subject))).await?;
+                } else {
+                    authorize_operation(&tx, &ctx, name, &params, &body).await?;
+                }
+                if matches!(name, "upgradeDeployment" | "rollbackDeployment") {
+                    crate::upgrades::authorize_replay(&tx, &ctx, id(&value, "id")?).await?;
+                }
+                return Ok((value, row.get::<_,i32>("response_status") as u16));
+            }
+            return Err(Error::conflict("Operation has no replayable response"));
         }
     }
     if let Err(error) = authorize_operation(&tx, &ctx, name, &params, &body).await {
@@ -420,11 +433,25 @@ async fn dispatch(
             200,
         ),
         "trustPublisher" => {
-            ed25519_dalek::VerifyingKey::from_public_key_pem(string(&body, "public_key_pem")?)
+            let submitted = ed25519_dalek::VerifyingKey::from_public_key_pem(string(&body, "public_key_pem")?)
                 .map_err(|_| Error::invalid("Expected an Ed25519 public key"))?;
-            let id = Uuid::new_v4();
-            tx.execute("INSERT INTO publishers(id,name,key_id,public_key_pem,status,created_at,updated_at) VALUES($1,$2,$3,$4,'trusted',now(),now())",&[&id,&string(&body,"name")?,&string(&body,"key_id")?,&string(&body,"public_key_pem")?]).await?;
-            (read_object(&tx, "publishers", id, "Publisher").await?, 201)
+            let (publisher, status) = if let Some(existing) = tx.query_opt("SELECT * FROM publishers WHERE key_id=$1 FOR UPDATE", &[&string(&body,"key_id")?]).await? {
+                let registered = ed25519_dalek::VerifyingKey::from_public_key_pem(&existing.get::<_,String>("public_key_pem"))
+                    .map_err(|_| Error::conflict("Registered publisher key is invalid"))?;
+                if registered != submitted || existing.get::<_,String>("name") != string(&body,"name")? {
+                    return Err(Error::conflict("Existing publisher identity or key differs; key rotation requires a new key_id"));
+                }
+                let publisher: Uuid = existing.get("id");
+                if existing.get::<_,String>("status") == "revoked" {
+                    tx.execute("UPDATE publishers SET status='trusted',revision=revision+1,updated_at=now() WHERE id=$1", &[&publisher]).await?;
+                }
+                (publisher, 200)
+            } else {
+                let publisher = Uuid::new_v4();
+                tx.execute("INSERT INTO publishers(id,name,key_id,public_key_pem,status,created_at,updated_at) VALUES($1,$2,$3,$4,'trusted',now(),now())",&[&publisher,&string(&body,"name")?,&string(&body,"key_id")?,&string(&body,"public_key_pem")?]).await?;
+                (publisher, 201)
+            };
+            (read_object(&tx, "publishers", publisher, "Publisher").await?, status)
         }
         "installPlugin" => {
             let publisher = id(&body, "publisher_id")?;
@@ -740,10 +767,21 @@ async fn authorize_operation(
             )
         }
         "getNode" => ("platform.read", Resource::new("platform", "node", None)),
-        "trustPublisher" => (
-            "publisher.trust",
-            Resource::new("publisher", "new", Some(ctx.subject)),
-        ),
+        "trustPublisher" => {
+            let existing = c
+                .query_opt(
+                    "SELECT id FROM publishers WHERE key_id=$1",
+                    &[&string(body, "key_id")?],
+                )
+                .await?;
+            (
+                "publisher.trust",
+                existing.map_or_else(
+                    || Resource::new("publisher", "new", Some(ctx.subject)),
+                    |row| Resource::new("publisher", row.get::<_, Uuid>(0), None),
+                ),
+            )
+        }
         "installPlugin" => (
             "plugin.install",
             Resource::new(
