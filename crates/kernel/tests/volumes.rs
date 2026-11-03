@@ -309,11 +309,29 @@ async fn actual_volume_operations_recover_enforce_capacity_and_fence_writers() {
             }
         }
     }
+    // XFS delayed-allocation reservations can reject a large write before its
+    // committed block counter equals the limit. Retain that actual EDQUOT check
+    // above, then drive the independent inode hard quota to its exact counter
+    // boundary for the metadata full-state/outbox assertion.
+    file.set_len(0).unwrap();
+    file.sync_all().unwrap();
+    let inode_failure = loop {
+        let n = fs::read_dir(&data).unwrap().count();
+        assert!(n < 2048, "inode quota was bypassed");
+        match fs::File::create(data.join(format!("inode-{n}"))) {
+            Ok(_) => (),
+            Err(error) => break error,
+        }
+    };
+    assert!(matches!(
+        inode_failure.raw_os_error(),
+        Some(libc::EDQUOT | libc::ENOSPC)
+    ));
     let full = f
         .api("getVolume", Some(id), Value::Null, "get-full", None, None)
         .await;
     assert_eq!(full.0, 200, "{}", full.1);
-    assert_eq!(full.1["state"], "full");
+    assert_eq!(full.1["state"], "full", "{0}", full.1);
     assert!(full.1["used_bytes"].as_u64().unwrap() > 0);
     assert_eq!(
         c.query_one(
