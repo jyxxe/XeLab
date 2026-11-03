@@ -8,6 +8,25 @@ use ed25519_dalek::{Signer, SigningKey};
 use std::sync::atomic::Ordering;
 use xelab_kernel::{artifact, controller, tls};
 
+struct WithheldKey {
+    original: std::path::PathBuf,
+    held: std::path::PathBuf,
+}
+impl WithheldKey {
+    fn new(original: std::path::PathBuf) -> Self {
+        let held = original.with_extension("key.held-by-test");
+        assert!(!held.exists());
+        fs::rename(&original, &held).unwrap();
+        Self { original, held }
+    }
+}
+impl Drop for WithheldKey {
+    fn drop(&mut self) {
+        fs::rename(&self.held, &self.original)
+            .expect("restore the fixture kernel TLS key even on failed assertions");
+    }
+}
+
 async fn terminal(f: &Fixture, operation: Uuid, expected: &str) -> Value {
     for _ in 0..180 {
         let response = f
@@ -414,6 +433,117 @@ pub async fn exercise(f: &Fixture, publisher: Uuid) {
     )
     .await;
     assert!(!f.app.runtime.running(instance).await.unwrap());
+    // A real pre-initialization TLS failure leaves an initializing binding but
+    // no business file. A NEW explicit operation may initialize only after the
+    // owning fence proves that directory actually empty again. The failed
+    // operation is never retried, and no credential/grant is revived.
+    let retry_volume = volume(f, "schema-empty-retry-volume").await;
+    let retry_path = data_path(f, retry_volume).await;
+    let retry_deployment = create_deployment(
+        f,
+        installation,
+        retry_volume,
+        "schema-empty-retry-deployment",
+    )
+    .await;
+    let withheld = WithheldKey::new(f.app.config.root().join("kernel-identity/tls.key"));
+    let (first, _) = enable(f, retry_deployment, "schema-empty-first-enable").await;
+    terminal(f, first, "failed").await;
+    drop(withheld);
+    assert!(fs::read_dir(&retry_path).unwrap().next().is_none());
+    let partial = c
+        .query_one(
+            "SELECT schema_state,schema_manifest_digest FROM volume_allocations WHERE volume_id=$1",
+            &[&retry_volume],
+        )
+        .await
+        .unwrap();
+    assert_eq!(partial.get::<_, String>("schema_state"), "initializing");
+    assert_eq!(
+        partial
+            .get::<_, Option<String>>("schema_manifest_digest")
+            .as_deref(),
+        Some(manifest_digest.as_str())
+    );
+    let old = c
+        .query_one(
+            "SELECT instance_id,scratch_volume_id FROM volume_schema_jobs WHERE operation_id=$1",
+            &[&first],
+        )
+        .await
+        .unwrap();
+    assert!(!f.app.runtime.running(old.get("instance_id")).await.unwrap());
+    assert_eq!(
+        c.query_one(
+            "SELECT status FROM reservations WHERE instance_id=$1",
+            &[&old.get::<_, Uuid>("instance_id")]
+        )
+        .await
+        .unwrap()
+        .get::<_, String>(0),
+        "released"
+    );
+    reap(f, old.get("scratch_volume_id")).await;
+    let (retried, _) = enable(f, retry_deployment, "schema-empty-new-explicit-enable").await;
+    assert_ne!(retried, first);
+    terminal(f, retried, "succeeded").await;
+    let completed = c.query_one("SELECT instance_id,scratch_volume_id,volume_plan FROM volume_schema_jobs WHERE operation_id=$1", &[&retried]).await.unwrap();
+    assert_eq!(
+        completed.get::<_, Value>("volume_plan")[0]["empty_initialization_proven"],
+        true
+    );
+    assert_ne!(
+        completed.get::<_, Uuid>("instance_id"),
+        old.get::<_, Uuid>("instance_id")
+    );
+    let initialized: Value =
+        serde_json::from_slice(&fs::read(retry_path.join("store.json")).unwrap()).unwrap();
+    assert_eq!(initialized["schema"], "1");
+    assert!(initialized["items"].as_array().unwrap().is_empty());
+    assert_eq!(
+        c.query_one("SELECT state FROM operations WHERE id=$1", &[&first])
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        "failed"
+    );
+    assert_eq!(
+        c.query_one(
+            "SELECT status FROM reservations WHERE instance_id=$1",
+            &[&old.get::<_, Uuid>("instance_id")]
+        )
+        .await
+        .unwrap()
+        .get::<_, String>(0),
+        "released"
+    );
+    assert_eq!(c.query_one("SELECT count(*) FROM reservations WHERE instance_id=$1 AND status IN ('reserved','active')", &[&completed.get::<_,Uuid>("instance_id")]).await.unwrap().get::<_,i64>(0),1);
+    reap(f, completed.get("scratch_volume_id")).await;
+    let before = current(f, retry_deployment).await;
+    let disabled = f
+        .api(
+            "setDeploymentEnabled",
+            Some(retry_deployment),
+            json!({"enabled":false}),
+            "schema-empty-retry-disable",
+            before["revision"].as_i64(),
+            None,
+        )
+        .await;
+    assert_eq!(disabled.0, 202, "{}", disabled.1);
+    terminal(
+        f,
+        disabled.1["id"].as_str().unwrap().parse().unwrap(),
+        "succeeded",
+    )
+    .await;
+    assert!(!f
+        .app
+        .runtime
+        .running(completed.get("instance_id"))
+        .await
+        .unwrap());
+    println!("Schema empty retry: actual TLS-key loss before Initialize, stopped failed attempt/data still empty, restored key and NEW explicit fenced-empty operation succeed; old Operation stays failed and its instance/reservation never revived");
     // A zero observation counter is insufficient: an actual nonempty unknown
     // directory must remain untouched and unversioned after failed admission.
     let unknown = volume(f, "schema-nonempty-volume").await;
