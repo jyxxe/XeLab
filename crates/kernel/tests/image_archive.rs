@@ -141,10 +141,13 @@ async fn real_oci_archive_recovers_into_an_empty_independent_content_store() {
                 "Nonempty namespace accepted a second import",
             ));
         }
+        target.resume_images(&mut archive,&saved).await?;
+        target.verify_restored_images(&mut archive,&saved).await?;
         // Export two admitted names for the same manifest. A distinct empty
         // namespace then shares this daemon's already populated CAS.
         let alias = format!("docker.io/xelab-ci/permitted-alias@{}", artifact::image_ref(&images[0])?);
         target.ctr(&["images".into(), "tag".into(), images[0].clone(), alias.clone()]).await?;
+        if target.resume_images(&mut archive,&saved).await.is_ok() {return Err(Error::conflict("Resume accepted an unrequested existing image alias"));}
         let mut alias_names = images.clone();
         alias_names.push(alias);
         alias_names.sort();

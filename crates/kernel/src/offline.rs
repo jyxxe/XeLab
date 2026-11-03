@@ -35,6 +35,9 @@ pub mod workspace;
 
 #[path = "offline_backup.rs"]
 pub mod backup;
+
+#[path = "offline_restore.rs"]
+pub mod restore;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstallationImage {

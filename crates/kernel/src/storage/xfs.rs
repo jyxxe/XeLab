@@ -736,6 +736,37 @@ impl ProjectStore {
         let root = std::fs::read_link(format!("/proc/self/fd/{}", self.root.as_raw_fd()))?;
         Ok(root.join(volume.to_string()).join("data"))
     }
+    /// Reset ONLY the unpublished data child under an already durable private
+    /// allocation. Caller must own the offline gate and have joined old writers.
+    /// The UUID directory, project identity, limits and root marker are retained.
+    pub fn clear_private_data(&mut self, volume: Uuid, id: u32) -> Result<()> {
+        self.inspect(volume, id)?;
+        let parent = self.dir(volume)?;
+        let name = CString::new("data").unwrap();
+        match open_at(&parent, &name) {
+            Ok(data) => {
+                let attr = attributes(&data)?;
+                if data.metadata()?.dev() != self.root.metadata()?.dev()
+                    || mount_id(&data)? != mount_id(&self.root)?
+                    || attr.project != id
+                    || attr.flags & PROJINHERIT == 0
+                    || attr.flags & RTINHERIT != 0
+                {
+                    return Err(Error::conflict("Private restore data identity differs"));
+                }
+                remove_contents(&data, self.root.metadata()?.dev(), mount_id(&self.root)?)?;
+                if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) }
+                    < 0
+                {
+                    return Err(io::Error::last_os_error().into());
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        parent.sync_all()?;
+        self.persist()
+    }
     /// The caller must first fence every attachment and positively confirm old
     /// containers/mount namespaces have exited. This routine never stops a task.
     /// Quota IDs and their limits remain tombstoned after physical deletion.

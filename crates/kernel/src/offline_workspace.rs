@@ -59,6 +59,7 @@ pub struct Workspace {
     directory: File,
     objects: File,
     gate: StdMutex<()>,
+    restore: bool,
 }
 fn name(value: &str) -> Result<CString> {
     if value.is_empty() || value.contains('/') || matches!(value, "." | "..") {
@@ -130,6 +131,9 @@ fn read<T: serde::de::DeserializeOwned>(parent: &File, child: &str) -> Result<T>
 }
 fn write<T: Serialize>(parent: &File, child: &str, value: &T, exclusive: bool) -> Result<()> {
     let bytes = serde_json::to_vec(value)?;
+    write_bytes(parent, child, &bytes, exclusive)
+}
+fn write_bytes(parent: &File, child: &str, bytes: &[u8], exclusive: bool) -> Result<()> {
     if bytes.len() > RECORD_LIMIT {
         return Err(Error::exhausted());
     }
@@ -141,7 +145,7 @@ fn write<T: Serialize>(parent: &File, child: &str, value: &T, exclusive: bool) -
             libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
         )?;
         owned(&file, false)?;
-        file.write_all(&bytes)?;
+        file.write_all(bytes)?;
         file.sync_all()?;
         let from = name(&temporary)?;
         let to = name(child)?;
@@ -163,8 +167,101 @@ fn write<T: Serialize>(parent: &File, child: &str, value: &T, exclusive: bool) -
     let _ = unsafe { libc::unlinkat(parent.as_raw_fd(), name(&temporary)?.as_ptr(), 0) };
     result
 }
+pub(super) fn image_index(root: &File, hash: &str, image: &str) -> Result<()> {
+    owned(root, true)?;
+    if !valid_digest(hash) || artifact::image_ref(image)? != hash {
+        return Err(Error::invalid("Invalid restored image reference"));
+    }
+    let images = subdirectory(root, "images", false)?;
+    let filename = format!("{}.reference", &hash[7..]);
+    let fd = unsafe {
+        libc::openat(
+            images.as_raw_fd(),
+            name(&filename)?.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd >= 0 {
+        let mut file = unsafe { File::from_raw_fd(fd) };
+        owned(&file, false)?;
+        let mut bytes = Vec::new();
+        (&mut file).take(2049).read_to_end(&mut bytes)?;
+        return if bytes == image.as_bytes() {
+            Ok(())
+        } else {
+            Err(Error::conflict("Restored image index changed"))
+        };
+    }
+    if std::io::Error::last_os_error().kind() != std::io::ErrorKind::NotFound {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    write_bytes(&images, &filename, image.as_bytes(), true)
+}
 impl Workspace {
     pub fn create(root: &File, header: Header) -> Result<Self> {
+        Self::create_in(root, ".platform-backups", header)
+    }
+    pub(crate) fn create_restore(root: &File, header: Header) -> Result<Self> {
+        Self::create_in(root, ".platform-restores", header)
+    }
+    /// Recover an interrupted initial journal write, only while the caller has
+    /// proved an importing gate and an entirely empty trusted target database.
+    /// A missing header can never adopt data files or a nonempty object folder.
+    pub(crate) fn recover_restore_creation(root: &File, header: Header) -> Result<Self> {
+        owned(root, true)?;
+        if header.format != 1
+            || header.snapshot.is_nil()
+            || header.repository.is_nil()
+            || header.phase != "preparing"
+            || !valid_digest(&header.master_key_reference)
+        {
+            return Err(Error::invalid("Invalid recovery creation intent"));
+        }
+        let area = subdirectory(root, ".platform-restores", false)?;
+        let directory = subdirectory(&area, &header.snapshot.to_string(), false)?;
+        lease(&directory)?;
+        for entry in fs::read_dir(format!("/proc/self/fd/{}", directory.as_raw_fd()))? {
+            let entry = entry?;
+            let child = entry.file_name();
+            let child = child
+                .to_str()
+                .ok_or_else(|| Error::conflict("Unknown recovery creation entry"))?;
+            if child == "objects" {
+                let objects = open(&directory, child, libc::O_RDONLY | libc::O_DIRECTORY)?;
+                owned(&objects, true)?;
+                if fs::read_dir(format!("/proc/self/fd/{}", objects.as_raw_fd()))?
+                    .next()
+                    .is_some()
+                {
+                    return Err(Error::conflict(
+                        "Interrupted recovery already has object intents",
+                    ));
+                }
+            } else if child
+                .strip_prefix(".write-")
+                .is_some_and(|id| Uuid::parse_str(id).is_ok())
+            {
+                let file = open(&directory, child, libc::O_RDONLY)?;
+                owned(&file, false)?;
+                if file.metadata()?.len() > RECORD_LIMIT as u64 {
+                    return Err(Error::conflict("Unknown recovery creation payload"));
+                }
+            } else {
+                return Err(Error::conflict(
+                    "Recovery without a header already contains data",
+                ));
+            }
+        }
+        let objects = subdirectory(&directory, "objects", false)?;
+        write(&directory, "snapshot.json", &header, true)?;
+        Ok(Self {
+            directory,
+            objects,
+            gate: StdMutex::new(()),
+            restore: true,
+        })
+    }
+    fn create_in(root: &File, area: &str, header: Header) -> Result<Self> {
         owned(root, true)?;
         if header.format != 1
             || header.snapshot.is_nil()
@@ -174,7 +271,7 @@ impl Workspace {
         {
             return Err(Error::invalid("Invalid maintenance header"));
         }
-        let snapshots = subdirectory(root, ".platform-backups", false)?;
+        let snapshots = subdirectory(root, area, false)?;
         let directory = subdirectory(&snapshots, &header.snapshot.to_string(), true)?;
         lease(&directory)?;
         let objects = subdirectory(&directory, "objects", true)?;
@@ -183,15 +280,29 @@ impl Workspace {
             directory,
             objects,
             gate: StdMutex::new(()),
+            restore: area == ".platform-restores",
         })
     }
     pub fn resume(root: &File, snapshot: Uuid, repository: Uuid, key: &str) -> Result<Self> {
+        Self::resume_in(root, ".platform-backups", snapshot, repository, key)
+    }
+    pub(crate) fn resume_restore(
+        root: &File,
+        snapshot: Uuid,
+        repository: Uuid,
+        key: &str,
+    ) -> Result<Self> {
+        Self::resume_in(root, ".platform-restores", snapshot, repository, key)
+    }
+    fn resume_in(
+        root: &File,
+        area: &str,
+        snapshot: Uuid,
+        repository: Uuid,
+        key: &str,
+    ) -> Result<Self> {
         owned(root, true)?;
-        let snapshots = open(
-            root,
-            ".platform-backups",
-            libc::O_RDONLY | libc::O_DIRECTORY,
-        )?;
+        let snapshots = open(root, area, libc::O_RDONLY | libc::O_DIRECTORY)?;
         owned(&snapshots, true)?;
         let directory = open(
             &snapshots,
@@ -206,6 +317,7 @@ impl Workspace {
             directory,
             objects,
             gate: StdMutex::new(()),
+            restore: area == ".platform-restores",
         };
         let header = value.header()?;
         if header.format != 1
@@ -230,6 +342,24 @@ impl Workspace {
             return Err(Error::invalid("Invalid maintenance header"));
         }
         Ok(header)
+    }
+    pub(crate) fn complete_restore(&self, context: Value) -> Result<()> {
+        if !self.restore {
+            return Err(Error::conflict(
+                "Backup journal cannot publish recovery completion",
+            ));
+        }
+        let _guard = self
+            .gate
+            .lock()
+            .map_err(|_| Error::unavailable("Recovery journal is unavailable"))?;
+        let mut header = self.header()?;
+        if header.phase != "preparing" {
+            return Err(Error::conflict("Recovery journal is already terminal"));
+        }
+        header.phase = "succeeded".into();
+        header.context = context;
+        write(&self.directory, "snapshot.json", &header, false)
     }
     pub fn update_header(&self, phase: &str, context: Value) -> Result<()> {
         let _guard = self
@@ -409,6 +539,40 @@ impl Workspace {
         owned(&file, false)?;
         Ok(file)
     }
+    /// Remove only the fixed private staging inode. A process owns all restore
+    /// workers until they join; this is never called over a published dataset.
+    pub(crate) fn discard_staged(&self, images: bool) -> Result<()> {
+        if self.header()?.phase != "preparing" {
+            return Err(Error::conflict("Recovery staging is already terminal"));
+        }
+        let file = if images { "images.oci" } else { "metadata.db" };
+        match open(&self.directory, file, libc::O_RDONLY) {
+            Ok(handle) => owned(&handle, false)?,
+            Err(error) => {
+                // Missing files are checked with fstatat rather than inferring
+                // ENOENT from a deliberately generic public I/O error.
+                let mut status: libc::stat = unsafe { std::mem::zeroed() };
+                if unsafe {
+                    libc::fstatat(
+                        self.directory.as_raw_fd(),
+                        name(file)?.as_ptr(),
+                        &mut status,
+                        libc::AT_SYMLINK_NOFOLLOW,
+                    )
+                } < 0
+                    && std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound
+                {
+                    return Ok(());
+                }
+                return Err(error);
+            }
+        }
+        if unsafe { libc::unlinkat(self.directory.as_raw_fd(), name(file)?.as_ptr(), 0) } < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        self.directory.sync_all()?;
+        Ok(())
+    }
     pub fn reserve_file(&self, images: bool, bytes: u64, headroom: u64) -> Result<File> {
         if bytes > 64 * 1024 * 1024 * 1024 {
             return Err(Error::exhausted());
@@ -561,6 +725,13 @@ impl backup_transfer::Journal for ObjectJournal {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::os::unix::fs::PermissionsExt;
+    fn private_root() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in("/tmp")
+            .unwrap()
+    }
     fn header() -> Header {
         Header {
             format: 1,
@@ -579,7 +750,7 @@ mod tests {
     }
     #[test]
     fn actual_private_journal_recovers_exact_preparations_without_overwriting_other_sessions() {
-        let root = tempfile::tempdir().unwrap();
+        let root = private_root();
         let fd = File::open(root.path()).unwrap();
         let header = header();
         let workspace = Workspace::create(&fd, header.clone()).unwrap();
@@ -673,8 +844,8 @@ mod tests {
     }
     #[test]
     fn private_journal_refuses_symlinks_and_torn_json() {
-        let root = tempfile::tempdir().unwrap();
-        let other = tempfile::tempdir().unwrap();
+        let root = private_root();
+        let other = private_root();
         let fd = File::open(root.path()).unwrap();
         std::os::unix::fs::symlink(other.path(), root.path().join(".platform-backups")).unwrap();
         assert!(Workspace::create(&fd, header()).is_err());
@@ -699,5 +870,33 @@ mod tests {
             .join(format!("{object}.json"));
         std::fs::write(path, b"{\"snapshot\":").unwrap();
         assert!(workspace.record(object).is_err());
+    }
+    #[test]
+    fn interrupted_restore_journal_creation_never_adopts_payloads_or_other_sessions() {
+        let root = private_root();
+        let fd = File::open(root.path()).unwrap();
+        let header = header();
+        let ws = Workspace::create_restore(&fd, header.clone()).unwrap();
+        let path = root
+            .path()
+            .join(".platform-restores")
+            .join(header.snapshot.to_string());
+        drop(ws);
+        std::fs::remove_file(path.join("snapshot.json")).unwrap();
+        let recovered = Workspace::recover_restore_creation(&fd, header.clone()).unwrap();
+        assert_eq!(recovered.header().unwrap().snapshot, header.snapshot);
+        drop(recovered);
+        assert!(Workspace::recover_restore_creation(&fd, header.clone()).is_err());
+        std::fs::remove_file(path.join("snapshot.json")).unwrap();
+        std::fs::write(
+            path.join("metadata.db"),
+            b"unpublished payload must be retained",
+        )
+        .unwrap();
+        assert!(Workspace::recover_restore_creation(&fd, header).is_err());
+        assert_eq!(
+            std::fs::read(path.join("metadata.db")).unwrap(),
+            b"unpublished payload must be retained"
+        );
     }
 }

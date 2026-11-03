@@ -62,12 +62,34 @@ impl Settings {
     pub async fn bind(&self, db: &Db, repository: Uuid) -> Result<Repository> {
         Repository::bind(db, repository, &self.uri, &self.region, self.client()?).await
     }
+    /// Open an existing source repository without registering or adopting it in
+    /// the empty recovery target database. Never creates a missing marker.
+    pub async fn reader(&self, repository: Uuid) -> Result<Repository> {
+        Repository::read_only(repository, self.client()?).await
+    }
 }
 pub struct Repository {
     pub id: Uuid,
     pub objects: Arc<s3::Client>,
 }
 impl Repository {
+    pub async fn read_only(id: Uuid, client: Arc<s3::Client>) -> Result<Self> {
+        if id.is_nil() {
+            return Err(Error::invalid("Invalid source repository identity"));
+        }
+        let marker = client
+            .get_optional(MARKER)
+            .await?
+            .ok_or_else(|| Error::unavailable("Source backup repository marker is missing"))?;
+        let raw = s3::bounded(marker, 4096).await?;
+        if strict_json(&raw, 4096)? != json!({"format":1,"repository_id":id}) {
+            return Err(Error::conflict("Source backup repository marker differs"));
+        }
+        Ok(Self {
+            id,
+            objects: Arc::new(client.scoped(&format!("repositories/{id}"))?),
+        })
+    }
     async fn bind(
         db: &Db,
         id: Uuid,
@@ -174,6 +196,44 @@ impl Repository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn readonly_source_marker_requires_existing_exact_identity_without_adoption() {
+        let Some((client, _root)) = s3::tests::fixture().await else {
+            return;
+        };
+        let client = Arc::new(client);
+        let id = Uuid::new_v4();
+        assert!(Repository::read_only(id, client.clone()).await.is_err());
+        assert!(
+            client.get_optional(MARKER).await.unwrap().is_none(),
+            "a missing marker must remain absent"
+        );
+        client
+            .put(
+                MARKER,
+                serde_json::to_vec(&json!({"format":1,"repository_id":id})).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(Repository::read_only(Uuid::new_v4(), client.clone())
+            .await
+            .is_err());
+        let reader = Repository::read_only(id, client.clone()).await.unwrap();
+        assert!(reader
+            .objects
+            .reference("sample.sealed")
+            .unwrap()
+            .contains(&format!("repositories/{id}/sample.sealed")));
+        assert!(!reader.objects.off_host());
+        let marker = s3::bounded(client.get(MARKER).await.unwrap(), 4096)
+            .await
+            .unwrap();
+        assert_eq!(
+            strict_json(&marker, 4096).unwrap(),
+            json!({"format":1,"repository_id":id})
+        );
+        s3::tests::cleanup(&client, &[MARKER.to_owned()]).await;
+    }
     async fn database(base: &str) -> Db {
         let admin = Db::new(base.to_owned()).unwrap().connect().await.unwrap();
         let name = format!("repository_{}", Uuid::new_v4().simple());
