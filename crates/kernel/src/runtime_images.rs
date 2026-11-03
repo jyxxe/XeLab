@@ -227,7 +227,7 @@ impl Runtime {
                 return Err(Error::invalid("Image archive digest differs before import"));
             }
             file.rewind().await?;
-            oci_tar::verify(file, &expected.images, expected.bytes).await?;
+            let inventory = oci_tar::verify(file, &expected.images, expected.bytes).await?;
             file.rewind().await?;
             process = Some(self.image_command(
                 &strs(&["images", "import", "--local", "--no-unpack", "-"]),
@@ -277,6 +277,55 @@ impl Runtime {
             for image in &expected.images {
                 self.verify_image(image, artifact::image_ref(image)?)
                     .await?;
+            }
+            // Namespace isolation does not imply a fresh content store. Verify
+            // actual stored config/layer bytes, including already present blobs.
+            for (digest, bytes) in inventory {
+                process =
+                    Some(self.image_command(&strs(&["content", "get", &digest]), Stdio::null())?);
+                let child = process.as_mut().unwrap();
+                let mut stdout = child
+                    .stdout
+                    .take()
+                    .ok_or_else(|| Error::unavailable("Restored content output is unavailable"))?;
+                let actual = copy_bounded(&mut stdout, &mut tokio::io::sink(), bytes).await?;
+                if !child.wait().await?.success() || actual != (bytes, digest) {
+                    return Err(Error::conflict(
+                        "Restored OCI content does not match its verified archive",
+                    ));
+                }
+            }
+            let listed = String::from_utf8(self.ctr(&strs(&["images", "list"])).await?)
+                .map_err(|_| Error::unavailable("Invalid restored image inventory"))?;
+            let mut lines = listed.lines().filter(|s| !s.trim().is_empty());
+            let header: Vec<_> = lines
+                .next()
+                .ok_or_else(|| Error::unavailable("Missing image inventory header"))?
+                .split_whitespace()
+                .collect();
+            if header.len() < 3 || header[..3] != ["REF", "TYPE", "DIGEST"] {
+                return Err(Error::unavailable("Unexpected image inventory format"));
+            }
+            let mut actual = BTreeMap::new();
+            for line in lines {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                if fields.len() < 3
+                    || actual
+                        .insert(fields[0].to_owned(), fields[2].to_owned())
+                        .is_some()
+                {
+                    return Err(Error::conflict("Restored image inventory is invalid"));
+                }
+            }
+            let wanted: BTreeMap<_, _> = expected
+                .images
+                .iter()
+                .map(|s| Ok((s.clone(), artifact::image_ref(s)?.to_owned())))
+                .collect::<Result<_>>()?;
+            if actual != wanted {
+                return Err(Error::conflict(
+                    "Restored image names or digests differ from the admitted set",
+                ));
             }
             Ok(())
         };
