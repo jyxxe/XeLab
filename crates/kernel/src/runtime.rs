@@ -518,6 +518,7 @@ impl Runtime {
         image: &str,
         sha: &str,
         limits: &Value,
+        mounts: &[crate::volumes::Mount],
     ) -> Result<Observation> {
         let dir = self.dir(id);
         fs::create_dir_all(&dir)?;
@@ -537,7 +538,7 @@ impl Runtime {
         {
             tls::issue(&self.config, Some((id, generation)), &identity)?;
         }
-        let spec = oci_spec(
+        let mut spec = oci_spec(
             &self.config,
             id,
             deployment,
@@ -547,6 +548,7 @@ impl Runtime {
             &identity,
             limits,
         )?;
+        add_volume_mounts(&mut spec, &root, mounts)?;
         let config = dir.join("config.json");
         if !self.inventory().await?.contains(&id) {
             tls::atomic_file(&config, &serde_json::to_vec(&spec)?, 0o600)?;
@@ -749,9 +751,39 @@ pub fn oci_spec(
         "XELAB_PLUGIN_RPC_LISTEN=0.0.0.0:7000".into(),
     ];
     let tmp = format!("size={},mode=1777", limits["ephemeral_bytes"]);
-    Ok(
-        json!({"ociVersion":"1.0.2","hostname":"xelab-plugin","root":{"path":root,"readonly":true},"process":{"terminal":false,"user":{"uid":65532,"gid":65532},"args":manifest["entrypoint"],"env":env,"cwd":"/","noNewPrivileges":true,"capabilities":{"bounding":[],"effective":[],"inheritable":[],"permitted":[],"ambient":[]},"rlimits":[{"type":"RLIMIT_NOFILE","hard":1024,"soft":1024}]},"mounts":[{"destination":"/proc","type":"proc","source":"proc","options":["nosuid","noexec","nodev"]},{"destination":"/dev","type":"tmpfs","source":"tmpfs","options":["nosuid","strictatime","mode=755","size=65536k"]},{"destination":"/tmp","type":"tmpfs","source":"tmpfs","options":["nosuid","nodev","noexec",tmp]},{"destination":"/run","type":"tmpfs","source":"tmpfs","options":["nosuid","nodev","noexec","size=1048576","mode=755"]},{"destination":"/run/xelab/identity","type":"bind","source":identity,"options":["rbind","ro","nosuid","nodev","noexec"]}],"annotations":{"org.xelab.instance":id.to_string(),"org.xelab.deployment":deployment.to_string(),"org.xelab.generation":generation.to_string()},"linux":{"cgroupsPath":format!("/xelab/plugins/{id}"),"namespaces":[{"type":"pid"},{"type":"ipc"},{"type":"uts"},{"type":"mount"},{"type":"cgroup"},{"type":"network","path":format!("/run/netns/xelab-{id}")}],"resources":{"cpu":{"period":100000,"quota":limits["cpu_millis"].as_u64().unwrap()*100},"memory":{"limit":limits["memory_bytes"],"swap":limits["memory_bytes"]},"pids":{"limit":limits["pids"]},"devices":[{"allow":false,"access":"rwm"},{"allow":true,"type":"c","major":1,"minor":3,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":5,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":8,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":9,"access":"rw"}]},"devices":[{"path":"/dev/null","type":"c","major":1,"minor":3,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/zero","type":"c","major":1,"minor":5,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/random","type":"c","major":1,"minor":8,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/urandom","type":"c","major":1,"minor":9,"fileMode":438,"uid":0,"gid":0}],"maskedPaths":["/proc/kcore","/proc/keys","/proc/timer_list","/proc/sched_debug","/sys/firmware"],"readonlyPaths":["/proc/asound","/proc/bus","/proc/fs","/proc/irq","/proc/sys","/proc/sysrq-trigger"],"seccomp":{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{"names":["mount","umount2","pivot_root","ptrace","process_vm_readv","process_vm_writev","bpf","perf_event_open","kexec_load","kexec_file_load","init_module","finit_module","delete_module","reboot","swapon","swapoff","open_by_handle_at","name_to_handle_at","setns","unshare","keyctl","add_key","request_key","userfaultfd","io_uring_setup"],"action":"SCMP_ACT_ERRNO","errnoRet":1},{"names":["clone3"],"action":"SCMP_ACT_ERRNO","errnoRet":38},{"names":["clone"],"action":"SCMP_ACT_ERRNO","errnoRet":1,"args":[{"index":0,"value":268435456,"valueTwo":268435456,"op":"SCMP_CMP_MASKED_EQ"}]}]}}}),
-    )
+    let mut spec = json!({"ociVersion":"1.0.2","hostname":"xelab-plugin","root":{"path":root,"readonly":true},"process":{"terminal":false,"user":{"uid":65532,"gid":65532},"args":manifest["entrypoint"],"env":env,"cwd":"/","noNewPrivileges":true,"capabilities":{"bounding":[],"effective":[],"inheritable":[],"permitted":[],"ambient":[]},"rlimits":[{"type":"RLIMIT_NOFILE","hard":1024,"soft":1024}]},"mounts":[{"destination":"/proc","type":"proc","source":"proc","options":["nosuid","noexec","nodev"]},{"destination":"/dev","type":"tmpfs","source":"tmpfs","options":["nosuid","strictatime","mode=755","size=65536k"]},{"destination":"/tmp","type":"tmpfs","source":"tmpfs","options":["nosuid","nodev","noexec",tmp]},{"destination":"/run","type":"tmpfs","source":"tmpfs","options":["nosuid","nodev","noexec","size=1048576","mode=755"]},{"destination":"/run/xelab/identity","type":"bind","source":identity,"options":["rbind","ro","nosuid","nodev","noexec"]}],"annotations":{"org.xelab.instance":id.to_string(),"org.xelab.deployment":deployment.to_string(),"org.xelab.generation":generation.to_string()},"linux":{"cgroupsPath":format!("/xelab/plugins/{id}"),"namespaces":[{"type":"pid"},{"type":"ipc"},{"type":"uts"},{"type":"mount"},{"type":"cgroup"},{"type":"network","path":format!("/run/netns/xelab-{id}")}],"resources":{"cpu":{"period":100000,"quota":limits["cpu_millis"].as_u64().unwrap()*100},"memory":{"limit":limits["memory_bytes"],"swap":limits["memory_bytes"]},"pids":{"limit":limits["pids"]},"devices":[{"allow":false,"access":"rwm"},{"allow":true,"type":"c","major":1,"minor":3,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":5,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":8,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":9,"access":"rw"}]},"devices":[{"path":"/dev/null","type":"c","major":1,"minor":3,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/zero","type":"c","major":1,"minor":5,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/random","type":"c","major":1,"minor":8,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/urandom","type":"c","major":1,"minor":9,"fileMode":438,"uid":0,"gid":0}],"maskedPaths":["/proc/kcore","/proc/keys","/proc/timer_list","/proc/sched_debug","/sys/firmware"],"readonlyPaths":["/proc/asound","/proc/bus","/proc/fs","/proc/irq","/proc/sys","/proc/sysrq-trigger"],"seccomp":{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{"names":["mount","umount2","pivot_root","ptrace","process_vm_readv","process_vm_writev","bpf","perf_event_open","kexec_load","kexec_file_load","init_module","finit_module","delete_module","reboot","swapon","swapoff","open_by_handle_at","name_to_handle_at","setns","unshare","keyctl","add_key","request_key","userfaultfd","io_uring_setup","quotactl","quotactl_fd"],"action":"SCMP_ACT_ERRNO","errnoRet":1},{"names":["clone3"],"action":"SCMP_ACT_ERRNO","errnoRet":38},{"names":["clone"],"action":"SCMP_ACT_ERRNO","errnoRet":1,"args":[{"index":0,"value":268435456,"valueTwo":268435456,"op":"SCMP_CMP_MASKED_EQ"}]}]}}});
+    for command in [0x401c5820u64, 0x40086602, 0x40046602] {
+        spec["linux"]["seccomp"]["syscalls"].as_array_mut().unwrap().push(json!({"names":["ioctl"],"action":"SCMP_ACT_ERRNO","errnoRet":1,"args":[{"index":1,"value":4294967295u64,"valueTwo":command,"op":"SCMP_CMP_MASKED_EQ"}]}));
+    }
+    Ok(spec)
+}
+
+fn add_volume_mounts(
+    spec: &mut Value,
+    root: &Path,
+    mounts: &[crate::volumes::Mount],
+) -> Result<()> {
+    for mount in mounts {
+        // Signed images are immutable. Reject every symlink component before
+        // allowing the OCI runtime to resolve a destination in that image.
+        let mut destination = root.to_path_buf();
+        for component in mount.destination.trim_start_matches('/').split('/') {
+            if component.is_empty() || component == "." || component == ".." {
+                return Err(Error::invalid("Invalid volume destination"));
+            }
+            destination.push(component);
+            let meta = fs::symlink_metadata(&destination)?;
+            if !meta.is_dir() || meta.file_type().is_symlink() {
+                return Err(Error::invalid(
+                    "Volume destination must be an existing image directory without symlinks",
+                ));
+            }
+        }
+        spec["mounts"].as_array_mut().unwrap().push(json!({"destination":mount.destination,"type":"bind","source":mount.source,"options":["bind",mount.access,"nosuid","nodev","noexec"]}));
+        spec["annotations"][format!("org.xelab.volume.{}", mount.volume)] =
+            json!(mount.fence.to_string());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

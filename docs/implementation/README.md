@@ -6,6 +6,7 @@
 - [M1 实现与验收记录](m1-acceptance.md)
 - [M2 Secret 托管与工作负载租约](m2-secrets.md)
 - [M2 不可变 Blob 与可恢复清理](m2-blobs.md)
+- [M2 单节点持久卷、恢复与挂载](m2-volumes.md)
 - [M2-A XFS 硬配额后端](m2-storage.md)
 - [RUN-03 独占宿主测试工具与执行手册](run03-host.md)（真实验收待执行）
 - [契约优先级、变更与文档维护](change-policy.md)
