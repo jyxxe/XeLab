@@ -48,7 +48,7 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
             for row in self
                 .c
                 .query(
-                    "SELECT g.id FROM grants g JOIN accounts a ON a.id=g.subject_id WHERE g.subject_id=$1 AND g.status='active' AND (NOT $2 OR g.issuer_id<>g.subject_id OR (a.independent_owner AND a.parent_id IS NULL AND g.role_id='Owner' AND g.created_at=a.created_at AND g.issuer_credential_id IS NULL)) ORDER BY g.id",
+                    "SELECT g.id FROM grants g JOIN accounts a ON a.id=g.subject_id WHERE g.subject_id=$1 AND g.status='active' AND (NOT $2 OR g.issuer_id<>g.subject_id OR (a.independent_owner AND a.parent_id IS NULL AND g.role_id='Owner' AND (g.created_at=a.created_at OR EXISTS(SELECT 1 FROM recovery_owner_anchors r WHERE r.grant_id=g.id AND r.account_id=a.id)) AND g.issuer_credential_id IS NULL)) ORDER BY g.id",
                     &[subject, &self.proving_self_grants.contains(subject)],
                 )
                 .await?
@@ -290,7 +290,7 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
         } else {
             let issuer: Uuid = row.get("issuer_id");
             let subject: Uuid = row.get("subject_id");
-            let bootstrap=self.c.query_one("SELECT EXISTS(SELECT 1 FROM accounts a JOIN grants g ON g.subject_id=a.id WHERE g.id=$1 AND a.id=$2 AND a.independent_owner AND a.parent_id IS NULL AND g.role_id='Owner' AND g.created_at=a.created_at AND g.issuer_id=a.id AND g.issuer_credential_id IS NULL)", &[&grant,&subject]).await?.get::<_,bool>(0);
+            let bootstrap=self.c.query_one("SELECT EXISTS(SELECT 1 FROM accounts a JOIN grants g ON g.subject_id=a.id WHERE g.id=$1 AND a.id=$2 AND a.independent_owner AND a.parent_id IS NULL AND g.role_id='Owner' AND (g.created_at=a.created_at OR EXISTS(SELECT 1 FROM recovery_owner_anchors r WHERE r.grant_id=g.id AND r.account_id=a.id)) AND g.issuer_id=a.id AND g.issuer_credential_id IS NULL)", &[&grant,&subject]).await?.get::<_,bool>(0);
             if !bootstrap {
                 match Box::pin(self.account(issuer, depth + 1)).await {
                     Ok(limits) => paths = self.intersection(&paths, &limits).await?,

@@ -12,3 +12,5 @@ pub mod s3;
 pub mod archive;
 
 pub mod backup_transfer;
+
+pub mod metadata_snapshot;

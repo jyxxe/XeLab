@@ -15,7 +15,8 @@ const VOLUME_SERVICE: &str = include_str!("../migrations/0005_volume_service.sql
 const HOST_BLOB: &str = include_str!("../migrations/0006_host_blob.sql");
 const BACKUP_JOBS: &str = include_str!("../migrations/0007_backup_jobs.sql");
 const RESTORE_VOLUMES: &str = include_str!("../migrations/0008_restore_volumes.sql");
-const MIGRATIONS: [&str; 8] = [
+const PLATFORM_RECOVERY: &str = include_str!("../migrations/0009_platform_recovery.sql");
+const MIGRATIONS: [&str; 9] = [
     BASELINE,
     CALL_CHARGES,
     SECRET_AUTHORITY,
@@ -24,9 +25,35 @@ const MIGRATIONS: [&str; 8] = [
     HOST_BLOB,
     BACKUP_JOBS,
     RESTORE_VOLUMES,
+    PLATFORM_RECOVERY,
 ];
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 pub const LEADER_LOCK: i64 = 0x58454c41424d3101;
+
+/// Only code-owned base tables can enter an offline metadata snapshot. Views,
+/// migration history and the target's recovery gate are never imported.
+pub(crate) fn snapshot_tables() -> Vec<&'static str> {
+    let mut tables: Vec<_> = MIGRATIONS
+        .iter()
+        .flat_map(|sql| sql.lines())
+        .filter_map(|line| line.trim_start().strip_prefix("CREATE TABLE "))
+        .filter_map(|line| line.split([' ', '(']).next())
+        .filter(|name| {
+            !matches!(
+                *name,
+                "schema_migrations" | "platform_recovery_state" | "recovery_owner_anchors"
+            )
+        })
+        .collect();
+    tables.sort_unstable();
+    tables
+}
+pub(crate) fn migration_fingerprints() -> Vec<String> {
+    MIGRATIONS
+        .iter()
+        .map(|sql| digest(sql.as_bytes()))
+        .collect()
+}
 
 /// Serialize a deployment's OCI mutations without holding an authorization
 /// transaction across RPC/disk work. Keep the owning connection until all
@@ -159,7 +186,19 @@ impl Db {
     }
     pub async fn check(&self) -> Result<()> {
         let c = self.connect().await?;
-        verify_migration(&c).await
+        verify_migration(&c).await?;
+        if c.query_one(
+            "SELECT EXISTS(SELECT 1 FROM platform_recovery_state WHERE phase<>'ready')",
+            &[],
+        )
+        .await?
+        .get::<_, bool>(0)
+        {
+            return Err(Error::unavailable(
+                "Offline platform recovery has not completed",
+            ));
+        }
+        Ok(())
     }
     pub async fn migrate(&self) -> Result<()> {
         let mut c = self.connect().await?;
