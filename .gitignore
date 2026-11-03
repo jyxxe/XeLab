@@ -13,3 +13,4 @@ __pycache__/
 /examples/generated-host-blob/
 
 /examples/generated-schema/
+/examples/generated-schema-upgrade/

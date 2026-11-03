@@ -126,23 +126,32 @@ async fn bind_empty(app: &App, row: &Row, fence: &db::DeploymentFence) -> Result
             )
             .await?
             .get(0);
-        if state == "unversioned" {
-            unknown.push((source.id, source.project_id));
+        if state != "verified" {
+            unknown.push((source.id, source.project_id, state));
         }
     }
     let path = app.config.root().join("volumes");
     // This task is always joined; the owning job is not cancelled on timeout.
-    tokio::task::spawn_blocking(move || -> Result<()> {
+    let empty = tokio::task::spawn_blocking(move || -> Result<BTreeSet<Uuid>> {
         let store = ProjectStore::open(&path)?;
-        for (volume, project) in unknown {
-            if !store.data_is_empty(volume, project)? {
+        let mut empty = BTreeSet::new();
+        for (volume, project, state) in unknown {
+            let actual = store.data_is_empty(volume, project)?;
+            if state == "unversioned" && !actual {
                 return Err(Error::conflict("Unversioned business data is not empty"));
             }
+            if actual {
+                empty.insert(volume);
+            }
         }
-        Ok(())
+        Ok(empty)
     })
     .await
     .map_err(|_| Error::unavailable("Bootstrap filesystem inspection stopped"))??;
+    let mut physical: Value = row.get("volume_plan");
+    for item in physical.as_array_mut().unwrap() {
+        item["empty_initialization_proven"] = json!(empty.contains(&id(item, "id")?));
+    }
     check(app, operation, fence).await?;
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
@@ -232,8 +241,8 @@ async fn bind_empty(app: &App, row: &Row, fence: &db::DeploymentFence) -> Result
         .await?;
     }
     tx.execute(
-        "UPDATE volume_schema_jobs SET volume_fence=$2,updated_at=now() WHERE operation_id=$1",
-        &[&operation, &token],
+        "UPDATE volume_schema_jobs SET volume_fence=$2,volume_plan=$3,updated_at=now() WHERE operation_id=$1",
+        &[&operation, &token,&physical],
     )
     .await?;
     if !fence.protects(deployment) {
@@ -731,7 +740,9 @@ async fn process(app: &App, operation: Uuid, fence: &db::DeploymentFence) -> Res
             .as_array()
             .unwrap()
             .iter()
-            .all(|v| v["schema_state"] != "initializing");
+            .all(|v| {
+                v["schema_state"] != "initializing" || v["empty_initialization_proven"] == true
+            });
     app.runtime.stop(row.get("instance_id")).await?;
     if row.get::<_, String>("state") == "planned" {
         checkpoint(app, &row, fence, "planned", "initializing", None).await?;

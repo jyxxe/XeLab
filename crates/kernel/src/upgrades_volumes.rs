@@ -8,6 +8,7 @@ pub(super) struct Item {
     pub target: Uuid,
     pub spec: Value,
     pub schema: Option<String>,
+    pub binding: Option<Value>,
 }
 pub(super) struct Admission {
     pub items: Vec<Item>,
@@ -51,9 +52,6 @@ pub(super) async fn plan(
                 != Some(row.get("capacity_bytes"))
             || row.get::<_, String>("allocation_state") != "ready"
             || row.get::<_, i64>("capacity_bytes") > 63 * 1024 * 1024 * 1024
-            || row
-                .get::<_, Option<String>>("data_schema_version")
-                .is_some_and(|s| s != "none")
         {
             return Err(Error::conflict(
                 "Source volume schema, ownership or capacity differs",
@@ -72,12 +70,14 @@ pub(super) async fn plan(
         .await?;
         let spec: Value = row.get("spec");
         let schema: Option<String> = row.get("data_schema_version");
+        let binding = schema_binding(c, source, &target["manifest"]).await?;
         reserved.push((fresh, spec.clone(), schema.clone()));
         items.push(Item {
             source,
             target: fresh,
             spec,
             schema,
+            binding,
         });
     }
     Ok(Some(Admission {
@@ -93,6 +93,7 @@ pub(super) async fn reserve(
     admission: Admission,
 ) -> Result<()> {
     volumes::reserve_restore(c, ctx, operation, admission.reservation).await?;
+    let source_manifest:Value = c.query_one("SELECT manifest FROM installations WHERE id=(SELECT installation_id FROM deployments WHERE id=$1)", &[&deployment]).await?.get(0);
     for (ordinal, item) in admission.items.into_iter().enumerate() {
         let row=c.query_one("SELECT v.owner_id,v.spec,v.state AS public_state,a.state,a.spec AS allocation_spec,a.owner_id AS allocation_owner,a.data_schema_version FROM volumes v JOIN volume_allocations a ON a.volume_id=v.id WHERE v.id=$1 FOR UPDATE OF v,a",&[&item.source]).await?;
         if row.get::<_, Uuid>("owner_id") != ctx.subject
@@ -105,6 +106,7 @@ pub(super) async fn reserve(
             )
             || row.get::<_, String>("state") != "ready"
             || row.get::<_, Option<String>>("data_schema_version") != item.schema
+            || schema_binding(c, item.source, &source_manifest).await? != item.binding
         {
             return Err(Error::conflict(
                 "Source volume changed during upgrade admission",
@@ -398,9 +400,17 @@ pub(super) async fn freeze(c: &(impl GenericClient + Sync), operation: Uuid) -> 
     if rows.is_empty() {
         return Ok(());
     }
+    let metadata: Value = c
+        .query_one(
+            "SELECT source_metadata FROM deployment_upgrade_jobs WHERE operation_id=$1",
+            &[&operation],
+        )
+        .await?
+        .get(0);
     let mut maximum = 1i64;
     for mapping in &rows {
         let source: Uuid = mapping.get("source_volume_id");
+        schema_binding(c, source, &metadata["manifest"]).await?;
         let row = c.query_one("SELECT v.write_fence,v.spec,v.writer_instance_id,a.state,a.data_schema_version,h.operation_id FROM volumes v JOIN volume_allocations a ON a.volume_id=v.id JOIN volume_holds h ON h.volume_id=v.id WHERE v.id=$1 FOR UPDATE OF v,a", &[&source]).await?;
         if row.get::<_, Uuid>("operation_id") != operation
             || row.get::<_, Value>("spec") != mapping.get::<_, Value>("source_spec")
@@ -493,9 +503,84 @@ pub(super) async fn clone_group(app: &App, job: &Row) -> Result<()> {
         let tx = c.transaction().await?;
         db::auth_lock(&tx, false).await?;
         revalidate(&tx, app, job).await?;
+        inherit_schema(&tx, job, source, target, &json!(proof)).await?;
         if tx.execute("UPDATE deployment_upgrade_volumes SET state='cloned',proof=$3,updated_at=now() WHERE operation_id=$1 AND target_volume_id=$2 AND state='copying'", &[&operation,&target,&json!(proof)]).await? != 1 { return Err(Error::conflict("Clone journal changed")); }
         if tx.execute("UPDATE volume_allocations SET state='restored',updated_at=now() WHERE volume_id=$1 AND operation_id=$2 AND state='restoring'", &[&target,&operation]).await? != 1 { return Err(Error::conflict("Clone allocation changed")); }
         tx.commit().await?;
     }
     Ok(())
 }
+
+/// A format string is scoped to its signed plugin/publisher. Disabled intent
+/// and a declared label alone cannot provide a source for a versioned clone.
+async fn schema_binding(
+    c: &(impl GenericClient + Sync),
+    volume: Uuid,
+    manifest: &Value,
+) -> Result<Option<Value>> {
+    let row = c.query_one("SELECT data_schema_version,schema_state,schema_deployment_id,schema_plugin_id,schema_publisher_id,schema_manifest_digest,schema_operation_id,schema_proof FROM volume_allocations WHERE volume_id=$1", &[&volume]).await?;
+    let schema: Option<String> = row.get("data_schema_version");
+    let state: String = row.get("schema_state");
+    if manifest["data_schema_version"] == "none" {
+        if state != "unversioned" || schema.as_deref().is_some_and(|s| s != "none") {
+            return Err(Error::conflict(
+                "Unversioned plugin cannot clone versioned data",
+            ));
+        }
+        return Ok(None);
+    }
+    let proof = row
+        .get::<_, Option<Value>>("schema_proof")
+        .filter(Value::is_object)
+        .ok_or_else(|| Error::conflict("Clone source lacks an actual format proof"))?;
+    if state != "verified"
+        || schema.as_deref() != manifest["data_schema_version"].as_str()
+        || row.get::<_, Option<String>>("schema_plugin_id").as_deref()
+            != manifest["plugin_id"].as_str()
+        || row.get::<_, Option<Uuid>>("schema_publisher_id") != Some(id(manifest, "publisher_id")?)
+    {
+        return Err(Error::conflict(
+            "Clone source format or signed scope differs",
+        ));
+    }
+    Ok(Some(
+        json!({"schema":schema,"deployment_id":row.get::<_,Option<Uuid>>("schema_deployment_id"),"plugin_id":row.get::<_,Option<String>>("schema_plugin_id"),"publisher_id":row.get::<_,Option<Uuid>>("schema_publisher_id"),"manifest_digest":row.get::<_,Option<String>>("schema_manifest_digest"),"operation_id":row.get::<_,Option<Uuid>>("schema_operation_id"),"proof_digest":crate::contracts::digest(&serde_json::to_vec(&proof)?)}),
+    ))
+}
+
+/// Called only after the owned physical clone has actually been read back.
+/// Identical bytes can carry an already verified SAME format into a new UUID;
+/// this never converts or relabels a different source schema.
+async fn inherit_schema(
+    c: &(impl GenericClient + Sync),
+    job: &Row,
+    source: Uuid,
+    target: Uuid,
+    copy: &Value,
+) -> Result<()> {
+    let source_metadata: Value = job.get("source_metadata");
+    let target_metadata: Value = job.get("target_metadata");
+    let Some(binding) = schema_binding(c, source, &source_metadata["manifest"]).await? else {
+        return Ok(());
+    };
+    if source_metadata["manifest"]["data_schema_version"]
+        != target_metadata["manifest"]["data_schema_version"]
+    {
+        return Err(Error::conflict(
+            "A clone cannot prove a different target schema",
+        ));
+    }
+    let proof = json!({"kind":"same_schema_clone","source_volume_id":source,"source_binding":binding,"copy":copy,"operation_id":job.get::<_,Uuid>("operation_id"),"instance_id":job.get::<_,Uuid>("candidate_id"),"generation":job.get::<_,i64>("candidate_generation"),"manifest_digest":target_metadata["manifest_digest"]});
+    if serde_json::to_vec(&proof)?.len() > 65536 {
+        return Err(Error::exhausted());
+    }
+    let changed = c.execute("UPDATE volume_allocations SET schema_state='verified',data_schema_version=$3,schema_deployment_id=$4,schema_plugin_id=$5,schema_publisher_id=$6,schema_manifest_digest=$7,schema_operation_id=$2,schema_proof=$8,updated_at=now() WHERE volume_id=$1 AND operation_id=$2 AND state='restoring' AND NOT EXISTS(SELECT 1 FROM volumes WHERE id=$1)", &[&target,&job.get::<_,Uuid>("operation_id"),&target_metadata["manifest"]["data_schema_version"].as_str().unwrap(),&job.get::<_,Uuid>("deployment_id"),&target_metadata["plugin_id"].as_str().unwrap(),&id(&target_metadata,"publisher_id")?,&target_metadata["manifest_digest"].as_str().unwrap(),&proof]).await?;
+    if changed != 1 {
+        return Err(Error::conflict("Verified schema clone is not private"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "upgrades_schema_tests.rs"]
+mod schema_tests;
