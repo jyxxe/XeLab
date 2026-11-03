@@ -18,14 +18,14 @@ cleanup() {
   # test files; never recurse through a live image or volume mount.
   local target
   local -a service_mounts
-  mapfile -t service_mounts < <(findmnt -rn -o TARGET | awk -v prefix="$work/service/" 'index($0,prefix)==1' | sort -r)
+  mapfile -t service_mounts < <(findmnt -rn -o TARGET | awk -v prefix="$work/service/" -v recovery="$work/platform-target/" 'index($0,prefix)==1 || index($0,recovery)==1' | sort -r)
   for target in "${service_mounts[@]}"; do
     if ! umount "$target"; then
       echo "Cleanup failed: isolated test mount retained at $target" >&2
       exit 1
     fi
   done
-  for name in restore-service/volumes service/volumes readonly accounting enforced; do
+  for name in platform-target/volumes restore-service/volumes service/volumes readonly accounting enforced; do
     if mountpoint -q "$work/$name"; then
       if ! umount "$work/$name"; then
         echo "Cleanup failed: isolated test mount retained at $work/$name" >&2
@@ -33,8 +33,8 @@ cleanup() {
       fi
     fi
   done
-  rm -f -- "$work/enforced.img" "$work/accounting.img" "$work/service.img" "$work/restore.img"
-  rm -rf --one-file-system -- "$work/service" "$work/restore-service"
+  rm -f -- "$work/enforced.img" "$work/accounting.img" "$work/service.img" "$work/restore.img" "$work/platform.img"
+  rm -rf --one-file-system -- "$work/service" "$work/restore-service" "$work/platform-target"
   rmdir -- "$work/enforced" "$work/accounting" "$work/readonly" "$work"
   exit "$rc"
 }
@@ -76,4 +76,11 @@ if [[ $# == 4 ]]; then
   chmod 700 "$work/restore-service/volumes"
   export XELAB_RESTORE_TEST_ROOT="$work/restore-service"
   "$restore_binary" --ignored --nocapture --exact volumes::restore_tests::actual_private_restore_allocator_and_verified_files
+  mkdir -m 700 "$work/platform-target" "$work/platform-target/volumes"
+  truncate -s 512M "$work/platform.img"
+  mkfs.xfs -q "$work/platform.img"
+  mount -o loop,prjquota,nosuid,nodev,noexec "$work/platform.img" "$work/platform-target/volumes"
+  chmod 700 "$work/platform-target/volumes"
+  export XELAB_PLATFORM_RESTORE_ROOT="$work/platform-target"
+  "$restore_binary" --ignored --nocapture --exact offline::restore::tests::actual_platform_recovery_rebuilds_fresh_state_and_resumes_after_process_death
 fi

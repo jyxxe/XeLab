@@ -32,6 +32,8 @@ use xelab_kernel::{
     runtime::Runtime,
     tls,
 };
+#[path = "support/platform_source.rs"]
+mod platform_source;
 
 #[allow(clippy::too_many_arguments)] // Test request envelope.
 async fn api(
@@ -125,7 +127,12 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         .unwrap();
     let db = Db::new(format!("{base} dbname=xelab_oci")).unwrap();
     db.migrate().await.unwrap();
-    let directory = tempfile::tempdir().unwrap().keep();
+    let directory = tempfile::Builder::new()
+        .prefix("xelab-oci-source-")
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir_in("/mnt")
+        .unwrap()
+        .keep();
     let root = directory.as_path();
     let key = KeyPair::generate().unwrap();
     let mut ca = CertificateParams::new(vec!["xelab-test-ca".into()]).unwrap();
@@ -1123,6 +1130,14 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     assert!(summary.rows > 0);
     println!("Offline source: real signed OCI Drain/stop, exclusive leases, image-index verification and consistent metadata export passed (not off-host acceptance)");
     drop(frozen);
+    let source_volume = platform_source::SourceVolume::create(
+        root,
+        &app.config.root(),
+        &db,
+        owner,
+        session["session"]["id"].as_str().unwrap().parse().unwrap(),
+    )
+    .await;
     // Exercise the complete capture driver against the CI's real local S3
     // fixture. Its evidence remains false; no production endpoint override.
     use xelab_kernel::{
@@ -1149,9 +1164,24 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     let client =
         Arc::new(s3::Client::new(location, s3::Credentials::load(&credentials).unwrap()).unwrap());
     client.create_bucket().await.unwrap();
+    let repository = Uuid::new_v4();
+    let uri = format!("s3://{bucket}/source/");
+    c.execute("INSERT INTO backup_repositories(id,location,region,state) VALUES($1,$2,'us-east-1','ready')",&[&repository,&uri]).await.unwrap();
+    client
+        .put(
+            "xelab-repository.identity",
+            serde_json::to_vec(&json!({"format":1,"repository_id":repository})).unwrap(),
+        )
+        .await
+        .unwrap();
+    let objects = Arc::new(
+        client
+            .scoped(&format!("repositories/{repository}"))
+            .unwrap(),
+    );
     let repo = Repository {
-        id: Uuid::new_v4(),
-        objects: client.clone(),
+        id: repository,
+        objects: objects.clone(),
     };
     let receipt = xelab_kernel::offline::backup::capture(
         offline.clone(),
@@ -1161,9 +1191,14 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     .await
     .unwrap();
     assert!(!receipt.off_host);
+    let report =
+        std::env::var("XELAB_PLATFORM_SOURCE_RECEIPT").expect("private source report path");
+    fs::write(&report,serde_json::to_vec(&json!({"receipt":receipt,"owner_id":owner,"location":uri,"volume_id":source_volume.volume,"source_filesystem":source_volume.filesystem})).unwrap()).unwrap();
+    fs::set_permissions(&report, fs::Permissions::from_mode(0o600)).unwrap();
+    source_volume.destroy();
     let repo = Repository {
         id: receipt.repository_id,
-        objects: client.clone(),
+        objects: objects.clone(),
     };
     let value = repo
         .read_manifest(
@@ -1180,13 +1215,15 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     assert!(!manifest.installations.is_empty());
     assert!(manifest.images.is_some());
     assert!(!manifest.off_host);
+    assert_eq!(manifest.volumes.len(), 1);
+    assert!(manifest.blob_count > 0);
     // Verify the actual encrypted native stream again on a fresh private file.
     let private = tempfile::NamedTempFile::new_in(root).unwrap();
     let target = raw::Target::new(private.reopen().unwrap()).unwrap();
     let pool = backup_transfer::Pool::default().raw(None);
     let restored = pool
         .download_file(
-            client.clone(),
+            objects.clone(),
             target,
             raw::Object {
                 backup: receipt.backup_id,
@@ -1241,7 +1278,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         let private = tempfile::NamedTempFile::new_in(root).unwrap();
         let restored = pool
             .download_file(
-                client.clone(),
+                objects.clone(),
                 raw::Target::new(private.reopen().unwrap()).unwrap(),
                 raw::Object {
                     backup: receipt.backup_id,

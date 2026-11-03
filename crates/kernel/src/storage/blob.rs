@@ -150,6 +150,16 @@ impl Store {
         Ok(())
     }
     pub fn stage(&self, size: u64) -> Result<Staged> {
+        self.stage_file(size, false)
+    }
+    /// Physically reserve a private decrypt target while keeping its EOF zero.
+    pub fn stage_empty(&self, size: u64) -> Result<Staged> {
+        self.stage_file(size, true)
+    }
+    fn stage_file(&self, size: u64, empty: bool) -> Result<Staged> {
+        if size > 67108864 {
+            return Err(Error::exhausted());
+        }
         let name = format!("upload-{}", Uuid::new_v4());
         let c = CString::new(name.clone()).unwrap();
         let file = component(
@@ -189,7 +199,15 @@ impl Store {
             return Err(Error::exhausted());
         }
         if size > 0 {
-            let code = unsafe { libc::posix_fallocate(fd, 0, size as i64) };
+            let code = if empty {
+                if unsafe { libc::fallocate(fd, libc::FALLOC_FL_KEEP_SIZE, 0, size as i64) } < 0 {
+                    libc::ENOSPC
+                } else {
+                    0
+                }
+            } else {
+                unsafe { libc::posix_fallocate(fd, 0, size as i64) }
+            };
             if code != 0 {
                 return Err(Error::exhausted());
             }
@@ -211,6 +229,27 @@ impl Store {
         )?;
         self.valid_file(&file)?;
         Ok(file)
+    }
+    pub fn open_optional(&self, id: Uuid) -> Result<Option<File>> {
+        let name = CString::new(id.to_string()).unwrap();
+        let fd = unsafe {
+            libc::openat(
+                self.root.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            let error = std::io::Error::last_os_error();
+            return if error.kind() == std::io::ErrorKind::NotFound {
+                Ok(None)
+            } else {
+                Err(error.into())
+            };
+        }
+        let file = unsafe { File::from_raw_fd(fd) };
+        self.valid_file(&file)?;
+        Ok(Some(file))
     }
     pub fn verify(&self, id: Uuid, size: u64, expected: &str) -> Result<File> {
         let mut file = self.open_object(id)?;
@@ -389,6 +428,39 @@ impl Orphan {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    #[tokio::test]
+    async fn decrypt_staging_reserves_blocks_with_empty_eof_and_no_optional_link_adoption() {
+        let root = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in("/tmp")
+            .unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let missing = Uuid::new_v4();
+        assert!(store.open_optional(missing).unwrap().is_none());
+        let staged = store.stage_empty(1048576).unwrap();
+        let file = staged
+            .file
+            .as_ref()
+            .unwrap()
+            .try_clone()
+            .await
+            .unwrap()
+            .into_std()
+            .await;
+        let metadata = file.metadata().unwrap();
+        assert_eq!(metadata.len(), 0);
+        assert!(metadata.blocks() * 512 >= 1048576);
+        let target = crate::storage::backup_transfer::raw::Target::new(file).unwrap();
+        drop(target);
+        drop(staged);
+        assert_eq!(store.entries().unwrap().count(), 0);
+        std::os::unix::fs::symlink(
+            "/etc/passwd",
+            root.path().join("blobs").join(missing.to_string()),
+        )
+        .unwrap();
+        assert!(store.open_optional(missing).is_err());
+    }
     #[test]
     fn writable_ancestor_cannot_be_hidden_by_a_private_leaf() {
         let root = tempfile::Builder::new()

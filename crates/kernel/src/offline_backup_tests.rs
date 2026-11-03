@@ -127,6 +127,48 @@ fn source_checkpoint_validation_rejects_inconsistent_recovery_sets() {
         assert!(broken.validate(&h, false).is_err(), "{path}");
     }
 }
+#[test]
+fn authenticated_recovery_receipt_binds_full_manifest_identity_and_key() {
+    let key = [29; 32];
+    let mut source = state(Uuid::new_v4(), Uuid::new_v4(), &key, b"component metadata");
+    source.manifest.metadata.ciphertext = Some(backup_crypto::Summary {
+        bytes: 200,
+        digest: digest(b"component ciphertext"),
+    });
+    let receipt = Receipt {
+        backup_id: source.manifest.backup_id,
+        repository_id: source.manifest.repository_id,
+        manifest_object: source.manifest_object,
+        manifest_digest: digest(&serde_json::to_vec(&source.manifest).unwrap()),
+        off_host: false,
+    };
+    source
+        .manifest
+        .validate_receipt(&receipt, &digest(&key))
+        .unwrap();
+    assert!(source
+        .manifest
+        .validate_receipt(&receipt, &digest(&[30; 32]))
+        .is_err());
+    let mut other = receipt.clone();
+    other.repository_id = Uuid::new_v4();
+    assert!(source
+        .manifest
+        .validate_receipt(&other, &digest(&key))
+        .is_err());
+    other = receipt.clone();
+    other.manifest_object = source.manifest.metadata.object;
+    assert!(source
+        .manifest
+        .validate_receipt(&other, &digest(&key))
+        .is_err());
+    other = receipt;
+    other.off_host = true;
+    assert!(source
+        .manifest
+        .validate_receipt(&other, &digest(&key))
+        .is_err());
+}
 #[tokio::test]
 async fn real_file_journal_and_s3_publish_only_complete_set_and_recover_without_source() {
     let root = private_root();

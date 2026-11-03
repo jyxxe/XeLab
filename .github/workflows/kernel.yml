@@ -88,21 +88,17 @@ jobs:
       - name: Real OCI API lifecycle and recovery
         env:
           XELAB_OCI_TEST: "1"
+          XELAB_PLATFORM_SOURCE_RECEIPT: ${{ runner.temp }}/xelab-platform-source.json
         run: |
           python3 - <<'PYTEST'
           import glob, os, subprocess
           binaries=[p for p in glob.glob("target/debug/deps/oci-*") if os.path.isfile(p) and os.access(p,os.X_OK)]
           assert len(binaries)==1,binaries
-          subprocess.run(["sudo","--preserve-env=XELAB_TEST_DATABASE_URL,XELAB_TEST_IMAGE,XELAB_TEST_PYTHON_IMAGE,XELAB_TEST_HOST_BLOB_IMAGE,XELAB_TEST_S3_ENDPOINT,XELAB_OCI_TEST",binaries[0],"--ignored","--nocapture"],check=True)
+          subprocess.run(["sudo","--preserve-env=XELAB_TEST_DATABASE_URL,XELAB_TEST_IMAGE,XELAB_TEST_PYTHON_IMAGE,XELAB_TEST_HOST_BLOB_IMAGE,XELAB_TEST_S3_ENDPOINT,XELAB_PLATFORM_SOURCE_RECEIPT,XELAB_OCI_TEST",binaries[0],"--ignored","--nocapture"],check=True)
           PYTEST
-      - name: Full workspace regression
-        run: cargo test --workspace --all-targets --locked
-      - name: Strict documentation validation
-        run: |
-          python3 -m venv /tmp/xelab-docs
-          /tmp/xelab-docs/bin/pip install -r docs/tools/requirements.txt
-          /tmp/xelab-docs/bin/python docs/tools/validate_docs.py --strict
       - name: Real XFS quota, volume lifecycle and private restore
+        env:
+          XELAB_PLATFORM_SOURCE_RECEIPT: ${{ runner.temp }}/xelab-platform-source.json
         run: |
           python3 - <<'PYTEST'
           import glob, os, subprocess
@@ -112,8 +108,15 @@ jobs:
           assert len(volumes)==1,volumes
           libraries=[p for p in glob.glob("target/debug/deps/xelab_kernel-*") if os.path.isfile(p) and os.access(p,os.X_OK)]
           assert len(libraries)==1,libraries
-          subprocess.run(["sudo","--preserve-env=XELAB_TEST_DATABASE_URL,XELAB_TEST_VOLUME_IMAGE,XELAB_TEST_S3_ENDPOINT","env","XELAB_XFS_TEST=1","bash","tools/test-xfs.sh","--isolated-test-host",binaries[0],volumes[0],libraries[0]],check=True)
+          subprocess.run(["sudo","--preserve-env=XELAB_TEST_DATABASE_URL,XELAB_TEST_VOLUME_IMAGE,XELAB_TEST_S3_ENDPOINT,XELAB_PLATFORM_SOURCE_RECEIPT","env","XELAB_XFS_TEST=1","bash","tools/test-xfs.sh","--isolated-test-host",binaries[0],volumes[0],libraries[0]],check=True)
           PYTEST
+      - name: Full workspace regression
+        run: cargo test --workspace --all-targets --locked
+      - name: Strict documentation validation
+        run: |
+          python3 -m venv /tmp/xelab-docs
+          /tmp/xelab-docs/bin/pip install -r docs/tools/requirements.txt
+          /tmp/xelab-docs/bin/python docs/tools/validate_docs.py --strict
       - name: Lints
         if: always()
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
