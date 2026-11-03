@@ -38,7 +38,7 @@ async fn main() {
 async fn start(args: Args) -> Result<()> {
     require_host_admin()?;
     let mut config = Config::load(&args.config)?;
-    let _host_lease = Runtime::new(config.clone()).host_lease()?;
+    Runtime::new(config.clone()).retain_daemon_host_lease()?;
     let (dsn, key) = config.secrets()?;
     let db = Db::new(dsn)?;
     db.check().await?;

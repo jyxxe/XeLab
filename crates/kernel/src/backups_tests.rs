@@ -16,18 +16,18 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
-struct Fixture {
-    app: Arc<App>,
-    token: String,
+pub(crate) struct Fixture {
+    pub(crate) app: Arc<App>,
+    pub(crate) token: String,
     credential: Uuid,
     operation: Uuid,
-    backup: Uuid,
+    pub(crate) backup: Uuid,
     volumes: [Uuid; 2],
     objects: [Uuid; 2],
     _root: tempfile::TempDir,
 }
 impl Fixture {
-    async fn new() -> Option<Self> {
+    pub(crate) async fn new() -> Option<Self> {
         crate::init_crypto();
         let Ok(base) = std::env::var("XELAB_TEST_DATABASE_URL") else {
             eprintln!("SKIPPED: backup journal needs PostgreSQL");

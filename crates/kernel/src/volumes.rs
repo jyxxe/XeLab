@@ -19,6 +19,9 @@ use tokio_postgres::GenericClient;
 use uuid::Uuid;
 const ROOT_LOCK: i64 = 0x58454c564f4c5254;
 const TOMBSTONE: i64 = 65536;
+#[cfg(test)]
+#[path = "volumes_restore_tests.rs"]
+mod restore_tests;
 #[derive(serde::Serialize)]
 pub struct BackupSource {
     pub id: Uuid,
@@ -78,6 +81,193 @@ pub async fn backup_sources(app: &App, operation: Uuid, ids: &[Uuid]) -> Result<
 struct Binding {
     id: Uuid,
     filesystem: Uuid,
+}
+pub(crate) struct RestorePlan {
+    bound: Binding,
+    volumes: Vec<(Uuid, Value, Option<String>, Limits, i64)>,
+}
+/// Compute geometry before the API takes root/deployment row locks; binding
+/// recovery uses a separate short transaction and cannot run under those locks.
+pub(crate) async fn plan_restore(
+    app: &App,
+    volumes: Vec<(Uuid, Value, Option<String>)>,
+) -> Result<RestorePlan> {
+    if volumes.is_empty() || volumes.len() > 16 {
+        return Err(Error::invalid("Invalid restore volume group"));
+    }
+    let bound = binding(app).await?;
+    let mut planned = Vec::new();
+    for (id, spec, schema) in volumes {
+        crate::contracts::validate("VolumeSpec", &spec)?;
+        let capacity = spec["capacity_bytes"]
+            .as_u64()
+            .ok_or_else(|| Error::invalid("Invalid restore capacity"))?;
+        let (limits, charge) = geometry(app, bound, capacity).await?;
+        planned.push((id, spec, schema, limits, charge));
+    }
+    Ok(RestorePlan {
+        bound,
+        volumes: planned,
+    })
+}
+/// Persist all bytes/inodes and unique project IDs before any filesystem work.
+pub(crate) async fn reserve_restore(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    operation: Uuid,
+    plan: RestorePlan,
+) -> Result<()> {
+    let total = plan
+        .volumes
+        .iter()
+        .try_fold(0i64, |sum, (_, _, _, limits, charge)| {
+            sum.checked_add(limits.capacity_bytes as i64)
+                .and_then(|n| n.checked_add(*charge))
+                .ok_or_else(Error::exhausted)
+        })?;
+    budget(c, plan.bound, total).await?;
+    for (id, spec, schema, limits, charge) in plan.volumes {
+        let project: i64 = c
+            .query_one("SELECT nextval('volume_project_ids')", &[])
+            .await?
+            .get(0);
+        let project = i32::try_from(project).map_err(|_| Error::exhausted())?;
+        c.execute("INSERT INTO volume_allocations(volume_id,root_id,project_id,owner_id,spec,capacity_bytes,inode_limit,metadata_charge,desired_capacity,desired_inodes,desired_metadata_charge,state,operation_id,credential_id,peer,data_schema_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$6,$7,$8,'restoring',$9,$10,$11::text::inet,$12)",&[&id,&plan.bound.id,&project,&ctx.subject,&spec,&(limits.capacity_bytes as i64),&(limits.inodes as i64),&charge,&operation,&ctx.credential,&ctx.peer.to_string(),&schema]).await?;
+    }
+    Ok(())
+}
+/// A restore owns this UUID/project exclusively. A partially extracted tree is
+/// failed/quarantined instead of being treated as an empty retry destination.
+pub(crate) async fn private_restore_path(
+    app: &App,
+    operation: Uuid,
+    volume: Uuid,
+    create: bool,
+) -> Result<BackupSource> {
+    let c = app.db.connect().await?;
+    let row=c.query_opt("SELECT a.*,r.filesystem_uuid FROM volume_allocations a JOIN volume_storage_root r ON r.id=a.root_id WHERE a.volume_id=$1 AND a.operation_id=$2 AND a.state IN ('restoring','restored') AND r.state='ready' AND NOT EXISTS(SELECT 1 FROM volumes v WHERE v.id=a.volume_id)",&[&volume,&operation]).await?.ok_or_else(||Error::conflict("Restore allocation is not private"))?;
+    let path = app.config.root().join("volumes");
+    blocking(move || {
+        let mut store = ProjectStore::open(&path)?;
+        let filesystem: Uuid = row.get("filesystem_uuid");
+        let project = row.get::<_, i32>("project_id") as u32;
+        let limits = Limits {
+            capacity_bytes: row.get::<_, i64>("capacity_bytes") as u64,
+            inodes: row.get::<_, i64>("inode_limit") as u64,
+        };
+        store.namespace_identity(filesystem, row.get("root_id"), false)?;
+        if create {
+            store.recover_create(volume, project, limits)?;
+            store.prepare_data(volume, project)?;
+        }
+        if store.inspect(volume, project)?.limits != limits {
+            return Err(Error::unavailable("Restore quota differs from reservation"));
+        }
+        Ok(BackupSource {
+            id: volume,
+            spec: row.get("spec"),
+            capacity_bytes: limits.capacity_bytes,
+            data_schema_version: row.get("data_schema_version"),
+            filesystem_uuid: filesystem,
+            project_id: project,
+            path: store.data_path(volume, project)?,
+        })
+    })
+    .await
+}
+pub(crate) struct RestorePublication {
+    operation: Uuid,
+    items: Vec<(Uuid, Uuid, Uuid, Uuid, Value, u32, ProjectStatus)>,
+}
+/// Inspect the filesystem before taking the final authorization transaction.
+pub(crate) async fn prepare_restore_publication(
+    app: &App,
+    operation: Uuid,
+    ids: &[Uuid],
+) -> Result<RestorePublication> {
+    let c = app.db.connect().await?;
+    let rows=c.query("SELECT a.*,r.filesystem_uuid FROM volume_allocations a JOIN volume_storage_root r ON r.id=a.root_id JOIN operations o ON o.id=a.operation_id AND o.owner_id=a.owner_id WHERE a.volume_id=ANY($1) AND a.operation_id=$2 AND a.state='restored' AND r.state='ready' ORDER BY a.volume_id",&[&ids,&operation]).await?;
+    if rows.len() != ids.len() {
+        return Err(Error::conflict(
+            "Restore verification journal is incomplete",
+        ));
+    }
+    let path = app.config.root().join("volumes");
+    let statuses = blocking(move || {
+        let mut store = ProjectStore::open(&path)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let id: Uuid = row.get("volume_id");
+            let project = row.get::<_, i32>("project_id") as u32;
+            let fs: Uuid = row.get("filesystem_uuid");
+            store.namespace_identity(fs, row.get("root_id"), false)?;
+            let status = store.inspect(id, project)?;
+            if status.limits.capacity_bytes != row.get::<_, i64>("capacity_bytes") as u64
+                || status.limits.inodes != row.get::<_, i64>("inode_limit") as u64
+            {
+                return Err(Error::unavailable("Restored quota differs"));
+            }
+            store.data_path(id, project)?;
+            out.push((
+                id,
+                row.get::<_, Uuid>("root_id"),
+                fs,
+                row.get::<_, Uuid>("owner_id"),
+                row.get::<_, Value>("spec"),
+                project,
+                status,
+            ));
+        }
+        Ok(out)
+    })
+    .await?;
+    Ok(RestorePublication {
+        operation,
+        items: statuses,
+    })
+}
+/// Publish metadata without filesystem/network I/O after checking that the
+/// reservation still matches its inspected namespace and limits.
+pub(crate) async fn publish_restored(
+    c: &(impl GenericClient + Sync),
+    publication: RestorePublication,
+) -> Result<()> {
+    let root = c
+        .query_one(
+            "SELECT id,filesystem_uuid FROM volume_storage_root WHERE state='ready' FOR UPDATE",
+            &[],
+        )
+        .await?;
+    for (id, root_id, filesystem, owner, spec, project, status) in publication.items {
+        let row=c.query_one("SELECT * FROM volume_allocations WHERE volume_id=$1 AND operation_id=$2 AND state='restored' FOR UPDATE",&[&id,&publication.operation]).await?;
+        if root.get::<_, Uuid>("id") != root_id
+            || root.get::<_, Uuid>("filesystem_uuid") != filesystem
+            || row.get::<_, Uuid>("root_id") != root_id
+            || row.get::<_, Uuid>("owner_id") != owner
+            || row.get::<_, i32>("project_id") as u32 != project
+            || row.get::<_, Value>("spec") != spec
+            || row.get::<_, i64>("capacity_bytes") as u64 != status.limits.capacity_bytes
+            || row.get::<_, i64>("inode_limit") as u64 != status.limits.inodes
+        {
+            return Err(Error::conflict(
+                "Restore reservation changed after verification",
+            ));
+        }
+        let backend = format!("xfs:{filesystem}:{project}");
+        let full = status.used_bytes >= status.limits.capacity_bytes
+            || status.used_inodes >= status.limits.inodes;
+        let state = if full { "full" } else { "available" };
+        c.execute("INSERT INTO volumes(id,owner_id,spec,backend_id,capacity_bytes,used_bytes,write_fence,state,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,1,$7,now(),now())",&[&id,&owner,&spec,&backend,&(status.limits.capacity_bytes as i64),&(status.used_bytes as i64),&state]).await?;
+        if full {
+            db::outbox(c, "volume_full", id, &json!({"volume_id":id})).await?;
+        }
+        c.execute(
+            "UPDATE volume_allocations SET state='ready',updated_at=now() WHERE volume_id=$1",
+            &[&id],
+        )
+        .await?;
+    }
+    Ok(())
 }
 pub fn handles(name: &str) -> bool {
     matches!(

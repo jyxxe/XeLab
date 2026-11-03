@@ -119,6 +119,16 @@ impl Runtime {
         }
         Ok(file)
     }
+    /// A Tokio runtime can still be joining filesystem workers after async main
+    /// returns. Keep the daemon's lease until process exit, so another kernel
+    /// cannot enter that shutdown window and reuse its storage namespace.
+    pub fn retain_daemon_host_lease(&self) -> Result<()> {
+        static LEASE: std::sync::OnceLock<fs::File> = std::sync::OnceLock::new();
+        let lease = self.host_lease()?;
+        LEASE
+            .set(lease)
+            .map_err(|_| Error::conflict("Daemon host lease was already retained"))
+    }
     pub async fn preflight(&self, cpu: i64, memory: i64) -> Result<()> {
         require_host_admin()?;
         admission::pool(&self.config.value["resources"], cpu, memory)?;

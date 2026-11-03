@@ -15,6 +15,7 @@ pub mod host;
 pub mod host_blobs;
 pub mod identity;
 pub mod policy;
+pub mod restores;
 pub mod runtime;
 pub mod secrets;
 pub mod storage;
