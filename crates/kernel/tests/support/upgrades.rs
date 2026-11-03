@@ -63,7 +63,6 @@ pub async fn exercise(
     publisher: Uuid,
     signing: &SigningKey,
     deployment: &str,
-    source: Uuid,
 ) {
     for _ in 0..120 {
         if app.ready.load(Ordering::SeqCst) {
@@ -96,6 +95,16 @@ pub async fn exercise(
     let supervisor = tokio::spawn(xelab_kernel::upgrades::run(app.clone()));
     let c = app.db.connect().await.unwrap();
     let deployment_id: Uuid = deployment.parse().unwrap();
+    // Capture the original installation from this deployment. The parent test
+    // also installs Python plugins, whose local bindings may shadow its v1.
+    let source: Uuid = c
+        .query_one(
+            "SELECT installation_id FROM deployments WHERE id=$1",
+            &[&deployment_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
     for (name, installation, key) in [
         ("upgradeDeployment", target, "actual-upgrade"),
         ("rollbackDeployment", source, "actual-rollback"),

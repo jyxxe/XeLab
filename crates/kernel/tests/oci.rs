@@ -1025,20 +1025,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     .await;
     assert_eq!(enable.0, 202, "{}", enable.1);
     operation(&router, enable.1["id"].as_str().unwrap(), token).await;
-    upgrade_acceptance::exercise(
-        &app,
-        &router,
-        token,
-        publisher,
-        &signing,
-        &deployment,
-        installed["installation_id"]
-            .as_str()
-            .unwrap()
-            .parse()
-            .unwrap(),
-    )
-    .await;
+    upgrade_acceptance::exercise(&app, &router, token, publisher, &signing, &deployment).await;
     let revoke = api(
         &router,
         "revokeSession",
