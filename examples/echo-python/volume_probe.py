@@ -42,9 +42,17 @@ if mode == 'fill':
     else:
         raise RuntimeError('real quota was bypassed')
     assert total > 0
-elif mode in ('read', 'ro'):
+elif mode in ('read', 'ro', 'append', 'current'):
     with open('/data/sentinel', 'rb') as file:
         assert file.read() == b'volume survives a container restart\n'
+    if mode == 'append':
+        with open('/data/after-upgrade', 'wb') as file:
+            file.write(b'written by the version 2 workload\n')
+            file.flush()
+            os.fsync(file.fileno())
+    if mode == 'current':
+        with open('/data/after-upgrade', 'rb') as file:
+            assert file.read() == b'written by the version 2 workload\n'
     if mode == 'ro':
         try:
             with open('/data/must-not-write', 'wb'):

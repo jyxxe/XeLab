@@ -28,6 +28,8 @@ use xelab_kernel::{
     storage::xfs::{Limits, ProjectStore},
     volumes,
 };
+#[path = "support/volume_upgrades.rs"]
+mod volume_upgrades;
 struct Fixture {
     app: Arc<App>,
     router: Router,
@@ -265,6 +267,7 @@ async fn unsupported_storage_never_publishes_a_volume_or_allocation() {
 #[tokio::test]
 #[ignore = "requires a dedicated real XFS mount and root; tools/test-xfs.sh"]
 async fn actual_volume_operations_recover_enforce_capacity_and_fence_writers() {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     assert_eq!(unsafe { libc::geteuid() }, 0);
     assert_eq!(std::env::var("XELAB_XFS_TEST").unwrap(), "1");
     let f = Fixture::new(true).await.unwrap();
@@ -714,6 +717,21 @@ async fn actual_volume_operations_recover_enforce_capacity_and_fence_writers() {
             .get::<_, Uuid>(0),
         f.owner
     );
+    // The previous attachment fixtures have positive stop proofs. Isolate the
+    // new real controller sweep from their deliberately deleted selections.
+    c.execute("UPDATE deployments SET spec=jsonb_set(spec,'{enabled}','false'),phase='disabled' WHERE id=ANY($1)", &[&vec![d,d2]]).await.unwrap();
+    xelab_kernel::tls::atomic_file(
+        &f.app
+            .config
+            .root()
+            .join("images")
+            .join(&artifact.image_digest[7..])
+            .with_extension("reference"),
+        image.as_bytes(),
+        0o600,
+    )
+    .unwrap();
+    volume_upgrades::exercise(&f, installation, publisher, &next.1).await;
 }
 
 async fn probe(f: &Fixture, instance: Uuid, mode: &str) {
