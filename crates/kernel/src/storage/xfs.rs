@@ -916,7 +916,7 @@ fn decode_mount(input: &str) -> Result<String> {
     String::from_utf8(output).map_err(|_| Error::unavailable("Invalid storage mount encoding"))
 }
 
-fn mount_id(file: &File) -> Result<u64> {
+pub(crate) fn mount_id(file: &File) -> Result<u64> {
     let mut stat: libc::statx = unsafe { mem::zeroed() };
     let empty = CString::new("").unwrap();
     if unsafe {
