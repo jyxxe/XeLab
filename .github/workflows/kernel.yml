@@ -31,6 +31,8 @@ jobs:
         run: rustc --version && cargo --version
       - name: Format
         run: cargo fmt --all -- --check
+      - name: Start isolated backup object store
+        run: bash tools/start-test-s3.sh
       - name: Compile and test
         run: cargo test --workspace --all-targets --locked
       - name: Build reference plugin

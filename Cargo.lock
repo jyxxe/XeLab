@@ -1907,6 +1907,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "263a3f48f01e7309e857138bd47f785585b4a005e8e56c6d2824ce91195999c3"
 
 [[package]]
+name = "quick-xml"
+version = "0.38.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c"
+dependencies = [
+ "memchr",
+ "serde",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3392,6 +3402,7 @@ dependencies = [
  "libc",
  "prost",
  "protoc-bin-vendored",
+ "quick-xml",
  "rand 0.8.8",
  "rcgen",
  "reqwest",
