@@ -93,7 +93,7 @@ jobs:
           import glob, os, subprocess
           binaries=[p for p in glob.glob("target/debug/deps/oci-*") if os.path.isfile(p) and os.access(p,os.X_OK)]
           assert len(binaries)==1,binaries
-          subprocess.run(["sudo","--preserve-env=XELAB_TEST_DATABASE_URL,XELAB_TEST_IMAGE,XELAB_TEST_PYTHON_IMAGE,XELAB_TEST_HOST_BLOB_IMAGE,XELAB_OCI_TEST",binaries[0],"--ignored","--nocapture"],check=True)
+          subprocess.run(["sudo","--preserve-env=XELAB_TEST_DATABASE_URL,XELAB_TEST_IMAGE,XELAB_TEST_PYTHON_IMAGE,XELAB_TEST_HOST_BLOB_IMAGE,XELAB_TEST_S3_ENDPOINT,XELAB_OCI_TEST",binaries[0],"--ignored","--nocapture"],check=True)
           PYTEST
       - name: Full workspace regression
         run: cargo test --workspace --all-targets --locked

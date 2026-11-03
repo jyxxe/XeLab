@@ -29,6 +29,20 @@ enum Cmd {
         #[arg(long)]
         config: PathBuf,
     },
+    /// Capture the stopped platform into its configured off-host repository.
+    PlatformBackup {
+        #[arg(long)]
+        config: PathBuf,
+        /// Stop and drain all platform workloads under exclusive host/DB leases.
+        #[arg(long)]
+        allow_downtime: bool,
+        /// Finish a saved snapshot only after every source object was prepared.
+        #[arg(long)]
+        resume: Option<uuid::Uuid>,
+        /// Abort failed-snapshot uploads by saved ID and exact object key.
+        #[arg(long, conflicts_with = "resume")]
+        cleanup_failed: Option<uuid::Uuid>,
+    },
     Migrate {
         #[arg(long)]
         config: PathBuf,
@@ -110,6 +124,33 @@ async fn run(args: Args) -> Result<()> {
             let cfg = Config::load(&config)?;
             let status = xelab_kernel::storage::xfs::check(&cfg.root().join("volumes"))?;
             println!("{}", serde_json::to_string(&status)?);
+        }
+        Cmd::PlatformBackup {
+            config,
+            allow_downtime,
+            resume,
+            cleanup_failed,
+        } => {
+            require_host_admin()?;
+            if !allow_downtime {
+                return Err(Error::invalid(
+                    "Offline maintenance requires explicit downtime",
+                ));
+            }
+            let config = Config::load(&config)?;
+            if let Some(snapshot) = cleanup_failed {
+                let receipt =
+                    xelab_kernel::offline::backup::cleanup(config, snapshot, true).await?;
+                println!("{}", serde_json::to_string(&receipt)?);
+                return Ok(());
+            }
+            let receipt = match resume {
+                Some(snapshot) => {
+                    xelab_kernel::offline::backup::resume(config, snapshot, true).await?
+                }
+                None => xelab_kernel::offline::backup::create(config, true).await?,
+            };
+            println!("{}", serde_json::to_string(&receipt)?);
         }
         Cmd::Migrate { config, target } => {
             require_host_admin()?;
