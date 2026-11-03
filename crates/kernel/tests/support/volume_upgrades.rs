@@ -277,7 +277,24 @@ pub async fn exercise(f: &Fixture, source: Uuid, publisher: Uuid, volume_operati
     );
     assert_eq!(c.query_one("SELECT count(*) FROM volume_allocations WHERE operation_id=$1 AND state='quarantined' AND NOT EXISTS(SELECT 1 FROM volumes v WHERE v.id=volume_allocations.volume_id)", &[&operation]).await.unwrap().get::<_,i64>(0), 1);
     // Reclaim only after the worker recorded positive candidate-stop proofs.
-    volumes::tick(&f.app).await.unwrap();
+    // XFS deletion can leave delayed dquot accounting after unlink/last close.
+    // The worker intentionally retains its charge until a later observation
+    // proves zero usage; one bounded tick does not promise convergence.
+    for _ in 0..50 {
+        volumes::tick(&f.app).await.unwrap();
+        let deleted: i64 = c
+            .query_one(
+                "SELECT count(*) FROM volume_allocations WHERE operation_id=$1 AND state='deleted'",
+                &[&operation],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        if deleted == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     assert_eq!(
         c.query_one(
             "SELECT count(*) FROM volume_allocations WHERE operation_id=$1 AND state='deleted'",
@@ -287,6 +304,23 @@ pub async fn exercise(f: &Fixture, source: Uuid, publisher: Uuid, volume_operati
         .unwrap()
         .get::<_, i64>(0),
         1
+    );
+    let private: Uuid = c
+        .query_one(
+            "SELECT target_volume_id FROM deployment_upgrade_volumes WHERE operation_id=$1",
+            &[&operation],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(
+        !f.app
+            .config
+            .root()
+            .join("volumes")
+            .join(private.to_string())
+            .exists(),
+        "quota/budget release must follow actual private directory deletion"
     );
     let current = current(f, deployment).await;
     let disabled = f
