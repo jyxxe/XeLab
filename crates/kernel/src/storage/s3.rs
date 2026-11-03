@@ -352,6 +352,7 @@ impl Client {
         )?;
         let method = reqwest::Method::from_bytes(method.as_bytes())
             .map_err(|_| Error::invalid("Invalid S3 method"))?;
+        let retry_read = matches!(method, reqwest::Method::GET | reqwest::Method::HEAD);
         let mut request = self.http.request(method, url).body(body);
         for (name, value) in headers {
             let mut value = reqwest::header::HeaderValue::from_str(&value)
@@ -364,11 +365,31 @@ impl Client {
         let mut authorization = reqwest::header::HeaderValue::from_str(&signed)
             .map_err(|_| Error::unavailable("Invalid S3 authorization header"))?;
         authorization.set_sensitive(true);
-        request
+        let request = request
             .header(reqwest::header::AUTHORIZATION, authorization)
-            .send()
-            .await
-            .map_err(|_| Error::unavailable("Backup object transport failed"))
+            .build()
+            .map_err(|_| Error::unavailable("Backup request is invalid"))?;
+        for attempt in 0..3 {
+            let next = request
+                .try_clone()
+                .ok_or_else(|| Error::unavailable("Backup request cannot be replayed"))?;
+            match self.http.execute(next).await {
+                Ok(response) => return Ok(response),
+                Err(error) if retry_read && attempt < 2 => {
+                    // Only reads whose response has not started are replayed.
+                    // Writes/completion remain ambiguous for durable recovery.
+                    tracing::warn!(
+                        connect = error.is_connect(),
+                        timeout = error.is_timeout(),
+                        attempt,
+                        "Backup read transport retry"
+                    );
+                    tokio::time::sleep(Duration::from_millis(50 << attempt)).await;
+                }
+                Err(_) => break,
+            }
+        }
+        Err(Error::unavailable("Backup object transport failed"))
     }
     pub async fn create_bucket(&self) -> Result<()> {
         let body = if self.location.region == "us-east-1" {
@@ -635,6 +656,72 @@ pub(super) mod tests {
             local.reference("snapshot/object.sealed").unwrap(),
             "s3://backup-bucket/node-01/snapshot/object.sealed"
         );
+    }
+    #[tokio::test]
+    async fn only_unstarted_reads_retry_transport_failure() {
+        crate::init_crypto();
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let reads = Arc::new(AtomicUsize::new(0));
+        let writes = Arc::new(AtomicUsize::new(0));
+        let server_reads = reads.clone();
+        let server_writes = writes.clone();
+        let (stop, mut stopped) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            loop {
+                let mut connection = tokio::select! {
+                    incoming=listener.accept()=>incoming.unwrap().0,
+                    _=&mut stopped=>break,
+                };
+                let mut request = Vec::new();
+                while !request.windows(4).any(|v| v == b"\r\n\r\n") {
+                    let mut byte = [0];
+                    if connection.read(&mut byte).await.unwrap() == 0 {
+                        break;
+                    }
+                    request.push(byte[0]);
+                    assert!(request.len() <= 16384);
+                }
+                if request.starts_with(b"GET ") {
+                    if server_reads.fetch_add(1, Ordering::SeqCst) == 2 {
+                        connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ndone").await.unwrap();
+                    }
+                } else {
+                    assert!(request.starts_with(b"PUT "));
+                    server_writes.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        });
+        let location = Location::aws("s3://xelab-test-bucket/node/", "us-east-1")
+            .unwrap()
+            .compatible(&endpoint)
+            .unwrap();
+        let client = Client::new(
+            location,
+            Credentials::new(
+                "xelab-test".into(),
+                "test-only-backup-password".into(),
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            bounded(client.get("read.sealed").await.unwrap(), 4)
+                .await
+                .unwrap(),
+            b"done"
+        );
+        assert!(client.put("write.sealed", b"once".to_vec()).await.is_err());
+        assert_eq!(reads.load(Ordering::SeqCst), 3);
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+        stop.send(()).unwrap();
+        server.await.unwrap();
     }
     #[tokio::test]
     async fn actual_s3_encrypted_roundtrip_conditional_publish_multipart_and_abort() {
