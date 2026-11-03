@@ -38,10 +38,22 @@ async fn real_oci_archive_recovers_into_an_empty_independent_content_store() {
     images.dedup();
     let named = tempfile::NamedTempFile::new_in(root.path()).unwrap();
     let mut archive = File::from_std(named.reopen().unwrap());
-    let saved = source
-        .export_images(&images, &mut archive, 1024 * 1024 * 1024)
-        .await
-        .unwrap();
+    // CI exports unstripped debug binaries as real image layers. Admit up to
+    // four GiB for this fixture; the production 64-GiB cap remains unchanged.
+    const FIXTURE_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
+    let exported = source
+        .export_images(&images, &mut archive, FIXTURE_LIMIT)
+        .await;
+    let staged = archive.metadata().await.unwrap().len();
+    assert!(
+        exported.is_ok(),
+        "OCI export failed: {exported:?}; staged_bytes={staged}; admitted_bytes={FIXTURE_LIMIT}"
+    );
+    let saved = exported.unwrap();
+    println!(
+        "OCI fixture archive: {} bytes, admitted {} bytes",
+        saved.bytes, FIXTURE_LIMIT
+    );
     assert!(saved.bytes > 1024);
     assert!(source
         .export_images(&images, &mut archive, 1024 * 1024 * 1024)
