@@ -19,6 +19,7 @@ async fn real_oci_archive_recovers_into_an_empty_independent_content_store() {
     );
     assert_eq!(unsafe { libc::geteuid() }, 0);
     xelab_kernel::init_crypto();
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let root = tempfile::Builder::new()
         .prefix("xelab-image-backup-")
         .permissions(fs::Permissions::from_mode(0o700))
@@ -38,9 +39,7 @@ async fn real_oci_archive_recovers_into_an_empty_independent_content_store() {
     images.dedup();
     let named = tempfile::NamedTempFile::new_in(root.path()).unwrap();
     let mut archive = File::from_std(named.reopen().unwrap());
-    // CI exports unstripped debug binaries as real image layers. Admit up to
-    // four GiB for this fixture; the production 64-GiB cap remains unchanged.
-    const FIXTURE_LIMIT: u64 = 4 * 1024 * 1024 * 1024;
+    const FIXTURE_LIMIT: u64 = 1024 * 1024 * 1024;
     let exported = source
         .export_images(&images, &mut archive, FIXTURE_LIMIT)
         .await;

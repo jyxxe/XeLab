@@ -71,7 +71,10 @@ pub(super) async fn verify(
         input.read_exact(&mut header).await?;
         consumed += 512;
         if consumed > maximum {
-            return Err(Error::exhausted());
+            tracing::warn!(consumed, maximum, "OCI header exceeds archive length");
+            let mut error = Error::exhausted();
+            error.message = "OCI tar header exceeds admitted archive length";
+            return Err(error);
         }
         if header.iter().all(|b| *b == 0) {
             let mut end = [0; 512];
@@ -80,7 +83,7 @@ pub(super) async fn verify(
             if end.iter().any(|b| *b != 0) {
                 return Err(Error::invalid("OCI archive has an invalid tar end"));
             }
-            let mut padding = [0; BUFFER];
+            let mut padding = vec![0u8; BUFFER];
             loop {
                 let n = input.read(&mut padding).await?;
                 if n == 0 {
@@ -124,7 +127,15 @@ pub(super) async fn verify(
             .map_err(|_| Error::invalid("OCI tar name is invalid"))?;
         let size = octal(&header[124..136])?;
         if consumed.checked_add(size).is_none_or(|n| n > maximum) {
-            return Err(Error::exhausted());
+            tracing::warn!(
+                entry_size = size,
+                consumed,
+                maximum,
+                "OCI entry exceeds archive length"
+            );
+            let mut error = Error::exhausted();
+            error.message = "OCI tar entry exceeds admitted archive length";
+            return Err(error);
         }
         if header[156] == b'5' && matches!(name, "blobs/" | "blobs/sha256/") && size == 0 {
             continue;
@@ -146,18 +157,34 @@ pub(super) async fn verify(
         }
         let id = blob.map(|b| format!("sha256:{b}"));
         let capture = id.as_ref().is_some_and(|id| expected.contains(id)) || blob.is_none();
+        if capture && size > JSON_LIMIT as u64 {
+            tracing::warn!(
+                entry_size = size,
+                is_manifest = id.is_some(),
+                "OCI JSON exceeds entry bound"
+            );
+            let mut error = Error::exhausted();
+            error.message = "OCI JSON entry exceeds its size bound";
+            return Err(error);
+        }
         if capture
-            && (size > JSON_LIMIT as u64
-                || json_bytes
-                    .checked_add(size as usize)
-                    .is_none_or(|n| n > JSON_TOTAL))
+            && json_bytes
+                .checked_add(size as usize)
+                .is_none_or(|n| n > JSON_TOTAL)
         {
-            return Err(Error::exhausted());
+            tracing::warn!(
+                entry_size = size,
+                json_bytes,
+                "OCI JSON exceeds retained-memory bound"
+            );
+            let mut error = Error::exhausted();
+            error.message = "OCI retained JSON exceeds its memory bound";
+            return Err(error);
         }
         let mut bytes = Vec::new();
         let mut hash = Sha256::new();
         let mut left = size;
-        let mut buffer = [0; BUFFER];
+        let mut buffer = vec![0u8; BUFFER];
         while left > 0 {
             let n = left.min(BUFFER as u64) as usize;
             input.read_exact(&mut buffer[..n]).await?;
@@ -276,6 +303,9 @@ mod tests {
         json!({"digest":format!("sha256:{hash}"),"size":data.len()})
     }
     fn fixture(missing: bool, wrong_size: bool) -> (Vec<u8>, Vec<String>) {
+        fixture_layer(missing, wrong_size, b"immutable layer contents")
+    }
+    fn fixture_layer(missing: bool, wrong_size: bool, layer_data: &[u8]) -> (Vec<u8>, Vec<String>) {
         let mut tar = Vec::new();
         entry(
             &mut tar,
@@ -288,7 +318,7 @@ mod tests {
         } else {
             blob(&mut tar, b"{}")
         };
-        let mut layer = blob(&mut tar, b"immutable layer contents");
+        let mut layer = blob(&mut tar, layer_data);
         if wrong_size {
             layer["size"] = json!(9999);
         }
@@ -351,5 +381,14 @@ mod tests {
                     .is_err()
             );
         }
+    }
+    #[tokio::test]
+    async fn large_layer_archive_verifies_from_an_actual_async_file() {
+        let layer = vec![73u8; 3 * 1024 * 1024 + 137];
+        let (tar, images) = fixture_layer(false, false, &layer);
+        let named = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(named.path(), &tar).unwrap();
+        let mut file = tokio::fs::File::open(named.path()).await.unwrap();
+        verify(&mut file, &images, tar.len() as u64).await.unwrap();
     }
 }

@@ -76,7 +76,9 @@ async fn copy_bounded(
 ) -> Result<(u64, String)> {
     let mut bytes = 0u64;
     let mut hash = Sha256::new();
-    let mut buffer = [0u8; BUFFER];
+    // Async futures may be nested by the CLI/coordinator. Keep bounded I/O
+    // buffers off their stack-resident state, including in debug builds.
+    let mut buffer = vec![0u8; BUFFER];
     loop {
         let n = input.read(&mut buffer).await?;
         if n == 0 {
@@ -162,14 +164,7 @@ impl Runtime {
                 return Err(Error::conflict("Image archive file changed"));
             }
             file.rewind().await?;
-            oci_tar::verify(file, images, bytes)
-                .await
-                .map_err(|mut error| {
-                    if error.code == "RESOURCE_EXHAUSTED" {
-                        error.message = "OCI archive exceeds its entry or metadata bounds";
-                    }
-                    error
-                })?;
+            oci_tar::verify(file, images, bytes).await?;
             for image in images {
                 self.verify_image(image, artifact::image_ref(image)?)
                     .await?;
@@ -324,5 +319,32 @@ mod tests {
                 .is_err()
         );
         assert!(rejected.len() <= BUFFER + 3);
+    }
+    #[tokio::test]
+    async fn public_archive_futures_fit_the_standard_runtime_stack() {
+        let t: toml::Value =
+            toml::from_str(include_str!("../../../docs/contracts/examples/kernel.toml")).unwrap();
+        let runtime = Runtime::new(
+            crate::config::Config::from_value(serde_json::to_value(t).unwrap()).unwrap(),
+        );
+        let named = tempfile::NamedTempFile::new().unwrap();
+        let mut file = File::from_std(named.reopen().unwrap());
+        let images = vec![format!("example.test/image@sha256:{}", "a".repeat(64))];
+        let exported = runtime.export_images(&images, &mut file, 1024);
+        assert!(
+            std::mem::size_of_val(&exported) < 32768,
+            "export future must not embed streaming buffers"
+        );
+        drop(exported);
+        let expected = ImageArchive {
+            images,
+            bytes: 512,
+            sha256: format!("sha256:{}", "a".repeat(64)),
+        };
+        let imported = runtime.import_images(&mut file, &expected);
+        assert!(
+            std::mem::size_of_val(&imported) < 32768,
+            "import future must not embed streaming buffers"
+        );
     }
 }
