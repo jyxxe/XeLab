@@ -2,7 +2,8 @@
 
 [实施目录](README.md) · [存储规范](../runtime/volumes.md) · [运行指南](../../crates/kernel/README.md)
 
-状态：HTTP/CLI Blob 存储实现增量。持久卷、HostService ReadBlob/WriteBlob、
+状态：HTTP/CLI Blob 存储实现增量。后续 [HostService Blob RPC](m2-host-blobs.md)
+和 [持久卷](m2-volumes.md) 独立交付；
 一致性备份及恢复仍需独立交付，不据此标记整个 M2 完成。
 
 ## 已接通的链路
@@ -79,7 +80,7 @@ CLI 流式读取普通文件并生成长度/摘要；二进制上传不接受未
 升级前停机备份 PostgreSQL、独立保护主密钥及 Blob 内容，执行：
 
 ```sh
-xelabctl migrate --config /etc/xelab/kernel.toml --target 5
+xelabctl migrate --config /etc/xelab/kernel.toml --target 6
 ```
 
 v4 添加内部删除意图/存储根注册表、过期/检查点索引和非负 pin 约束，原始 metadata.sql

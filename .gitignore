@@ -9,3 +9,5 @@ __pycache__/
 /examples/generated-python/
 
 /examples/generated-volume/
+
+/examples/generated-host-blob/

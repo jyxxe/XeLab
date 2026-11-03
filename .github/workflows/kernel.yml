@@ -65,6 +65,14 @@ jobs:
           test -n "$digest"
           sudo ctr -n xelab-ci images tag docker.io/xelab-ci/volume:test "docker.io/xelab-ci/volume@$digest"
           echo "XELAB_TEST_VOLUME_IMAGE=docker.io/xelab-ci/volume@$digest" >> "$GITHUB_ENV"
+          python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output examples/generated-host-blob --implementation python --request-blob
+          docker build -t docker.io/xelab-ci/host-blob:test --build-arg ARTIFACT_DIR=examples/generated-host-blob -f examples/echo-python/Dockerfile .
+          docker save docker.io/xelab-ci/host-blob:test -o examples/generated-host-blob/host-blob.tar
+          sudo ctr -n xelab-ci images import examples/generated-host-blob/host-blob.tar
+          digest=$(sudo ctr -n xelab-ci images list | awk '$1=="docker.io/xelab-ci/host-blob:test" {print $3}')
+          test -n "$digest"
+          sudo ctr -n xelab-ci images tag docker.io/xelab-ci/host-blob:test "docker.io/xelab-ci/host-blob@$digest"
+          echo "XELAB_TEST_HOST_BLOB_IMAGE=docker.io/xelab-ci/host-blob@$digest" >> "$GITHUB_ENV"
       - name: Real OCI API lifecycle and recovery
         env:
           XELAB_OCI_TEST: "1"
@@ -73,7 +81,7 @@ jobs:
           import glob, os, subprocess
           binaries=[p for p in glob.glob("target/debug/deps/oci-*") if os.path.isfile(p) and os.access(p,os.X_OK)]
           assert len(binaries)==1,binaries
-          subprocess.run(["sudo","--preserve-env=XELAB_TEST_DATABASE_URL,XELAB_TEST_IMAGE,XELAB_TEST_PYTHON_IMAGE,XELAB_OCI_TEST",binaries[0],"--ignored","--nocapture"],check=True)
+          subprocess.run(["sudo","--preserve-env=XELAB_TEST_DATABASE_URL,XELAB_TEST_IMAGE,XELAB_TEST_PYTHON_IMAGE,XELAB_TEST_HOST_BLOB_IMAGE,XELAB_OCI_TEST",binaries[0],"--ignored","--nocapture"],check=True)
           PYTEST
       - name: Strict documentation validation
         run: |

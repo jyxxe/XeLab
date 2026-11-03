@@ -538,9 +538,7 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
         }
         return Ok(());
     }
-    if d.get::<_, Value>("approval") != json!({"rules":[],"egress":[]}) {
-        return Err(Error::denied());
-    }
+    crate::host_blobs::check_approval(&c, app, deployment, &manifest).await?;
     let Some(i) = instances.last() else {
         probes.remove(&deployment);
         return Err(Error::conflict(
@@ -695,6 +693,7 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
     let tx = c.transaction().await?;
     db::auth_lock(&tx, false).await?;
     crate::volumes::check_approval(&tx, app, deployment, generation, &spec, &manifest).await?;
+    crate::host_blobs::check_approval(&tx, app, deployment, &manifest).await?;
     let current = tx
         .query_one(
             "SELECT spec,approval,archived_at FROM deployments WHERE id=$1 FOR UPDATE",
@@ -705,7 +704,7 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
         .get::<_, Option<chrono::DateTime<chrono::Utc>>>("archived_at")
         .is_some()
         || current.get::<_, Value>("spec") != spec
-        || current.get::<_, Value>("approval") != json!({"rules":[],"egress":[]})
+        || current.get::<_, Value>("approval") != d.get::<_, Value>("approval")
     {
         return Err(Error::conflict(
             "Deployment changed while runtime was starting",

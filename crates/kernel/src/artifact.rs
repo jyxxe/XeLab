@@ -138,8 +138,13 @@ pub fn validate_profile(manifest: &Value) -> Result<()> {
         .is_some_and(|rules| {
             rules.iter().any(|r| {
                 r["required"] != false
-                    || r["rule"]["action"] != "secret.use"
-                    || r["rule"]["resource"]["kind"] != "secret"
+                    || !((r["rule"]["action"] == "secret.use"
+                        && r["rule"]["resource"]["kind"] == "secret")
+                        || (matches!(
+                            r["rule"]["action"].as_str(),
+                            Some("blob.read" | "blob.create")
+                        ) && r["rule"]["resource"]
+                            == serde_json::json!({"kind":"blob","match":"all"})))
                     || r["rule"]
                         .get("conditions")
                         .is_some_and(|v| !v.as_object().is_some_and(serde_json::Map::is_empty))
@@ -147,7 +152,7 @@ pub fn validate_profile(manifest: &Value) -> Result<()> {
         })
     {
         return Err(Error::invalid(
-            "This profile permits only optional unconditional secret.use workload requests",
+            "This profile permits only optional unconditional secret.use and Blob proxy requests",
         ));
     }
     crate::volumes::validate_mounts(manifest)?;

@@ -151,6 +151,17 @@ pub async fn invoke(
         .auth
         .issue_rpc(&tx, &ctx, call, instance, generation, deadline)
         .await?;
+    crate::host_blobs::grant_call(
+        &tx,
+        app,
+        &ctx,
+        call,
+        row.get("deployment_id"),
+        &manifest,
+        &definition,
+        &input["input"],
+    )
+    .await?;
     tx.execute("DELETE FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method='POST' AND path='/api/platform/v1/calls' AND key=$3 AND expires_at<=now()",&[&ctx.subject,&ctx.credential,&key]).await?;
     tx.execute("INSERT INTO idempotency_records(subject_id,credential_id,method,path,key,fingerprint,resource_id,expires_at,created_at) VALUES($1,$2,'POST','/api/platform/v1/calls',$3,$4,$5,now()+interval '24 hours',now())",&[&ctx.subject,&ctx.credential,&key,&fingerprint,&call.to_string()]).await?;
     tx.commit().await?;

@@ -24,7 +24,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_postgres::GenericClient;
 use uuid::Uuid;
 const MAX: u64 = 64 * 1024 * 1024;
-const LIVE:&str="(expires_at>now() OR pin_count>0 OR EXISTS(SELECT 1 FROM attempts WHERE checkpoint_blob_id=blobs.id))";
+pub(crate) const LIVE:&str="(expires_at>now() OR pin_count>0 OR EXISTS(SELECT 1 FROM attempts WHERE checkpoint_blob_id=blobs.id))";
 pub fn handles(name: &str) -> bool {
     matches!(
         name,
@@ -140,7 +140,7 @@ async fn replay(
     Ok(None)
 }
 
-async fn bound_store(app: &App) -> Result<Store> {
+pub(crate) async fn bound_store(app: &App) -> Result<Store> {
     const LOCK: i64 = 0x58454c424c4f4252;
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;

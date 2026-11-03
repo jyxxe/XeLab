@@ -477,15 +477,10 @@ async fn dispatch(
             (db::operation_value(&tx, op).await?, 202)
         }
         "approvePlugin" => {
-            if body != json!({"rules":[],"egress":[]}) {
-                return Err(Error::invalid(
-                    "M1 only approves empty proxy and egress permissions",
-                ));
-            }
             let id = path_id(&params, "deployment_id")?;
             let r = tx
                 .query_one(
-                    "SELECT spec,revision FROM deployments WHERE id=$1 FOR UPDATE",
+                    "SELECT spec,revision,owner_id,installation_id FROM deployments WHERE id=$1 FOR UPDATE",
                     &[&id],
                 )
                 .await?;
@@ -495,6 +490,8 @@ async fn dispatch(
                     "Approval changes require a disabled deployment",
                 ));
             }
+            let manifest:Value=tx.query_one("SELECT manifest FROM installations WHERE id=$1",&[&r.get::<_,Uuid>("installation_id")]).await?.get(0);
+            crate::host_blobs::approve(&tx,&ctx,id,&manifest,&body,r.get("owner_id")).await?;
             tx.execute("UPDATE deployments SET approval=$2,revision=revision+1,updated_at=now() WHERE id=$1",&[&id,&body]).await?;
             (body.clone(), 200)
         }
@@ -508,8 +505,9 @@ async fn dispatch(
             tx.execute("UPDATE operations SET state='failed',error=$2,revision=revision+1,updated_at=now() WHERE resource_id=$1 AND kind='setDeploymentEnabled' AND state IN ('pending','running')", &[&id.to_string(),&Error::conflict("Superseded by a newer deployment intent").detail()]).await?;
             let enabled = body["enabled"].as_bool().unwrap();
             let mut spec: Value = row.get("spec");
-            if enabled && row.get::<_, Value>("approval") != json!({"rules":[],"egress":[]}) {
-                return Err(Error::denied());
+            if enabled {
+                let manifest:Value=tx.query_one("SELECT manifest FROM installations WHERE id=$1",&[&row.get::<_,Uuid>("installation_id")]).await?.get(0);
+                crate::host_blobs::check_approval(&tx,app,id,&manifest).await?;
             }
             if enabled && spec["enabled"] != true {
                 if tx.query_one("SELECT count(*) FROM instances WHERE deployment_id=$1 AND phase<>'stopped'",&[&id]).await?.get::<_,i64>(0)>0{return Err(Error::conflict("Previous instances have not drained"));}

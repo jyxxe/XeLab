@@ -347,6 +347,27 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
         self.intersection(&paths, &saved).await
     }
 
+    /// Re-evaluate every original grant alternative before intersecting current
+    /// credential rights. Newly acquired grants cannot revive a withdrawn part.
+    pub async fn revalidate(&mut self, saved: &[Path], credential: Uuid) -> Result<Vec<Path>> {
+        bounded(saved)?;
+        let mut live = Vec::new();
+        for path in saved {
+            let mut current = vec![path.clone()];
+            for source in &path.sources {
+                let grants = self.grant(*source, 1).await?;
+                current = self.intersection(&current, &grants).await?;
+                if current.is_empty() {
+                    break;
+                }
+            }
+            live.extend(current);
+            bounded(&live)?;
+        }
+        let current = self.credential(credential, 0).await?;
+        self.intersection(&live, &current).await
+    }
+
     pub async fn intersection(&self, left: &[Path], right: &[Path]) -> Result<Vec<Path>> {
         let mut out = Vec::new();
         let mut seen = HashSet::new();

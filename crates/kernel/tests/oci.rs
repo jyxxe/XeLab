@@ -162,6 +162,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     fs::write("/sys/fs/cgroup/xelab/plugins/memory.max", "1073741824").unwrap();
     fs::write("/sys/fs/cgroup/xelab/plugins/cpu.max", "200000 100000").unwrap();
     fs::create_dir_all(config.root()).unwrap();
+    fs::set_permissions(config.root(), fs::Permissions::from_mode(0o700)).unwrap();
     runtime.prepare_host_service_network().await.unwrap();
     tls::issue(&config, None, &config.root().join("kernel-identity")).unwrap();
     let mut c = db.connect().await.unwrap();
@@ -982,6 +983,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     assert_eq!(disabled.0, 202, "{}", disabled.1);
     operation(&router, disabled.1["id"].as_str().unwrap(), token).await;
     assert!(!app.runtime.running(instance).await.unwrap());
+    host_blob_component(&app, &router, token, publisher, &signing).await;
     assert_eq!(
         c.query_one("SELECT reserved_cpu_millis FROM node_budget", &[])
             .await
@@ -1271,4 +1273,178 @@ async fn grant_source_budget(router: &Router, db: &Db, owner: Uuid, token: &str,
         1,
         "revocation never refunds used budget"
     );
+}
+
+async fn blob_http(
+    router: &Router,
+    operation: &str,
+    token: &str,
+    id: Option<&str>,
+    data: &[u8],
+) -> (u16, Vec<u8>) {
+    let (mut path, method) = contracts::openapi()["paths"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .flat_map(|(p, ms)| ms.as_object().unwrap().iter().map(move |(m, s)| (p, m, s)))
+        .find(|(_, _, s)| s["operationId"] == operation)
+        .map(|(p, m, _)| (p.clone(), m.to_uppercase()))
+        .unwrap();
+    if let Some(id) = id {
+        path = path.replace("{blob_id}", id);
+    }
+    let mut request = Request::builder()
+        .method(method.as_str())
+        .header("authorization", format!("Bearer {token}"));
+    if operation == "uploadBlob" {
+        path.push_str("?content_type=application%2Foctet-stream");
+        request = request
+            .header("content-type", "application/octet-stream")
+            .header("content-length", data.len())
+            .header("x-content-sha256", contracts::digest(data))
+            .header("idempotency-key", Uuid::new_v4().to_string());
+    }
+    let mut request = request.uri(path).body(Body::from(data.to_vec())).unwrap();
+    request.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:30000".parse::<SocketAddr>().unwrap(),
+    ));
+    let response = router.clone().oneshot(request).await.unwrap();
+    (
+        response.status().as_u16(),
+        to_bytes(response.into_body(), 67108865)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+}
+async fn host_blob_component(
+    app: &Arc<App>,
+    router: &Router,
+    token: &str,
+    publisher: Uuid,
+    signing: &SigningKey,
+) {
+    let raw = fs::read("examples/generated-host-blob/xelab/plugin.json").unwrap();
+    let manifest: Value = serde_json::from_slice(&raw).unwrap();
+    let image = std::env::var("XELAB_TEST_HOST_BLOB_IMAGE").unwrap();
+    let envelope =
+        artifact::signature_envelope(&manifest, artifact::image_ref(&image).unwrap(), &raw)
+            .unwrap();
+    let install=api(router,"installPlugin",&[],Some(token),json!({"publisher_id":publisher,"image":image,"signature":STANDARD.encode(signing.sign(envelope.as_bytes()).to_bytes())}),"host-blob-install",None).await;
+    assert_eq!(install.0, 202, "{}", install.1);
+    let installed = operation(router, install.1["id"].as_str().unwrap(), token).await;
+    let created=api(router,"createDeployment",&[],Some(token),json!({"installation_id":installed["installation_id"],"display_name":"Host Blob component","enabled":false,"limits":{"cpu_millis":100,"memory_bytes":67108864,"ephemeral_bytes":1048576,"pids":64},"config":{},"volume_ids":[]}),"host-blob-deploy",None).await;
+    assert_eq!(created.0, 202, "{}", created.1);
+    let deployment = operation(router, created.1["id"].as_str().unwrap(), token).await
+        ["deployment_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let params = [("deployment_id", deployment.clone())];
+    let approval = json!({"rules":[{"action":"blob.read","resource":{"kind":"blob","match":"all"}},{"action":"blob.create","resource":{"kind":"blob","match":"all"}}],"egress":[]});
+    let approved = api(
+        router,
+        "approvePlugin",
+        &params,
+        Some(token),
+        approval,
+        "host-blob-approve",
+        Some(1),
+    )
+    .await;
+    assert_eq!(approved.0, 200, "{}", approved.1);
+    let enabled = api(
+        router,
+        "setDeploymentEnabled",
+        &params,
+        Some(token),
+        json!({"enabled":true}),
+        "host-blob-enable",
+        Some(2),
+    )
+    .await;
+    assert_eq!(enabled.0, 202, "{}", enabled.1);
+    operation(router, enabled.1["id"].as_str().unwrap(), token).await;
+    let source = b"source bytes for the actual OCI Blob proxy";
+    let uploaded = blob_http(router, "uploadBlob", token, None, source).await;
+    assert_eq!(uploaded.0, 201, "{}", String::from_utf8_lossy(&uploaded.1));
+    let source_meta: Value = serde_json::from_slice(&uploaded.1).unwrap();
+    let host = tokio::spawn(xelab_kernel::host::serve(app.clone()));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let input = json!({"contract":manifest["capabilities"][0]["contract"],"input":{"message":"OCI-created Blob","blob_id":source_meta["id"],"export":true},"provider_deployment_id":deployment,"timeout_ms":10000});
+    let invoked = api(
+        router,
+        "invokeCapability",
+        &[],
+        Some(token),
+        input.clone(),
+        "host-blob-invoke",
+        None,
+    )
+    .await;
+    assert_eq!(invoked.0, 200, "{}", invoked.1);
+    let output = &invoked.1["output"];
+    assert_eq!(output["source_digest"], contracts::digest(source));
+    assert_eq!(
+        output["blob"]["digest"],
+        contracts::digest(b"OCI-created Blob")
+    );
+    let downloaded = blob_http(
+        router,
+        "downloadBlob",
+        token,
+        output["blob"]["blob_id"].as_str(),
+        b"",
+    )
+    .await;
+    assert_eq!(downloaded.0, 200);
+    assert_eq!(downloaded.1, b"OCI-created Blob");
+    let replay = api(
+        router,
+        "invokeCapability",
+        &[],
+        Some(token),
+        input,
+        "host-blob-invoke",
+        None,
+    )
+    .await;
+    assert_eq!(replay.1, invoked.1);
+    let c = app.db.connect().await.unwrap();
+    let call: Uuid = invoked.1["call_id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM host_blob_outputs WHERE call_id=$1",
+            &[&call]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        1
+    );
+    host.abort();
+    let _ = host.await;
+    let current = api(
+        router,
+        "getDeployment",
+        &params,
+        Some(token),
+        Value::Null,
+        "host-blob-read",
+        None,
+    )
+    .await;
+    let disabled = api(
+        router,
+        "setDeploymentEnabled",
+        &params,
+        Some(token),
+        json!({"enabled":false}),
+        "host-blob-disable",
+        current.1["revision"].as_i64(),
+    )
+    .await;
+    assert_eq!(disabled.0, 202, "{}", disabled.1);
+    operation(router, disabled.1["id"].as_str().unwrap(), token).await;
+    println!("Host Blob: actual signed OCI -> delegated ReadBlob/WriteBlob -> verified HTTP download and call replay passed");
 }
