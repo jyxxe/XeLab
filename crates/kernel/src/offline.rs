@@ -430,6 +430,9 @@ async fn source_preflight(c: &(impl GenericClient + Sync)) -> Result<()> {
     if c.query_one("SELECT EXISTS(SELECT 1 FROM deployment_upgrade_jobs WHERE state NOT IN ('succeeded','failed'))", &[]).await?.get::<_,bool>(0) {
         return Err(Error::conflict("Unsettled deployment upgrade blocks offline snapshot"));
     }
+    if c.query_one("SELECT EXISTS(SELECT 1 FROM volume_schema_jobs WHERE state NOT IN ('verified','failed')) OR EXISTS(SELECT 1 FROM volume_allocations WHERE state<>'deleted' AND schema_state='initializing')", &[]).await?.get::<_,bool>(0) {
+        return Err(Error::conflict("Unverified business initialization blocks offline snapshot"));
+    }
     if !c.query_one("SELECT EXISTS(SELECT 1 FROM accounts WHERE independent_owner AND parent_id IS NULL AND kind='user' AND status<>'archived')",&[]).await?.get::<_,bool>(0){return Err(Error::conflict("Offline source has no eligible recovery Owner"));}
     let volumes: i64 = c
         .query_one("SELECT count(*) FROM volumes WHERE state<>'deleted'", &[])

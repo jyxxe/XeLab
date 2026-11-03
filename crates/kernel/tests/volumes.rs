@@ -28,6 +28,8 @@ use xelab_kernel::{
     storage::xfs::{Limits, ProjectStore},
     volumes,
 };
+#[path = "support/schema_bootstrap.rs"]
+mod schema_bootstrap;
 #[path = "support/volume_upgrades.rs"]
 mod volume_upgrades;
 struct Fixture {
@@ -732,6 +734,7 @@ async fn actual_volume_operations_recover_enforce_capacity_and_fence_writers() {
     )
     .unwrap();
     volume_upgrades::exercise(&f, installation, publisher, &next.1).await;
+    schema_bootstrap::exercise(&f, publisher).await;
 }
 
 async fn probe(f: &Fixture, instance: Uuid, mode: &str) {

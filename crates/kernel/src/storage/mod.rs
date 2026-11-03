@@ -15,3 +15,5 @@ pub mod archive;
 pub mod backup_transfer;
 
 pub mod metadata_snapshot;
+
+pub mod migration_backup;

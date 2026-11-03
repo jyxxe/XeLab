@@ -135,6 +135,7 @@ pub(crate) async fn reset_rows(
     c.execute("DELETE FROM idempotency_records", &[]).await?;
     c.execute("UPDATE storage_recovery_jobs SET state='failed',failure=coalesce(failure,$1),updated_at=now() WHERE state NOT IN ('succeeded','failed')",&[&unknown]).await?;
     c.execute("UPDATE deployment_upgrade_jobs SET state='failed',failure=coalesce(failure,$1),updated_at=now() WHERE state NOT IN ('succeeded','failed')",&[&unknown]).await?;
+    c.execute("UPDATE volume_schema_jobs SET state='failed',failure=coalesce(failure,$1),updated_at=now() WHERE state NOT IN ('verified','failed')",&[&unknown]).await?;
     c.execute("UPDATE backups SET state='failed',revision=revision+1,updated_at=now() WHERE state='creating'",&[]).await?;
     c.execute("DELETE FROM volume_holds", &[]).await?;
     c.execute("DELETE FROM deployment_storage_holds", &[])

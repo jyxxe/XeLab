@@ -1015,7 +1015,7 @@ pub async fn validate_selection(
         if !ids.insert(id) {
             return Err(Error::invalid("Duplicate volume ID"));
         }
-        let row=c.query_opt("SELECT v.owner_id,v.spec,v.state,a.state AS allocation_state FROM volumes v JOIN volume_allocations a ON a.volume_id=v.id WHERE v.id=$1",&[&id]).await?.ok_or_else(Error::not_found)?;
+        let row=c.query_opt("SELECT v.owner_id,v.spec,v.state,a.state AS allocation_state,a.data_schema_version,a.schema_state,a.schema_plugin_id,a.schema_publisher_id FROM volumes v JOIN volume_allocations a ON a.volume_id=v.id WHERE v.id=$1",&[&id]).await?.ok_or_else(Error::not_found)?;
         // Metadata read access never grants another owner's writable storage.
         let owner: Uuid = row.get("owner_id");
         if owner != ctx.subject {
@@ -1028,6 +1028,7 @@ pub async fn validate_selection(
             &Resource::new("volume", id, Some(owner)),
         )
         .await?;
+        check_schema_selection(&row, spec, manifest)?;
         if row.get::<_, String>("allocation_state") != "ready"
             || matches!(
                 row.get::<_, String>("state").as_str(),
@@ -1050,6 +1051,45 @@ pub async fn validate_selection(
                 "Volume scope, access or capacity differs from manifest",
             ));
         }
+    }
+    Ok(())
+}
+/// Disabled specs describe an intent only; they do not authorize mounting an
+/// unverified format. The bootstrap owner must prove emptiness, persist its
+/// binding and verify the actual business format before normal runtime mounts.
+fn check_schema_selection(row: &tokio_postgres::Row, spec: &Value, manifest: &Value) -> Result<()> {
+    let expected = manifest["data_schema_version"]
+        .as_str()
+        .ok_or_else(|| Error::invalid("Missing business schema"))?;
+    let observed: Option<String> = row.get("data_schema_version");
+    let state: String = row.get("schema_state");
+    if expected == "none" {
+        if state != "unversioned" || observed.as_deref().is_some_and(|v| v != "none") {
+            return Err(Error::conflict(
+                "An unversioned plugin cannot mount versioned business data",
+            ));
+        }
+        return Ok(());
+    }
+    if state == "unversioned"
+        && observed.as_deref().is_none_or(|v| v == "none")
+        && spec["enabled"] == false
+    {
+        return Ok(()); // metadata-only intent; no empty/verified claim
+    }
+    if observed.as_deref() != Some(expected)
+        || row.get::<_, Option<String>>("schema_plugin_id").as_deref()
+            != manifest["plugin_id"].as_str()
+        || row
+            .get::<_, Option<Uuid>>("schema_publisher_id")
+            .map(|id| id.to_string())
+            .as_deref()
+            != manifest["publisher_id"].as_str()
+        || (state != "verified" && !(state == "initializing" && spec["enabled"] == false))
+    {
+        return Err(Error::conflict(
+            "Business schema requires its bound initialization or migration worker",
+        ));
     }
     Ok(())
 }
@@ -1280,6 +1320,98 @@ pub async fn release_stopped(c: &impl GenericClient, instance: Option<Uuid>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn actual_postgres_business_schema_intent_never_grants_a_runtime_mount() {
+        let Some(f) = crate::backups::tests::Fixture::new().await else {
+            return;
+        };
+        let mut c = f.app.db.connect().await.unwrap();
+        let ctx = f
+            .app
+            .auth
+            .authenticate(&c, &f.token, "127.0.0.1".parse().unwrap(), Uuid::new_v4())
+            .await
+            .unwrap();
+        let volume: Uuid = c
+            .query_one("SELECT id FROM volumes LIMIT 1", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let deployment: Uuid = c
+            .query_one(
+                "SELECT deployment_id FROM backups WHERE id=$1",
+                &[&f.backup],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let publisher: Uuid = c
+            .query_one("SELECT publisher_id FROM installations LIMIT 1", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let operation = db::operation(&c, ctx.subject, "schema_fixture", None)
+            .await
+            .unwrap();
+        let root = Uuid::new_v4();
+        c.execute("INSERT INTO volume_storage_root(id,filesystem_uuid,state,capacity_bytes) VALUES($1,$2,'ready',67108864)", &[&root,&Uuid::new_v4()]).await.unwrap();
+        let vs: Value = c
+            .query_one("SELECT spec FROM volumes WHERE id=$1", &[&volume])
+            .await
+            .unwrap()
+            .get(0);
+        c.execute("INSERT INTO volume_allocations(volume_id,root_id,project_id,owner_id,spec,capacity_bytes,inode_limit,metadata_charge,desired_capacity,desired_inodes,desired_metadata_charge,state,operation_id,credential_id,peer) VALUES($1,$2,nextval('volume_project_ids'),$3,$4,1048576,256,65536,1048576,256,65536,'ready',$5,$6,'127.0.0.1')", &[&volume,&root,&ctx.subject,&vs,&operation,&ctx.credential]).await.unwrap();
+        let manifest = json!({"plugin_id":"org.xelab.schema-fixture","publisher_id":publisher,"data_schema_version":"1","volumes":[{"name":vs["name"],"mount_path":"/data","access":"rw","scope":"deployment","minimum_bytes":1048576}]});
+        let mut spec = json!({"enabled":false,"volume_ids":[volume]});
+        validate_selection(&c, &ctx, &spec, &manifest)
+            .await
+            .unwrap();
+        spec["enabled"] = json!(true);
+        assert!(
+            validate_selection(&c, &ctx, &spec, &manifest)
+                .await
+                .is_err(),
+            "metadata-only intent must not mount"
+        );
+        let constraint = c.transaction().await.unwrap();
+        assert!(constraint.execute("UPDATE volume_allocations SET data_schema_version='1',schema_state='verified' WHERE volume_id=$1", &[&volume]).await.is_err(), "verified state requires all durable binding/proof fields");
+        constraint.rollback().await.unwrap();
+        // Metadata fixtures only; no claim of physical emptiness or a verified
+        // business format. The real worker must provide those proofs separately.
+        c.execute("UPDATE volume_allocations SET data_schema_version='1',schema_state='initializing',schema_deployment_id=$2,schema_plugin_id='org.xelab.schema-fixture',schema_publisher_id=$3,schema_manifest_digest=$4,schema_operation_id=$5 WHERE volume_id=$1", &[&volume,&deployment,&publisher,&crate::contracts::digest(b"schema metadata fixture"),&operation]).await.unwrap();
+        assert!(validate_selection(&c, &ctx, &spec, &manifest)
+            .await
+            .is_err());
+        spec["enabled"] = json!(false);
+        validate_selection(&c, &ctx, &spec, &manifest)
+            .await
+            .unwrap();
+        let mut unversioned = manifest.clone();
+        unversioned["data_schema_version"] = json!("none");
+        assert!(validate_selection(&c, &ctx, &spec, &unversioned)
+            .await
+            .is_err());
+        c.execute("UPDATE volume_allocations SET schema_state='verified',schema_proof='{\"metadata_fixture\":true}' WHERE volume_id=$1", &[&volume]).await.unwrap();
+        spec["enabled"] = json!(true);
+        validate_selection(&c, &ctx, &spec, &manifest)
+            .await
+            .unwrap();
+        for field in ["data_schema_version", "plugin_id", "publisher_id"] {
+            let mut other = manifest.clone();
+            other[field] = if field == "publisher_id" {
+                json!(Uuid::new_v4())
+            } else {
+                json!("different")
+            };
+            assert!(
+                validate_selection(&c, &ctx, &spec, &other).await.is_err(),
+                "binding field {field} must match"
+            );
+        }
+        assert!(validate_selection(&c, &ctx, &spec, &unversioned)
+            .await
+            .is_err());
+    }
     #[test]
     fn signed_volume_destinations_cannot_shadow_runtime_or_overlap() {
         let request = |path: &str, name: &str| json!({"name":name,"mount_path":path,"access":"rw","scope":"deployment","minimum_bytes":1048576});

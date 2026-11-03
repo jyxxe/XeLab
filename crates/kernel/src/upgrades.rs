@@ -18,15 +18,19 @@ use uuid::Uuid;
 mod volume_group;
 #[path = "upgrades_worker.rs"]
 mod worker;
+pub(crate) use worker::artifact;
 pub use worker::run;
 
 fn metadata(row: &Row) -> Value {
     json!({"id":row.get::<_,Uuid>("id"),"publisher_id":row.get::<_,Uuid>("publisher_id"),"plugin_id":row.get::<_,String>("plugin_id"),"version":row.get::<_,String>("version"),"image_digest":row.get::<_,String>("image_digest"),"manifest_digest":row.get::<_,String>("manifest_digest"),"manifest":row.get::<_,Value>("manifest")})
 }
-async fn installation(c: &(impl GenericClient + Sync), installation: Uuid) -> Result<Value> {
+pub(crate) async fn installation(
+    c: &(impl GenericClient + Sync),
+    installation: Uuid,
+) -> Result<Value> {
     let row=c.query_opt("SELECT i.* FROM installations i JOIN publishers p ON p.id=i.publisher_id WHERE i.id=$1 AND i.state='installed' AND p.status='trusted' FOR SHARE OF i,p",&[&installation]).await?.ok_or_else(||Error::conflict("Upgrade installation is not currently trusted"))?;
     let value = metadata(&row);
-    artifact::validate_profile(&value["manifest"])?;
+    artifact::validate_runtime_profile(&value["manifest"])?;
     if ["publisher_id", "plugin_id", "version"]
         .iter()
         .any(|field| value[*field] != value["manifest"][*field])

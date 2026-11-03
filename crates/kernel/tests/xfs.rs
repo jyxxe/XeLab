@@ -194,11 +194,14 @@ fn enforced_projects_survive_reopen_isolate_usage_and_fail_closed() {
         limits
     );
     store.prepare_data(recovered, 1006).unwrap();
+    assert!(store.data_is_empty(recovered, 1006).unwrap());
+    assert!(store.data_is_empty(recovered, 1002).is_err());
     let data_path = store.data_path(recovered, 1006).unwrap();
     use std::os::unix::fs::MetadataExt;
     assert_eq!(fs::metadata(&recovered_root).unwrap().uid(), 0);
     assert_eq!(fs::metadata(&data_path).unwrap().uid(), 65532);
     fs::write(data_path.join("retained"), b"persistent bytes").unwrap();
+    assert!(!store.data_is_empty(recovered, 1006).unwrap());
     assert_eq!(
         store
             .recover_create(recovered, 1006, limits)
