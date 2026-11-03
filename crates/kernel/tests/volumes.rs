@@ -66,8 +66,8 @@ impl Fixture {
         };
         if real {
             value["runtime"]["namespace"] = json!("xelab-ci");
-            value["runtime"]["network_cidr"] = json!("172.29.241.0/24");
-            value["server"]["host_rpc_listen"] = json!("172.29.241.1:7443");
+            value["runtime"]["network_cidr"] = json!("172.29.240.0/24");
+            value["server"]["host_rpc_listen"] = json!("172.29.240.1:7443");
             value["security"]["workload_ca_cert_file"] = json!(root.path().join("ca.crt"));
             value["security"]["workload_ca_key_file"] = json!(root.path().join("ca.key"));
         }
