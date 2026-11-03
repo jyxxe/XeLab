@@ -22,6 +22,6 @@
 - [契约优先级、变更与文档维护](change-policy.md)
 - [原计划迁移映射](migration-map.md)
 - [M2 迁移 RPC 传输组件](m2-migration-rpc.md)
-- [M2 无状态部署升级与回退](m2-deployment-upgrades.md)
+- [M2 部署重建升级与同格式卷回退](m2-deployment-upgrades.md)
 - [外部规范与实现依据](references.md)
 - [实施里程碑与接口落地](roadmap.md)

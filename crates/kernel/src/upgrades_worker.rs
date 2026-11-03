@@ -46,7 +46,7 @@ async fn old_instances(app: &App, row: &Row) -> Result<Vec<(Uuid, i64)>> {
         ids.insert(id(item, "id")?, generation);
     }
     let c = app.db.connect().await?;
-    for instance in c.query("SELECT id,generation FROM instances WHERE deployment_id=$1 AND id<>$2 AND phase<>'stopped' LIMIT 33",&[&row.get::<_,Uuid>("deployment_id"),&row.get::<_,Uuid>("candidate_id")]).await? {let id:Uuid=instance.get(0);let generation:i64=instance.get(1);if ids.insert(id,generation).is_some_and(|old|old!=generation){return Err(Error::conflict("Upgrade instance generation changed"));}}
+    for instance in c.query("SELECT i.id,i.generation FROM instances i WHERE i.deployment_id=$1 AND i.id<>$2 AND (i.phase<>'stopped' OR EXISTS(SELECT 1 FROM volume_attachments a WHERE a.instance_id=i.id)) LIMIT 33",&[&row.get::<_,Uuid>("deployment_id"),&row.get::<_,Uuid>("candidate_id")]).await? {let id:Uuid=instance.get(0);let generation:i64=instance.get(1);if ids.insert(id,generation).is_some_and(|old|old!=generation){return Err(Error::conflict("Upgrade instance generation changed"));}}
     if ids.len() > 32 {
         return Err(Error::exhausted());
     }
@@ -112,7 +112,9 @@ async fn freeze(app: &App, row: &Row) -> Result<()> {
     for (instance, _) in &instances {
         tx.execute("UPDATE instances SET phase='stopped',health='unknown',runtime_id=NULL,revision=revision+1,updated_at=now() WHERE id=$1 AND deployment_id=$2",&[instance,&row.get::<_,Uuid>("deployment_id")]).await?;
         admission::release_stopped(&tx, *instance).await?;
+        crate::volumes::release_stopped(&tx, Some(*instance)).await?;
     }
+    volume_group::freeze(&tx, operation).await?;
     if row.get::<_, Value>("target_spec")["enabled"] == true {
         // Transfer the released source budget while the same budget lock is
         // held. Another deployment cannot consume it between stop and reserve.
@@ -200,6 +202,7 @@ async fn probe(app: &App, row: &Row, artifact: &Artifact) -> Result<Option<rpc::
     )
     .await?;
     tx.commit().await?;
+    let mounts = volume_group::mounts(app, row).await?;
     let observed = app
         .runtime
         .ensure(
@@ -210,7 +213,7 @@ async fn probe(app: &App, row: &Row, artifact: &Artifact) -> Result<Option<rpc::
             &artifact.image,
             &artifact.image_digest,
             &spec["limits"],
-            &[],
+            &mounts,
         )
         .await?;
     if !observed.running {
@@ -335,6 +338,7 @@ async fn publish(app: &App, row: &Row, health: Option<rpc::HealthResponse>) -> R
     let operation: Uuid = row.get("operation_id");
     let deployment: Uuid = row.get("deployment_id");
     let generation: i64 = row.get("candidate_generation");
+    let publication = volume_group::prepare_publication(app, row).await?;
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
     db::auth_lock(&tx, false).await?;
@@ -356,6 +360,7 @@ async fn publish(app: &App, row: &Row, health: Option<rpc::HealthResponse>) -> R
     if !matches!(current.as_str(), "stopped" | "probing") {
         return Err(Error::conflict("Upgrade publication phase changed"));
     }
+    volume_group::publish(&tx, &ctx, row, publication).await?;
     if enabled {
         if tx.query_opt("SELECT instance_id FROM reservations WHERE instance_id=$1 AND status IN ('reserved','active')",&[&candidate]).await?.is_none(){return Err(Error::conflict("Upgrade candidate lacks its resource reservation"));}
         let manifest = row.get::<_, Value>("target_metadata")["manifest"].clone();
@@ -431,6 +436,7 @@ async fn process(app: &App, operation: Uuid, fence: &db::DeploymentFence) -> Res
         return Err(Error::conflict("Unsupported upgrade execution phase"));
     }
     let artifact = artifact(app, &row).await?;
+    volume_group::clone_group(app, &row).await?;
     check(app, operation).await?;
     let health = probe(app, &row, &artifact).await?;
     if !fence.protects(row.get("deployment_id")) {
@@ -468,12 +474,7 @@ pub(super) async fn recover_source(
         c.execute("UPDATE deployments SET phase='disabled',revision=revision+1,updated_at=now() WHERE id=$1",&[&deployment]).await?;
         return Ok(SourceRecovery::NotRequired);
     }
-    if original["volume_ids"] != json!([]) {
-        return Err(Error::conflict(
-            "Stateful recovery needs its own volume fence",
-        ));
-    }
-    let permitted: Result<()> = async {
+    let permitted: Result<Context> = async {
         let credential: Uuid = row.get("credential_id");
         let peer = row
             .get::<_, String>("approved_peer")
@@ -511,10 +512,28 @@ pub(super) async fn recover_source(
         ) {
             return Err(Error::denied());
         }
-        Ok(())
+        for volume in original["volume_ids"]
+            .as_array()
+            .ok_or_else(|| Error::conflict("Invalid original volume group"))?
+        {
+            let volume: Uuid = volume
+                .as_str()
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| Error::conflict("Invalid original volume identity"))?;
+            if !auth::rules_allow(
+                &available,
+                "volume.read",
+                &Resource::new("volume", volume, Some(ctx.subject)),
+                peer,
+            ) {
+                return Err(Error::denied());
+            }
+        }
+        crate::volumes::validate_selection(c, &ctx, &original, &source["manifest"]).await?;
+        Ok(ctx)
     }
     .await;
-    if permitted.is_ok() {
+    if let Ok(ctx) = permitted {
         let last: i64 = c
             .query_one(
                 "SELECT coalesce(max(generation),0) FROM instances WHERE deployment_id=$1",
@@ -530,7 +549,9 @@ pub(super) async fn recover_source(
             let instance = Uuid::new_v4();
             let admitted:Result<()>=async{
                 c.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,created_at,updated_at) VALUES($1,$2,$3,0,'pending','unknown',$4,now(),now())",&[&instance,&deployment,&generation,&original["limits"]]).await?;
-                admission::reserve(c,instance).await?;Ok(())
+                admission::reserve(c,instance).await?;
+                crate::volumes::approve_mounts(c, &ctx, deployment, generation, &original, &row.get::<_,Value>("source_metadata")["manifest"]).await?;
+                Ok(())
             }.await;
             if admitted.is_ok() {
                 c.batch_execute("RELEASE SAVEPOINT upgrade_source_recovery")
@@ -587,7 +608,9 @@ async fn fail_stopped(
     for (instance, _) in &instances {
         tx.execute("UPDATE instances SET phase='stopped',runtime_id=NULL,health='unknown',revision=revision+1,updated_at=now() WHERE id=$1 AND deployment_id=$2",&[instance,&deployment]).await?;
         admission::release_stopped(&tx, *instance).await?;
+        crate::volumes::release_stopped(&tx, Some(*instance)).await?;
     }
+    volume_group::failed(&tx, operation).await?;
     let recovery = recover_source(&tx, app, &row).await?;
     let (recovery_state, instance) = match recovery {
         SourceRecovery::NotRequired => ("not_required", None),

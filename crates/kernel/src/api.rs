@@ -371,7 +371,7 @@ async fn dispatch(
                 return Err(Error::new("ONE_TIME_RESPONSE_UNAVAILABLE","The one-time secret is unavailable; inspect the existing resource",StatusCode::CONFLICT).with_resource(row.get::<_,String>("resource_id")));
             }
             // Authentication has been rechecked; resource authorization is checked by the same dispatch before any replay below.
-            let response:Option<Value>=row.get("safe_response");if let Some(value)=response{authorize_operation(&tx,&ctx,name,&params,&body).await?;return Ok((value,row.get::<_,i32>("response_status") as u16));}return Err(Error::conflict("Operation has no replayable response"));
+            let response:Option<Value>=row.get("safe_response");if let Some(value)=response{authorize_operation(&tx,&ctx,name,&params,&body).await?;if matches!(name,"upgradeDeployment"|"rollbackDeployment"){crate::upgrades::authorize_replay(&tx,&ctx,id(&value,"id")?).await?;}return Ok((value,row.get::<_,i32>("response_status") as u16));}return Err(Error::conflict("Operation has no replayable response"));
         }
     }
     if let Err(error) = authorize_operation(&tx, &ctx, name, &params, &body).await {
