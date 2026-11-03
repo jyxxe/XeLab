@@ -83,6 +83,14 @@ jobs:
           test -n "$digest"
           sudo ctr -n xelab-ci images tag docker.io/xelab-ci/volume:test "docker.io/xelab-ci/volume@$digest"
           echo "XELAB_TEST_VOLUME_IMAGE=docker.io/xelab-ci/volume@$digest" >> "$GITHUB_ENV"
+          python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output examples/generated-schema --implementation python --volume-access rw --data-schema 1
+          docker build -t docker.io/xelab-ci/schema:test --build-arg ARTIFACT_DIR=examples/generated-schema -f examples/echo-python/Dockerfile .
+          docker save docker.io/xelab-ci/schema:test -o examples/generated-schema/schema.tar
+          sudo ctr -n xelab-ci images import examples/generated-schema/schema.tar
+          digest=$(sudo ctr -n xelab-ci images list | awk '$1=="docker.io/xelab-ci/schema:test" {print $3}')
+          test -n "$digest"
+          sudo ctr -n xelab-ci images tag docker.io/xelab-ci/schema:test "docker.io/xelab-ci/schema@$digest"
+          echo "XELAB_TEST_SCHEMA_IMAGE=docker.io/xelab-ci/schema@$digest" >> "$GITHUB_ENV"
           for variant in volume-upgrade volume-failed-upgrade; do
             flags=(--plugin-version 2.0.0)
             variable=XELAB_TEST_VOLUME_UPGRADE_IMAGE
@@ -140,7 +148,7 @@ jobs:
           assert len(volumes)==1,volumes
           libraries=[p for p in glob.glob("target/debug/deps/xelab_kernel-*") if os.path.isfile(p) and os.access(p,os.X_OK)]
           assert len(libraries)==1,libraries
-          subprocess.run(["sudo","--preserve-env=XELAB_TEST_DATABASE_URL,XELAB_TEST_VOLUME_IMAGE,XELAB_TEST_VOLUME_UPGRADE_IMAGE,XELAB_TEST_VOLUME_FAILED_UPGRADE_IMAGE,XELAB_TEST_S3_ENDPOINT,XELAB_PLATFORM_SOURCE_RECEIPT","env","XELAB_XFS_TEST=1","bash","tools/test-xfs.sh","--isolated-test-host",binaries[0],volumes[0],libraries[0]],check=True)
+          subprocess.run(["sudo","--preserve-env=XELAB_TEST_DATABASE_URL,XELAB_TEST_VOLUME_IMAGE,XELAB_TEST_VOLUME_UPGRADE_IMAGE,XELAB_TEST_VOLUME_FAILED_UPGRADE_IMAGE,XELAB_TEST_SCHEMA_IMAGE,XELAB_TEST_S3_ENDPOINT,XELAB_PLATFORM_SOURCE_RECEIPT","env","XELAB_XFS_TEST=1","bash","tools/test-xfs.sh","--isolated-test-host",binaries[0],volumes[0],libraries[0]],check=True)
           PYTEST
       - name: Full workspace regression
         run: cargo test --workspace --all-targets --locked

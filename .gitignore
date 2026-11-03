@@ -11,3 +11,5 @@ __pycache__/
 /examples/generated-volume/
 
 /examples/generated-host-blob/
+
+/examples/generated-schema/
