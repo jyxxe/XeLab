@@ -493,6 +493,34 @@ async fn actual_mtls_checks_peer_generation_key_integrity_and_issuer_revocation(
         tonic::Code::PermissionDenied
     );
     fs::write(f.directory.path().join("master.key"), [43; 32]).unwrap();
+    let wrong_key_body = json!({"name":"wrong key","value_base64":"YQ=="});
+    assert_eq!(
+        f.call(
+            "createSecret",
+            &[],
+            wrong_key_body.clone(),
+            None,
+            "wrong-key-create",
+            None
+        )
+        .await
+        .0,
+        503
+    );
+    assert_eq!(
+        f.call(
+            "rotateSecret",
+            &[("secret_id", secret)],
+            wrong_key_body,
+            Some(1),
+            "wrong-key-rotate",
+            None
+        )
+        .await
+        .0,
+        503
+    );
+
     assert_eq!(
         client
             .lease_secret(request(binding))
