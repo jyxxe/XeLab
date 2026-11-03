@@ -26,6 +26,8 @@ CREATE TABLE deployment_upgrade_jobs (
   plan jsonb,
   volume_fence bigint CHECK(volume_fence BETWEEN 1 AND 9007199254740991),
   failure jsonb,
+  source_recovery text NOT NULL DEFAULT 'not_required' CHECK(source_recovery IN ('not_required','intent_created','blocked')),
+  recovery_instance_id uuid REFERENCES instances(id),
   expires_at timestamptz NOT NULL DEFAULT now()+interval '1 hour',
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),

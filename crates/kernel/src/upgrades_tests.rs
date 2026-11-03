@@ -156,6 +156,114 @@ async fn actual_postgres_upgrade_admission_is_atomic_and_keeps_original_authorit
     );
     assert!(revalidate(&revoked, app, &row).await.is_err());
     revoked.rollback().await.unwrap();
+    // Stop proofs below are metadata fixtures. The separate OCI drill verifies
+    // actual process absence before invoking this same recovery transaction.
+    for scenario in ["allowed", "revoked", "no_admission"] {
+        let recovery = c.transaction().await.unwrap();
+        db::auth_lock(&recovery, true).await.unwrap();
+        recovery
+            .query_one("SELECT id FROM node_budget FOR UPDATE", &[])
+            .await
+            .unwrap();
+        recovery
+            .execute(
+                "UPDATE node_budget SET admission_enabled=$1",
+                &[&(scenario != "no_admission")],
+            )
+            .await
+            .unwrap();
+        recovery
+            .execute(
+                "UPDATE instances SET phase='stopped' WHERE id=$1",
+                &[&candidate],
+            )
+            .await
+            .unwrap();
+        if scenario == "revoked" {
+            recovery
+                .execute(
+                    "UPDATE credentials SET status='revoked' WHERE id=$1",
+                    &[&ctx.credential],
+                )
+                .await
+                .unwrap();
+        }
+        let outcome = worker::recover_source(&recovery, app, &row).await.unwrap();
+        match outcome {
+            worker::SourceRecovery::Created(instance) => {
+                assert_eq!(scenario, "allowed");
+                assert_ne!(instance, candidate);
+                let next = recovery
+                    .query_one(
+                        "SELECT generation,phase FROM instances WHERE id=$1",
+                        &[&instance],
+                    )
+                    .await
+                    .unwrap();
+                assert!(next.get::<_, i64>(0) > row.get::<_, i64>("candidate_generation"));
+                assert_eq!(next.get::<_, String>(1), "pending");
+                assert_eq!(recovery.query_one("SELECT count(*) FROM reservations WHERE instance_id=$1 AND status='reserved'",&[&instance]).await.unwrap().get::<_,i64>(0),1);
+                assert_eq!(
+                    recovery
+                        .query_one("SELECT spec FROM deployments WHERE id=$1", &[&deployment])
+                        .await
+                        .unwrap()
+                        .get::<_, Value>(0),
+                    spec
+                );
+            }
+            worker::SourceRecovery::Blocked => {
+                assert_ne!(scenario, "allowed");
+                let disabled = recovery
+                    .query_one(
+                        "SELECT spec,phase FROM deployments WHERE id=$1",
+                        &[&deployment],
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(disabled.get::<_, Value>(0)["enabled"], false);
+                assert_eq!(disabled.get::<_, String>(1), "disabled");
+                assert_eq!(
+                    recovery
+                        .query_one(
+                            "SELECT count(*) FROM instances WHERE deployment_id=$1",
+                            &[&deployment]
+                        )
+                        .await
+                        .unwrap()
+                        .get::<_, i64>(0),
+                    1,
+                    "a rejected restart must leave no new instance intent"
+                );
+                assert_eq!(
+                    recovery
+                        .query_one(
+                            "SELECT count(*) FROM reservations WHERE instance_id=$1",
+                            &[&candidate]
+                        )
+                        .await
+                        .unwrap()
+                        .get::<_, i64>(0),
+                    0
+                );
+            }
+            worker::SourceRecovery::NotRequired => {
+                panic!("enabled unchanged source must be resumed or explicitly blocked")
+            }
+        }
+        assert_eq!(
+            recovery
+                .query_one(
+                    "SELECT installation_id FROM deployments WHERE id=$1",
+                    &[&deployment]
+                )
+                .await
+                .unwrap()
+                .get::<_, Uuid>(0),
+            source
+        );
+        recovery.rollback().await.unwrap();
+    }
     let tx = c.transaction().await.unwrap();
     assert!(create(
         &tx,

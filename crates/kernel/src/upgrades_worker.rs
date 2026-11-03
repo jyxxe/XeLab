@@ -439,6 +439,112 @@ async fn process(app: &App, operation: Uuid, fence: &db::DeploymentFence) -> Res
     let row = check(app, operation).await?;
     publish(app, &row, health).await
 }
+pub(super) enum SourceRecovery {
+    NotRequired,
+    Created(Uuid),
+    Blocked,
+}
+
+/// Metadata only. The caller owns the deployment fence, authorization/budget
+/// transaction, and positive stop proofs for every old/candidate process.
+pub(super) async fn recover_source(
+    c: &(impl GenericClient + Sync),
+    app: &App,
+    row: &Row,
+) -> Result<SourceRecovery> {
+    let deployment: Uuid = row.get("deployment_id");
+    let original: Value = row.get("original_spec");
+    let current=c.query_one("SELECT owner_id,spec,installation_id,archived_at FROM deployments WHERE id=$1 FOR UPDATE",&[&deployment]).await?;
+    if current.get::<_, Value>("spec") != original
+        || current.get::<_, Uuid>("installation_id") != row.get::<_, Uuid>("source_installation_id")
+        || current.get::<_, Uuid>("owner_id") != row.get::<_, Uuid>("subject_id")
+        || current
+            .get::<_, Option<chrono::DateTime<chrono::Utc>>>("archived_at")
+            .is_some()
+    {
+        return Ok(SourceRecovery::NotRequired);
+    }
+    if original["enabled"] != true {
+        c.execute("UPDATE deployments SET phase='disabled',revision=revision+1,updated_at=now() WHERE id=$1",&[&deployment]).await?;
+        return Ok(SourceRecovery::NotRequired);
+    }
+    if original["volume_ids"] != json!([]) {
+        return Err(Error::conflict(
+            "Stateful recovery needs its own volume fence",
+        ));
+    }
+    let permitted: Result<()> = async {
+        let credential: Uuid = row.get("credential_id");
+        let peer = row
+            .get::<_, String>("approved_peer")
+            .parse()
+            .map_err(|_| Error::denied())?;
+        let ctx = app
+            .auth
+            .resume(c, credential, peer, row.get("operation_id"))
+            .await?;
+        if ctx.subject != row.get::<_, Uuid>("subject_id") {
+            return Err(Error::denied());
+        }
+        let source = installation(c, row.get("source_installation_id")).await?;
+        if source != row.get::<_, Value>("source_metadata") {
+            return Err(Error::conflict("Original installation changed"));
+        }
+        let saved: Vec<policy::Path> =
+            serde_json::from_value(row.get("authority")).map_err(|_| Error::denied())?;
+        let available = policy::rules(&Policy::new(c, peer).revalidate(&saved, credential).await?);
+        for action in ["plugin.read", "plugin.enable"] {
+            if !auth::rules_allow(
+                &available,
+                action,
+                &Resource::new("deployment", deployment, Some(ctx.subject)),
+                peer,
+            ) {
+                return Err(Error::denied());
+            }
+        }
+        if !auth::rules_allow(
+            &available,
+            "plugin.read",
+            &Resource::new("plugin", source["plugin_id"].as_str().unwrap(), None),
+            peer,
+        ) {
+            return Err(Error::denied());
+        }
+        Ok(())
+    }
+    .await;
+    if permitted.is_ok() {
+        let last: i64 = c
+            .query_one(
+                "SELECT coalesce(max(generation),0) FROM instances WHERE deployment_id=$1",
+                &[&deployment],
+            )
+            .await?
+            .get(0);
+        if let Some(generation) = last
+            .checked_add(1)
+            .filter(|g| (1..=9_007_199_254_740_991).contains(g))
+        {
+            c.batch_execute("SAVEPOINT upgrade_source_recovery").await?;
+            let instance = Uuid::new_v4();
+            let admitted:Result<()>=async{
+                c.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,created_at,updated_at) VALUES($1,$2,$3,0,'pending','unknown',$4,now(),now())",&[&instance,&deployment,&generation,&original["limits"]]).await?;
+                admission::reserve(c,instance).await?;Ok(())
+            }.await;
+            if admitted.is_ok() {
+                c.batch_execute("RELEASE SAVEPOINT upgrade_source_recovery")
+                    .await?;
+                c.execute("UPDATE deployments SET phase='reconciling',revision=revision+1,updated_at=now() WHERE id=$1",&[&deployment]).await?;
+                return Ok(SourceRecovery::Created(instance));
+            }
+            c.batch_execute("ROLLBACK TO SAVEPOINT upgrade_source_recovery; RELEASE SAVEPOINT upgrade_source_recovery").await?;
+        }
+    }
+    c.execute("UPDATE deployments SET spec=jsonb_set(spec,'{enabled}','false'),phase='disabled',revision=revision+1,updated_at=now() WHERE id=$1",&[&deployment]).await?;
+    Ok(SourceRecovery::Blocked)
+}
+
 async fn fail_stopped(
     app: &App,
     operation: Uuid,
@@ -453,6 +559,7 @@ async fn fail_stopped(
     if !fence.protects(deployment) {
         return Err(Error::conflict("Upgrade cleanup fence differs"));
     }
+    if app.db.connect().await?.query_opt("SELECT deployment_id FROM deployment_storage_holds WHERE deployment_id=$1 AND operation_id=$2",&[&deployment,&operation]).await?.is_none(){return Ok(());}
     let mut instances = old_instances(app, &row).await?;
     instances.push((row.get("candidate_id"), row.get("candidate_generation")));
     let mut stopped = Ok(());
@@ -481,8 +588,20 @@ async fn fail_stopped(
         tx.execute("UPDATE instances SET phase='stopped',runtime_id=NULL,health='unknown',revision=revision+1,updated_at=now() WHERE id=$1 AND deployment_id=$2",&[instance,&deployment]).await?;
         admission::release_stopped(&tx, *instance).await?;
     }
-    tx.execute("UPDATE deployment_upgrade_jobs SET state='failed',failure=coalesce(failure,$2),updated_at=now() WHERE operation_id=$1",&[&operation,&error.detail()]).await?;
-    db::complete(&tx, operation, Err(error)).await?;
+    let recovery = recover_source(&tx, app, &row).await?;
+    let (recovery_state, instance) = match recovery {
+        SourceRecovery::NotRequired => ("not_required", None),
+        SourceRecovery::Created(id) => ("intent_created", Some(id)),
+        SourceRecovery::Blocked => ("blocked", None),
+    };
+    tx.execute("UPDATE deployment_upgrade_jobs SET state='failed',failure=coalesce(failure,$2),source_recovery=$3,recovery_instance_id=$4,updated_at=now() WHERE operation_id=$1",&[&operation,&error.detail(),&recovery_state,&instance]).await?;
+    let report = if recovery_state == "blocked" {
+        Error::conflict("Upgrade failed; the original deployment remains disabled")
+            .with_resource(deployment)
+    } else {
+        error
+    };
+    db::complete(&tx, operation, Err(report)).await?;
     tx.execute(
         "DELETE FROM deployment_storage_holds WHERE deployment_id=$1 AND operation_id=$2",
         &[&deployment, &operation],

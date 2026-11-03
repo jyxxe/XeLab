@@ -237,6 +237,19 @@ pub async fn exercise(
         ready,
         "original installation must recover after candidate failure"
     );
+    let restored=c.query_one("SELECT source_recovery,recovery_instance_id FROM deployment_upgrade_jobs WHERE operation_id=$1",&[&operation_id]).await.unwrap();
+    assert_eq!(restored.get::<_, String>(0), "intent_created");
+    let restored_instance = restored.get::<_, Option<Uuid>>(1).unwrap();
+    assert_ne!(restored_instance, candidate);
+    let restored_state = c
+        .query_one(
+            "SELECT phase,generation FROM instances WHERE id=$1",
+            &[&restored_instance],
+        )
+        .await
+        .unwrap();
+    assert_eq!(restored_state.get::<_, String>(0), "ready");
+    assert!(app.runtime.running(restored_instance).await.unwrap());
     supervisor.abort();
     let _ = supervisor.await;
     println!("Upgrade: actual signed v1 -> v2 -> v1, mTLS health, capability routing, idempotent intent, failed candidate stopped/reservation released and original version recovered; stateless recreate only");
