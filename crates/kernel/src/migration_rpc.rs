@@ -70,6 +70,7 @@ impl Binding {
             .iter()
             .any(Uuid::is_nil)
             || self.generation <= 0
+            || self.generation as u64 > MAX_COUNTER
             || !schema(&self.source_schema)
             || !schema(&self.target_schema)
             || self.source_schema == self.target_schema

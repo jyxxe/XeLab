@@ -197,6 +197,9 @@ async fn actual_mtls_protocol_rejects_bad_plans_and_verifies_unknown_apply_witho
         target_schema: "2".into(),
     };
     binding.validate().unwrap();
+    let mut excessive_generation = binding.clone();
+    excessive_generation.generation = i64::MAX;
+    assert!(excessive_generation.validate().is_err());
     let plan = Plan {
         id: Uuid::new_v4(),
         digest: digest(b"persisted fixture plan"),
@@ -264,7 +267,10 @@ async fn actual_mtls_protocol_rejects_bad_plans_and_verifies_unknown_apply_witho
             &ca,
             &key,
             "other.xelab.local",
-            "spiffe://xelab.local/instance/other",
+            &format!(
+                "spiffe://xelab.local/instance/{}/generation/1",
+                Uuid::new_v4()
+            ),
         )))
         .unwrap()
         .connect()
