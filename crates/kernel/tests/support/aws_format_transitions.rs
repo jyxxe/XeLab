@@ -335,6 +335,11 @@ pub async fn exercise() {
     );
     assert_eq!(bytes(&f, original).await, original_bytes);
     invoke(&f, deployment, &manifest, "aws-v1-post-rollback").await;
+    let final_data: Value = serde_json::from_slice(&bytes(&f, rolled_volume).await).unwrap();
+    assert_eq!(final_data["schema"], "1");
+    assert_eq!(final_data["items"].as_array().unwrap().len(), 2);
+    assert_eq!(bytes(&f, original).await, original_bytes);
+    assert_eq!(bytes(&f, upgraded_volume).await, version_two_bytes);
     let current = ready(&f, deployment).await;
     let disabled = f
         .api(
