@@ -15,7 +15,7 @@ use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     fs,
     io::{Read, Seek, SeekFrom, Write},
     net::{SocketAddr, TcpListener},
@@ -25,12 +25,13 @@ use std::{
     },
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tower::ServiceExt;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
 use uuid::Uuid;
 use xelab_kernel::{
     admission,
@@ -490,6 +491,187 @@ struct DiagnosticTarget {
     instance: Option<Uuid>,
 }
 
+// This subscriber intentionally has no fmt layer. Only fixed controller fields
+// survive; instance/deployment identities are private role-mapping inputs.
+#[derive(Clone)]
+struct ControllerEvents {
+    events: Arc<Mutex<VecDeque<ControllerEvent>>>,
+    dropped: Arc<AtomicU64>,
+    installed: Arc<AtomicBool>,
+    started: Instant,
+}
+struct ControllerEvent {
+    fields: ControllerFields,
+    relative_ms: u64,
+}
+#[derive(Default)]
+struct ControllerFields {
+    deployment: Option<Uuid>,
+    instance: Option<Uuid>,
+    safe: serde_json::Map<String, Value>,
+}
+impl tracing::field::Visit for ControllerFields {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        let allowed: &[&str] = match field.name() {
+            "code" => &[
+                "UNCERTAIN_WORK_FENCE",
+                "HEALTH_REJECTED",
+                "HEALTH_THRESHOLD_STOP",
+            ],
+            "stage" => &[
+                "recovery",
+                "channel",
+                "describe",
+                "initialize",
+                "get_health",
+                "http_probe",
+            ],
+            _ => return,
+        };
+        self.safe
+            .insert(field.name().into(), json!(diagnostic_enum(value, allowed)));
+    }
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        if [
+            "call_unknown",
+            "call_expired",
+            "static_unknown",
+            "static_expired",
+            "failures",
+            "threshold",
+        ]
+        .contains(&field.name())
+        {
+            self.safe.insert(field.name().into(), json!(value));
+        }
+    }
+    fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+        if let Ok(value) = value.try_into() {
+            self.record_u64(field, value);
+        }
+    }
+    fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+        if field.name() == "was_ready" {
+            self.safe.insert("was_ready".into(), json!(value));
+        }
+    }
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        let slot = match field.name() {
+            "deployment_id" => &mut self.deployment,
+            "instance_id" => &mut self.instance,
+            _ => return,
+        };
+        *slot = Uuid::parse_str(&format!("{value:?}")).ok();
+    }
+}
+impl<S: tracing::Subscriber> Layer<S> for ControllerEvents {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        if event.metadata().target() != "xelab.controller_transition" {
+            return;
+        }
+        let mut fields = ControllerFields::default();
+        event.record(&mut fields);
+        let Ok(mut events) = self.events.lock() else {
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+            return;
+        };
+        if events.len() >= 32 {
+            events.pop_front();
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+        }
+        events.push_back(ControllerEvent {
+            fields,
+            relative_ms: self.started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+        });
+    }
+}
+impl ControllerEvents {
+    fn new() -> Self {
+        Self {
+            events: Arc::new(Mutex::new(VecDeque::new())),
+            dropped: Arc::new(AtomicU64::new(0)),
+            installed: Arc::new(AtomicBool::new(false)),
+            started: Instant::now(),
+        }
+    }
+    fn install() -> Self {
+        let collector = Self::new();
+        let installed = tracing_subscriber::registry()
+            .with(collector.clone())
+            .try_init()
+            .is_ok();
+        collector.installed.store(installed, Ordering::SeqCst);
+        collector
+    }
+    fn snapshot(&self, targets: &[DiagnosticTarget]) -> Value {
+        let installed = self.installed.load(Ordering::SeqCst);
+        let Ok(events) = self.events.lock() else {
+            return json!({"status":"read_failed","init_failures":u64::from(!installed)});
+        };
+        let safe: Vec<_> = events
+            .iter()
+            .map(|event| {
+                let role = targets
+                    .iter()
+                    .find(|target| event.fields.deployment == Some(target.deployment))
+                    .or_else(|| {
+                        targets.iter().find(|target| {
+                            target.instance.is_some() && target.instance == event.fields.instance
+                        })
+                    })
+                    .map(|target| target.role)
+                    .unwrap_or("unknown");
+                let mut safe = event.fields.safe.clone();
+                safe.entry("code").or_insert(json!("missing"));
+                safe.entry("stage").or_insert(json!("missing"));
+                safe.insert("role".into(), json!(role));
+                safe.insert("relative_ms".into(), json!(event.relative_ms));
+                Value::Object(safe)
+            })
+            .collect();
+        json!({"status":if installed {"installed"} else {"init_failed"},"init_failures":u64::from(!installed),"dropped":self.dropped.load(Ordering::SeqCst),"events":safe})
+    }
+}
+
+#[test]
+fn controller_diagnostics_are_bounded_and_role_mapped_without_raw_fields() {
+    let collector = ControllerEvents::new();
+    let deployment = Uuid::new_v4();
+    let instance = Uuid::new_v4();
+    let subscriber = tracing_subscriber::registry().with(collector.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::info!(target: "ignored", code="HEALTH_REJECTED", secret="never-print");
+        tracing::info!(target: "xelab.controller_transition", code="HEALTH_REJECTED", stage="channel", deployment_id=%deployment, instance_id=%instance, failures=1u64, threshold=3u64, was_ready=true, secret="never-print");
+        for _ in 0..32 {
+            tracing::info!(target: "xelab.controller_transition", code="untrusted-value", stage="untrusted-value");
+        }
+        tracing::info!(target: "xelab.controller_transition", code="UNCERTAIN_WORK_FENCE", stage="recovery", deployment_id=%deployment, instance_id=%instance, call_unknown=0i64, static_unknown=1i64);
+    });
+    let safe = collector.snapshot(&[DiagnosticTarget {
+        role: "ui_reference",
+        deployment,
+        instance: None,
+    }]);
+    assert_eq!(safe["status"], "init_failed");
+    assert_eq!(safe["init_failures"], 1);
+    assert_eq!(safe["events"].as_array().unwrap().len(), 32);
+    assert_eq!(safe["dropped"], 2);
+    assert_eq!(safe["events"][0]["role"], "unknown");
+    assert_eq!(safe["events"][0]["code"], "other");
+    assert_eq!(safe["events"][31]["role"], "ui_reference");
+    assert_eq!(safe["events"][31]["code"], "UNCERTAIN_WORK_FENCE");
+    assert_eq!(safe["events"][31]["static_unknown"], 1);
+    let encoded = serde_json::to_string(&safe).unwrap();
+    for forbidden in [
+        "never-print".to_owned(),
+        "untrusted-value".to_owned(),
+        deployment.to_string(),
+        instance.to_string(),
+    ] {
+        assert!(!encoded.contains(&forbidden));
+    }
+}
+
 fn diagnostic_enum(value: &str, allowed: &[&'static str]) -> &'static str {
     allowed
         .iter()
@@ -689,7 +871,11 @@ async fn diagnostic_database(
     Ok(())
 }
 
-async fn diagnostic_snapshot(app: &App, targets: &mut [DiagnosticTarget]) -> Value {
+async fn diagnostic_snapshot(
+    app: &App,
+    targets: &mut [DiagnosticTarget],
+    controller: &ControllerEvents,
+) -> Value {
     let mut evidence = json!({"status":"collecting","database_status":"not_observed","tasks_status":"not_observed","exit_status":"unsupported","calls":null,"deployments":{},"runtime":{},"kernel_ready":app.ready.load(Ordering::SeqCst),"kernel_shutdown":app.shutdown.load(Ordering::SeqCst),"consistency":"best_effort_non_atomic","counter_comparison":"absolute_only_lifetime_not_proven"});
     let collected=std::panic::AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(8),async {
         evidence["database_status"]=json!(match tokio::time::timeout(Duration::from_secs(2),diagnostic_database(app,targets,&mut evidence)).await {
@@ -719,6 +905,7 @@ async fn diagnostic_snapshot(app: &App, targets: &mut [DiagnosticTarget]) -> Val
         Ok(Err(_)) => "timeout",
         Err(_) => "collector_failed",
     });
+    evidence["controller"] = controller.snapshot(targets);
     evidence
 }
 
@@ -995,7 +1182,7 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
     assert_eq!(std::env::var("XELAB_M3_UI_TEST").as_deref(), Ok("1"));
     assert_eq!(unsafe { libc::geteuid() }, 0);
     xelab_kernel::init_crypto();
-    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let controller_events = ControllerEvents::install();
     let directory = tempfile::Builder::new()
         .prefix("xelab-m3-ui-")
         .permissions(fs::Permissions::from_mode(0o700))
@@ -1160,7 +1347,7 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
         let approved_reference=read_deployment(&router,&host,&token,&reference_deployment).await;
         report["cgroup_limits"]=json!({"official_webui":instance_cgroup_limits(app,&web_deployment,&approved_web["spec"]["limits"]).await,"ui_reference":instance_cgroup_limits(app,&reference_deployment,&approved_reference["spec"]["limits"]).await});
         report["checks"]["both_oci_images_enforce_approved_cpu_memory_and_pids_cgroups"]=json!(true);
-        report["diagnostics"]["baseline"]=diagnostic_snapshot(app,&mut diagnostic_targets).await;
+        report["diagnostics"]["baseline"]=diagnostic_snapshot(app,&mut diagnostic_targets,&controller_events).await;
         let skill=status(api(&router,&host,"registerSkill",&[],Some(&token),json!({"installation_id":reference_installation["installation_id"],"definition":reference_manifest["skills"][0],"enabled":false}),"register-fixed-skill",None).await,201,"registerSkill");
         let skill_id=skill["id"].as_str().unwrap().to_owned();
         status(api(&router,&host,"setSkillEnabled",&[("skill_id",skill_id.clone())],Some(&token),json!({"enabled":true}),"enable-fixed-skill",skill["revision"].as_i64()).await,200,"setSkillEnabled");
@@ -1282,7 +1469,7 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
         }
         if let Some(active) = running.as_ref() {
             report["diagnostics"]["failure_before_shutdown"] =
-                diagnostic_snapshot(&active.app, &mut diagnostic_targets).await;
+                diagnostic_snapshot(&active.app, &mut diagnostic_targets, &controller_events).await;
         } else {
             report["diagnostics"]["failure_before_shutdown"] =
                 json!({"status":"kernel_not_running"});
@@ -1310,4 +1497,8 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
     if let Err(panic) = outcome {
         std::panic::resume_unwind(panic);
     }
+    assert!(
+        controller_events.installed.load(Ordering::SeqCst),
+        "Controller diagnostic subscriber initialization failed"
+    );
 }

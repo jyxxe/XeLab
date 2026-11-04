@@ -18,12 +18,17 @@
 
 | 检查 | 2026-11-04 已执行结果 | 不能据此证明的内容 |
 |---|---|---|
-| WebUI Node / 回环 mTLS / Chromium 桌面 / 隔离桥 | 16 / 9 / 20+12 / 10 项通过，无跳过 | 浏览器使用明确核心响应夹具，非真实 Owner/OCI 整体授权 |
+| WebUI Node / 回环 mTLS / Chromium 桌面 / 隔离桥 | 17 / 9 / 20+12 / 10 项通过，无跳过 | 浏览器使用明确核心响应夹具，非真实 Owner/OCI 整体授权 |
+| 真实 HTTP/2 TLS / Chromium151 | 6 项通过：40 个不同 Call 正文与完成事件、10 次完成后取消；真实字节边界、UTF-8、超时与取消负向 | 本地 JSON 服务与 token provider 是明确适配器，不是 Core/OCI/OAuth 验收；204 的无正文语义与 Inspector 事件单独记录 |
 | 独立 UI 插件 Python / Node / Chromium | 7 / 5 / 4 项通过，无跳过 | 组件适配器不实现核心授权、OAuth、签名准入或 Runtime |
 | WebUI 打包组件 | `68e50b22…` 镜像，真实生成的 Lifecycle RPC、mTLS 静态服务通过 | 非签名安装，也不是生产镜像的整体核心调用 |
 | UI reference 生产镜像打包组件 | `5a654ccb…`，真实 ENTRYPOINT、Lifecycle、5 文件 GET/HEAD、HTTP echo 及拒绝/排空，42 条断言通过 | 42 条断言不是 42 个独立测试；上下文为明确的组件值，未验证核心授权或签名 |
 | F hosts 防护 | 2 项实际临时文件测试通过；保留他人行、精确恢复、冲突地址拒绝 | 没有在本地修改真实 hosts 或运行 privileged OCI |
 | F Rust 目标 | 类型检查及 `clippy --test m3_ui -- -D warnings` 通过，fmt/脚本语法通过 | 不代表被忽略的整体测试已运行 |
+
+HTTP/2 读取回归直接服务生产 `api.js`，不拦截或伪造浏览器响应。原实现同一回归中40次真实UI读取成功，但6次被Inspector报告取消，只有34份独立正文完成证据；修正后40份及10次完成后取消均通过。修正先在clone分支严格计数，不存第二份JavaScript块数组，合法正文才用原Response的native消费者读取并复核字节数；并行取消两分支，保留原上限、Content-Type、严格UTF-8、JSON和调用取消/超时。原tee分支仍缓存合法正文，不是常量内存。残留timer、releaseLock和简单TransformStream的单一根因均被对照反证，未据此修改预算或采用不合格候选。
+
+独立的#45真实OCI失败现场还发现reference在第三次POST之前进入draining/unhealthy；仅有成功Call不能排除独立静态租约围栏，cgroup删除也不能推导退出原因。新增固定Controller事件分别记录健康检查阶段与未知工作围栏，在停止前保留32条有界证据；测试只输出角色、枚举、计数与相对时间。健康阈值、原needed谓词、资源与物理围栏不变，真实最终CI仍须验证，不能称整体故障已修复。
 
 打包 QA 保留 `packaged-ui-qa-20261104/evidence.json`、源文件 SHA-256、探针及日志； 实际观察到 UID 65532、只读根、零有效 capability 和 NoNewPrivs。 该本地 Docker 的 `CgroupDriver=none`，CPU/内存/PID 标志仅已配置，**没有逐容器资源限额执行证据**。 临时容器、QA 镜像标签和测试私钥已删除；镜像短摘要是本次执行标识，不是发布/签名引用。
 
@@ -33,6 +38,7 @@
 set -euo pipefail
 node --test examples/webui/test_api.mjs examples/ui-reference/test_bridge.mjs
 "$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/webui -p 'test_server.py' -v
+"$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/webui -p 'test_http2.py' -v
 "$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/webui -p 'test_browser.py' -v
 "$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/webui -p 'test_shell.py' -v
 "$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/webui -p 'test_bridge.py' -v
