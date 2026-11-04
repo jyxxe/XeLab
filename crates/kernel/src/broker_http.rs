@@ -59,6 +59,7 @@ pub(super) async fn execute_skill(
     key: &str,
     started: tokio::time::Instant,
     deadline: tokio::time::Instant,
+    stream: Option<&crate::skill_streams::Output>,
     browser_origin: Option<&str>,
 ) -> Result<Value> {
     let value = Input {
@@ -77,7 +78,7 @@ pub(super) async fn execute_skill(
         started,
         deadline,
     };
-    let result = execute(app, token, peer, request, value, None).await?;
+    let result = execute(app, token, peer, request, value, None, stream).await?;
     Ok(result.0)
 }
 
@@ -128,7 +129,7 @@ pub async fn invoke(
         let result = tokio::select! {
             biased;
             _ = producer.abandoned_before_admission() => Err(Error::new("CANCELED","HTTP consumer disconnected before admission",StatusCode::CONFLICT)),
-            result=tokio::time::timeout_at(input.deadline,execute(&actor,&actor_token,peer,request,input,Some(&producer)))=>result.unwrap_or_else(|_|Err(expired())),
+            result=tokio::time::timeout_at(input.deadline,execute(&actor,&actor_token,peer,request,input,Some(&producer),None))=>result.unwrap_or_else(|_|Err(expired())),
         };
         match result {
             Ok((value, Some(response))) => producer.complete_json(value, response).await,
@@ -208,6 +209,7 @@ async fn execute(
     request: Uuid,
     mut input: Input,
     output: Option<&Output>,
+    stream: Option<&crate::skill_streams::Output>,
 ) -> Result<(Value, Option<plugin_http::transport::Response>)> {
     // This lookup conveys no authority. It only narrows the original request
     // clock before waiting on the shared admission lock, exactly as Skill RPC.
@@ -220,7 +222,29 @@ async fn execute(
         )
         .await?;
     let minimum: Option<i64> = if let Some(skill) = input.skill {
-        c.query_one("SELECT min((r->>'timeout_ms')::bigint) FROM skills s JOIN installations n ON n.id=s.installation_id CROSS JOIN LATERAL jsonb_array_elements(n.manifest->'routes') r WHERE s.id=$1 AND r->>'kind'='http'",&[&skill]).await?.get(0)
+        // Budget-only metadata must neither select another route nor expose a
+        // private installation's integrity/availability before authorization.
+        // Authoritative errors are produced by resolve_http_for_invoke below.
+        let exact_budget = async {
+            let row = c
+                .query_opt(
+                    "SELECT definition,installation_id FROM skills WHERE id=$1",
+                    &[&skill],
+                )
+                .await
+                .ok()??;
+            let registry = crate::http_contracts::load(&*c, row.get("installation_id"))
+                .await
+                .ok()?;
+            let definition: Value = row.get("definition");
+            registry
+                .bind_skill(&definition)
+                .ok()
+                .map(|operation| operation.route.timeout.as_millis() as i64)
+        };
+        tokio::time::timeout_at(input.deadline, exact_budget)
+            .await
+            .map_err(|_| expired())?
     } else {
         plugin_http::canonical_path(&input.path)?;
         let plugin = input
@@ -242,7 +266,7 @@ async fn execute(
     }
     tokio::time::timeout_at(
         input.deadline,
-        execute_inner(app, token, peer, request, input, output),
+        execute_inner(app, token, peer, request, input, output, stream),
     )
     .await
     .unwrap_or_else(|_| Err(expired()))
@@ -256,6 +280,7 @@ async fn execute_inner(
     request: Uuid,
     mut input: Input,
     output: Option<&Output>,
+    stream: Option<&crate::skill_streams::Output>,
 ) -> Result<(Value, Option<plugin_http::transport::Response>)> {
     crate::skill_streams::ensure_active(app)?;
     let mut c = app
@@ -311,10 +336,6 @@ async fn execute_inner(
         input.deadline = input
             .deadline
             .min(input.started + Duration::from_millis(requested));
-        input.bytes = serde_json::to_vec(&invocation["input"])?;
-        input
-            .headers
-            .insert("content-type", "application/json".parse().unwrap());
     }
     // Expensive current-policy preparation can run concurrently under the
     // shared auth fence. The physical ledger, provider rows and mutable budget
@@ -325,6 +346,24 @@ async fn execute_inner(
     authority.verify(&tx, &current)?;
     let target = resolve(&tx, &input, skill.as_ref()).await?;
     let op = target.operation()?;
+    if let Some(skill) = &skill {
+        let invocation = input.skill_input.as_ref().ok_or_else(Error::denied)?;
+        if op.input.is_some() {
+            input.bytes = serde_json::to_vec(&invocation["input"])?;
+            input
+                .headers
+                .insert("content-type", "application/json".parse().unwrap());
+        } else if !invocation["input"].is_null() {
+            return Err(Error::invalid(
+                "Bodyless HTTP Skill identity input must be null",
+            ));
+        }
+        if stream.is_some() != !skill.definition["stream_item_schema"].is_null() {
+            return Err(Error::invalid(
+                "HTTP Skill invocation must use the endpoint matching its signed streaming declaration",
+            ));
+        }
+    }
     input.deadline = input.deadline.min(input.started + op.route.timeout);
     let remaining = input
         .deadline
@@ -401,7 +440,13 @@ async fn execute_inner(
     )?;
     let path = skill
         .as_ref()
-        .map(|s| format!("/api/platform/v1/skills/{}/calls", s.id))
+        .map(|s| {
+            format!(
+                "/api/platform/v1/skills/{}/calls{}",
+                s.id,
+                if stream.is_some() { ":stream" } else { "" }
+            )
+        })
         .unwrap_or_else(|| input.path.clone());
     let method = if skill.is_some() {
         "POST"
@@ -412,6 +457,7 @@ async fn execute_inner(
         if prior.get::<_,String>("fingerprint")!=fingerprint{return Err(Error::new("IDEMPOTENCY_CONFLICT","HTTP key was already bound to different input",StatusCode::CONFLICT));}
         let call=prior.get::<_,Option<String>>("resource_id").and_then(|s|s.parse::<Uuid>().ok()).ok_or_else(Error::denied)?;
         check_skill_authority(&tx,&ctx,call).await?;
+        if stream.is_some(){return Err(Error::conflict("Generation streams cannot be replayed; inspect the admitted Call").with_resource(call));}
         let saved=tx.query_one("SELECT state,result FROM calls WHERE id=$1",&[&call]).await?;
         if saved.get::<_,String>("state")!="succeeded"{return Err(Error::new("OUTCOME_UNKNOWN","Prior HTTP call is not a confirmed success",StatusCode::CONFLICT).with_resource(call));}
         let value:Value=saved.get::<_,Option<Value>>("result").ok_or_else(Error::denied)?;
@@ -476,10 +522,21 @@ async fn execute_inner(
         output.ensure_open()?;
         output.bind_origin(call, wall_deadline, input.browser_origin.as_deref());
     }
+    if let Some(stream) = stream {
+        stream.ensure_open()?;
+    }
     drop(authority);
     tx.commit().await?;
     drop(c);
     let execution = async {
+        if let Some(stream) = stream {
+            stream.bind(
+                skill.as_ref().ok_or_else(Error::denied)?,
+                call,
+                wall_deadline,
+            )?;
+            stream.ensure_open()?;
+        }
         check_live_call(
             app,
             token,
@@ -524,8 +581,11 @@ async fn execute_inner(
         let streaming =
             op.responses[&status.as_u16()].media_type.as_deref() == Some("text/event-stream");
         if streaming {
-            let output =
-                output.ok_or_else(|| Error::invalid("HTTP Skill cannot bind an event stream"))?;
+            if output.is_none() && stream.is_none() {
+                return Err(Error::invalid(
+                    "HTTP event stream requires a streaming invocation",
+                ));
+            }
             let terminal = read_events(
                 app,
                 token,
@@ -535,6 +595,7 @@ async fn execute_inner(
                 &target,
                 response,
                 output,
+                stream.zip(skill.as_ref()),
                 (status, safe_headers),
                 wall_deadline,
                 input.browser_origin.as_deref(),
@@ -542,7 +603,8 @@ async fn execute_inner(
             .await?;
             let value = terminal["payload"].clone();
             if value["call_id"] != call.to_string()
-                || value["contract"] != contract
+                || value["contract"]
+                    != json!({"name":format!("{}.http",string(&target.manifest,"plugin_id")?),"version":target.manifest["version"],"schema_digest":op.contract_digest})
                 || value["provider_instance_id"] != target.instance.to_string()
             {
                 return Err(Error::conflict("HTTP completed stream target differs"));
@@ -550,15 +612,25 @@ async fn execute_inner(
             if value.get("skill_id").is_some() || value.get("skill_definition_digest").is_some() {
                 return Err(Error::conflict("Direct HTTP cannot claim a Skill result"));
             }
-            let value = json!({"call_id":call,"contract":contract,"provider_instance_id":target.instance,"output":value["output"],"completed_at":chrono::Utc::now()});
             validate("CallResult", &value)?;
-            let mut terminal = terminal;
-            terminal["payload"] = value.clone();
-            op.responses[&200]
-                .schema
-                .as_ref()
-                .ok_or_else(Error::denied)?
-                .check(&terminal)?;
+            let mut value = json!({"call_id":call,"contract":contract,"provider_instance_id":target.instance,"output":value["output"],"completed_at":chrono::Utc::now()});
+            if let Some(skill) = &skill {
+                validate_business(&skill.definition["output_schema"], &value["output"])?;
+                value["skill_id"] = json!(skill.id);
+                value["skill_definition_digest"] = json!(skill.definition_digest);
+            }
+            validate("CallResult", &value)?;
+            if let Some(stream) = stream {
+                stream.validate_completed(&value)?;
+            } else {
+                let mut terminal = terminal;
+                terminal["payload"] = value.clone();
+                op.responses[&200]
+                    .schema
+                    .as_ref()
+                    .ok_or_else(Error::denied)?
+                    .check(&terminal)?;
+            }
             return Ok((value, None));
         }
         let mut source = response.bytes_stream();
@@ -583,9 +655,9 @@ async fn execute_inner(
             strict_json(&bytes, plugin_http::MAXIMUM_RESPONSE_BYTES)?
         };
         if let Some(skill) = &skill {
-            if status != StatusCode::OK {
+            if !status.is_success() {
                 return Err(Error::unavailable(
-                    "HTTP Skill operation did not return 200",
+                    "HTTP Skill operation did not return a declared success",
                 ));
             }
             validate_business(&skill.definition["output_schema"], &body)?;
@@ -631,7 +703,7 @@ async fn execute_inner(
         tokio::select! {
             result=execution=>result,
             error=authority=>Err(error),
-            _=async{if let Some(output)=output{output.sender.closed().await}else{std::future::pending::<()>().await}}=>Err(Error::new("CANCELED","HTTP consumer disconnected",StatusCode::CONFLICT)),
+            _=async{if let Some(output)=output{output.sender.closed().await}else if let Some(stream)=stream{stream.closed().await}else{std::future::pending::<()>().await}}=>Err(Error::new("CANCELED","HTTP consumer disconnected",StatusCode::CONFLICT)),
         }
     };
     let result = tokio::time::timeout_at(input.deadline, monitored)
@@ -1060,7 +1132,8 @@ async fn read_events(
     call: Uuid,
     target: &Provider,
     response: reqwest::Response,
-    output: &Output,
+    output: Option<&Output>,
+    stream: Option<(&crate::skill_streams::Output, &crate::skills::ResolvedSkill)>,
     head: (StatusCode, HeaderMap),
     deadline: chrono::DateTime<chrono::Utc>,
     browser_origin: Option<&str>,
@@ -1168,14 +1241,42 @@ async fn read_events(
             // accepted frame is actually available. Earlier EOF/malformed
             // frames remain ordinary HTTP errors, never failed sequence1.
             if let Some((status, headers)) = pending_head.take() {
-                output.begin(status, headers, true)?;
+                if let Some(output) = output {
+                    output.begin(status, headers, true)?;
+                }
             }
             if value["terminal"] == true {
+                if value["kind"] == "canceled" {
+                    return Err(if value["payload"]["reason"] == "deadline" {
+                        expired()
+                    } else {
+                        Error::new(
+                            "CANCELED",
+                            "HTTP plugin canceled the stream; physical outcome remains unknown",
+                            StatusCode::CONFLICT,
+                        )
+                    });
+                }
                 if value["kind"] != "completed" {
-                    return Err(Error::unavailable("HTTP plugin stream did not complete"));
+                    return Err(Error::unavailable(
+                        "HTTP plugin stream failed; inspect the fixed Call",
+                    ));
                 }
                 completed = Some(value);
-            } else {
+            } else if let Some((stream, skill)) = stream {
+                let kind = match string(&value, "kind")? {
+                    "accepted" => "accepted",
+                    "item" => {
+                        validate_business(
+                            &skill.definition["stream_item_schema"],
+                            &value["payload"],
+                        )?;
+                        "item"
+                    }
+                    _ => return Err(Error::conflict("Unexpected nonterminal HTTP event")),
+                };
+                stream.emit(kind, value["payload"].clone()).await?;
+            } else if let Some(output) = output {
                 output.emit(&value).await?;
             }
         }

@@ -46,6 +46,9 @@ static COMPONENT_PROCESS: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new(
 #[path = "oauth_http_selector_tests.rs"]
 mod selectors;
 
+#[path = "broker_http_skill_stream_tests.rs"]
+mod skill_streams;
+
 async fn raw(
     router: &Router,
     method: &str,
@@ -147,6 +150,9 @@ impl Drop for Component {
 }
 impl Component {
     async fn new() -> Option<Self> {
+        Self::with_exact_route_budget(false).await
+    }
+    async fn with_exact_route_budget(split: bool) -> Option<Self> {
         let process_lock = COMPONENT_PROCESS
             .get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
@@ -194,6 +200,26 @@ impl Component {
         let (artifact, mut manifest, openapi) =
             crate::http_contracts::tests::fixture_manifest(publisher);
         manifest["concurrency"]["max_active_requests"] = json!(2);
+        if split {
+            let doc: Value = serde_json::from_slice(&openapi).unwrap();
+            let template = manifest["routes"][0].clone();
+            let mut routes = vec![manifest["routes"][1].clone()];
+            for (path, operations) in doc["paths"].as_object().unwrap() {
+                let mut route = template.clone();
+                route["path_prefix"] = json!(path);
+                route["methods"] = json!(operations
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(|method| method.to_ascii_uppercase())
+                    .collect::<Vec<_>>());
+                if path.ends_with("/echo") {
+                    route["timeout_ms"] = json!(100);
+                }
+                routes.push(route);
+            }
+            manifest["routes"] = json!(routes);
+        }
         fs::write(
             artifact.path().join("xelab/plugin.json"),
             serde_json::to_vec(&manifest).unwrap(),
@@ -260,6 +286,15 @@ def reply(self,status,body=b'',content_type='application/json',extra=()):
  return original(self,status,body,content_type,extra)
 Handler.reply=reply
 original_events=Handler.events
+original_encoded=encoded
+def encoded(value):
+ if isinstance(value,dict) and value.get('kind')=='item' and value.get('payload',{}).get('message')=='fault:skill-item':
+  value={**value,'payload':{'message':42,'index':0}}
+ if isinstance(value,dict) and value.get('kind')=='completed' and value.get('payload',{}).get('output',{}).get('message')=='fault:skill-output':
+  value={**value,'payload':{**value['payload'],'output':{'message':42}}}
+ return original_encoded(value)
+import http_server
+http_server.encoded=encoded
 def events(self,value,call_id,deadline):
  if value['message'] not in ('fault:empty-sse','fault:first-item'):
   return original_events(self,value,call_id,deadline)

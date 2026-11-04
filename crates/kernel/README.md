@@ -7,23 +7,25 @@
 | 模块 | 当前实现 | 后续能力与验收边界 |
 |---|---|---|
 | 元数据 | PostgreSQL 显式追加迁移及校验和、单控制器锁、事务内操作/审计/outbox、原生离线快照及门禁 | 在线升级迁移、多个控制器、自动备份调度；原生快照要求精确版本/布局 |
-| 身份与授权 | Owner 引导、五种角色、Guest 自助、固定父级子账户与激活、三种继承模式、不可变权限组/授权、API Key 与会话/密码管理、实时源链撤销、树配额、审计；恢复后历史用户显式重新激活；本分支加入 Cookie CSRF 与可信 Host 边界 | OAuth、Workflow 执行委托与缓存式授权优化；恢复不复活旧权限 |
+| 身份与授权 | Owner 引导、五种角色、Guest 自助、固定父级子账户与激活、三种继承模式、不可变权限组/授权、API Key 与会话/密码管理、实时源链撤销、树配额、审计、Cookie CSRF 与可信 Host；恢复后历史用户显式重新激活 | Workflow 执行委托与缓存式授权优化；恢复不复活旧权限 |
+| OAuth/UI 控制面 | 精确 Client origin/redirect/规则上限、code + PKCE S256、可信登录/原生同意、短期单次码、刷新轮换/重用撤族、来源绑定 CORS、默认 UI、签名贡献发现及本人偏好；已随 #44 合并 | 独立 OCI WebUI 的完整浏览器集成仍待 #45 门禁；不是插件密码或核心 Cookie 代理 |
 | 制品 | 预导入固定 OCI manifest digest、Ed25519 信封、原始清单/契约摘要及实际内容校验、严格 JSON/Schema 校验、OCI 归档及冷内容库导入 | 在线拉取、image index 自动选平台、仓库登录、依赖安装、卸载；公开非 none 格式安装关闭 |
-| 控制器 | 安装/批准/启用/健康/排空停止、有界对账与重启、部署重建与同格式卷切换、内部初始化/格式迁移监督器 | 多副本、滚动升级、动态配置更新；完整格式升级/不兼容回退仍待正式备份验收 |
+| 控制器 | 安装/批准/启用/健康/排空停止、有界对账与重启、完全停用排空后的配置更新、部署重建与同格式卷切换、内部初始化/格式迁移监督器 | 多副本、滚动升级、运行中动态配置；完整格式升级/不兼容回退仍待正式备份验收 |
 | 执行 | containerd/runc 真容器、cgroups v2 CPU/内存/PID、只读根目录、受限 tmpfs、无 Linux capabilities、隔离网络、工作负载 mTLS | 外网/代理、尚未实现的 HostService 方法、GPU、微插件/MPR、Extension Plugin；组件预算不代替生产 RUN-03 |
-| 调用 | 直接非流式 Broker、固定契约/部署、有界并发、树配额/源链计费、幂等账本与 unknown 查询、异常调用停止后回收；内部已登记格式的幂等业务调用；固定安装 capability Skill 的七项公开操作、双层授权、纯流 SSE 和取消围栏 | 等待队列、一般非纯 capability 调用、结果查询协议、Workflow、Batch、Schedule、Event；HostService 代理按 M4 路线交付 |
-| HTTP（本分支集成中） | 原始签名 OpenAPI 持久化、精确操作/动作/Schema、HTTP Skill、共享 Broker 账本及 SSE；隔离来源静态 GET/HEAD 与共享物理槽；独立 HTTP/RPC 参考插件 | 完整本地回归、真实内核 OCI、最终 CI 与合并仍待完成；OAuth、WebUI、UI 桥尚未交付 |
+| 调用 | 固定契约/安装/部署、双层授权、共享实例并发、树配额/源链计费、幂等/unknown 账本、有界 SSE 缓冲与取消围栏；分支实现普通无版本数据格式 capability 四类副作用的单次/声明流和原实例 QueryResult | #46 普通副作用真实 OCI 待验收；事务锁准入等待及有界 SSE 缓冲不是业务等待队列或持久 TaskEngine；Workflow、Batch、Schedule、Event、M4 HostService 代理未交付 |
+| HTTP | #43 已合并签名原始 OpenAPI、精确操作/动作/Schema、共享 Broker 账本、直接 HTTP SSE、隔离来源静态 GET/HEAD 与物理槽；#47 扩展固定 HTTP Skill 的六方法、成功状态和 SSE | #47 新 HTTP Skill 方法/流的真实 OCI 待验收；不是任意 URL/路径模板/查询参数代理，未声明协议拒绝 |
+| 独立 WebUI/消息桥 | #45 源码包含 UID 65532 OCI 桌面、公开管理 API/OAuth 客户端、window/widget、固定 alias 的 skill.call、同部署 window.open、通道撤权/登出/升级失效及独立 UI 参考插件 | 组件与打包探针通过不能替代真实核心 OCI/Owner OAuth/iframe 全链；#45 整体门禁尚未通过，未来 batch 方法明确不可用 |
 | 持久卷 | 独立 XFS 硬配额、预留/扩容/回收、实际计数、单写者 fence、OCI 挂载、新私有卷恢复、同格式克隆/回退、内部格式证明 | 多副本应用行为、公开格式安装/迁移、正式独立宿主恢复验收 |
 | Blob | 不可变上传/下载、摘要/长度校验、pin/TTL、可恢复清理、HTTPS CLI、受限工作负载 RPC、整体离线备份/恢复 | 自动备份调度、正式 AWS/独立宿主演练 |
 | Secret | AES-256-GCM 托管、元数据 API、轮换/撤销、部署绑定、工作负载 mTLS 租约；恢复后旧 Secret/绑定撤销 | 主密钥轮换；恢复后需显式重建所需秘密及授权 |
 | 备份/恢复 | 部署一致性备份、新卷恢复/切换、整体离线源冻结、元数据/Blob/镜像/卷重建、权限重置、持久检查点与中断续作、格式备份登记 | 自动备份调度、正式 AWS/独立宿主恢复、不同格式升级/不兼容回退的完整正式演练；兼容对象存储始终 off_host=false |
-| 运维 | HTTPS 管理 API、通用 CLI、离线备份/恢复与账户维护命令、探针、结构化错误日志、数据库审计、故障恢复测试 | WebUI、UDS 控制通道、指标/Tracing 导出、自动备份、数据与 AI 平台 |
+| 运维 | HTTPS 管理 API、独立 CLI、WebUI 配置/默认界面及停用恢复、离线备份/恢复与账户维护命令、探针、结构化错误日志、数据库审计、故障恢复测试 | UDS 控制通道、指标/Tracing 导出、自动备份、数据与 AI 平台；独立 WebUI 的整体验收另列 |
 
-本分支公开安装 profile 接受单副本、无依赖、无 WebUI/UI Contribution、无扩展点且 data_schema_version 为 none 的普通插件；宿主权限申请仅保留现有可选 Secret/Blob profile。允许受控持久卷、签名 capability/HTTP Skill 候选及经验证的 http/static 路由。内部版本化格式的初始化、同格式切换和 Plan/Apply/Verify 见[格式监督器](../../docs/implementation/m2-format-transitions.md)；内部实现不等于公开准入或正式验收。业务 Schema 必须自包含，拒绝 $ref/$id 等引用。并发池满立即拒绝，未实现操作明确报错。
+当前公开安装 profile 接受单副本、无依赖、无扩展点且 data_schema_version 为 none 的普通插件；宿主权限申请仅保留现有可选 Secret/Blob profile。允许受控持久卷、签名 capability/HTTP Skill 候选、经验证的 http/static/webui 路由及固定 WebUI/UI Contribution 声明；页面必须有独立来源和对应签名准入，不因 UI 存在而授予业务权限。内部版本化格式的初始化、同格式切换和 Plan/Apply/Verify 见[格式监督器](../../docs/implementation/m2-format-transitions.md)；内部实现不等于公开准入或正式验收。业务 Schema 必须自包含，拒绝 $ref/$id 等引用。实例业务池满拒绝，事务锁准入等待和有界 SSE 缓冲不创建业务等待队列或持久任务，未实现操作明确报错。
 
-`registerSkill/getSkill/listSkills/setSkillEnabled/archiveSkill/invokeSkill/streamSkill` 的普通 OCI capability profile 已实现并合并，固定安装、不可变定义与 UUID，复用 Broker 并发、配额、来源链和 unknown 围栏。HTTP Skill 在本分支只绑定固定 POST/JSON→200/JSON；直接 HTTP 的声明式 SSE 使用既有 StreamEvent。HostService Skill 代理属于路线图 M4；OAuth、WebUI、UI 桥仍待交付，不能据此宣布完整 M3 完成。边界和命令见 [Skill](../../docs/implementation/m3-skills.md)、[纯流 SSE](../../docs/implementation/m3-skill-streams.md)及[HTTP 集成](../../docs/implementation/m3-http.md)。
+`registerSkill/getSkill/listSkills/setSkillEnabled/archiveSkill/invokeSkill/streamSkill` 固定安装、不可变定义与 UUID，复用 Broker 并发、配额、来源链和 unknown 围栏。分支中普通 capability 的 `none/idempotent/queryable/non_repeatable` 均支持首次单次和已声明流；从不自动重派业务。queryable 的 getCall 仅向原实例/代次发送 QueryResult，复核原来源，不切换提供者或重新 Invoke。内部版本化数据 profile 仍保留既有 none/idempotent 限制，公开版本化制品门禁关闭。HTTP Skill 固定签名 GET/HEAD/POST/PUT/PATCH/DELETE、声明成功状态和 Schema；无正文/204/HEAD 使用契约允许的 null，声明流接入已有 Skill SSE，不能由输入选 URL/方法。两类扩展的真实 OCI 验收仍待 #46/#47。HostService 的 Skill 发现/解析/检查/调用 RPC 仍为 UNIMPLEMENTED，属于 M4；不等于公开 Skill API 未实现。边界和命令见 [Skill](../../docs/implementation/m3-skills.md)、[流式调用](../../docs/implementation/m3-skill-streams.md)、[HTTP](../../docs/implementation/m3-http.md)和[WebUI 整体门禁](../../docs/implementation/m3-webui.md)。
 
-配置仍使用现有 `kernel.toml`；`unix_socket` 暂未提供控制服务。`ui_gateway` 在本分支提供精确部署来源的静态代理，未配置时不降级到可信内核同源页面；它不代表默认 WebUI 或 OAuth 已实现。备份 URI 的标准 AWS 后端还需独立凭证、主密钥及仓库注册，见 [备份任务](../../docs/implementation/m2-backup-jobs.md)。
+配置仍使用现有 `kernel.toml`；`unix_socket` 暂未提供控制服务。`ui_gateway` 提供精确部署来源的静态/WebUI 代理，未配置时不降级到可信内核同源页面。WebUI 需先创建 disabled 部署、取得隔离来源、注册精确 Client、以完整 `{spec}` 更新配置并轮询 202 Operation，审批/启用至 Ready 后再设默认界面；根路径不可用返回 503，核心 API/CLI 独立。部署步骤和同一 TLS listener 的通配域名配置见[WebUI 说明](../../examples/webui/DEPLOYMENT.md)。备份 URI 的标准 AWS 后端还需独立凭证、主密钥及仓库注册，见 [备份任务](../../docs/implementation/m2-backup-jobs.md)。
 
 工作负载 Blob 代理、显式批准与固定输入白名单见 [M2 Host Blob](../../docs/implementation/m2-host-blobs.md)。
 
@@ -53,12 +55,12 @@ cargo fmt --all -- --check
 
 ```bash
 xelabctl validate-config --config /etc/xelab/kernel.toml
-xelabctl migrate --config /etc/xelab/kernel.toml --target 15
+xelabctl migrate --config /etc/xelab/kernel.toml --target 16
 xelabctl bootstrap --config /etc/xelab/kernel.toml --owner-name admin
 xelabd --config /etc/xelab/kernel.toml
 ```
 
-`validate-config` 只验证结构和本地约束；不宣称宿主检查已经通过。当前迁移目标为 15：
+`validate-config` 只验证结构和本地约束；不宣称宿主检查已经通过。当前迁移目标为 16：
 空库先建立原始基线，已有库先检查已应用的版本和校验和，再顺序执行追加迁移；
 重复执行仍核对布局与校验和。bootstrap 只允许空账户库，须在启动守护进程前执行。
 守护进程不会隐式迁移数据库。
@@ -152,7 +154,7 @@ CI 另在一次性 Linux 主机运行 `tests/oci.rs`：真实 containerd + Rust/
 
 托管 CI 容量低于规范的生产内核预留，因此 OCI 组件测试使用小的实际容器 cgroup 和独立测试数据库中的合成节点预算；生产 `xelabd` 没有绕过预留门槛的开关。它验证真实插件执行、HTTPS/CLI 和控制面逻辑，不等价于合规容量宿主上的完整 daemon 启动、4C16G 保留量在持续压力下的有效性、长期负载或灾备验收。
 
-发布前补齐合规宿主容量验收；后续按 M2 存储与可恢复运行、M3 Skill/OAuth/WebUI、M4–M6 通信/自动化/生态顺序演进。身份求值和全局授权写锁优先保证正确性，大账户树下的吞吐须实测再优化。
+独立 WebUI 整体门禁包含实际浏览器/OCI、两实例真实 CPU/内存/PID cgroup 读数、撤权账本、停用后 CLI 与同进程核心组件重启；尚未通过不能当作 daemon 重执行或独立宿主恢复证据。真实 AWS 按维护者指令 DEFERRED；正式 RUN-03、独立宿主及完整格式迁移验收保留工具和门禁，不能用合成预算代替。身份求值和全局授权写锁优先保证正确性，大账户树下的吞吐须实测再优化。
 
 
 
@@ -162,7 +164,7 @@ CI 另在一次性 Linux 主机运行 `tests/oci.rs`：真实 containerd + Rust/
 - 自授 Grant 证明签发权限时，忽略同账户其他非引导自授绑定，只使用独立来源（外部 Grant、父级继承或初始 Owner）。这些自授绑定仍在最外层保留权限/来源记录；撤销独立来源后不能互相维持权限。此优化针对同账户自授，其他来源图仍受现有深度/路径边界限制。
 - 控制器启用与停用清理分别保存 `(created_at,id)` 游标与上界，每轮各最多 16 项，并在项间检查 250 ms 时间片。Probe 按实例代次复用、分批回收；已清理禁用记录不反复协调。完整行为、回归与单项延迟限制见 [Controller 稳定化](../../docs/implementation/m1-acceptance.md#controller-稳定化pr-4-遗留项)。
 
-升级前备份并停机，确认没有未完成任务，执行上面的 `--target 15` 后再启动。
+升级前备份并停机，确认没有未完成任务，执行上面的 `--target 16` 后再启动。
 旧二进制拒绝不匹配的元数据版本，不能直接回退；原生快照恢复同样要求精确布局。
 v1 已有的凭证/账户派生调用继续计入预算；旧版本未记录的实际 Grant 来源无法事后精确重建，因此已有受此漏洞影响的限次来源 Key 应在升级时撤销后重新签发，不把旧账本当成完整历史计费证据。v7 持久备份任务见 [备份任务记录](../../docs/implementation/m2-backup-jobs.md)，v8 新卷恢复和切换见 [恢复实现](../../docs/implementation/m2-restores.md)，v9 元数据快照、启动门禁与权限重置见 [离线恢复组件](../../docs/implementation/m2-platform-recovery.md)。
 v10–11 部署重建与卷克隆见[部署重建实现](../../docs/implementation/m2-deployment-upgrades.md)，
@@ -170,6 +172,7 @@ v12 格式初始化见[初始化监督器](../../docs/implementation/m2-schema-b
 v13 格式备份登记见[登记组件](../../docs/implementation/m2-format-backups.md)。
 v14 为恢复后的历史用户提供[维护窗口重新激活](../../docs/implementation/m2-recovered-accounts.md)，
 需要实际宿主 root、当前恢复 Owner 凭证和明确的目标修订；不恢复旧授权。
+v15 保存[原始 HTTP 契约与调用绑定](../../docs/implementation/m3-http-provenance.md)，v16 保存[OAuth/UI 状态](../../docs/implementation/m3-oauth-ui.md)；恢复仍撤销旧凭证、Client 和信任，历史记录不能复活权限。
 已验证的业务格式可随认证数据进行[整体备份/恢复](../../docs/implementation/m2-platform-formats.md)，保留逻辑卷和历史格式绑定；恢复仍禁用部署并撤销旧信任，不自动迁移或重新授权。
 内部[格式变更执行器](../../docs/implementation/m2-format-transitions.md)已经接通，
 正式备份下的完整迁移与故障验收尚未完成，公开版本化制品安装入口仍关闭。

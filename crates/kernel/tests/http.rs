@@ -37,6 +37,9 @@ use xelab_kernel::{
     tls,
 };
 
+#[path = "http_skill_profiles/mod.rs"]
+mod skill_profiles;
+
 const CORE_HOST: &str = "kernel.example.org:8443";
 const ECHO: &str = "/plugins/org.xelab.http-echo/echo";
 const HOLD: &str = "/plugins/org.xelab.http-echo/hold";
@@ -740,6 +743,16 @@ async fn signed_http_and_static_gateway_use_real_oci_and_shared_broker() {
     .await;
     assert_eq!(registered.0, 201, "{}", registered.1);
     let skill = registered.1["id"].as_str().unwrap().to_owned();
+    let streamed_skill = skill_profiles::fixed_methods_and_stream(
+        &router,
+        &db,
+        &token,
+        &manifest,
+        &installed,
+        &deployment,
+    )
+    .await;
+
     let skill_params = [("skill_id", skill.clone())];
     let input =
         json!({"input":{"message":"HTTP Skill"},"timeout_ms":10000,"idempotency_key":"业务🔑"});
@@ -1021,6 +1034,15 @@ async fn signed_http_and_static_gateway_use_real_oci_and_shared_broker() {
     .await;
     assert_eq!(after_restart.0, 200, "{}", after_restart.1);
     assert_eq!(after_restart.1["skill_id"], skill);
+    skill_profiles::after_restart_and_live_revoke(
+        &router,
+        &db,
+        &token,
+        owner,
+        &streamed_skill,
+        &deployment,
+    )
+    .await;
     enabled(&router, &deployment, &token, false, "http-finish-only").await;
     let (mixed, _, mixed_deployment) = install(
         &router,
@@ -1251,5 +1273,5 @@ async fn signed_http_and_static_gateway_use_real_oci_and_shared_broker() {
     app.shutdown.store(true, Ordering::SeqCst);
     worker.abort();
     let _ = worker.await;
-    println!("HTTP-OCI: signed HTTP-only readiness, JSON Skill, direct HTTP, static origin, SSE, revocation, restart and mixed physical slots passed");
+    println!("HTTP-OCI: signed HTTP-only readiness, fixed GET/PUT/PATCH/DELETE Skill, JSON/streaming Skill, direct HTTP, static origin, SSE, original-authority revocation, restart and mixed physical slots passed");
 }

@@ -558,6 +558,7 @@ async fn authorize_delivery_inner(
         .await?;
     ctx.browser_origin = browser_origin.map(str::to_owned);
     crate::broker::check_skill_authority(&transaction, &ctx, call).await?;
+    crate::broker::check_http_approval(&transaction, app, call).await?;
     let status = transaction
         .query_one("SELECT deadline_at,error FROM calls WHERE id=$1", &[&call])
         .await?;
