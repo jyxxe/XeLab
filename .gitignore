@@ -15,3 +15,6 @@ __pycache__/
 /examples/generated-schema/
 /examples/generated-schema-upgrade/
 /examples/generated-schema-transition/
+/examples/generated-schema-crash/
+/examples/generated-aws-source/
+/examples/generated-aws-target/

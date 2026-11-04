@@ -27,7 +27,7 @@ impl Drop for WithheldKey {
     }
 }
 
-async fn terminal(f: &Fixture, operation: Uuid, expected: &str) -> Value {
+pub(super) async fn terminal(f: &Fixture, operation: Uuid, expected: &str) -> Value {
     for _ in 0..180 {
         let response = f
             .api(
@@ -48,7 +48,7 @@ async fn terminal(f: &Fixture, operation: Uuid, expected: &str) -> Value {
     }
     panic!("schema operation did not settle");
 }
-async fn current(f: &Fixture, deployment: Uuid) -> Value {
+pub(super) async fn current(f: &Fixture, deployment: Uuid) -> Value {
     let response = f
         .api(
             "getDeployment",
@@ -62,13 +62,13 @@ async fn current(f: &Fixture, deployment: Uuid) -> Value {
     assert_eq!(response.0, 200, "{}", response.1);
     response.1
 }
-async fn volume(f: &Fixture, key: &str) -> Uuid {
+pub(super) async fn volume(f: &Fixture, key: &str) -> Uuid {
     let created = f.api("createVolume",None,json!({"name":"data","capacity_bytes":8388608,"access":"single_writer","scope":"deployment"}),key,None,None).await;
     assert_eq!(created.0, 202, "{}", created.1);
     f.finish(&created.1).await;
     created.1["resource_id"].as_str().unwrap().parse().unwrap()
 }
-async fn data_path(f: &Fixture, volume: Uuid) -> std::path::PathBuf {
+pub(super) async fn data_path(f: &Fixture, volume: Uuid) -> std::path::PathBuf {
     let project: i32 = f
         .app
         .db
@@ -82,12 +82,30 @@ async fn data_path(f: &Fixture, volume: Uuid) -> std::path::PathBuf {
         .await
         .unwrap()
         .get(0);
-    ProjectStore::open(&f.app.config.root().join("volumes"))
-        .unwrap()
-        .data_path(volume, project as u32)
-        .unwrap()
+    // Observers can race the real allocator's exclusive backend lease. Wait
+    // only for that exact contention; never bypass path/quota validation or
+    // hide other storage failures behind a retry.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match ProjectStore::open(&f.app.config.root().join("volumes")) {
+            Ok(store) => return store.data_path(volume, project as u32).unwrap(),
+            Err(error)
+                if error.code == "STATE_CONFLICT"
+                    && error.message == "Storage backend is already in use"
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(error) => panic!("validated test data path unavailable: {error}"),
+        }
+    }
 }
-async fn create_deployment(f: &Fixture, installation: Uuid, volume: Uuid, key: &str) -> Uuid {
+pub(super) async fn create_deployment(
+    f: &Fixture,
+    installation: Uuid,
+    volume: Uuid,
+    key: &str,
+) -> Uuid {
     let created = f.api("createDeployment",None,json!({"installation_id":installation,"display_name":"schema initialization acceptance","enabled":false,"replicas":1,"limits":{"cpu_millis":100,"memory_bytes":134217728,"ephemeral_bytes":1048576,"pids":64},"config":{},"volume_ids":[volume]}),key,None,None).await;
     assert_eq!(created.0, 202, "{}", created.1);
     let deployment: Uuid = created.1["resource_id"].as_str().unwrap().parse().unwrap();
@@ -105,7 +123,7 @@ async fn create_deployment(f: &Fixture, installation: Uuid, volume: Uuid, key: &
     assert_eq!(approved.0, 200, "{}", approved.1);
     deployment
 }
-async fn enable(f: &Fixture, deployment: Uuid, key: &str) -> (Uuid, i64) {
+pub(super) async fn enable(f: &Fixture, deployment: Uuid, key: &str) -> (Uuid, i64) {
     let before = current(f, deployment).await;
     let revision = before["revision"].as_i64().unwrap();
     let response = f

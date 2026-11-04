@@ -98,6 +98,33 @@ class MigrationRpc(unittest.TestCase):
             call(request, timeout=5)
         self.assertEqual(failure.exception.code(), code)
 
+    def test_known_initialize_with_image_scratch_directory_but_no_scratch_mount(self):
+        self.server.stop(0).wait()
+        builder_path = pathlib.Path(__file__).resolve().parents[1] / "echo" / "build_artifact.py"
+        spec = importlib.util.spec_from_file_location("initialization_probe_builder", builder_path)
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        builder.build(self.root / "artifact", str(uuid.uuid4()), implementation="python",
+                      volume_access="rw", data_schema="1", migration_pause_after_initialize=True)
+        self.start()
+        client = lifecycle.PluginLifecycleStub(self.channel(self.kernel_identity))
+        instance = str(uuid.uuid4())
+        request = life.InitializeRequest(context=self.context("initialize"), deployment_id=self.deployment,
+                                         instance_id=instance, generation=7, config_json=b"{}",
+                                         config_digest="sha256:" + hashlib.sha256(b"{}").hexdigest(), approval_revision=1)
+        # The image retains a plain scratch directory after the actual private
+        # mount is detached. Known activation must not try writing into it.
+        os.chmod(self.scratch, 0o500)
+        try:
+            with patch("sys.argv", ["server.py", "--migration-pause-after-initialize"]), patch.dict(os.environ, {"XELAB_INSTANCE_ID": instance}):
+                response = client.Initialize(request, timeout=5)
+        finally:
+            os.chmod(self.scratch, 0o700)
+        self.assertTrue(response.initialized)
+        self.assertEqual(response.observed_generation, 7)
+        self.assertEqual((self.data / "store.json").read_bytes(), self.before)
+        self.assertEqual(list(self.scratch.iterdir()), [])
+
     def test_real_tls_plan_ambiguous_apply_restart_and_actual_disk_verification(self):
         plan_request = migration.PlanMigrationRequest(context=self.context("plan"), deployment_id=self.deployment, source_schema="1", target_schema="2")
         other = migration_service.DataMigrationStub(self.channel(self.other_identity))
@@ -132,6 +159,7 @@ class MigrationRpc(unittest.TestCase):
         self.refused(self.client.Apply, wrong, grpc.StatusCode.FAILED_PRECONDITION)
         with patch("sys.argv", ["server.py", "--migration-fail-after-write"]):
             self.refused(self.client.Apply, apply, grpc.StatusCode.UNAVAILABLE)
+        self.assertEqual(read(self.scratch / "apply-attempts.json")[1], {"plan_id": plan.plan_id, "count": 1})
         self.assertEqual(read(self.data / "store.json")[1]["schema"], "2")
         self.server.stop(0).wait()
         self.start()  # Fresh Python service state, same persisted private files.
