@@ -131,7 +131,7 @@ Python 参考插件 12 项测试及 HTTP-only/混合两个实际打包探针通�
 双层授权拒绝、JSON/SSE、精确撤权失败、跨部署 owner 隔离、缺少冻结上下文拒绝，
 以及声明两槽的两路实际请求、第三路核心 503 且无新增 Call/计费、成功后槽释放。
 此前四路 debug 组件试验有实际 deadline 失败，不能计为压力或容量通过；
-签名参考制品与真实 OCI 四槽混合 HTTP/RPC 场景保持不变，尚待 CI 执行。
+签名参考制品与真实 OCI 四槽混合 HTTP/RPC 场景保持不变，已在 #43 的真实 OCI 阶段通过。
 原 13 项安全/组件场景已分别实际通过（串行 11 项与修正夹具后的 2 项），
 包括 PG 排队授权写入者、Grant/签发账户跨账本等待到期、原始有效替代来源继续计费，
 以及冻结上下文排除过期未计费来源。测试组规则保留签发 Key 的原始到期上限，
@@ -143,6 +143,10 @@ Python 参考插件 12 项测试及 HTTP-only/混合两个实际打包探针通�
 其余 4 项归档/克隆失败来自本地主机 overlay 目录属性列表的长度/读取不一致。
 保持相同源码、路径及严格检查，在隔离非特权容器真实 tmpfs /tmp 上，
 归档 2 项及克隆 3 项全部通过；这不等于原宿主完整 workspace 通过。
-后续 integration 25 项通过；真实内核 OCI、正式 PR/最终 main CI 仍待最终验证。
+后续 integration 25 项通过。[Draft #43](https://github.com/jyxxe/XeLab/pull/43)
+的 [c537bef CI](https://github.com/jyxxe/XeLab/actions/runs/41841936407) 实际 HTTP/static OCI、
+旧 OCI 生命周期和 XFS 卷/进程恢复通过；后续全平台恢复业务测试因夹具 Host
+仍为示例域名而失败。已改用实际恢复配置的 public_origin，不放宽生产 Host 检查；
+该修正的完整 CI 与最终 main CI 仍须通过。
 这些组件结果不替代真实 OCI、浏览器或生产验收。
 AWS/独立宿主与 RUN-03 继续按[持续进度](m3-progress.md)单独待验收。
