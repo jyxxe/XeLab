@@ -113,7 +113,7 @@ impl Auth {
         crate::db::auth_lock(c, false).await?;
         let r = c
             .query_opt(
-                "SELECT owner_id FROM credentials WHERE id=$1 AND kind IN ('session','api_key')",
+                "SELECT owner_id FROM credentials WHERE id=$1 AND kind IN ('session','api_key','oauth_access')",
                 &[&credential],
             )
             .await?
@@ -407,7 +407,9 @@ pub(crate) async fn validate_sources(
                 return Err(Error::credential());
             }
             let kind: String = r.get("kind");
-            if !matches!(kind.as_str(), "session" | "api_key") {
+            if kind == "oauth_access" {
+                crate::oauth::binding(c, id).await?;
+            } else if !matches!(kind.as_str(), "session" | "api_key") {
                 return Err(Error::credential());
             }
             pending.push((false, r.get("owner_id")));

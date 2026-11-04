@@ -153,6 +153,31 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
         }
         match row.get::<_, String>("kind").as_str() {
             "session" => {}
+            "oauth_access" => {
+                let binding = crate::oauth::binding(self.c, credential).await?;
+                paths = self
+                    .freeze(
+                        paths,
+                        row.get::<_, Option<Value>>("maximum_rules")
+                            .as_ref()
+                            .ok_or_else(Error::credential)?,
+                        None,
+                        Some(credential),
+                    )
+                    .await?;
+                for ceiling in [&binding.maximum_rules, &binding.client_maximum_rules] {
+                    let caps: Vec<Path> = ceiling
+                        .as_array()
+                        .ok_or_else(Error::credential)?
+                        .iter()
+                        .map(|rule| Path {
+                            rule: rule.clone(),
+                            sources: BTreeSet::new(),
+                        })
+                        .collect();
+                    paths = self.intersection(&paths, &caps).await?;
+                }
+            }
             "api_key" => match row.get::<_, Option<String>>("inheritance_mode").as_deref() {
                 Some("follow_parent") => {}
                 Some("selected" | "all_snapshot") => {
@@ -636,6 +661,7 @@ pub async fn resource_owner(c: &impl GenericClient, kind: &str, id: &str) -> Res
     let sql=match kind {
         "account"=>"SELECT id FROM accounts WHERE id::text=$1",
         "group"=>"SELECT owner_id FROM permission_groups WHERE id::text=$1",
+        "client"=>"SELECT created_by FROM clients WHERE id::text=$1",
         "credential"=>"SELECT owner_id FROM credentials WHERE id::text=$1",
         "deployment"=>"SELECT owner_id FROM deployments WHERE id::text=$1",
         "instance"=>"SELECT d.owner_id FROM instances i JOIN deployments d ON d.id=i.deployment_id WHERE i.id::text=$1",
@@ -649,7 +675,9 @@ pub async fn resource_owner(c: &impl GenericClient, kind: &str, id: &str) -> Res
         "secret"=>"SELECT owner_id FROM secrets WHERE id::text=$1",
         _=>return Ok(None),
     };
-    Ok(c.query_opt(sql, &[&id]).await?.map(|r| r.get(0)))
+    Ok(c.query_opt(sql, &[&id])
+        .await?
+        .and_then(|r| r.get::<_, Option<Uuid>>(0)))
 }
 
 pub fn validate_conditions(v: &Value) -> Result<()> {

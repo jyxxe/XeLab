@@ -476,7 +476,7 @@ async fn issuing_key(c: &impl GenericClient, ctx: &Context) -> Result<Option<Uui
         )
         .await?
         .get(0);
-    Ok((kind == "api_key").then_some(ctx.credential))
+    Ok(matches!(kind.as_str(), "api_key" | "oauth_access").then_some(ctx.credential))
 }
 async fn bounded_expiry(
     c: &impl GenericClient,
@@ -719,6 +719,9 @@ pub async fn execute(
             };
             c.execute("UPDATE accounts SET display_name=$2,status=$3,expires_at=$4,revision=revision+1,updated_at=now() WHERE id=$1", &[&account,&name,&status,&expires]).await?;
             protect_owners(c).await?;
+            if status != "active" {
+                crate::oauth::revoke_account(c, account).await?;
+            }
             changed(c, account).await?;
             refresh_quotas(c).await?;
             if status == "active" {
@@ -812,6 +815,7 @@ pub async fn execute(
             auth.login_succeeded(account, ctx.peer)?;
             c.execute("UPDATE accounts SET password_hash=$2,revision=revision+1,updated_at=now() WHERE id=$1", &[&account,&hash]).await?;
             c.execute("UPDATE credentials SET status='revoked',revision=revision+1,updated_at=now() WHERE owner_id=$1 AND kind IN ('session','oauth_access','oauth_refresh') AND status='active'", &[&account]).await?;
+            crate::oauth::revoke_account(c, account).await?;
             changed(c, account).await?;
             Ok((Value::Null, 204))
         }
@@ -834,6 +838,9 @@ pub async fn execute(
                 .await?;
             etag(headers, row.get(1))?;
             c.execute("UPDATE credentials SET status='revoked',revision=revision+1,updated_at=now() WHERE id=$1", &[&key]).await?;
+            if name == "revokeSession" {
+                crate::oauth::revoke_session(c, key).await?;
+            }
             changed(c, row.get(0)).await?;
             refresh_quotas(c).await?;
             Ok((Value::Null, 204))

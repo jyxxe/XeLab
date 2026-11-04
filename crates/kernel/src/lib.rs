@@ -16,6 +16,7 @@ pub mod host;
 pub mod host_blobs;
 pub mod identity;
 pub mod migration_rpc;
+pub mod oauth;
 pub mod offline;
 pub mod policy;
 pub mod recovery;
@@ -41,3 +42,8 @@ pub const SPEC_VERSION: &str = "2.8.0";
 pub fn init_crypto() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
+
+#[cfg(test)]
+mod oauth_http;
+#[cfg(test)]
+mod trusted_auth;
