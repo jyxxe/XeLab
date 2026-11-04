@@ -242,6 +242,10 @@ async fn backup_metadata_http_and_hold_fences_use_current_authority() {
         "/api/platform/v1/backups".into(),
     ] {
         let mut request = Request::builder()
+            .header(
+                "host",
+                crate::plugin_http_gateway::core_authority(&f.app.config).unwrap(),
+            )
             .uri(path)
             .header("authorization", format!("Bearer {}", f.token))
             .body(Body::empty())

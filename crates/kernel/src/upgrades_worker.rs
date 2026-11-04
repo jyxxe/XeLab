@@ -112,6 +112,11 @@ async fn freeze(app: &App, row: &Row) -> Result<()> {
     for (instance, _) in &instances {
         tx.execute("UPDATE instances SET phase='stopped',health='unknown',runtime_id=NULL,revision=revision+1,updated_at=now() WHERE id=$1 AND deployment_id=$2",&[instance,&row.get::<_,Uuid>("deployment_id")]).await?;
         admission::release_stopped(&tx, *instance).await?;
+        tx.execute(
+            "DELETE FROM plugin_http_requests WHERE instance_id=$1",
+            &[instance],
+        )
+        .await?;
         crate::volumes::release_stopped(&tx, Some(*instance)).await?;
     }
     volume_group::freeze(&tx, operation).await?;
@@ -165,7 +170,16 @@ pub(crate) async fn artifact(app: &App, target: &Value) -> Result<Artifact> {
         ));
     }
     artifact::validate_runtime_profile(&manifest)?;
+    let c = app.db.connect().await?;
+    let http_contract = crate::http_contracts::verify_image(
+        &c,
+        crate::contracts::id(target, "id")?,
+        &manifest,
+        &root,
+    )
+    .await?;
     Ok(Artifact {
+        http_contract,
         image: image.to_owned(),
         image_digest: digest.to_owned(),
         manifest_digest,
@@ -646,6 +660,11 @@ async fn fail_stopped(
     for (instance, _) in &instances {
         tx.execute("UPDATE instances SET phase='stopped',runtime_id=NULL,health='unknown',revision=revision+1,updated_at=now() WHERE id=$1 AND deployment_id=$2",&[instance,&deployment]).await?;
         admission::release_stopped(&tx, *instance).await?;
+        tx.execute(
+            "DELETE FROM plugin_http_requests WHERE instance_id=$1",
+            &[instance],
+        )
+        .await?;
         crate::volumes::release_stopped(&tx, Some(*instance)).await?;
     }
     volume_group::failed(&tx, operation).await?;

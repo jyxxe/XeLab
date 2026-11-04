@@ -1,5 +1,7 @@
 //! Real PostgreSQL, HTTP and mTLS transport tests. Workload metadata here is a
 //! fixture; the dedicated OCI test separately verifies real container identity.
+#[path = "support/http_host.rs"]
+mod http_host;
 use axum::{
     body::{to_bytes, Body},
     extract::ConnectInfo,
@@ -139,6 +141,10 @@ impl Fixture {
             path = path.replace(&format!("{{{k}}}"), &v.to_string());
         }
         let mut builder = Request::builder()
+            .header(
+                "host",
+                http_host::authority(Some(self.app.config.text("server", "public_origin"))),
+            )
             .method(method.to_uppercase().as_str())
             .uri(path)
             .header(

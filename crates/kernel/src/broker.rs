@@ -10,6 +10,11 @@ use crate::{
 use serde_json::{json, Value};
 use std::{net::IpAddr, time::Duration};
 use uuid::Uuid;
+#[path = "broker_http.rs"]
+mod http;
+pub(crate) use http::check_route_approval as check_http_approval;
+pub use http::invoke as invoke_http;
+pub(crate) use http::target_resource as business_target;
 
 pub async fn invoke(
     app: &App,
@@ -89,6 +94,7 @@ async fn invoke_bounded(
     };
     let invocation = async {
         let mut effective = timeout;
+        let mut http_target = false;
         if let Some(skill) = skill {
             // This read can only narrow the time budget. It conveys no authority;
             // full signed binding and current authorization are checked inside
@@ -102,16 +108,40 @@ async fn invoke_bounded(
                 .await?;
             if let Some(row) = c
                 .query_opt(
-                    "SELECT definition->'maximum_timeout_ms' AS maximum FROM skills WHERE id=$1",
+                    "SELECT definition->'maximum_timeout_ms' AS maximum,definition->'target'->>'kind' AS target_kind FROM skills WHERE id=$1",
                     &[&skill],
                 )
                 .await?
             {
+                http_target = row.get::<_,Option<String>>("target_kind").as_deref()==Some("http");
                 let maximum: Option<Value> = row.get("maximum");
                 if let Some(maximum) = maximum.and_then(|v| unsigned(&v).ok()) {
                     effective = effective.min(maximum);
                 }
             }
+        }
+        if http_target {
+            if stream.is_some() {
+                return Err(Error::invalid(
+                    "HTTP Skills are nonstreaming fixed JSON operations",
+                ));
+            }
+            return tokio::time::timeout_at(
+                started + Duration::from_millis(effective),
+                http::execute_skill(
+                    app,
+                    token,
+                    peer,
+                    request_id,
+                    skill.ok_or_else(Error::denied)?,
+                    input,
+                    key,
+                    started,
+                    started + Duration::from_millis(effective),
+                ),
+            )
+            .await
+            .unwrap_or_else(|_| Err(expired()));
         }
         tokio::time::timeout_at(
             started + Duration::from_millis(effective),
@@ -338,53 +368,17 @@ async fn invoke_inner(
     if manifest["business_entry"] == "skill_required" && skill.is_none() {
         return Err(Error::denied());
     }
-    let active:i64=tx.query_one("SELECT count(*) FROM calls c WHERE provider_instance_id=$1 AND (state IN ('accepted','running') OR EXISTS(SELECT 1 FROM reservations r WHERE r.id=c.id AND r.kind='call' AND r.status<>'released'))",&[&instance]).await?.get(0);
-    let max = manifest["concurrency"]["max_active_requests"]
-        .as_i64()
-        .unwrap_or(1);
-    if active >= max {
-        return Err(Error::exhausted());
-    }
-    let accounts = account_chain(&tx, ctx.subject).await?;
-    let today = chrono::Utc::now().date_naive();
-    for account in &accounts {
-        let quota = tx
-            .query_one(
-                "SELECT * FROM quotas WHERE account_id=$1 FOR UPDATE",
-                &[account],
-            )
-            .await?;
-        let q: Value = quota.get("spec");
-        let daily = if quota.get::<_, chrono::NaiveDate>("daily_bucket") == today {
-            quota.get::<_, i64>("daily_calls_used")
-        } else {
-            0
-        };
-        if quota.get::<_, i64>("concurrent_calls_used")
-            >= q["maximum_concurrent_calls"].as_i64().unwrap()
-            || daily >= q["daily_calls"].as_i64().unwrap()
-        {
-            return Err(Error::exhausted());
-        }
-        tx.execute("UPDATE quotas SET concurrent_calls_used=concurrent_calls_used+1,daily_calls_used=$2::bigint+1,daily_bucket=$3 WHERE account_id=$1", &[account,&daily,&today]).await?;
-    }
-    let mut charged = crate::identity::call_sources(
+    let (accounts, charged) = reserve_business(
         &tx,
         &ctx,
+        instance,
+        &manifest,
+        "capability.invoke",
         &Resource::new("capability", format!("{name}@{version}"), None),
+        skill.as_ref(),
+        None,
     )
     .await?;
-    if let Some(skill) = &skill {
-        charged.extend(
-            crate::identity::call_sources_for(
-                &tx,
-                &ctx,
-                "skill.invoke",
-                &Resource::new("skill", skill.id, Some(skill.owner)),
-            )
-            .await?,
-        );
-    }
     let call = Uuid::new_v4();
     let timeout = input
         .get("timeout_ms")
@@ -558,22 +552,30 @@ async fn invoke_inner(
         }
         Ok(out)
     };
-    let monitored = async {
-        tokio::pin!(result);
+    let monitor = async {
+        if skill.is_none() {
+            std::future::pending::<()>().await;
+        }
         loop {
-            tokio::select! {
-                result = &mut result => return result,
-                _ = async { if let Some(stream) = stream { stream.closed().await } else { std::future::pending::<()>().await } } => {
-                    return Err(Error::new("CANCELED", "Skill stream consumer disconnected", axum::http::StatusCode::CONFLICT));
-                }
-                _ = tokio::time::sleep(Duration::from_millis(100)), if skill.is_some() => {
-                    // Revoke in-flight work promptly. Retain its physical slot until
-                    // the controller confirms process fencing, as for RPC timeouts.
-                    check_live_call(app, token, peer, request_id, call, instance, generation, deadline).await?;
-                }
-            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Retain the physical slot until process fencing on failure, as
+            // for RPC timeouts. This guard must be polled alongside execution:
+            // execution may own a short shared authorization transaction when
+            // a revocation writer queues ahead of this next reader.
+            check_live_call(
+                app, token, peer, request_id, call, instance, generation, deadline,
+            )
+            .await?;
         }
     };
+    let consumer = async {
+        if let Some(stream) = stream {
+            stream.closed().await
+        } else {
+            std::future::pending::<()>().await
+        }
+    };
+    let monitored = race_live_call(result, monitor, consumer);
     let mut result = tokio::time::timeout(remaining(), monitored)
         .await
         .unwrap_or_else(|_| {
@@ -614,6 +616,224 @@ async fn invoke_inner(
     if let Err(e) = check.await {
         result = Err(e);
     }
+    settle_business(
+        &tx,
+        &ctx,
+        call,
+        &accounts,
+        if skill.is_some() {
+            "skill.invoke"
+        } else {
+            "capability.invoke"
+        },
+        &result,
+    )
+    .await?;
+    tx.commit().await?;
+    skill_result(skill.as_ref(), result.map_err(|e| e.with_resource(call))?)
+}
+
+async fn race_live_call<T>(
+    execution: impl std::future::Future<Output = Result<T>>,
+    monitor: impl std::future::Future<Output = Result<T>>,
+    consumer: impl std::future::Future<Output = ()>,
+) -> Result<T> {
+    tokio::pin!(execution, monitor, consumer);
+    tokio::select! {
+        result = &mut execution => result,
+        result = &mut monitor => result,
+        _ = &mut consumer => Err(Error::new(
+            "CANCELED",
+            "Skill stream consumer disconnected",
+            axum::http::StatusCode::CONFLICT,
+        )),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn check_live_call(
+    app: &App,
+    token: &str,
+    peer: IpAddr,
+    request_id: Uuid,
+    call: Uuid,
+    instance: Uuid,
+    generation: i64,
+    deadline: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    crate::skill_streams::ensure_active(app)?;
+    let mut connection = app
+        .db
+        .connect_scoped(
+            (deadline - chrono::Utc::now())
+                .to_std()
+                .unwrap_or(Duration::ZERO),
+        )
+        .await?;
+    let check = connection.transaction().await?;
+    let current = app
+        .auth
+        .authenticate(&check, token, peer, request_id)
+        .await?;
+    check_skill_authority(&check, &current, call).await?;
+    http::check_route_approval(&check, app, call).await?;
+    let status = check
+        .query_one("SELECT state,error FROM calls WHERE id=$1", &[&call])
+        .await?;
+    if status
+        .get::<_, Option<Value>>("error")
+        .as_ref()
+        .is_some_and(|error| error["code"] == "CANCELED")
+    {
+        return Err(Error::new(
+            "CANCELED",
+            "Call cancellation was requested; physical outcome remains unknown",
+            axum::http::StatusCode::CONFLICT,
+        ));
+    }
+    if status.get::<_, String>("state") != "running" {
+        return Err(Error::conflict("Admitted call is no longer running"));
+    }
+    let live: bool = check.query_one("SELECT EXISTS(SELECT 1 FROM instances i JOIN deployments d ON d.id=i.deployment_id WHERE i.id=$1 AND i.generation=$2 AND i.phase='ready' AND d.archived_at IS NULL AND d.spec->>'enabled'='true')", &[&instance,&generation]).await?.get(0);
+    if !live {
+        return Err(Error::unavailable("Fixed Skill deployment is unavailable"));
+    }
+    check.commit().await?;
+    crate::skill_streams::ensure_active(app)?;
+    Ok(())
+}
+
+/// HostService reads authority from the admitted Call, not plugin JSON/headers.
+async fn check_skill_binding(
+    c: &(impl tokio_postgres::GenericClient + Sync),
+    ctx: &crate::auth::Context,
+    call: Uuid,
+) -> Result<()> {
+    http::check_binding(c, ctx, call).await?;
+    let row = c.query_opt(
+        "SELECT c.skill_id,c.skill_definition_digest,c.http_binding,d.installation_id FROM calls c LEFT JOIN instances i ON i.id=c.provider_instance_id LEFT JOIN deployments d ON d.id=i.deployment_id WHERE c.id=$1",
+        &[&call],
+    ).await?.ok_or_else(Error::denied)?;
+    if let Some(skill) = row.get::<_, Option<Uuid>>("skill_id") {
+        if row.get::<_, Option<Value>>("http_binding").is_some() {
+            return crate::skills::check_admitted_http_binding(
+                c,
+                skill,
+                &row.get::<_, Option<String>>("skill_definition_digest")
+                    .ok_or_else(Error::denied)?,
+                row.get::<_, Option<Uuid>>("installation_id")
+                    .ok_or_else(Error::denied)?,
+            )
+            .await;
+        }
+        let resolved = crate::skills::resolve_for_invoke(c, ctx, skill).await?;
+        if Some(resolved.definition_digest)
+            != row.get::<_, Option<String>>("skill_definition_digest")
+            || Some(resolved.installation_id) != row.get::<_, Option<Uuid>>("installation_id")
+        {
+            return Err(Error::denied());
+        }
+    }
+    Ok(())
+}
+
+fn skill_result(skill: Option<&crate::skills::ResolvedSkill>, call: Value) -> Result<Value> {
+    if let Some(skill) = skill {
+        let value = json!({"skill_id":skill.id,"skill_version":skill.definition["version"],"definition_digest":skill.definition_digest,"call":call});
+        validate("SkillCallResult", &value)?;
+        Ok(value)
+    } else {
+        Ok(call)
+    }
+}
+
+#[cfg(test)]
+#[path = "broker_schema_tests.rs"]
+mod schema_tests;
+
+/// One admission path for RPC and signed HTTP; all physical requests consume
+/// the same instance count and ancestor/source credential accounting.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn reserve_business(
+    tx: &tokio_postgres::Transaction<'_>,
+    ctx: &crate::auth::Context,
+    instance: Uuid,
+    manifest: &Value,
+    action: &str,
+    resource: &Resource,
+    skill: Option<&crate::skills::ResolvedSkill>,
+    authority: Option<&crate::auth::CurrentAuthority<'_, '_>>,
+) -> Result<(Vec<Uuid>, std::collections::BTreeSet<Uuid>)> {
+    let active:i64=tx.query_one("SELECT (SELECT count(*) FROM calls c WHERE provider_instance_id=$1 AND (state IN ('accepted','running') OR EXISTS(SELECT 1 FROM reservations r WHERE r.id=c.id AND r.kind='call' AND r.status<>'released')))+(SELECT count(*) FROM plugin_http_requests WHERE instance_id=$1)",&[&instance]).await?.get(0);
+    let max = manifest["concurrency"]["max_active_requests"]
+        .as_i64()
+        .unwrap_or(1);
+    if active >= max {
+        return Err(Error::exhausted());
+    }
+    let accounts = account_chain(tx, ctx.subject).await?;
+    let today = chrono::Utc::now().date_naive();
+    for account in &accounts {
+        let quota = tx
+            .query_one(
+                "SELECT * FROM quotas WHERE account_id=$1 FOR UPDATE",
+                &[account],
+            )
+            .await?;
+        let q: Value = quota.get("spec");
+        let daily = if quota.get::<_, chrono::NaiveDate>("daily_bucket") == today {
+            quota.get::<_, i64>("daily_calls_used")
+        } else {
+            0
+        };
+        if quota.get::<_, i64>("concurrent_calls_used")
+            >= q["maximum_concurrent_calls"].as_i64().unwrap()
+            || daily >= q["daily_calls"].as_i64().unwrap()
+        {
+            return Err(Error::exhausted());
+        }
+        tx.execute("UPDATE quotas SET concurrent_calls_used=concurrent_calls_used+1,daily_calls_used=$2::bigint+1,daily_bucket=$3 WHERE account_id=$1", &[account,&daily,&today]).await?;
+    }
+    let mut charged = if let Some(authority) = authority {
+        crate::identity::call_sources_from_paths(
+            tx,
+            ctx,
+            action,
+            resource,
+            authority.paths(tx, ctx, resource)?.to_vec(),
+        )
+        .await?
+    } else {
+        crate::identity::call_sources_for(tx, ctx, action, resource).await?
+    };
+    if let Some(skill) = skill {
+        let resource = Resource::new("skill", skill.id, Some(skill.owner));
+        charged.extend(if let Some(authority) = authority {
+            crate::identity::call_sources_from_paths(
+                tx,
+                ctx,
+                "skill.invoke",
+                &resource,
+                authority.paths(tx, ctx, &resource)?.to_vec(),
+            )
+            .await?
+        } else {
+            crate::identity::call_sources_for(tx, ctx, "skill.invoke", &resource).await?
+        });
+    }
+    Ok((accounts, charged))
+}
+
+/// A transport failure never proves physical completion. Only confirmed results
+/// release the shared reservation; Controller recovery fences unknown work.
+pub(crate) async fn settle_business(
+    tx: &(impl tokio_postgres::GenericClient + Sync),
+    ctx: &crate::auth::Context,
+    call: Uuid,
+    accounts: &[Uuid],
+    action: &str,
+    result: &Result<Value>,
+) -> Result<()> {
     let (state, value, error) = match &result {
         Ok(v) => ("succeeded", Some(v.clone()), None),
         Err(e) => ("unknown", None, Some(e.detail())),
@@ -650,7 +870,7 @@ async fn invoke_inner(
             &[&call],
         )
         .await?;
-        for account in &accounts {
+        for account in accounts {
             tx.execute("UPDATE quotas SET concurrent_calls_used=greatest(0,concurrent_calls_used-1) WHERE account_id=$1", &[account]).await?;
         }
     }
@@ -661,15 +881,11 @@ async fn invoke_inner(
     .await?;
     tx.execute("UPDATE execution_delegations SET status='revoked' WHERE id IN(SELECT delegation_id FROM calls WHERE id=$1)", &[&call]).await?;
     db::audit(
-        &tx,
+        tx,
         ctx.subject,
         Some(ctx.credential),
-        request_id,
-        if skill.is_some() {
-            "skill.invoke"
-        } else {
-            "capability.invoke"
-        },
+        ctx.request,
+        action,
         &Resource::new("call", call, Some(ctx.subject)).json(),
         if result.is_ok() {
             "succeeded"
@@ -683,95 +899,25 @@ async fn invoke_inner(
         },
     )
     .await?;
-    tx.commit().await?;
-    skill_result(skill.as_ref(), result.map_err(|e| e.with_resource(call))?)
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn check_live_call(
-    app: &App,
-    token: &str,
-    peer: IpAddr,
-    request_id: Uuid,
-    call: Uuid,
-    instance: Uuid,
-    generation: i64,
-    deadline: chrono::DateTime<chrono::Utc>,
-) -> Result<()> {
-    crate::skill_streams::ensure_active(app)?;
-    let mut connection = app
-        .db
-        .connect_scoped(
-            (deadline - chrono::Utc::now())
-                .to_std()
-                .unwrap_or(Duration::ZERO),
-        )
-        .await?;
-    let check = connection.transaction().await?;
-    let current = app
-        .auth
-        .authenticate(&check, token, peer, request_id)
-        .await?;
-    check_skill_authority(&check, &current, call).await?;
-    crate::host_blobs::check_call_sources(&check, &current, call).await?;
-    let status = check
-        .query_one("SELECT state,error FROM calls WHERE id=$1", &[&call])
-        .await?;
-    if status
-        .get::<_, Option<Value>>("error")
-        .as_ref()
-        .is_some_and(|error| error["code"] == "CANCELED")
-    {
-        return Err(Error::new(
-            "CANCELED",
-            "Call cancellation was requested; physical outcome remains unknown",
-            axum::http::StatusCode::CONFLICT,
-        ));
-    }
-    if status.get::<_, String>("state") != "running" {
-        return Err(Error::conflict("Admitted call is no longer running"));
-    }
-    let live: bool = check.query_one("SELECT EXISTS(SELECT 1 FROM instances i JOIN deployments d ON d.id=i.deployment_id WHERE i.id=$1 AND i.generation=$2 AND i.phase='ready' AND d.archived_at IS NULL AND d.spec->>'enabled'='true')", &[&instance,&generation]).await?.get(0);
-    if !live {
-        return Err(Error::unavailable("Fixed Skill deployment is unavailable"));
-    }
-    check.commit().await?;
-    crate::skill_streams::ensure_active(app)?;
     Ok(())
 }
 
-/// HostService reads authority from the admitted Call, not plugin JSON/headers.
+#[cfg(test)]
+#[path = "broker_http_tests.rs"]
+mod http_component_tests;
+
+/// Mandatory combined gate for admitted business delivery and HostService use.
+/// Metadata-only checks are private; no HTTP caller can omit original/current
+/// frozen proof validation, including calls with no Blob delegation context.
 pub(crate) async fn check_skill_authority(
     c: &(impl tokio_postgres::GenericClient + Sync),
     ctx: &crate::auth::Context,
     call: Uuid,
 ) -> Result<()> {
-    let row = c.query_opt(
-        "SELECT c.skill_id,c.skill_definition_digest,d.installation_id FROM calls c LEFT JOIN instances i ON i.id=c.provider_instance_id LEFT JOIN deployments d ON d.id=i.deployment_id WHERE c.id=$1",
-        &[&call],
-    ).await?.ok_or_else(Error::denied)?;
-    if let Some(skill) = row.get::<_, Option<Uuid>>("skill_id") {
-        let resolved = crate::skills::resolve_for_invoke(c, ctx, skill).await?;
-        if Some(resolved.definition_digest)
-            != row.get::<_, Option<String>>("skill_definition_digest")
-            || Some(resolved.installation_id) != row.get::<_, Option<Uuid>>("installation_id")
-        {
-            return Err(Error::denied());
-        }
-    }
-    Ok(())
-}
-
-fn skill_result(skill: Option<&crate::skills::ResolvedSkill>, call: Value) -> Result<Value> {
-    if let Some(skill) = skill {
-        let value = json!({"skill_id":skill.id,"skill_version":skill.definition["version"],"definition_digest":skill.definition_digest,"call":call});
-        validate("SkillCallResult", &value)?;
-        Ok(value)
-    } else {
-        Ok(call)
-    }
+    check_skill_binding(c, ctx, call).await?;
+    crate::host_blobs::check_call_sources(c, ctx, call).await
 }
 
 #[cfg(test)]
-#[path = "broker_schema_tests.rs"]
-mod schema_tests;
+#[path = "broker_monitor_tests.rs"]
+mod monitor_tests;

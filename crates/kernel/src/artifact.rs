@@ -19,6 +19,8 @@ pub struct Artifact {
     pub raw: Vec<u8>,
     pub image_digest: String,
     pub manifest_digest: String,
+    /// Original immutable OpenAPI member, validated after OCI/Manifest signature.
+    pub http_contract: Option<Vec<u8>>,
 }
 
 pub fn image_ref(image: &str) -> Result<&str> {
@@ -129,12 +131,22 @@ pub(crate) fn validate_runtime_profile(manifest: &Value) -> Result<()> {
 fn validate_profile_inner(manifest: &Value, allow_versioned: bool) -> Result<()> {
     validate("Manifest", manifest)?;
     let versioned = manifest["data_schema_version"] != "none";
-    for field in ["dependencies", "routes", "event_topics", "extension_points"] {
+    if manifest["routes"]
+        .as_array()
+        .is_some_and(|routes| routes.iter().any(|route| route["kind"] == "webui"))
+    {
+        return Err(Error::invalid(
+            "WebUI route admission requires the future client profile",
+        ));
+    }
+    for field in ["dependencies", "event_topics", "extension_points"] {
         if manifest
             .get(field)
             .is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))
         {
-            return Err(Error::invalid("This ordinary-plugin profile does not support dependencies, proxy rules, UI or extensions"));
+            return Err(Error::invalid(
+                "This ordinary-plugin profile does not support dependencies, UI or extensions",
+            ));
         }
     }
     if manifest
@@ -235,7 +247,34 @@ fn validate_profile_inner(manifest: &Value, allow_versioned: bool) -> Result<()>
             }
         }
     }
-    crate::skills::validate_candidates(manifest)?;
+    // HTTP candidates are checked against the signed OpenAPI member by inspect
+    // and subsequently against immutable stored bytes. Keep ordinary capability
+    // validation unchanged and reject all future target kinds.
+    let mut capability_manifest = manifest.clone();
+    if let Some(candidates) = capability_manifest
+        .get_mut("skills")
+        .and_then(Value::as_array_mut)
+    {
+        let mut versions = std::collections::HashSet::new();
+        for definition in candidates.iter() {
+            if definition["target"]["kind"] != "capability"
+                && definition["target"]["kind"] != "http"
+            {
+                return Err(Error::invalid(
+                    "Unsupported Skill target in the ordinary plugin profile",
+                ));
+            }
+            validate("SkillDefinition", definition)?;
+            if !versions.insert((
+                string(definition, "name")?.to_owned(),
+                string(definition, "version")?.to_owned(),
+            )) {
+                return Err(Error::invalid("Duplicate signed Skill name and version"));
+            }
+        }
+        candidates.retain(|definition| definition["target"]["kind"] == "capability");
+    }
+    crate::skills::validate_candidates(&capability_manifest)?;
     Ok(())
 }
 
@@ -262,6 +301,19 @@ impl Artifact {
             &raw,
         )?;
         validate_profile(&manifest)?;
+        let http_contract = if manifest["routes"]
+            .as_array()
+            .is_some_and(|routes| routes.iter().any(|route| route["kind"] == "http"))
+        {
+            Some(read_image_file(
+                &root,
+                "xelab/http/openapi.json",
+                crate::plugin_http::MAXIMUM_CONTRACT_BYTES,
+            )?)
+        } else {
+            None
+        };
+        crate::plugin_http::Registry::compile(&manifest, http_contract.as_deref())?;
         for cap in manifest["capabilities"].as_array().unwrap() {
             let name = string(&cap["contract"], "name")?;
             let version = string(&cap["contract"], "version")?;
@@ -298,6 +350,7 @@ impl Artifact {
             manifest,
             raw,
             image_digest,
+            http_contract,
         })
     }
     pub fn validate_deployment(&self, spec: &Value) -> Result<()> {

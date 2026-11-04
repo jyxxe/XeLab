@@ -4,7 +4,8 @@
 
 本页记录 M3-A 的首个实现子集，不能据此声明 M3-A 或整个 M3 已完成。
 实现复用现有 PostgreSQL、Identity/Authorizer、Broker、Controller、Runtime 和 mTLS；
-内部数据库仍为 Schema 14，不修改已发布 SQL、布局或迁移校验和。
+该子集首次交付使用 Schema 14；后续 [HTTP 集成](m3-http-provenance.md)追加至 Schema 15，
+不修改已发布 SQL 或迁移校验和。
 
 ## 实际操作与边界
 

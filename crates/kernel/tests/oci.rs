@@ -1,4 +1,6 @@
 //! Privileged, disposable-host component test. It never lowers daemon preflight limits.
+#[path = "support/http_host.rs"]
+mod http_host;
 use axum::{
     body::{to_bytes, Body},
     extract::ConnectInfo,
@@ -64,6 +66,7 @@ async fn api(
         path = path.replace(&format!("{{{name}}}"), value);
     }
     let mut req = Request::builder()
+        .header("host", http_host::authority(None))
         .method(method.as_str())
         .uri(path)
         .header("idempotency-key", key);
@@ -1017,12 +1020,26 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     .unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
+    // This real TLS listener has its own explicit trusted origin; the ordinary
+    // in-process fixture above continues to use the checked-in core origin.
+    let mut cli_value = app.config.value.clone();
+    cli_value["server"]["public_origin"] = json!(format!("https://{address}"));
+    cli_value["server"]["listen"] = json!(address.to_string());
+    let cli_config = Config::from_value(cli_value).unwrap();
+    let cli_app = Arc::new(App {
+        runtime: Runtime::new(cli_config.clone()),
+        config: cli_config,
+        db: app.db.clone(),
+        auth: app.auth.clone(),
+        leader: app.leader.clone(),
+        ready: AtomicBool::new(app.ready.load(Ordering::SeqCst)),
+        shutdown: AtomicBool::new(false),
+        blob_uploads: tokio::sync::Semaphore::new(4),
+    });
+    let cli_router = xelab_kernel::api::router(cli_app);
     let serve = tokio::spawn(
-        axum_server::from_tcp_rustls(listener, server_tls).serve(
-            router
-                .clone()
-                .into_make_service_with_connect_info::<SocketAddr>(),
-        ),
+        axum_server::from_tcp_rustls(listener, server_tls)
+            .serve(cli_router.into_make_service_with_connect_info::<SocketAddr>()),
     );
     let token_file = root.join("cli-token");
     fs::write(&token_file, token).unwrap();
@@ -1764,6 +1781,7 @@ async fn blob_http(
         path = path.replace("{blob_id}", id);
     }
     let mut request = Request::builder()
+        .header("host", http_host::authority(None))
         .method(method.as_str())
         .header("authorization", format!("Bearer {token}"));
     if operation == "uploadBlob" {
@@ -2658,8 +2676,20 @@ async fn ordinary_skill_stream_lifecycle(
     let key=api(router,"createApiKey",&[("account_id",owner.to_string())],Some(token),json!({"name":"live stream revocation","inheritance":{"mode":"selected","rules":rules},"conditions":{"expires_at":chrono::Utc::now()+chrono::Duration::days(1)}}),"stream-source-key",None).await;
     assert_eq!(key.0, 201, "{}", key.1);
     let caller = key.1["secret"].as_str().unwrap();
-    let revoked_input = json!({"input":{"message":"revoke actual stream","count":64,"delay_ms":1000},"timeout_ms":10000});
+    // This scenario proves revocation, not deadline expiry. Keep the request
+    // inside the signed Skill maximum while leaving enough time for the
+    // actual management transaction and the unchanged 10s delivery bound.
+    let revocation_budget_ms = 90000_u64;
+    assert!(
+        revocation_budget_ms
+            <= manifest["skills"][1]["maximum_timeout_ms"]
+                .as_u64()
+                .unwrap(),
+        "the revocation fixture cannot exceed the signed Skill maximum"
+    );
+    let revoked_input = json!({"input":{"message":"revoke actual stream","count":64,"delay_ms":1000},"timeout_ms":revocation_budget_ms});
     let old_process = stream_process(app, live_instance).await;
+    let revocation_started = std::time::Instant::now();
     let response = stream_skill_request(
         router,
         caller,
@@ -2690,6 +2720,15 @@ async fn ordinary_skill_stream_lifecycle(
         .unwrap()
         .parse::<Uuid>()
         .unwrap();
+    let accepted_elapsed = revocation_started.elapsed();
+    let call_deadline: chrono::DateTime<chrono::Utc> = c
+        .query_one(
+            "SELECT deadline_at FROM calls WHERE id=$1",
+            &[&revoked_call],
+        )
+        .await
+        .unwrap()
+        .get(0);
     let revoked = api(
         router,
         "revokeApiKey",
@@ -2704,18 +2743,56 @@ async fn ordinary_skill_stream_lifecycle(
     )
     .await;
     assert_eq!(revoked.0, 204, "{}", revoked.1);
+    let revocation_committed_at = chrono::Utc::now();
+    let remaining_ms = (call_deadline - revocation_committed_at).num_milliseconds();
+    println!(
+        "Skill revocation timing: elapsed_ms={} accepted_ms={} revoke_committed_at={} call_deadline={} remaining_ms={}",
+        revocation_started.elapsed().as_millis(),
+        accepted_elapsed.as_millis(),
+        revocation_committed_at,
+        call_deadline,
+        remaining_ms
+    );
+    assert!(
+        remaining_ms > 30000,
+        "revocation must leave more than 30s before the Call deadline for the 10s delivery check; elapsed={:?}, deadline={call_deadline}, revoked_at={revocation_committed_at}",
+        revocation_started.elapsed()
+    );
     let mut response_bytes = first.to_vec();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    let delivery = tokio::time::timeout(Duration::from_secs(10), async {
         while let Some(chunk) = stream.next().await {
             response_bytes.extend_from_slice(&chunk.unwrap());
         }
     })
-    .await
-    .unwrap();
+    .await;
     let events = parse_skill_events(std::str::from_utf8(&response_bytes).unwrap());
-    assert_eq!(events.len(), 2, "revocation rejects queued business output");
-    assert_eq!(events[1]["event"]["kind"], "failed");
-    assert_eq!(events[1]["event"]["payload"]["code"], "INVALID_CREDENTIAL");
+    let observed = c
+        .query_one(
+            "SELECT state,error FROM calls WHERE id=$1",
+            &[&revoked_call],
+        )
+        .await
+        .unwrap();
+    let diagnostic = format!(
+        "events={events:?}; stored_state={}; stored_error={:?}; elapsed={:?}; deadline={call_deadline}; revoked_at={revocation_committed_at}",
+        observed.get::<_, String>("state"),
+        observed.get::<_, Option<Value>>("error"),
+        revocation_started.elapsed()
+    );
+    assert!(
+        delivery.is_ok(),
+        "revocation delivery exceeded 10s: {diagnostic}"
+    );
+    assert_eq!(
+        events.len(),
+        2,
+        "revocation rejects queued business output: {diagnostic}"
+    );
+    assert_eq!(events[1]["event"]["kind"], "failed", "{diagnostic}");
+    assert_eq!(
+        events[1]["event"]["payload"]["code"], "INVALID_CREDENTIAL",
+        "{diagnostic}"
+    );
     live_instance = recovery
         .fence_and_ready(
             &[revoked_call],
@@ -2900,6 +2977,7 @@ async fn stream_skill_request(
     last_event: bool,
 ) -> axum::response::Response {
     let mut request = Request::builder()
+        .header("host", http_host::authority(None))
         .method("POST")
         .uri(format!("/api/platform/v1/skills/{skill}/calls:stream"))
         .header("authorization", format!("Bearer {token}"))

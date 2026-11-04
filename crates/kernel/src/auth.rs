@@ -44,6 +44,156 @@ pub struct Resource {
     pub owner: Option<Uuid>,
 }
 
+/// One current policy expansion under a specific transaction's authorization
+/// fence. This cannot outlive that transaction or be supplied by a request.
+pub(crate) struct CurrentAuthority<'transaction, 'client> {
+    transaction: &'transaction tokio_postgres::Transaction<'client>,
+    subject: Uuid,
+    credential: Uuid,
+    peer: IpAddr,
+    request: Uuid,
+    chain: Vec<Uuid>,
+    browser_origin: Option<String>,
+    paths: Vec<crate::policy::Path>,
+    rules: Value,
+    plugin_target: Option<(String, Option<Uuid>)>,
+}
+impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
+    pub(crate) async fn new(
+        transaction: &'transaction tokio_postgres::Transaction<'client>,
+        ctx: &Context,
+    ) -> Result<Self> {
+        db::auth_lock(transaction, false).await?;
+        let owner: Uuid = transaction
+            .query_one(
+                "SELECT owner_id FROM credentials WHERE id=$1",
+                &[&ctx.credential],
+            )
+            .await?
+            .get(0);
+        if owner != ctx.subject {
+            return Err(Error::credential());
+        }
+        let paths = crate::policy::Policy::for_context(transaction, ctx)
+            .credential(ctx.credential, 0)
+            .await?;
+        let rules = crate::policy::rules(&paths);
+        Ok(Self {
+            transaction,
+            subject: ctx.subject,
+            credential: ctx.credential,
+            peer: ctx.peer,
+            request: ctx.request,
+            chain: ctx.chain.clone(),
+            browser_origin: ctx.browser_origin.clone(),
+            paths,
+            rules,
+            plugin_target: None,
+        })
+    }
+    pub(crate) fn verify(
+        &self,
+        transaction: &tokio_postgres::Transaction<'_>,
+        ctx: &Context,
+    ) -> Result<()> {
+        if !std::ptr::eq(self.transaction, transaction)
+            || self.subject != ctx.subject
+            || self.credential != ctx.credential
+            || self.peer != ctx.peer
+            || self.request != ctx.request
+            || self.chain != ctx.chain
+            || self.browser_origin != ctx.browser_origin
+        {
+            return Err(Error::denied());
+        }
+        Ok(())
+    }
+    pub(crate) async fn revalidate(
+        &self,
+        transaction: &tokio_postgres::Transaction<'_>,
+        ctx: &Context,
+        saved: &[crate::policy::Path],
+    ) -> Result<Vec<crate::policy::Path>> {
+        self.verify(transaction, ctx)?;
+        crate::policy::Policy::for_context(transaction, ctx)
+            .revalidate_current(saved, &self.paths)
+            .await
+    }
+    pub(crate) fn bind_plugin(
+        &mut self,
+        transaction: &tokio_postgres::Transaction<'_>,
+        ctx: &Context,
+        resource: &Resource,
+    ) -> Result<()> {
+        self.verify(transaction, ctx)?;
+        if resource.kind != "plugin" {
+            return Err(Error::denied());
+        }
+        let target = (resource.id.clone(), resource.owner);
+        if self
+            .plugin_target
+            .as_ref()
+            .is_some_and(|current| current != &target)
+        {
+            return Err(Error::denied());
+        }
+        self.plugin_target = Some(target);
+        Ok(())
+    }
+    fn check_resource(&self, resource: &Resource) -> Result<()> {
+        if resource.kind == "plugin"
+            && self.plugin_target.as_ref() != Some(&(resource.id.clone(), resource.owner))
+        {
+            return Err(Error::denied());
+        }
+        Ok(())
+    }
+    pub(crate) fn require(
+        &self,
+        transaction: &tokio_postgres::Transaction<'_>,
+        ctx: &Context,
+        action: &str,
+        resource: &Resource,
+    ) -> Result<()> {
+        self.verify(transaction, ctx)?;
+        self.check_resource(resource)?;
+        if rules_allow(&self.rules, action, resource, ctx.peer) {
+            Ok(())
+        } else {
+            Err(Error::denied())
+        }
+    }
+    pub(crate) fn require_context(
+        &self,
+        ctx: &Context,
+        action: &str,
+        resource: &Resource,
+    ) -> Result<()> {
+        self.check_resource(resource)?;
+        if self.subject != ctx.subject
+            || self.credential != ctx.credential
+            || self.peer != ctx.peer
+            || self.request != ctx.request
+            || self.chain != ctx.chain
+            || self.browser_origin != ctx.browser_origin
+            || !rules_allow(&self.rules, action, resource, ctx.peer)
+        {
+            return Err(Error::denied());
+        }
+        Ok(())
+    }
+    pub(crate) fn paths(
+        &self,
+        transaction: &tokio_postgres::Transaction<'_>,
+        ctx: &Context,
+        resource: &Resource,
+    ) -> Result<&[crate::policy::Path]> {
+        self.verify(transaction, ctx)?;
+        self.check_resource(resource)?;
+        Ok(&self.paths)
+    }
+}
+
 impl Resource {
     pub fn new(kind: &str, id: impl ToString, owner: Option<Uuid>) -> Self {
         Self {
@@ -74,6 +224,20 @@ impl Auth {
             Hmac::<Sha256>::new_from_slice(&self.key).expect("HMAC accepts any key length");
         mac.update(token.as_bytes());
         mac.finalize().into_bytes().to_vec()
+    }
+    /// Browser CSRF proof, bound to one opaque session without exposing the
+    /// session's verification digest or creating a second authority token.
+    pub(crate) fn csrf_token(&self, session: &str) -> String {
+        URL_SAFE_NO_PAD.encode(self.token_digest(&format!("xelab-csrf-v1\n{session}")))
+    }
+    pub(crate) fn verify_csrf(&self, session: &str, proof: &str) -> Result<()> {
+        let signature = URL_SAFE_NO_PAD.decode(proof).map_err(|_| Error::denied())?;
+        if signature.len() != 32
+            || !self.verify_mac(&format!("xelab-csrf-v1\n{session}"), &signature)
+        {
+            return Err(Error::denied());
+        }
+        Ok(())
     }
     pub(crate) fn verify_mac(&self, value: &str, signature: &[u8]) -> bool {
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.key).expect("HMAC key");

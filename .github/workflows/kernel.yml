@@ -150,6 +150,24 @@ jobs:
           test -n "$digest"
           sudo ctr -n xelab-ci images tag docker.io/xelab-ci/host-blob:test "docker.io/xelab-ci/host-blob@$digest"
           echo "XELAB_TEST_HOST_BLOB_IMAGE=docker.io/xelab-ci/host-blob@$digest" >> "$GITHUB_ENV"
+          python3 examples/http/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001
+          docker build -t docker.io/xelab-ci/http:test -f examples/http/Dockerfile .
+          python3 examples/http/container_probe.py --image docker.io/xelab-ci/http:test
+          docker save docker.io/xelab-ci/http:test -o examples/http/generated/http.tar
+          sudo ctr -n xelab-ci images import examples/http/generated/http.tar
+          digest=$(sudo ctr -n xelab-ci images list | awk '$1=="docker.io/xelab-ci/http:test" {print $3}')
+          test -n "$digest"
+          sudo ctr -n xelab-ci images tag docker.io/xelab-ci/http:test "docker.io/xelab-ci/http@$digest"
+          echo "XELAB_TEST_HTTP_IMAGE=docker.io/xelab-ci/http@$digest" >> "$GITHUB_ENV"
+          python3 examples/http/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output examples/http/generated-mixed --plugin-version 2.0.0 --include-rpc
+          docker build -t docker.io/xelab-ci/http-mixed:test --build-arg ARTIFACT_DIR=examples/http/generated-mixed -f examples/http/Dockerfile .
+          python3 examples/http/container_probe.py --image docker.io/xelab-ci/http-mixed:test
+          docker save docker.io/xelab-ci/http-mixed:test -o examples/http/generated-mixed/http.tar
+          sudo ctr -n xelab-ci images import examples/http/generated-mixed/http.tar
+          digest=$(sudo ctr -n xelab-ci images list | awk '$1=="docker.io/xelab-ci/http-mixed:test" {print $3}')
+          test -n "$digest"
+          sudo ctr -n xelab-ci images tag docker.io/xelab-ci/http-mixed:test "docker.io/xelab-ci/http-mixed@$digest"
+          echo "XELAB_TEST_HTTP_MIXED_IMAGE=docker.io/xelab-ci/http-mixed@$digest" >> "$GITHUB_ENV"
       # Validate new archive/import behavior before the longer controller sweep.
       # The source daemon is read only; a second daemon owns a fresh content root.
       - name: Real OCI archive and cold content-store recovery
@@ -159,6 +177,16 @@ jobs:
           binaries=[p for p in glob.glob("target/debug/deps/image_archive-*") if os.path.isfile(p) and os.access(p,os.X_OK)]
           assert len(binaries)==1,binaries
           subprocess.run(["sudo","--preserve-env=XELAB_TEST_IMAGE,XELAB_TEST_PYTHON_IMAGE","env","XELAB_IMAGE_ARCHIVE_TEST=1",binaries[0],"--ignored","--nocapture"],check=True)
+          PYTEST
+      - name: Real signed HTTP and static OCI gateway
+        env:
+          XELAB_HTTP_OCI_TEST: "1"
+        run: |
+          python3 - <<'PYTEST'
+          import glob, os, subprocess
+          binaries=[p for p in glob.glob("target/debug/deps/http-*") if os.path.isfile(p) and os.access(p,os.X_OK)]
+          assert len(binaries)==1,binaries
+          subprocess.run(["sudo","--preserve-env=XELAB_TEST_DATABASE_URL,XELAB_TEST_HTTP_IMAGE,XELAB_TEST_HTTP_MIXED_IMAGE,XELAB_HTTP_OCI_TEST",binaries[0],"--ignored","--nocapture"],check=True)
           PYTEST
       - name: Real OCI API lifecycle and recovery
         env:
@@ -186,7 +214,9 @@ jobs:
           subprocess.run(["sudo","--preserve-env=XELAB_TEST_PLATFORM_SCHEMA_1_IMAGE,XELAB_TEST_PLATFORM_SCHEMA_2_IMAGE,XELAB_TEST_DATABASE_URL,XELAB_TEST_VOLUME_IMAGE,XELAB_TEST_VOLUME_UPGRADE_IMAGE,XELAB_TEST_VOLUME_FAILED_UPGRADE_IMAGE,XELAB_TEST_SCHEMA_IMAGE,XELAB_TEST_SCHEMA_UPGRADE_IMAGE,XELAB_TEST_SCHEMA_TRANSITION_IMAGE,XELAB_TEST_SCHEMA_CRASH_IMAGE,XELAB_TEST_S3_ENDPOINT,XELAB_PLATFORM_SOURCE_RECEIPT","env","XELAB_XFS_TEST=1","bash","tools/test-xfs.sh","--isolated-test-host",binaries[0],volumes[0],libraries[0]],check=True)
           PYTEST
       - name: Full workspace regression
-        run: cargo test --workspace --all-targets --locked
+        # Preserve each scenario's internal concurrency, without independent
+        # Argon/policy fixtures competing with signed deadline assertions.
+        run: cargo test --workspace --all-targets --locked -- --test-threads=1
       - name: Strict documentation validation
         run: |
           python3 -m venv /tmp/xelab-docs

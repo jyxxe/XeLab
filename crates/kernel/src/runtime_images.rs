@@ -73,6 +73,7 @@ async fn copy_bounded(
     input: &mut (impl AsyncRead + Unpin),
     out: &mut (impl AsyncWrite + Unpin),
     maximum: u64,
+    phase: &'static str,
 ) -> Result<(u64, String)> {
     let mut bytes = 0u64;
     let mut hash = Sha256::new();
@@ -80,7 +81,10 @@ async fn copy_bounded(
     // buffers off their stack-resident state, including in debug builds.
     let mut buffer = vec![0u8; BUFFER];
     loop {
-        let n = input.read(&mut buffer).await?;
+        let n = input
+            .read(&mut buffer)
+            .await
+            .map_err(|error| archive_io(error, phase, "read"))?;
         if n == 0 {
             break;
         }
@@ -88,11 +92,28 @@ async fn copy_bounded(
         if bytes > maximum {
             return Err(Error::exhausted());
         }
-        out.write_all(&buffer[..n]).await?;
+        out.write_all(&buffer[..n])
+            .await
+            .map_err(|error| archive_io(error, phase, "write"))?;
         hash.update(&buffer[..n]);
     }
-    out.flush().await?;
+    out.flush()
+        .await
+        .map_err(|error| archive_io(error, phase, "flush"))?;
     Ok((bytes, format!("sha256:{:x}", hash.finalize())))
+}
+fn archive_io(error: std::io::Error, phase: &'static str, operation: &'static str) -> Error {
+    // Keep the public error generic and omit command arguments, paths and
+    // environment. Internal diagnostics must distinguish e.g. a closed child
+    // pipe from a full staging filesystem before an operator retries recovery.
+    tracing::error!(
+        phase,
+        operation,
+        io_kind = ?error.kind(),
+        os_error = error.raw_os_error(),
+        "OCI archive I/O failed"
+    );
+    error.into()
 }
 impl Runtime {
     fn image_command(&self, args: &[String], input: Stdio) -> Result<Child> {
@@ -148,15 +169,14 @@ impl Runtime {
                 .stdout
                 .take()
                 .ok_or_else(|| Error::unavailable("Image export output is unavailable"))?;
-            let (bytes, sha256) =
-                copy_bounded(&mut stdout, file, maximum)
-                    .await
-                    .map_err(|mut error| {
-                        if error.code == "RESOURCE_EXHAUSTED" {
-                            error.message = "Image export exceeded its admitted byte limit";
-                        }
-                        error
-                    })?;
+            let (bytes, sha256) = copy_bounded(&mut stdout, file, maximum, "export archive")
+                .await
+                .map_err(|mut error| {
+                    if error.code == "RESOURCE_EXHAUSTED" {
+                        error.message = "Image export exceeded its admitted byte limit";
+                    }
+                    error
+                })?;
             if bytes == 0 || !child.wait().await?.success() {
                 return Err(Error::unavailable("Image export did not complete"));
             }
@@ -239,7 +259,13 @@ impl Runtime {
                 ));
             }
             file.rewind().await?;
-            let first = copy_bounded(file, &mut tokio::io::sink(), expected.bytes).await?;
+            let first = copy_bounded(
+                file,
+                &mut tokio::io::sink(),
+                expected.bytes,
+                "verify import archive digest",
+            )
+            .await?;
             if first != (expected.bytes, expected.sha256.clone())
                 || !same_file(&before, &file.metadata().await?)
             {
@@ -263,21 +289,34 @@ impl Runtime {
                 .ok_or_else(|| Error::unavailable("Image import output is unavailable"))?;
             let transfer = async {
                 let feed = async {
-                    let actual = copy_bounded(file, &mut stdin, expected.bytes).await?;
-                    stdin.shutdown().await?;
+                    let actual =
+                        copy_bounded(file, &mut stdin, expected.bytes, "feed import stdin").await?;
+                    stdin
+                        .shutdown()
+                        .await
+                        .map_err(|error| archive_io(error, "feed import stdin", "shutdown"))?;
                     drop(stdin);
                     Ok::<_, Error>(actual)
                 };
                 let receive = async {
                     let mut output = Vec::new();
-                    stdout.take(2097153).read_to_end(&mut output).await?;
+                    stdout
+                        .take(2097153)
+                        .read_to_end(&mut output)
+                        .await
+                        .map_err(|error| archive_io(error, "drain import stdout", "read"))?;
                     if output.len() > 2097152 {
                         return Err(Error::exhausted());
                     }
                     Ok::<_, Error>(())
                 };
                 let (actual, ()) = tokio::try_join!(feed, receive)?;
-                if !child.wait().await?.success() {
+                if !child
+                    .wait()
+                    .await
+                    .map_err(|error| archive_io(error, "finish import child", "wait"))?
+                    .success()
+                {
                     return Err(Error::unavailable("Image import did not complete"));
                 }
                 if actual != (expected.bytes, expected.sha256.clone())
@@ -332,7 +371,13 @@ impl Runtime {
                 .stdout
                 .take()
                 .ok_or_else(|| Error::unavailable("Restored content output is unavailable"))?;
-            let actual = copy_bounded(&mut stdout, &mut tokio::io::sink(), bytes).await?;
+            let actual = copy_bounded(
+                &mut stdout,
+                &mut tokio::io::sink(),
+                bytes,
+                "verify restored blob",
+            )
+            .await?;
             if !child.wait().await?.success() || actual != (bytes, digest) {
                 return Err(Error::conflict(
                     "Restored OCI content does not match its verified archive",
@@ -399,7 +444,13 @@ impl Runtime {
                 ));
             }
             file.rewind().await?;
-            let actual = copy_bounded(file, &mut tokio::io::sink(), expected.bytes).await?;
+            let actual = copy_bounded(
+                file,
+                &mut tokio::io::sink(),
+                expected.bytes,
+                "verify retained archive digest",
+            )
+            .await?;
             if actual != (expected.bytes, expected.sha256.clone()) {
                 return Err(Error::invalid("Retained OCI archive differs"));
             }
@@ -440,18 +491,26 @@ mod tests {
         assert!(references(&["example.test/x:latest".into()]).is_err());
         let input = vec![43u8; BUFFER * 2 + 7];
         let mut output = Vec::new();
-        let summary = copy_bounded(&mut input.as_slice(), &mut output, input.len() as u64)
-            .await
-            .unwrap();
+        let summary = copy_bounded(
+            &mut input.as_slice(),
+            &mut output,
+            input.len() as u64,
+            "test copy",
+        )
+        .await
+        .unwrap();
         assert_eq!(output, input);
         assert_eq!(summary.0, input.len() as u64);
         assert_eq!(summary.1, format!("sha256:{:x}", Sha256::digest(&input)));
         let mut rejected = Vec::new();
-        assert!(
-            copy_bounded(&mut input.as_slice(), &mut rejected, (BUFFER + 3) as u64)
-                .await
-                .is_err()
-        );
+        assert!(copy_bounded(
+            &mut input.as_slice(),
+            &mut rejected,
+            (BUFFER + 3) as u64,
+            "test rejected copy"
+        )
+        .await
+        .is_err());
         assert!(rejected.len() <= BUFFER + 3);
     }
     #[tokio::test]

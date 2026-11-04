@@ -1,0 +1,1247 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "XeLab HTTP echo reference",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/plugins/org.xelab.http-echo/echo": {
+      "post": {
+        "operationId": "echoMessage",
+        "x-permission": "plugin.http.invoke",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "message": {
+                    "type": "string",
+                    "maxLength": 1024
+                  }
+                },
+                "required": [
+                  "message"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The submitted message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/plugins/org.xelab.http-echo/hold": {
+      "post": {
+        "operationId": "holdMessage",
+        "x-permission": "plugin.http.invoke",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "message": {
+                    "type": "string",
+                    "maxLength": 1024
+                  },
+                  "delay_ms": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 5000
+                  }
+                },
+                "required": [
+                  "message",
+                  "delay_ms"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded business result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/plugins/org.xelab.http-echo/events": {
+      "post": {
+        "operationId": "streamMessages",
+        "x-permission": "plugin.http.invoke",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "message": {
+                    "type": "string",
+                    "maxLength": 1024
+                  },
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 64
+                  },
+                  "interval_ms": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1000
+                  }
+                },
+                "required": [
+                  "message",
+                  "items",
+                  "interval_ms"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded business result",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "object",
+                  "description": "SSE data 对象；terminal 只出现一次",
+                  "additionalProperties": false,
+                  "properties": {
+                    "call_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 36,
+                      "description": "资源唯一标识",
+                      "format": "uuid",
+                      "example": "00000000-0000-4000-8000-000000000001"
+                    },
+                    "sequence": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991,
+                      "description": "从 1 开始单调递增"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "accepted",
+                        "item",
+                        "completed",
+                        "failed",
+                        "canceled"
+                      ],
+                      "description": "事件类型"
+                    },
+                    "payload": {
+                      "description": "业务契约定义的 JSON 值；业务输入输出必须另按对应能力的 JSON Schema 校验。控制面字段不能用此类型逃避定义。",
+                      "type": [
+                        "object",
+                        "array",
+                        "string",
+                        "number",
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "terminal": {
+                      "type": "boolean",
+                      "description": "结束事件标记"
+                    }
+                  },
+                  "required": [
+                    "call_id",
+                    "sequence",
+                    "kind",
+                    "payload",
+                    "terminal"
+                  ],
+                  "allOf": [
+                    {
+                      "if": {
+                        "properties": {
+                          "kind": {
+                            "enum": [
+                              "accepted",
+                              "item"
+                            ]
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "terminal": {
+                            "const": false
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "if": {
+                        "properties": {
+                          "kind": {
+                            "enum": [
+                              "completed",
+                              "failed",
+                              "canceled"
+                            ]
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "terminal": {
+                            "const": true
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "if": {
+                        "properties": {
+                          "kind": {
+                            "const": "accepted"
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "payload": {
+                            "type": "object",
+                            "additionalProperties": false
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "if": {
+                        "properties": {
+                          "kind": {
+                            "const": "completed"
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "payload": {
+                            "type": "object",
+                            "description": "非流式结果；micro调用必须附全部微绑定/制品标识，contract使用候选Skill的name/version/definition_digest",
+                            "additionalProperties": false,
+                            "properties": {
+                              "call_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 36,
+                                "description": "资源唯一标识",
+                                "format": "uuid",
+                                "example": "00000000-0000-4000-8000-000000000001"
+                              },
+                              "contract": {
+                                "type": "object",
+                                "description": "不可变能力契约引用",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128,
+                                    "description": "能力名称",
+                                    "pattern": "^[a-z][a-z0-9.-]+$"
+                                  },
+                                  "version": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128,
+                                    "description": "SemVer 2.0.0；版本约束语法见插件版本文档",
+                                    "example": "1.0.0",
+                                    "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-((?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?$"
+                                  },
+                                  "schema_digest": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 71,
+                                    "description": "制品或内容 SHA-256 摘要",
+                                    "pattern": "^sha256:[a-f0-9]{64}$",
+                                    "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "version",
+                                  "schema_digest"
+                                ]
+                              },
+                              "provider_instance_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 36,
+                                "description": "资源唯一标识",
+                                "format": "uuid",
+                                "example": "00000000-0000-4000-8000-000000000001"
+                              },
+                              "output": {
+                                "description": "业务契约定义的 JSON 值；业务输入输出必须另按对应能力的 JSON Schema 校验。控制面字段不能用此类型逃避定义。",
+                                "type": [
+                                  "object",
+                                  "array",
+                                  "string",
+                                  "number",
+                                  "boolean",
+                                  "null"
+                                ]
+                              },
+                              "completed_at": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 40,
+                                "description": "完成时间",
+                                "format": "date-time",
+                                "example": "2026-10-28T12:00:00Z"
+                              },
+                              "skill_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 36,
+                                "description": "经 Skill 调用时必有；直接能力调用省略",
+                                "format": "uuid",
+                                "example": "00000000-0000-4000-8000-000000000001"
+                              },
+                              "skill_definition_digest": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 71,
+                                "description": "制品或内容 SHA-256 摘要",
+                                "pattern": "^sha256:[a-f0-9]{64}$",
+                                "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                              },
+                              "micro_version_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 36,
+                                "description": "资源唯一标识",
+                                "format": "uuid",
+                                "example": "00000000-0000-4000-8000-000000000001"
+                              },
+                              "micro_deployment_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 36,
+                                "description": "资源唯一标识",
+                                "format": "uuid",
+                                "example": "00000000-0000-4000-8000-000000000001"
+                              },
+                              "package_digest": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 71,
+                                "description": "制品或内容 SHA-256 摘要",
+                                "pattern": "^sha256:[a-f0-9]{64}$",
+                                "example": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                              },
+                              "micro_plugin_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 36,
+                                "description": "资源唯一标识",
+                                "format": "uuid",
+                                "example": "00000000-0000-4000-8000-000000000001"
+                              }
+                            },
+                            "required": [
+                              "call_id",
+                              "contract",
+                              "provider_instance_id",
+                              "output",
+                              "completed_at"
+                            ],
+                            "dependentRequired": {
+                              "micro_plugin_id": [
+                                "micro_version_id",
+                                "micro_deployment_id",
+                                "package_digest",
+                                "skill_id",
+                                "skill_definition_digest"
+                              ],
+                              "micro_version_id": [
+                                "micro_plugin_id",
+                                "micro_deployment_id",
+                                "package_digest",
+                                "skill_id",
+                                "skill_definition_digest"
+                              ],
+                              "micro_deployment_id": [
+                                "micro_plugin_id",
+                                "micro_version_id",
+                                "package_digest",
+                                "skill_id",
+                                "skill_definition_digest"
+                              ],
+                              "package_digest": [
+                                "micro_plugin_id",
+                                "micro_version_id",
+                                "micro_deployment_id",
+                                "skill_id",
+                                "skill_definition_digest"
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "if": {
+                        "properties": {
+                          "kind": {
+                            "const": "failed"
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "payload": {
+                            "type": "object",
+                            "description": "稳定错误对象",
+                            "additionalProperties": false,
+                            "properties": {
+                              "code": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 80,
+                                "description": "错误码；取值见错误目录"
+                              },
+                              "message": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 2048,
+                                "description": "安全且不含敏感信息的说明"
+                              },
+                              "retryable": {
+                                "type": "boolean",
+                                "description": "是否允许按重试规则再次提交"
+                              },
+                              "violations": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "description": "字段级错误",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "path": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 512,
+                                      "description": "JSON Pointer 或参数名"
+                                    },
+                                    "reason": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 1024,
+                                      "description": "可读原因"
+                                    }
+                                  },
+                                  "required": [
+                                    "path",
+                                    "reason"
+                                  ]
+                                },
+                                "minItems": 0,
+                                "maxItems": 256,
+                                "description": "字段校验错误"
+                              },
+                              "retry_after_ms": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 3600000,
+                                    "description": "建议退避时间，毫秒"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "建议退避时间，毫秒"
+                              },
+                              "resource_id": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 160,
+                                    "description": "可选非敏感资源引用；一次性签发重放供核实使用"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "description": "可选非敏感资源引用；一次性签发重放供核实使用"
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message",
+                              "retryable",
+                              "violations",
+                              "retry_after_ms"
+                            ]
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "if": {
+                        "properties": {
+                          "kind": {
+                            "const": "canceled"
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "payload": {
+                            "type": "object",
+                            "required": [
+                              "reason"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "reason": {
+                                "enum": [
+                                  "requested",
+                                  "deadline",
+                                  "authorization",
+                                  "disconnected"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

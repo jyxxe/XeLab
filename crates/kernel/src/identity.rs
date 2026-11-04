@@ -1070,21 +1070,40 @@ pub(crate) async fn call_sources_for(
     let paths = Policy::for_context(c, ctx)
         .credential(ctx.credential, 0)
         .await?;
+    call_sources_from_paths(c, ctx, action, resource, paths).await
+}
+
+pub(crate) async fn call_sources_from_paths(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    action: &str,
+    resource: &Resource,
+    paths: Vec<crate::policy::Path>,
+) -> Result<BTreeSet<Uuid>> {
     let mut alternatives = Vec::new();
-    for path in paths {
+    'candidate: for path in paths {
         if !auth::rules_allow(&json!([path.rule]), action, resource, ctx.peer) {
             continue;
         }
         let mut keys: BTreeSet<_> = ctx.chain.iter().copied().collect();
         let sources: Vec<_> = path.sources.into_iter().collect();
-        for row in c
+        let issuers = c
             .query(
                 "SELECT issuer_id,issuer_credential_id FROM grants WHERE id=ANY($1)",
                 &[&sources],
             )
-            .await?
-        {
-            keys.extend(auth::validate_sources(c, row.get(1), Some(row.get(0)), ctx.peer).await?);
+            .await?;
+        if issuers.len() != sources.len() {
+            return Err(Error::denied());
+        }
+        for row in issuers {
+            match auth::validate_sources(c, row.get(1), Some(row.get(0)), ctx.peer).await {
+                Ok(sources) => keys.extend(sources),
+                // A prepared alternative may expire while admission waits for
+                // the ledger. Other independent proofs remain eligible.
+                Err(error) if error.code == "INVALID_CREDENTIAL" => continue 'candidate,
+                Err(error) => return Err(error),
+            }
         }
         alternatives.push(keys);
     }
