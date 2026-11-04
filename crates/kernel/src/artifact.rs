@@ -370,6 +370,135 @@ impl Artifact {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn generated_reference_profiles_match_manifest_and_raw_contracts() {
+        let root = tempfile::tempdir().unwrap();
+        let builder =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/echo/build_artifact.py");
+        let platform = if cfg!(target_arch = "aarch64") {
+            "linux/arm64"
+        } else {
+            "linux/amd64"
+        };
+        let variants: &[(&str, &[&str], bool)] = &[
+            ("rust-default", &[], false),
+            ("rust-upgrade", &["--plugin-version", "2.0.0"], false),
+            (
+                "rust-failed-upgrade",
+                &["--plugin-version", "3.0.0", "--failed-startup"],
+                false,
+            ),
+            ("rust-blob", &["--request-blob"], false),
+            (
+                "python-secret",
+                &["--implementation", "python", "--request-secret"],
+                false,
+            ),
+            (
+                "python-host-blob",
+                &["--implementation", "python", "--request-blob"],
+                false,
+            ),
+            (
+                "python-schema-1",
+                &[
+                    "--implementation",
+                    "python",
+                    "--volume-access",
+                    "rw",
+                    "--data-schema",
+                    "1",
+                ],
+                true,
+            ),
+            (
+                "python-schema-2",
+                &[
+                    "--implementation",
+                    "python",
+                    "--volume-access",
+                    "rw",
+                    "--data-schema",
+                    "2",
+                    "--plugin-version",
+                    "2.0.0",
+                ],
+                true,
+            ),
+        ];
+        for &(variant, arguments, versioned) in variants {
+            let directory = root.path().join(variant);
+            let output = std::process::Command::new("python3")
+                .arg(&builder)
+                .args([
+                    "--publisher-id",
+                    "00000000-0000-4000-8000-000000000001",
+                    "--platform",
+                    platform,
+                    "--output",
+                ])
+                .arg(&directory)
+                .args(arguments)
+                .env("PYTHONDONTWRITEBYTECODE", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "Reference generator failed for {variant}"
+            );
+            let bytes = read_image_file(&directory, "xelab/plugin.json", 4 * 1024 * 1024).unwrap();
+            let manifest = strict_json(&bytes, 4 * 1024 * 1024).unwrap();
+            validate_runtime_profile(&manifest).unwrap_or_else(|error| {
+                panic!("Generated {variant} profile failed: {}", error.code)
+            });
+            assert_eq!(
+                validate_profile(&manifest).is_err(),
+                versioned,
+                "Only versioned-data artifacts retain their public installation gate"
+            );
+            for capability in manifest["capabilities"].as_array().unwrap() {
+                let contract = &capability["contract"];
+                let name = contract["name"].as_str().unwrap();
+                let version = contract["version"].as_str().unwrap();
+                let mut checks = String::new();
+                for (file, field) in [
+                    ("input.schema.json", "input_schema"),
+                    ("output.schema.json", "output_schema"),
+                    ("stream.schema.json", "stream_item_schema"),
+                    ("semantics.json", ""),
+                ] {
+                    let bytes = read_image_file(
+                        &directory,
+                        &format!("xelab/contracts/{name}/{version}/{file}"),
+                        1024 * 1024,
+                    )
+                    .unwrap();
+                    let value = strict_json(&bytes, 1024 * 1024).unwrap();
+                    if field.is_empty() {
+                        assert_eq!(value["side_effect"], capability["side_effect"]);
+                    } else {
+                        assert_eq!(value, capability[field]);
+                    }
+                    checks.push_str(&format!("{file} {}\n", &digest(&bytes)[7..]));
+                }
+                assert_eq!(contract["schema_digest"], digest(checks.as_bytes()));
+            }
+            if variant.starts_with("rust-") {
+                let capabilities = manifest["capabilities"].as_array().unwrap();
+                assert_eq!(capabilities.len(), 5);
+                let effect = capabilities
+                    .iter()
+                    .find(|cap| cap["side_effect"] == "non_repeatable")
+                    .unwrap();
+                assert!(effect["contract"]["name"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(".non-repeatable"));
+                assert!(!effect["stream_item_schema"].is_null());
+            }
+        }
+    }
+
+    #[test]
     fn ordinary_streaming_profiles_keep_side_effects_and_local_schemas() {
         let mut manifest: Value =
             serde_json::from_str(include_str!("../tests/fixtures/secret-manifest.json")).unwrap();

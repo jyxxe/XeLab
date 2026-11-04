@@ -107,7 +107,9 @@ def build(root, publisher, platform="linux/amd64", implementation="rust", reques
         # with a real per-generation mutation counter for queryable and
         # non-repeatable execution. No public versioned data profile is opened.
         for effect in ["idempotent", "queryable", "non_repeatable"]:
-            effect_name = "org.xelab.echo." + effect
+            # The semantic enum uses an underscore; public capability/Skill
+            # names use the existing lowercase dot/hyphen namespace grammar.
+            effect_name = manifest["plugin_id"] + "." + effect.replace("_", "-")
             effect_input = json.loads(json.dumps(stream_input))
             effect_input["properties"]["fault"]["enum"].append("after-commit")
             effect_output = json.loads(json.dumps(stream_output))

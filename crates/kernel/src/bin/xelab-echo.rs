@@ -502,7 +502,7 @@ mod tests {
 
     fn fixture(effect: &str) -> (Echo, rpc::InvokeRequest) {
         let contract = rpc::ContractRef {
-            name: format!("org.xelab.echo.{effect}"),
+            name: format!("org.xelab.echo.{}", effect.replace('_', "-")),
             version: "1.0.0".into(),
             schema_digest: digest(effect.as_bytes()),
         };

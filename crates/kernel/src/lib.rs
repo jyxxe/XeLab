@@ -21,6 +21,7 @@ pub mod identity;
 pub mod migration_rpc;
 pub mod oauth;
 pub mod offline;
+pub(crate) mod plugin_catalog;
 pub mod plugin_http;
 pub mod plugin_http_gateway;
 pub mod policy;

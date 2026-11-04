@@ -621,6 +621,8 @@ async fn dispatch(
     let execution=async {
     let result = if identity::handles(name) {
         identity::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
+    } else if crate::plugin_catalog::handles(name) {
+        crate::plugin_catalog::execute(&tx,&app.auth,&ctx,name,uri.query().unwrap_or("")).await?
     } else if crate::oauth::clients::handles(name) {
         crate::oauth::clients::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
     } else if crate::webui::handles(name) {
@@ -967,6 +969,11 @@ async fn authorize_operation(
 ) -> Result<()> {
     if identity::handles(name) {
         return identity::authorize(c, ctx, name, params, body).await;
+    }
+    if crate::plugin_catalog::handles(name) {
+        // Collection entry grants no object authority. The catalog filters each
+        // object using the current credential/Origin policy and actual owner.
+        return Ok(());
     }
     if crate::oauth::clients::handles(name) {
         return crate::oauth::clients::authorize(c, ctx, name, params, body).await;
