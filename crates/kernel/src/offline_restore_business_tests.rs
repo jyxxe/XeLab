@@ -16,6 +16,7 @@ use std::{
 use tower::ServiceExt;
 
 async fn request(
+    config: &Config,
     router: &Router,
     token: Option<&str>,
     action: &str,
@@ -43,7 +44,10 @@ async fn request(
         }
     }
     let mut req = Request::builder()
-        .header("host", http_host::authority(None))
+        .header(
+            "host",
+            http_host::authority(Some(config.text("server", "public_origin"))),
+        )
         .method(method.as_str())
         .uri(path)
         .header("idempotency-key", Uuid::new_v4().to_string());
@@ -75,9 +79,10 @@ async fn request(
         },
     ))
 }
-async fn finish(router: &Router, token: &str, id: Uuid) -> Result<()> {
+async fn finish(config: &Config, router: &Router, token: &str, id: Uuid) -> Result<()> {
     for _ in 0..120 {
         let response = request(
+            config,
             router,
             Some(token),
             "getOperation",
@@ -113,6 +118,7 @@ async fn exercise_source(
     let manifest: Value = publisher.get("manifest");
     assert_eq!(manifest["data_schema_version"], schema);
     let current = request(
+        &app.config,
         router,
         Some(token),
         "getDeployment",
@@ -125,6 +131,7 @@ async fn exercise_source(
     assert_eq!(current.1["spec"]["enabled"], false);
     if publisher.get::<_, String>("status") == "revoked" {
         let denied = request(
+            &app.config,
             router,
             Some(token),
             "setDeploymentEnabled",
@@ -137,7 +144,7 @@ async fn exercise_source(
             denied.0, 202,
             "restored format does not restore publisher authority"
         );
-        let trusted=request(router,Some(token),"trustPublisher",None,json!({"name":publisher.get::<_,String>("name"),"key_id":publisher.get::<_,String>("key_id"),"public_key_pem":publisher.get::<_,String>("public_key_pem")}),None).await?;
+        let trusted=request(&app.config,router,Some(token),"trustPublisher",None,json!({"name":publisher.get::<_,String>("name"),"key_id":publisher.get::<_,String>("key_id"),"public_key_pem":publisher.get::<_,String>("public_key_pem")}),None).await?;
         assert_eq!(trusted.0, 200, "{}", trusted.1);
     } else {
         assert_eq!(
@@ -147,6 +154,7 @@ async fn exercise_source(
         );
     }
     let current = request(
+        &app.config,
         router,
         Some(token),
         "getDeployment",
@@ -156,6 +164,7 @@ async fn exercise_source(
     )
     .await?;
     let approved = request(
+        &app.config,
         router,
         Some(token),
         "approvePlugin",
@@ -166,6 +175,7 @@ async fn exercise_source(
     .await?;
     assert_eq!(approved.0, 200, "{}", approved.1);
     let current = request(
+        &app.config,
         router,
         Some(token),
         "getDeployment",
@@ -175,6 +185,7 @@ async fn exercise_source(
     )
     .await?;
     let enabled = request(
+        &app.config,
         router,
         Some(token),
         "setDeploymentEnabled",
@@ -185,6 +196,7 @@ async fn exercise_source(
     .await?;
     assert_eq!(enabled.0, 202, "{}", enabled.1);
     finish(
+        &app.config,
         router,
         token,
         enabled.1["id"].as_str().unwrap().parse().unwrap(),
@@ -202,7 +214,7 @@ async fn exercise_source(
     let data = store.data_path(volume, row.get::<_, i32>("project_id") as u32)?;
     drop(store);
     let before: Value = serde_json::from_slice(&fs::read(data.join("store.json"))?)?;
-    let called=request(router,Some(token),"invokeCapability",None,json!({"contract":manifest["capabilities"][0]["contract"],"input":{"message":format!("business write after whole-platform schema{schema} recovery")},"provider_deployment_id":deployment,"timeout_ms":30000}),None).await?;
+    let called=request(&app.config,router,Some(token),"invokeCapability",None,json!({"contract":manifest["capabilities"][0]["contract"],"input":{"message":format!("business write after whole-platform schema{schema} recovery")},"provider_deployment_id":deployment,"timeout_ms":30000}),None).await?;
     assert_eq!(called.0, 200, "{}", called.1);
     let after: Value = serde_json::from_slice(&fs::read(data.join("store.json"))?)?;
     assert_eq!(after["schema"], schema);
@@ -223,6 +235,7 @@ async fn exercise_source(
         _ => panic!("unsupported reference format"),
     }
     let current = request(
+        &app.config,
         router,
         Some(token),
         "getDeployment",
@@ -232,6 +245,7 @@ async fn exercise_source(
     )
     .await?;
     let disabled = request(
+        &app.config,
         router,
         Some(token),
         "setDeploymentEnabled",
@@ -242,6 +256,7 @@ async fn exercise_source(
     .await?;
     assert_eq!(disabled.0, 202, "{}", disabled.1);
     finish(
+        &app.config,
         router,
         token,
         disabled.1["id"].as_str().unwrap().parse().unwrap(),
@@ -317,6 +332,7 @@ pub(super) async fn resume(config: &Config, db: &Db, info: &Value) -> Result<()>
             0
         );
         let login = request(
+            config,
             &router,
             None,
             "login",

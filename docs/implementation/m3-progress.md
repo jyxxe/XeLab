@@ -6,13 +6,14 @@
 `dbb35cbc7c2c110c88de7ba16dc2d4569fad3ad2`，内部 Schema 14。
 这是开发与证据清单；未勾选项尚未完成，规范存在不代表运行代码已经交付。
 后续阶段须更新实际提交、PR、测试命令及结果，不能用本页代替运行证据。
-当前 main 为 `41e495bf91e898986791f436720fdac9cbea9fda`：
+当前 main 为 `201fb5a92854cbcefe7e547dca121b89796f1506`：
 [PR #39](https://github.com/jyxxe/XeLab/pull/39)、
 [PR #40](https://github.com/jyxxe/XeLab/pull/40) 与
-[PR #41](https://github.com/jyxxe/XeLab/pull/41) 已合并，交付普通 OCI capability
+[PR #41](https://github.com/jyxxe/XeLab/pull/41) 与
+[PR #42](https://github.com/jyxxe/XeLab/pull/42) 已合并，交付普通 OCI capability
 Skill 的七项公开操作，包括纯流 SSE，以及并发授权复核的撤权活性修复。
-#41 精确提交 CI 成功；新 main 自身 CI 在离线捕获阶段再次失败，
-P0 容量来源与生成输入清理修正独立处理中，不能以 PR 绿灯代替最终 main 验证。
+#41、#42 精确提交 CI 成功；#42 保留实际容量诊断并清理已消费的精确传输 tar，
+不能据此断言已证明旧容量失败的根因。新 main 自身 CI 仍须单独确认。
 HTTP 已在开发分支接入源码并进行本地验证，尚未交付 main；
 OAuth、官方 WebUI 与 UI 桥尚未交付 main。开发分支 Schema 15 不等于 main 已迁移。
 
@@ -60,7 +61,7 @@ OAuth、官方 WebUI 与 UI 桥尚未交付 main。开发分支 Schema 15 不等
 - [x] M3-A：独立插件注册→启用→授权→调用→禁用拒绝→恢复，包含重复请求、资源不足与实例重启的实际 OCI 场景；一般非纯 capability 执行及 HostService 代理不计入本 profile。
 - [ ] M3-B：精确签名 HTTP 路由、不可变 OpenAPI、动作/Schema 和 HTTP Skill 已接入开发分支；完整验收与合并待完成。
 - [ ] M3-B：隔离 Host 静态 GET/HEAD、共享物理池、HTTP/SSE、超时/撤权与恢复源码已接入；最终真实集成待验收。
-- [ ] M3-B：独立 HTTP-only/混合插件、负向测试与 OCI 工具已落地；组件重跑、真实内核 OCI、完整 workspace/CI 尚未通过。
+- [ ] M3-B：独立 HTTP-only/混合插件、负向测试与 OCI 工具已落地；真实 HTTP OCI 已通过，恢复夹具修正后的完整 CI 尚待通过。
 - [ ] M3-C：Client 注册/查询/修改/禁用、精确 origin/redirect/scope 和默认 UI。
 - [ ] M3-C：可信登录/同意页、code + PKCE S256、短期单次 code、刷新轮换与重用检测。
 - [ ] M3-C：会话/账户/客户端绑定、Origin/CSRF/Cookie 检查及正常/拒绝流程测试。
@@ -95,10 +96,12 @@ OAuth、官方 WebUI 与 UI 桥尚未交付 main。开发分支 Schema 15 不等
 | Draft #41 `3ed37c67…` | [执行 41823170948](https://github.com/jyxxe/XeLab/actions/runs/41823170948) 实际 OCI 再现撤权等待到 deadline：执行未来持有共享授权事务时，监视分支等待排在独占撤权写入者后的新共享事务，却暂停轮询执行未来；并发 guard 修复及真实 PostgreSQL 屏障回归尚在验证 |
 | #41 `20e09827…` | 独立并发 guard 修复及实际 PostgreSQL/OCI 撤权回归通过；[执行 41827862054](https://github.com/jyxxe/XeLab/actions/runs/41827862054) 全步骤成功，PR 已合并；OCI 撤权约 739 ms，仍余 89261 ms，精确双事件 failed/INVALID_CREDENTIAL 和物理 fencing/配额均保留 |
 | main `41e495bf…` | [执行 41832456991](https://github.com/jyxxe/XeLab/actions/runs/41832456991) 失败：实际归档恢复通过，OCI 离线捕获返回 RESOURCE_EXHAUSTED；已修撤权仍及时完成，容量来源及已消费构建 tar 清理修正独立处理，不盲目重跑或放松门槛 |
-| Draft #42 `534d0a1b…` | [P0 捕获容量修正](https://github.com/jyxxe/XeLab/pull/42) 已正常合入 HTTP 开发分支；保留容量诊断与门槛，全部 immutable refs 核实后只删除已消费的精确 docker-save 传输 tar，HTTP 分支增加两份 HTTP 制品且逐层拒绝符号链接。[执行 41837147021](https://github.com/jyxxe/XeLab/actions/runs/41837147021) 尚待最终结果，不能计为已合并 main 或修复验收成功 |
+| #42 `534d0a1b…` | [P0 捕获容量修正](https://github.com/jyxxe/XeLab/pull/42) 已合并 main，精确提交[执行 41837147021](https://github.com/jyxxe/XeLab/actions/runs/41837147021) 全步骤成功。保留容量诊断与门槛，只在全部 immutable refs 核实后删除已消费的精确传输 tar；HTTP 分支增加两份 HTTP 制品且逐层拒绝符号链接。旧失败缺少实际容量数值，不能把此次成功当作已证明旧容量根因 |
+| main `201fb5a…` | [执行 41845259790](https://github.com/jyxxe/XeLab/actions/runs/41845259790) 尚待最终结果，不能以 #42 的 PR CI 替代 |
+| Draft #43 `c537bef…` | [执行 41841936407](https://github.com/jyxxe/XeLab/actions/runs/41841936407) 的实际 HTTP/static OCI、旧 OCI 生命周期、XFS 卷与进程恢复场景通过；随后平台恢复业务夹具用示例 Host 请求已改域名的内核，Owner 登录正确被拒 404，整体 CI 失败。夹具改为实际恢复配置 Host，生产隔离检查及恢复断言不变，新提交仍须完整验证 |
 | HTTP 分支本地完整 workspace 尝试 | 库 150 通过/5 失败/3 显式忽略；1 项空 ContractRef 旧夹具按契约修正后通过；4 项归档/克隆因 overlay 目录属性列表长度/读取不一致拒绝，相同源码和检查在真实 tmpfs 隔离组件归档 2 项、克隆 3 项全部通过。保留原宿主失败，不冒充整轮 workspace 通过 |
 | HTTP 后续安全/兼容回归 | API→JSONB 1.0 额度/轮换、首帧 SSE 拒绝的实际 mTLS 组件 2 项通过；结果读取/重放的原始计费与 Blob ACL PostgreSQL 3 项、Identity 15/Skill 8/PostgreSQL 2 项通过；精确分支完整 CI 尚待执行 |
-| HTTP 开发分支 | [实现及命令](m3-http.md)、[持久化](m3-http-provenance.md)与[参考制品](../../examples/http/README.md)已存在；5 项契约 PostgreSQL、12 项 Python 及两个实际打包探针通过；核心/PG/独立 mTLS 两槽组件与 13 项安全场景、6 项契约、16 项网关/HTTP、4 项快照、Broker/API 回归和全-target Clippy 通过；真实内核 OCI、完整 workspace 执行与最终 CI 待确认 |
+| HTTP 开发分支 | [实现及命令](m3-http.md)、[持久化](m3-http-provenance.md)与[参考制品](../../examples/http/README.md)已存在；5 项契约 PostgreSQL、12 项 Python 及两个实际打包探针通过；核心/PG/独立 mTLS 两槽组件与 13 项安全场景、6 项契约、16 项网关/HTTP、4 项快照、Broker/API 回归和全-target Clippy 通过；实际 HTTP/static OCI 与旧 OCI 生命周期已通过；修正恢复 Host 夹具后的完整 workspace 与最终 CI 待确认 |
 
 流式实现保留单调时钟 deadline、请求作用域数据库取消和实际后端退出断言；
 [流式说明](m3-skill-streams.md)记录其已交付 profile。main 的失败与后续修复单独跟踪，
