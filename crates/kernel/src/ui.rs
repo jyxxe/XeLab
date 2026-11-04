@@ -10,7 +10,6 @@ use crate::{
     policy::{self, Policy},
 };
 use axum::http::{HeaderMap, Method};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap};
@@ -404,15 +403,6 @@ async fn contribution(
         }
         Err(error) => return Err(error),
     };
-    if let (Some(parent), Some(_)) = (ctx.browser_origin.as_deref(), origin.as_ref()) {
-        if !crate::webui::frame_ancestors(c, app, deployment)
-            .await?
-            .iter()
-            .any(|origin| origin == parent)
-        {
-            reasons.insert("PARENT_ORIGIN_UNAVAILABLE");
-        }
-    }
     let registry = crate::http_contracts::load(c, installation).await?;
     for field in ["entry_path", "icon_path"] {
         if let Some(path) = spec.get(field).and_then(Value::as_str) {
@@ -520,15 +510,43 @@ async fn contribution(
         }
     }
     let frame_origin = origin.as_ref().map(StaticOrigin::origin);
+    let framing_query = if origin.is_some() && reasons.is_empty() {
+        match crate::webui::framing_query(c, app, ctx, deployment, spec).await {
+            Ok(query) => query,
+            Err(error) if unavailable(&error) || error.code == "NOT_READY" => {
+                reasons.insert("PARENT_ORIGIN_UNAVAILABLE");
+                None
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        None
+    };
     let frame_url = frame_origin.map(|origin| {
         format!(
-            "{origin}/ui/{plugin}{}",
-            spec["entry_path"].as_str().unwrap()
+            "{origin}/ui/{plugin}{}{}",
+            spec["entry_path"].as_str().unwrap(),
+            framing_query
+                .as_ref()
+                .map(|query| format!("?{query}"))
+                .unwrap_or_default()
         )
     });
     let value = json!({"deployment_id":deployment,"installation_id":installation,"plugin_id":plugin,"manifest_digest":row.get::<_,String>("manifest_digest"),"contribution_digest":crate::skills::definition_digest(spec)?,"spec":spec,"frame_url":frame_url,"frame_origin":frame_origin,"availability":if reasons.is_empty(){"ready"}else{"unavailable"},"reason_codes":reasons,"bindings":bindings});
     validate("UiContribution", &value)?;
     Ok(value)
+}
+
+const UI_CURSOR_DOMAIN: &str = "xelab-ui-contribution-cursor-v1";
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UiCursor {
+    binding: Value,
+    watermark: DateTime<Utc>,
+    last_plugin: String,
+    last_deployment: String,
+    last_contribution: String,
+    expires_at: DateTime<Utc>,
 }
 
 async fn list(
@@ -562,41 +580,86 @@ async fn list(
     if !args.is_empty() {
         return Err(Error::invalid("Unsupported UI filter"));
     }
-    let binding = json!({"subject":ctx.subject,"credential":ctx.credential,"operation":"listUiContributions","limit":limit,"kind":kind});
-    let mut watermark = Utc::now();
-    let mut last_plugin = String::new();
-    let mut last_deployment = String::new();
-    let mut last_contribution = String::new();
-    if let Some(cursor) = cursor {
-        let cursor = cursor.as_str().unwrap();
-        if cursor.len() > 2048 {
-            return Err(Error::invalid("Invalid UI cursor"));
-        }
-        let (raw, signature) = cursor
-            .split_once('.')
-            .ok_or_else(|| Error::invalid("Invalid UI cursor"))?;
-        let signature = URL_SAFE_NO_PAD
-            .decode(signature)
-            .map_err(|_| Error::invalid("Invalid UI cursor"))?;
-        if !app.auth.verify_mac(raw, &signature) {
-            return Err(Error::invalid("Invalid UI cursor"));
-        }
-        let raw = URL_SAFE_NO_PAD
-            .decode(raw)
-            .map_err(|_| Error::invalid("Invalid UI cursor"))?;
-        let value: Value =
-            serde_json::from_slice(&raw).map_err(|_| Error::invalid("Invalid UI cursor"))?;
-        if value["binding"] != binding || policy::timestamp(&value["expires_at"])? <= Utc::now() {
-            return Err(Error::invalid(
-                "UI cursor identity, filter or expiry differs",
-            ));
-        }
-        watermark = policy::timestamp(&value["watermark"])?;
-        last_plugin = string(&value, "last_plugin")?.to_owned();
-        last_deployment = string(&value, "last_deployment")?.to_owned();
-        last_contribution = string(&value, "last_contribution")?.to_owned();
+    if !policy::registered(c, "plugin.ui.open", "plugin").await? {
+        return Err(Error::denied());
     }
-    let rows=c.query("SELECT d.id,d.owner_id,d.installation_id,d.spec AS deployment_spec,d.phase,d.observed_generation,d.approval,n.plugin_id,n.manifest_digest,n.manifest,n.state AS installation_state,p.status AS publisher_status,x.spec AS contribution FROM deployments d JOIN installations n ON n.id=d.installation_id JOIN publishers p ON p.id=n.publisher_id CROSS JOIN LATERAL jsonb_array_elements(n.manifest->'ui'->'contributions') x(spec) WHERE d.archived_at IS NULL AND d.created_at<=$1 AND (n.plugin_id,d.id::text,x.spec->>'id')>($2,$3,$4) AND ($5::text IS NULL OR x.spec->>'kind'=$5) ORDER BY n.plugin_id,d.id::text,x.spec->>'id' LIMIT 201", &[&watermark,&last_plugin,&last_deployment,&last_contribution,&kind]).await?;
+    let candidates = policy::PluginOwnerCandidates::default();
+    let paths = Policy::for_context(c, ctx)
+        .with_plugin_owner_candidates(&candidates)
+        .credential(ctx.credential, 0)
+        .await?;
+    let ui_paths: Vec<_> = paths
+        .into_iter()
+        .filter(|path| {
+            path.rule["action"] == "plugin.ui.open" && path.rule["resource"]["kind"] == "plugin"
+        })
+        .collect();
+    let mut authority_bytes = 0usize;
+    for path in &ui_paths {
+        let bytes = serde_jcs::to_vec(path)?.len();
+        crate::plugin_catalog::reserve_authority_bytes(&mut authority_bytes, bytes)?;
+    }
+    let mut authority_paths = ui_paths.clone();
+    let mut fixed_pairs = Vec::new();
+    for (plugin, owner) in candidates.pairs()? {
+        let resource = Resource::new("plugin", &plugin, Some(owner));
+        let paths = Policy::for_context(c, ctx)
+            .with_resource_owner(&resource)
+            .credential(ctx.credential, 0)
+            .await?;
+        let mut allowed = false;
+        for path in paths {
+            if auth::rules_allow(&json!([path.rule]), "plugin.ui.open", &resource, ctx.peer) {
+                let bytes = serde_jcs::to_vec(&path)?.len();
+                crate::plugin_catalog::reserve_authority_bytes(&mut authority_bytes, bytes)?;
+                // Fixed-owner paths are ONLY an authority stamp input, never
+                // global ID selectors; reject before growing beyond its cap.
+                authority_paths.push(path);
+                allowed = true;
+            }
+        }
+        if allowed {
+            fixed_pairs.push((plugin, owner));
+        }
+    }
+    let authority = crate::plugin_catalog::authority_binding(c, ctx, &authority_paths).await?;
+    let binding = json!({"subject":ctx.subject,"credential":ctx.credential,"chain":crate::contracts::digest(&serde_jcs::to_vec(&ctx.chain)?),"origin":ctx.browser_origin,"peer":ctx.peer,"operation":"listUiContributions","limit":limit,"kind":kind,"authority":authority,"owner_pairs":crate::contracts::digest(&serde_jcs::to_vec(&fixed_pairs)?)});
+    let now = Utc::now();
+    let mut position = if let Some(cursor) = cursor {
+        crate::plugin_catalog::decode_opaque_cursor::<UiCursor>(
+            &app.auth,
+            UI_CURSOR_DOMAIN,
+            "u1",
+            cursor.as_str().unwrap(),
+        )?
+    } else {
+        UiCursor {
+            binding: binding.clone(),
+            watermark: now,
+            last_plugin: String::new(),
+            last_deployment: String::new(),
+            last_contribution: String::new(),
+            expires_at: now + chrono::Duration::minutes(15),
+        }
+    };
+    if position.binding != binding
+        || position.expires_at <= now
+        || position.watermark > now
+        || position.expires_at != position.watermark + chrono::Duration::minutes(15)
+    {
+        return Err(Error::invalid(
+            "UI cursor authority, filters or expiry changed",
+        ));
+    }
+    let watermark = position.watermark;
+    let mut last_plugin = position.last_plugin.clone();
+    let mut last_deployment = position.last_deployment.clone();
+    let mut last_contribution = position.last_contribution.clone();
+    let selected = crate::plugin_catalog::selectors(&ui_paths, "plugin.ui.open", "plugin", ctx)?;
+    let ids: Vec<_> = selected.ids.into_iter().collect();
+    let owners: Vec<_> = selected.owners.into_iter().collect();
+    let (pair_plugins, pair_owners): (Vec<_>, Vec<_>) = fixed_pairs.into_iter().unzip();
+    let rows=c.query("SELECT d.id,d.owner_id,d.installation_id,d.spec AS deployment_spec,d.phase,d.observed_generation,d.approval,n.plugin_id,n.manifest_digest,n.manifest,n.state AS installation_state,p.status AS publisher_status,x.spec AS contribution FROM deployments d JOIN installations n ON n.id=d.installation_id JOIN publishers p ON p.id=n.publisher_id CROSS JOIN LATERAL jsonb_array_elements(n.manifest->'ui'->'contributions') x(spec) WHERE d.archived_at IS NULL AND d.created_at<=$1 AND (n.plugin_id,d.id::text,x.spec->>'id')>($2,$3,$4) AND ($5::text IS NULL OR x.spec->>'kind'=$5) AND ($6 OR n.plugin_id=ANY($7::text[]) OR d.owner_id=ANY($8::uuid[]) OR EXISTS(SELECT 1 FROM unnest($9::text[],$10::uuid[]) AS fixed(plugin_id,owner_id) WHERE fixed.plugin_id=n.plugin_id AND fixed.owner_id=d.owner_id)) ORDER BY n.plugin_id,d.id::text,x.spec->>'id' LIMIT 201", &[&watermark,&last_plugin,&last_deployment,&last_contribution,&kind,&selected.all,&ids,&owners,&pair_plugins,&pair_owners]).await?;
     let mut items = Vec::new();
     let mut processed = 0;
     for row in &rows {
@@ -618,11 +681,15 @@ async fn list(
         }
     }
     let next = if processed < rows.len() {
-        let raw=URL_SAFE_NO_PAD.encode(serde_json::to_vec(&json!({"binding":binding,"watermark":watermark,"last_plugin":last_plugin,"last_deployment":last_deployment,"last_contribution":last_contribution,"expires_at":watermark+chrono::Duration::minutes(15)}))?);
-        Some(format!(
-            "{raw}.{}",
-            URL_SAFE_NO_PAD.encode(app.auth.token_digest(&raw))
-        ))
+        position.last_plugin = last_plugin;
+        position.last_deployment = last_deployment;
+        position.last_contribution = last_contribution;
+        Some(crate::plugin_catalog::encode_opaque_cursor(
+            &app.auth,
+            UI_CURSOR_DOMAIN,
+            "u1",
+            &position,
+        )?)
     } else {
         None
     };

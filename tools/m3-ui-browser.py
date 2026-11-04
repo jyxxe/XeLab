@@ -669,11 +669,37 @@ def run(config, report):
             page.wait_for_timeout(50)
         raise CheckFailed("coordinator_barrier_not_completed")
 
+    def current_sibling_frame_url(page):
+        # An intentional wrong-source sibling still needs its own approved
+        # framing selector. A bare URL must not bypass the new CSP boundary.
+        result = page.evaluate("""async ({core,client,deployment}) => {
+          const {ApiClient}=await import('/ui/org.xelab.webui/api.js');
+          const api=new ApiClient({core_origin:core,client_id:client},{accessToken:async()=>{
+            const session=JSON.parse(sessionStorage.getItem('xelab.oauth:'+core+':'+client));
+            if(!session?.access_token)throw new Error('No current shell credential');return session.access_token;
+          }});
+          const response=await api.invoke('getUiContribution',{params:{deployment_id:deployment,contribution_id:'echo_widget'}});
+          return response.data.frame_url;
+        }""", {"core": core, "client": config["client_id"], "deployment": config["reference_deployment_id"]})
+        parsed = urllib.parse.urlsplit(result)
+        require(url_origin(result) == reference and parsed.path == "/ui/org.xelab.ui-reference/widget.html"
+                and parsed.query.startswith("xelab_frame=v1.") and not parsed.fragment,
+                "wrong_source_sibling_uses_approved_framing_selector")
+        return result
+
     with sync_playwright() as playwright:
         report["step"] = "launch_actual_chromium"
         browser = playwright.chromium.launch(executable_path=config["chromium_path"], headless=True, args=["--no-sandbox", "--disable-dev-shm-usage", "--no-proxy-server", "--host-resolver-rules=" + resolver, "--ignore-certificate-errors-spki-list=" + config["tls_spki_sha256"]])
         report["browser_version"] = browser.version
         owner_context, page = login(browser, config["owner_id"], config["owner_password"], "owner")
+        require(coordinator_barrier(page, "await_owner_nondefault_ui", "owner_nondefault_ui_ready").get("cleared") is True,
+                "owner_shell_default_ui_was_cleared")
+        report["step"] = "reload_actual_nondefault_shell"
+        page.reload(wait_until="domcontentloaded")
+        page.wait_for_function("() => document.querySelector('#login')?.textContent === '退出'")
+        page.wait_for_function("() => document.querySelector('#connection')?.textContent === '已连接核心'")
+        require(url_origin(page.url) == ui and urllib.parse.urlsplit(page.url).path == "/ui/org.xelab.webui/",
+                "actual_oauth_shell_reloads_while_not_default")
         resources = open_app(page, "resources", "系统状态")
         resources.locator("pre.result").wait_for()
         require('"kernel_cpu_millis": 4000' in resources.inner_text() and '"kernel_memory_bytes": 17179869184' in resources.inner_text(), "desktop_reads_actual_node_reservations")
@@ -727,8 +753,9 @@ def run(config, report):
         page.evaluate("""meta => window.postMessage({protocol:meta.protocol,view_id:meta.view_id,channel_nonce:meta.channel_nonce,seq:3,type:'request',request_id:2,method:'skill.call',params:{binding_alias:'echo',input:{message:'Wrong source must not execute'},idempotency_key:'forged-host-source',timeout_ms:10000}},location.origin)""", channel)
         # An actual sibling on the SAME plugin origin isolates event.source
         # validation from the separate wrong-origin check above.
+        sibling_url = current_sibling_frame_url(page)
         with page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith(reference_base + "widget.html")) as sibling_navigation:
-            page.evaluate("""({metadata,url}) => {const frame=document.createElement('iframe');frame.id='source-probe';frame.hidden=true;frame.setAttribute('sandbox','allow-scripts allow-same-origin');frame.src=url+'#'+new URLSearchParams(metadata);document.body.append(frame);}""", {"metadata": channel, "url": reference_base + "widget.html"})
+            page.evaluate("""({metadata,url}) => {const frame=document.createElement('iframe');frame.id='source-probe';frame.hidden=true;frame.setAttribute('sandbox','allow-scripts allow-same-origin');frame.src=url+'#'+new URLSearchParams(metadata);document.body.append(frame);}""", {"metadata": channel, "url": sibling_url})
         sibling = sibling_navigation.value
         sibling.locator("#state").wait_for(state="attached")
         sibling.wait_for_load_state("load")
@@ -758,6 +785,9 @@ def run(config, report):
         require(report["http"]["actual_skill_successes"] >= 3, "owner_actual_skill_requests_observed")
         require(report["http"]["preference_writes"] >= 2, "core_preferences_and_widget_layout_persisted")
         owner_call = calls[0]
+        require(coordinator_barrier(page, "await_child_default_ui", "child_default_ui_ready").get("restored") is True,
+                "default_ui_restored_for_real_child_root_login")
+        wait_for_observers(page, observed, bodies)
         owner_context.close()
 
         child_context, page = login(browser, config["child_id"], config["child_password"], "child")

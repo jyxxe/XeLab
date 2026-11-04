@@ -5,8 +5,64 @@
 //! Synthetic host capacity remains component setup, never RUN-03 acceptance.
 use super::*;
 use ed25519_dalek::{pkcs8::EncodePublicKey, SigningKey};
-use std::sync::atomic::Ordering;
+use std::{
+    ffi::{CStr, CString},
+    io::{self, Read},
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::fs::{MetadataExt, OpenOptionsExt},
+    },
+    path::Path,
+    sync::atomic::Ordering,
+};
 use xelab_kernel::{controller, schema_jobs, tls};
+
+struct InitializationObservation {
+    bytes: Vec<u8>,
+    data: fs::File,
+}
+
+fn observation_child(parent: &fs::File, name: &CStr, directory: bool) -> io::Result<fs::File> {
+    let flags = libc::O_RDONLY
+        | libc::O_NOFOLLOW
+        | libc::O_CLOEXEC
+        | if directory {
+            libc::O_DIRECTORY
+        } else {
+            libc::O_NONBLOCK
+        };
+    // SAFETY: parent is an owned directory fd and name is NUL terminated.
+    // Observation never takes the allocator's exclusive backend flock.
+    let fd = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: openat returned a new descriptor owned only by this File.
+    Ok(unsafe { fs::File::from_raw_fd(fd) })
+}
+
+/// A marker is only a read-only observation, never quota or format proof.
+/// The root was verified before enable; the only variable component is the
+/// scratch UUID from this operation's trusted journal, not a caller path.
+fn initialization_observation(root: &Path, scratch: Uuid) -> io::Result<InitializationObservation> {
+    let root = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(root)?;
+    let name = CString::new(scratch.to_string()).unwrap();
+    let volume = observation_child(&root, &name, true)?;
+    let data = observation_child(&volume, c"data", true)?;
+    let file = observation_child(&data, c"initialization-probe.json", false)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::from(io::ErrorKind::InvalidData));
+    }
+    let mut bytes = Vec::new();
+    file.take(65_537).read_to_end(&mut bytes)?;
+    if bytes.len() > 65_536 {
+        return Err(io::Error::from(io::ErrorKind::InvalidData));
+    }
+    Ok(InitializationObservation { bytes, data })
+}
 
 async fn ready(f: &Fixture) {
     for _ in 0..120 {
@@ -74,26 +130,56 @@ pub async fn exercise() {
             schema_bootstrap::create_deployment(&f, installation, business, "crash-deployment")
                 .await;
         let path = schema_bootstrap::data_path(&f, business).await;
+        let backend_root = f.app.config.root().join("volumes");
+        assert_eq!(path, backend_root.join(business.to_string()).join("data"));
         let (operation, _) =
             schema_bootstrap::enable(&f, deployment, "crash-original-enable").await;
         for _ in 0..600 {
             let job = journal(&f, operation).await;
-            assert_ne!(job["state"], "failed", "{job}");
+            assert_ne!(
+                job["state"],
+                "failed",
+                "bootstrap failed before crash checkpoint; code={}, backend_busy={}, plan_saved={}",
+                job["failure"]["code"].as_str().unwrap_or("not_recorded"),
+                job["failure"]["message"] == "Storage backend is already in use",
+                !job["plan"].is_null()
+            );
             if job["state"] != "initializing" {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
             let scratch = uuid(&job, "scratch_volume_id");
-            let scratch_path = schema_bootstrap::data_path(&f, scratch).await;
-            let trace = scratch_path.join("initialization-probe.json");
-            if let Ok(bytes) = fs::read(&trace) {
-                let events: Value = serde_json::from_slice(&bytes).unwrap();
+            let observation = match initialization_observation(&backend_root, scratch) {
+                Ok(observation) => Some(observation),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) => panic!("initialization observation failed: {:?}", error.kind()),
+            };
+            if let Some(observation) = observation {
+                let events: Value = serde_json::from_slice(&observation.bytes).unwrap();
                 if events
                     .as_array()
                     .unwrap()
                     .iter()
                     .any(|e| e["phase"] == "initialize_fresh")
                 {
+                    // Initialize has fsynced its marker and is withholding its
+                    // RPC response. Validate the full original XFS proof here,
+                    // outside the startup polling race, before the real abort.
+                    let scratch_path = schema_bootstrap::data_path(&f, scratch).await;
+                    assert_eq!(
+                        scratch_path,
+                        backend_root.join(scratch.to_string()).join("data")
+                    );
+                    let observed = observation.data.metadata().unwrap();
+                    let validated = fs::metadata(&scratch_path).unwrap();
+                    assert_eq!(
+                        (observed.dev(), observed.ino()),
+                        (validated.dev(), validated.ino())
+                    );
+                    assert!(
+                        journal(&f, operation).await == job,
+                        "bootstrap checkpoint changed while observing initialization"
+                    );
                     assert_eq!(job["state"], "initializing");
                     assert_eq!(
                         events,

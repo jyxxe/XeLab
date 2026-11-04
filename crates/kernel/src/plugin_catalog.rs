@@ -21,6 +21,7 @@ use zeroize::Zeroizing;
 
 const CURSOR_DOMAIN: &str = "xelab-plugin-catalog-cursor-v1";
 const MAX_PAGE_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_AUTHORITY_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 struct Collection {
@@ -63,48 +64,72 @@ struct Cursor {
     last_id: String,
     expires_at: DateTime<Utc>,
 }
-fn cipher(auth: &Auth) -> Result<LessSafeKey> {
-    let key = Zeroizing::new(auth.token_digest(CURSOR_DOMAIN));
+fn cipher(auth: &Auth, domain: &'static str) -> Result<LessSafeKey> {
+    let key = Zeroizing::new(auth.token_digest(domain));
     Ok(LessSafeKey::new(
         UnboundKey::new(&aead::AES_256_GCM, &key)
             .map_err(|_| Error::unavailable("Catalog cursor cipher is unavailable"))?,
     ))
 }
 fn encode(auth: &Auth, cursor: &Cursor) -> Result<String> {
+    encode_opaque_cursor(auth, CURSOR_DOMAIN, "c1", cursor)
+}
+
+/// Shared position confidentiality; callers supply fixed, distinct purpose and
+/// wire-version constants, never caller-selected keys or authorization policy.
+pub(crate) fn encode_opaque_cursor(
+    auth: &Auth,
+    domain: &'static str,
+    version: &'static str,
+    cursor: &impl Serialize,
+) -> Result<String> {
     let mut nonce = [0u8; 12];
     OsRng.fill_bytes(&mut nonce);
     let mut ciphertext = serde_json::to_vec(cursor)?;
-    cipher(auth)?
+    cipher(auth, domain)?
         .seal_in_place_append_tag(
             Nonce::assume_unique_for_key(nonce),
-            Aad::from(CURSOR_DOMAIN),
+            Aad::from(domain),
             &mut ciphertext,
         )
         .map_err(|_| Error::unavailable("Catalog cursor encryption failed"))?;
     let mut bytes = nonce.to_vec();
     bytes.extend(ciphertext);
-    let value = format!("c1.{}", URL_SAFE_NO_PAD.encode(bytes));
+    let value = format!("{version}.{}", URL_SAFE_NO_PAD.encode(bytes));
     if value.len() > 2048 {
         return Err(Error::exhausted());
     }
     Ok(value)
 }
 fn decode(auth: &Auth, value: &str) -> Result<Cursor> {
+    decode_opaque_cursor(auth, CURSOR_DOMAIN, "c1", value)
+}
+
+pub(crate) fn decode_opaque_cursor<T: serde::de::DeserializeOwned>(
+    auth: &Auth,
+    domain: &'static str,
+    version: &'static str,
+    value: &str,
+) -> Result<T> {
     let invalid = || Error::invalid("Invalid plugin catalog cursor");
     if value.len() > 2048 {
         return Err(invalid());
     }
     let mut bytes = URL_SAFE_NO_PAD
-        .decode(value.strip_prefix("c1.").ok_or_else(invalid)?)
+        .decode(
+            value
+                .strip_prefix(&format!("{version}."))
+                .ok_or_else(invalid)?,
+        )
         .map_err(|_| invalid())?;
     if bytes.len() < 29 {
         return Err(invalid());
     }
     let nonce: [u8; 12] = bytes[..12].try_into().map_err(|_| invalid())?;
-    let plaintext = cipher(auth)?
+    let plaintext = cipher(auth, domain)?
         .open_in_place(
             Nonce::assume_unique_for_key(nonce),
-            Aad::from(CURSOR_DOMAIN),
+            Aad::from(domain),
             &mut bytes[12..],
         )
         .map_err(|_| invalid())?;
@@ -112,12 +137,17 @@ fn decode(auth: &Auth, value: &str) -> Result<Cursor> {
         .map_err(|_| invalid())
 }
 
-struct Selectors {
-    all: bool,
-    ids: BTreeSet<String>,
-    owners: BTreeSet<Uuid>,
+pub(crate) struct Selectors {
+    pub(crate) all: bool,
+    pub(crate) ids: BTreeSet<String>,
+    pub(crate) owners: BTreeSet<Uuid>,
 }
-fn selectors(paths: &[Path], action: &str, kind: &str, ctx: &Context) -> Result<Selectors> {
+pub(crate) fn selectors(
+    paths: &[Path],
+    action: &str,
+    kind: &str,
+    ctx: &Context,
+) -> Result<Selectors> {
     let mut selected = Selectors {
         all: false,
         ids: BTreeSet::new(),
@@ -163,15 +193,27 @@ fn selectors(paths: &[Path], action: &str, kind: &str, ctx: &Context) -> Result<
     Ok(selected)
 }
 
-async fn authority_binding(
+pub(crate) fn reserve_authority_bytes(used: &mut usize, bytes: usize) -> Result<()> {
+    let next = used.checked_add(bytes).ok_or_else(Error::exhausted)?;
+    if next > MAX_AUTHORITY_BYTES {
+        return Err(Error::exhausted());
+    }
+    *used = next;
+    Ok(())
+}
+
+pub(crate) async fn authority_binding(
     c: &(impl GenericClient + Sync),
     ctx: &Context,
     paths: &[Path],
 ) -> Result<String> {
-    let mut canonical_paths = paths
-        .iter()
-        .map(serde_jcs::to_vec)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut canonical_paths = Vec::new();
+    let mut bytes = 0usize;
+    for path in paths {
+        let encoded = serde_jcs::to_vec(path)?;
+        reserve_authority_bytes(&mut bytes, encoded.len())?;
+        canonical_paths.push(encoded);
+    }
     canonical_paths.sort();
     let sources: Vec<Uuid> = paths
         .iter()
@@ -179,8 +221,7 @@ async fn authority_binding(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    if sources.len() > 4096 || canonical_paths.iter().map(Vec::len).sum::<usize>() > 4 * 1024 * 1024
-    {
+    if sources.len() > 4096 {
         return Err(Error::exhausted());
     }
     let grants: Vec<Value> = c
@@ -360,3 +401,23 @@ pub(crate) async fn execute(
 #[cfg(test)]
 #[path = "plugin_catalog_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod authority_budget_tests {
+    use super::*;
+    #[test]
+    fn combined_authority_budget_rejects_before_growth_without_charging_failed_reservations() {
+        let mut used = 0;
+        reserve_authority_bytes(&mut used, MAX_AUTHORITY_BYTES - 1).unwrap();
+        reserve_authority_bytes(&mut used, 1).unwrap();
+        assert_eq!(used, MAX_AUTHORITY_BYTES);
+        for bytes in [1, usize::MAX] {
+            assert_eq!(
+                reserve_authority_bytes(&mut used, bytes).unwrap_err().code,
+                "RESOURCE_EXHAUSTED"
+            );
+            assert_eq!(used, MAX_AUTHORITY_BYTES);
+        }
+        reserve_authority_bytes(&mut used, 0).unwrap();
+    }
+}

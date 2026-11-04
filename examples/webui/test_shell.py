@@ -7,7 +7,7 @@ import unittest
 from urllib.parse import parse_qs, urlparse
 
 import test_browser as desktop
-from test_bridge import contribution
+from test_bridge import contribution, framing_query
 
 
 class ShellBrowser(unittest.TestCase):
@@ -178,6 +178,7 @@ class ShellBrowser(unittest.TestCase):
 
     def test_contribution_restore_uses_new_channel_and_never_stores_business_or_credentials(self):
         value = self.window_contribution()
+        value["frame_url"] += framing_query("main", "browser-component")
         self.fixture.open()
         skills = self.fixture.app("Skill")
         skills.get_by_role("button", name="调用测试", exact=True).click()

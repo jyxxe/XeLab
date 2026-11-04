@@ -85,6 +85,12 @@ impl Config {
             {
                 return Err(Error::invalid("Invalid UI base domain"));
             }
+            if c.origin()?
+                .host_str()
+                .is_some_and(|host| host == base || host.ends_with(&format!(".{base}")))
+            {
+                return Err(Error::invalid("UI namespace must exclude the trusted core"));
+            }
             for s in c.value["ui_gateway"]["shell_origins"].as_array().unwrap() {
                 let origin = checked_origin(s.as_str().unwrap())?;
                 if origin == c.origin()?
@@ -207,6 +213,11 @@ mod tests {
         Config::from_value(value.clone()).unwrap();
         // An empty static list is not a wildcard. Explicit external parents
         // still cannot impersonate the trusted core or a deployment origin.
+        for core in ["https://plugins.example", "https://core.plugins.example"] {
+            let mut invalid = value.clone();
+            invalid["server"]["public_origin"] = serde_json::json!(core);
+            assert!(Config::from_value(invalid).is_err());
+        }
         for parent in [
             "https://*.example",
             value["server"]["public_origin"].as_str().unwrap(),
