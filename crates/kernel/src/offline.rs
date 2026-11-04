@@ -174,7 +174,8 @@ impl Session {
                     if instance.requires_drain {
                         return Err(Error::conflict(
                             "Offline writer exited before consistent drain",
-                        ));
+                        )
+                        .with_resource(instance.id));
                     }
                     return Ok(());
                 }

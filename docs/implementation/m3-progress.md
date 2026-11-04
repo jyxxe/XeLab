@@ -2,7 +2,8 @@
 
 [实施索引](README.md) · [目标 Issue #38](https://github.com/jyxxe/XeLab/issues/38) · [里程碑](roadmap.md)
 
-状态快照：2026-11-04 15:54 UTC；GitHub 状态会继续变化，最终完成清单以[目标 #38](https://github.com/jyxxe/XeLab/issues/38)持续维护的实际证据为准。
+状态快照：2026-11-04 18:20 UTC；本页保留该时刻的阶段证据，不自动代表后续分支状态。
+GitHub 状态会继续变化，最终完成清单以[目标 #38](https://github.com/jyxxe/XeLab/issues/38)持续维护的实际证据为准。
 初始基线为 main
 `dbb35cbc7c2c110c88de7ba16dc2d4569fad3ad2`，内部 Schema 14。
 这是开发与证据清单；勾选只表示该子项已有相应证据，不代表整个 M3-A/B 或 M3 完成。
@@ -14,7 +15,7 @@
 [PR #42](https://github.com/jyxxe/XeLab/pull/42)、
 [HTTP #43](https://github.com/jyxxe/XeLab/pull/43) 和
 [OAuth/UI 控制面 #44](https://github.com/jyxxe/XeLab/pull/44) 已合并。
-#43/#44 精确提交 CI 成功；新 main 自身 [CI 41860893005](https://github.com/jyxxe/XeLab/actions/runs/41860893005) 仍在执行。
+#43/#44 精确提交 CI 成功；main 自身 [CI 41860893005](https://github.com/jyxxe/XeLab/actions/runs/41860893005) 也已全部成功，包含 242 默认 Rust、真实 OAuth 浏览器 42 checks、OCI/XFS/恢复及严格文档检查。
 已合并的七项 Skill 操作、首个普通纯调用/流 profile、HTTP 基础及 OAuth 控制面不能代替完整目标。
 [Draft #45](https://github.com/jyxxe/XeLab/pull/45) 的独立 WebUI/桥、
 [Draft #46](https://github.com/jyxxe/XeLab/pull/46) 的普通四类副作用/QueryResult 和
@@ -64,9 +65,9 @@
 - [x] M3-A：streamSkill 经相同 Broker 与固定真实 OCI 实例；普通 capability 纯流 profile 已随 #40 合并。
 - [x] M3-A 首个普通纯 profile：签名/安装/Schema/版本冲突、双层授权、撤权取消及共享并发；见 #39/#40 精确 CI。
 - [x] M3-A 首个 profile：独立插件注册→启用→授权→调用→禁用拒绝→恢复，含重复请求、资源不足与实例重启；不是全部副作用验收。
-- [ ] M3-A 完整普通 profile：none/idempotent/queryable/non_repeatable 的单次与已声明流、原提供者 QueryResult 源码/组件已实现，#46 真实 OCI 待完成；HostService Skill 代理属 M4，不冒充已实现。
+- [ ] M3-A 完整普通 profile：none/idempotent/queryable/non_repeatable 的单次与已声明流、原提供者 QueryResult 已实现，#46 真实 OCI 子场景已通过，最终整轮 CI 与合并待完成；HostService Skill 代理属 M4，不冒充已实现。
 - [x] M3-B 基础：精确签名 HTTP/OpenAPI、动作/Schema、首个 HTTP Skill、隔离静态 GET/HEAD、共享物理池、直接 HTTP SSE、超时/撤权/恢复及独立 HTTP-only/混合插件；#43 已合并且精确 CI 成功。
-- [ ] M3-B 完整 HTTP Skill：固定 GET/HEAD/POST/PUT/PATCH/DELETE、声明成功状态/null identity 和 streamSkill SSE 已在 #47 实现；新真实 OCI 与最终 CI 待完成。
+- [ ] M3-B 完整 HTTP Skill：固定 GET/HEAD/POST/PUT/PATCH/DELETE、声明成功状态/null identity 和 streamSkill SSE 已在 #47 实现，真实 OCI 子场景已通过，最终整轮 CI 与合并待完成。
 - [x] M3-C 控制面：Client 注册/查询/修改/禁用、精确 origin/redirect/scope、默认 UI；#44 已合并，精确 CI 成功。
 - [x] M3-C 控制面：可信登录/原生同意、code + PKCE S256、单次码、刷新轮换/重用撤族、会话/主体/Client/Origin/CSRF/Cookie 及拒绝测试；实际可信页面浏览器已运行，不是 OCI WebUI 全链。
 - [ ] M3-D：#45 已实现独立 OCI `org.xelab.webui` 的签名构建、配置、限额、部署与访问步骤；整体门禁未通过。
@@ -90,21 +91,27 @@
 |---|---|
 | [#43](https://github.com/jyxxe/XeLab/pull/43) `68522810…` | [41850322061](https://github.com/jyxxe/XeLab/actions/runs/41850322061) 成功；已合并为 `a285c4ba…` |
 | [#44](https://github.com/jyxxe/XeLab/pull/44) `f427b4c5…` | [41851424259](https://github.com/jyxxe/XeLab/actions/runs/41851424259) 成功；已合并为 main `e9ad62b8…` |
-| [Draft #45](https://github.com/jyxxe/XeLab/pull/45) `4dea9d9e…` | [41857107136](https://github.com/jyxxe/XeLab/actions/runs/41857107136) 首次真实 M3 UI/iframe 整体步骤已失败；源码审计确认 listInstallations/listDeployments 尚未实现，请求到达将返回 503；此处未观测目录 GET 响应，缺口正在补齐，不能记为 F 通过；快照时作业仍运行 |
-| [Draft #46](https://github.com/jyxxe/XeLab/pull/46) `f253fa9a…` | [41860628714](https://github.com/jyxxe/XeLab/actions/runs/41860628714) 在执行；普通副作用/QueryResult 新 OCI 尚无通过结论 |
-| [Draft #47](https://github.com/jyxxe/XeLab/pull/47) `00443323…`（本文档更新前） | [41861912197](https://github.com/jyxxe/XeLab/actions/runs/41861912197) 排队；HTTP Skill 六方法/SSE 新 OCI 未通过，文档/后续修复形成新 head 后须核对对应 CI，不能借旧队列代表新提交 |
+| [Draft #45](https://github.com/jyxxe/XeLab/pull/45) `acf558cc…` | 前一 `257ef1b` 的 [41878371384](https://github.com/jyxxe/XeLab/actions/runs/41878371384) 真实安装/Ready/cgroup、Owner OAuth、Node 与目录 GET200 通过，随后关闭窗口超时；新 head 修复初始布局恢复竞态及实际前景关闭控件，Chromium 桌面14/Node21通过，新 [41885559126](https://github.com/jyxxe/XeLab/actions/runs/41885559126) 在执行，完整 F 尚未通过 |
+| [Draft #46](https://github.com/jyxxe/XeLab/pull/46) `62e020a6…`（本页后仍有修复） | [41879467933](https://github.com/jyxxe/XeLab/actions/runs/41879467933) 普通四类副作用/非纯流/QueryResult 真实 OCI sentinel 通过，随后旧离线快照拒绝已退出写入者，整轮失败；夹具撤销卷审批原会话后才 abort Controller 的竞争正在修正，保持生产 fail-closed，不能以子场景通过替代最终 CI |
+| [Draft #47](https://github.com/jyxxe/XeLab/pull/47) `031d306e…`（本文档更新前） | [41879474976](https://github.com/jyxxe/XeLab/actions/runs/41879474976) 真实 HTTP Skill 六方法/HEAD/SSE 1 PASS/155.62s，普通副作用/旧 OCI 1 PASS/529.62s，XFS/private restore 通过；完整 F 在目录成功后的关闭阶段失败，workspace/docs/protocol 被跳过；合并修复及文档后仍须核对新精确 CI |
+
+目录缺口与实际网络证据分别记录：早期缺少列表实现的503是源码分析，
+当时真实浏览器在带查询 OPTIONS400 停止，尚未发送目录 GET。
+现四个列表接口与严格 preflight 顺序均已修复，最新真实 F 已观察目录 GET200。
+窗口竞态由延迟偏好加载的 Chromium 回归确定复现；离线竞争由源码和独立审查确认可达，
+旧失败日志未带实例 ID，不能将其称为唯一已证明的历史根因。
 
 CI DWARF/incremental 产物优化和 90 分钟总作业预算只改变测试构建占用/作业预算，
 不修改业务 deadline、并发、资源限额或安全断言。
 
 官方独立 OCI WebUI、第三方 UI 参考插件和宿主消息桥已实现于集成分支，
-Node 21、WebUI mTLS 9、reference HTTP 7、Chromium 桌面 11/桥 8/reference 4
+Node 21、WebUI mTLS 9、reference HTTP 7、Chromium 桌面 14/桥 8/reference 4
 项组件测试已执行通过；独立打包 Docker 探针也通过。rootless Docker 的 CgroupDriver=none，不证明实际逐容器资源限制。
 真实签名两镜像、公开安装/Client 引导、Owner/子账户 OAuth、iframe Skill、攻击账本、
 撤权、停止 WebUI 后 CLI 及同进程核心组件重启的 `m3_ui` 测试已接入 CI，尚未执行通过。
 [实现与复现入口](m3-webui.md)明确组件、真实 OCI 与生产验收的证据边界。
 普通副作用/QueryResult 和 HTTP Skill 六方法/SSE 的定向 PostgreSQL/mTLS 组件及合并源码检查已有本地结果，
-详见 [Skill](m3-skills.md)、[流](m3-skill-streams.md)和[HTTP](m3-http.md)；不能替代 #46/#47 新真实 OCI。
+详见 [Skill](m3-skills.md)、[流](m3-skill-streams.md)和[HTTP](m3-http.md)；组件与已通过的真实子门禁均不能替代 #46/#47 最终完整 CI。
 
 
 | 证据 | 结果及边界 |

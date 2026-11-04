@@ -27,6 +27,24 @@ class CheckFailed(Exception):
     pass
 
 
+def close_windows(page, report):
+    report["step"] = "desktop_close_actual_windows"
+    for _ in range(16):
+        if not page.locator("#windows section.window").count():
+            report["checks"]["all_windows_close"] = True
+            return
+        focused = page.locator('#windows section.window[data-focused="true"]:visible')
+        if not focused.count():
+            # A minimized window must be restored through its real Dock control.
+            page.locator('#dock button[aria-label^="恢复"]').last.click()
+        # Background controls may legitimately be covered by a newer window.
+        # Close the current foreground window using its actual UI control.
+        focused.last.locator('.window-controls button[aria-label^="关闭"]').click()
+    if page.locator("#windows section.window").count():
+        raise CheckFailed("all_windows_close")
+    report["checks"]["all_windows_close"] = True
+
+
 def url_origin(value):
     parsed = urllib.parse.urlsplit(value)
     return f"{parsed.scheme}://{parsed.netloc}"
@@ -218,14 +236,6 @@ def run(config, report):
         result.wait_for()
         return result
 
-    def close_windows(page):
-        for _ in range(16):
-            buttons = page.locator('#windows .window-controls button[aria-label^="关闭"]')
-            if not buttons.count():
-                return
-            buttons.first.click()
-        require(page.locator("#windows section.window").count() == 0, "all_windows_close")
-
     def contribution_frame(page, identifier="echo_window"):
         report["step"] = "mount_actual_" + identifier
         dialog = open_app(page, "contributions", "插件页面", dock=False)
@@ -239,7 +249,7 @@ def run(config, report):
         frame.locator("#call").wait_for(state="visible")
         frame.wait_for_function("() => document.querySelector('#call')?.disabled === false")
         if identifier == "echo_widget":
-            close_windows(page)
+            close_windows(page, report)
         require(url_origin(frame.url) == reference, identifier + "_actual_isolated_origin")
         require(frame.evaluate("() => { try { parent.document.body; return false; } catch { return true; } }"), identifier + "_parent_dom_blocked")
         require(frame.evaluate("() => { try { parent.sessionStorage.length; return false; } catch { return true; } }"), identifier + "_parent_credential_storage_blocked")
@@ -280,17 +290,17 @@ def run(config, report):
         resources = open_app(page, "resources", "系统状态")
         resources.locator("pre.result").wait_for()
         require('"kernel_cpu_millis": 4000' in resources.inner_text() and '"kernel_memory_bytes": 17179869184' in resources.inner_text(), "desktop_reads_actual_node_reservations")
-        close_windows(page)
+        close_windows(page, report)
         plugins = open_app(page, "plugins", "插件中心")
         report["step"] = "desktop_wait_actual_plugin_catalog"
         plugins.get_by_role("heading", name="M3 official WebUI", exact=True).wait_for()
         plugins.get_by_role("heading", name="M3 independent UI reference", exact=True).wait_for()
         require("org.xelab.webui" in plugins.inner_text() and "org.xelab.ui-reference" in plugins.inner_text(), "desktop_reads_actual_installed_plugins")
-        close_windows(page)
+        close_windows(page, report)
         accounts = open_app(page, "accounts", "账户与权限")
         accounts.locator("pre.result").wait_for()
         require(config["owner_id"] in accounts.inner_text(), "desktop_reads_actual_owner_identity")
-        close_windows(page)
+        close_windows(page, report)
         skills = open_app(page, "skills", "Skill")
         card = skills.locator("article.card").filter(has=page.get_by_role("heading", name="org.xelab.ui-reference.echo", exact=True))
         card.get_by_role("button", name="调用测试", exact=True).click()
@@ -300,19 +310,19 @@ def run(config, report):
         editor.get_by_role("button", name="提交", exact=True).click()
         editor.locator("pre.result").wait_for()
         require("Actual management UI Skill call" in editor.inner_text(), "desktop_invokes_actual_fixed_skill")
-        close_windows(page)
+        close_windows(page, report)
         settings = open_app(page, "settings", "设置")
         settings.get_by_role("combobox", name="主题模式", exact=True).select_option("dark")
         settings.get_by_role("checkbox", name="减少动画", exact=True).check()
         settings.get_by_role("button", name="保存到当前账户", exact=True).click()
         page.wait_for_function("() => [...document.querySelectorAll('.theme-preview-note')].some(value => value.textContent.includes('已保存到核心'))")
-        close_windows(page)
+        close_windows(page, report)
         settings = open_app(page, "settings", "设置")
         require(settings.get_by_role("combobox", name="主题模式", exact=True).input_value() == "dark" and settings.get_by_role("checkbox", name="减少动画", exact=True).is_checked(), "actual_theme_preferences_survive_reread")
-        close_windows(page)
+        close_windows(page, report)
         unavailable = open_app(page, "tasks", "任务与知识库", dock=False)
         require("未伪造" in unavailable.inner_text() and unavailable.locator('[data-kind="unavailable"]').count() == 1, "future_execution_features_remain_unavailable")
-        close_windows(page)
+        close_windows(page, report)
         window = contribution_frame(page)
         echo(window, "Actual OCI iframe <img src=x onerror=alert(1)>", "window_bridge_calls_real_http_skill")
         report["step"] = "real_channel_nonce_replay_and_source_rejection"
@@ -342,7 +352,7 @@ def run(config, report):
         require(proof.get("calls_delta") == 1 and proof.get("daily_delta") == 1 and proof.get("concurrent") == 0,
                 "channel_attacks_create_no_call_or_quota_charge")
         require(window.evaluate("async core => { try { await fetch(core+'/api/platform/v1/node'); return false; } catch { return true; } }", core), "third_party_connect_src_none")
-        close_windows(page)
+        close_windows(page, report)
         widget = contribution_frame(page, "echo_widget")
         echo(widget, "Actual OCI widget Skill call", "widget_bridge_calls_real_http_skill")
         with page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith(reference_base + "window.html")) as opened:
