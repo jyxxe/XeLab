@@ -179,6 +179,23 @@ pub fn string<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
         .as_str()
         .ok_or_else(|| Error::invalid("Required string is missing"))
 }
+/// JSON Schema integers include integral JSON numbers such as `1000.0`.
+/// Convert bounded counters/deadlines without truncation or unchecked unwraps.
+pub(crate) fn unsigned(value: &Value) -> Result<u64> {
+    if let Some(integer) = value.as_u64() {
+        return Ok(integer);
+    }
+    if let Some(number) = value.as_f64() {
+        if number.is_finite()
+            && (0.0..=9007199254740991.0).contains(&number)
+            && number.fract() == 0.0
+        {
+            return Ok(number as u64);
+        }
+    }
+    Err(Error::invalid("Expected an exact unsigned integer"))
+}
+
 pub fn id(v: &Value, key: &str) -> Result<uuid::Uuid> {
     string(v, key)?
         .parse()

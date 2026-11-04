@@ -294,6 +294,17 @@ impl Fixture {
         instance: Uuid,
         source: Uuid,
     ) -> (Uuid, rpc::RpcContext) {
+        self.skill_delegation(deployment, instance, source, None, true)
+            .await
+    }
+    async fn skill_delegation(
+        &self,
+        deployment: Uuid,
+        instance: Uuid,
+        source: Uuid,
+        skill: Option<Uuid>,
+        input_blobs: bool,
+    ) -> (Uuid, rpc::RpcContext) {
         let mut c = self.app.db.connect().await.unwrap();
         let tx = c.transaction().await.unwrap();
         crate::db::auth_lock(&tx, false).await.unwrap();
@@ -314,13 +325,49 @@ impl Fixture {
         let input = json!({"source":source});
         let contract = &manifest["capabilities"][0]["contract"];
         tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,idempotency_key,state,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,'running',$8,now())",&[&call,&ctx.subject,&ctx.credential,&instance,&contract,&contracts::digest(&serde_json::to_vec(&input).unwrap()),&Uuid::new_v4().to_string(),&deadline]).await.unwrap();
+        if let Some(skill) = skill {
+            tx.execute("UPDATE calls SET skill_id=$2,skill_definition_digest=(SELECT definition_digest FROM skills WHERE id=$2) WHERE id=$1", &[&call,&skill]).await.unwrap();
+            let mut charged = crate::identity::call_sources(
+                &tx,
+                &ctx,
+                &auth::Resource::new(
+                    "capability",
+                    format!(
+                        "{}@{}",
+                        contract["name"].as_str().unwrap(),
+                        contract["version"].as_str().unwrap()
+                    ),
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+            charged.extend(
+                crate::identity::call_sources_for(
+                    &tx,
+                    &ctx,
+                    "skill.invoke",
+                    &auth::Resource::new("skill", skill, Some(ctx.subject)),
+                )
+                .await
+                .unwrap(),
+            );
+            for credential in charged {
+                tx.execute(
+                    "INSERT INTO call_credential_charges(call_id,credential_id) VALUES($1,$2)",
+                    &[&call, &credential],
+                )
+                .await
+                .unwrap();
+            }
+        }
         let token = self
             .app
             .auth
             .issue_rpc(&tx, &ctx, call, instance, 7, deadline)
             .await
             .unwrap();
-        super::grant_call(
+        super::grant_skill_call(
             &tx,
             &self.app,
             &ctx,
@@ -329,6 +376,7 @@ impl Fixture {
             &manifest,
             &manifest["capabilities"][0],
             &input,
+            input_blobs,
         )
         .await
         .unwrap();
@@ -848,4 +896,270 @@ async fn withdrawn_approval_source_is_not_replaced_by_a_new_permission_grant() {
         .unwrap()
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn skill_blob_inputs_and_live_original_skill_authority_are_enforced_over_mtls() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let (deployment, instance) = f.workload().await;
+    let source = f.source(b"approved source".to_vec()).await;
+    let c = f.app.db.connect().await.unwrap();
+    let row = c.query_one("SELECT d.installation_id,d.owner_id,n.manifest FROM deployments d JOIN installations n ON n.id=d.installation_id WHERE d.id=$1", &[&deployment]).await.unwrap();
+    let installation: Uuid = row.get("installation_id");
+    let owner: Uuid = row.get("owner_id");
+    let mut manifest: Value = row.get("manifest");
+    let cap = manifest["capabilities"][0].clone();
+    let definition = json!({"name":"org.xelab.echo-python.blob","version":"1.0.0","description":"Read only explicitly delegated inputs","input_schema":cap["input_schema"],"output_schema":cap["output_schema"],"stream_item_schema":null,"target":{"kind":"capability","plugin_id":manifest["plugin_id"],"contract":cap["contract"]},"mapping":"identity","maximum_timeout_ms":120000,"input_blobs":true,"tags":[]});
+    manifest["skills"] = json!([definition]);
+    crate::artifact::validate_profile(&manifest).unwrap();
+    c.execute(
+        "UPDATE installations SET manifest=$2 WHERE id=$1",
+        &[&installation, &manifest],
+    )
+    .await
+    .unwrap();
+    c.execute(
+        "INSERT INTO capability_contracts(name,version,schema_digest,spec) VALUES($1,$2,$3,$4)",
+        &[
+            &cap["contract"]["name"].as_str().unwrap(),
+            &cap["contract"]["version"].as_str().unwrap(),
+            &cap["contract"]["schema_digest"].as_str().unwrap(),
+            &cap,
+        ],
+    )
+    .await
+    .unwrap();
+    let skill = Uuid::new_v4();
+    c.execute("INSERT INTO skills(id,name,version,installation_id,created_by,definition,definition_digest,enabled,created_at,updated_at) VALUES($1,$2,'1.0.0',$3,$4,$5,$6,true,now(),now())", &[&skill,&definition["name"].as_str().unwrap(),&installation,&owner,&definition,&crate::skills::definition_digest(&definition).unwrap()]).await.unwrap();
+    let (_, no_inputs) = f
+        .skill_delegation(deployment, instance, source, Some(skill), false)
+        .await;
+    let (skill_call, context) = f
+        .skill_delegation(deployment, instance, source, Some(skill), true)
+        .await;
+    let server = tokio::spawn(crate::host::serve(f.app.clone()));
+    let mut client = f
+        .client(f.client_identity(&format!(
+            "spiffe://xelab.local/instance/{instance}/generation/7"
+        )))
+        .await;
+    assert_eq!(
+        client
+            .read_blob(rpc::ReadBlobRequest {
+                context: Some(no_inputs.clone()),
+                blob_id: source.to_string()
+            })
+            .await
+            .err()
+            .unwrap()
+            .code(),
+        tonic::Code::PermissionDenied
+    );
+    // Disabling Blob input delegation does not remove independent output authority.
+    client
+        .write_blob(tokio_stream::iter(frames(
+            no_inputs,
+            b"output remains approved",
+        )))
+        .await
+        .unwrap();
+    let mut stream = client
+        .read_blob(rpc::ReadBlobRequest {
+            context: Some(context.clone()),
+            blob_id: source.to_string(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        stream.message().await.unwrap().unwrap().data,
+        b"approved source"
+    );
+    let disabled = f
+        .call(
+            "setSkillEnabled",
+            &[("skill_id", skill)],
+            json!({"enabled":false}),
+            Some(1),
+            "disable-live-host-skill",
+            None,
+        )
+        .await;
+    assert_eq!(disabled.0, 200, "{}", disabled.1);
+    assert!(
+        client
+            .write_blob(tokio_stream::iter(frames(
+                context.clone(),
+                b"must be refused"
+            )))
+            .await
+            .is_err(),
+        "disable must fence HostService before Broker monitor runs"
+    );
+    let enabled = f
+        .call(
+            "setSkillEnabled",
+            &[("skill_id", skill)],
+            json!({"enabled":true}),
+            Some(2),
+            "enable-live-host-skill",
+            None,
+        )
+        .await;
+    assert_eq!(enabled.0, 200, "{}", enabled.1);
+    let source_grant: Uuid = c
+        .query_one(
+            "SELECT id FROM grants WHERE scope->>'kind'='skill' AND role_id='Owner'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    c.execute(
+        "UPDATE grants SET status='revoked' WHERE id=$1",
+        &[&source_grant],
+    )
+    .await
+    .unwrap();
+    c.execute("INSERT INTO grants(id,subject_id,issuer_id,role_id,scope,status,created_at,updated_at) SELECT $2,subject_id,issuer_id,role_id,scope,'active',created_at,now() FROM grants WHERE id=$1", &[&source_grant,&Uuid::new_v4()]).await.unwrap();
+    let ctx = f
+        .app
+        .auth
+        .authenticate(&c, &f.token, "127.0.0.1".parse().unwrap(), Uuid::new_v4())
+        .await
+        .unwrap();
+    auth::authorize(
+        &c,
+        &ctx,
+        "skill.invoke",
+        &auth::Resource::new("skill", skill, Some(owner)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        super::check_call_sources(&c, &ctx, skill_call)
+            .await
+            .unwrap_err()
+            .code,
+        "PERMISSION_DENIED"
+    );
+    assert_eq!(
+        client
+            .read_blob(rpc::ReadBlobRequest {
+                context: Some(context),
+                blob_id: source.to_string()
+            })
+            .await
+            .err()
+            .unwrap()
+            .code(),
+        tonic::Code::PermissionDenied,
+        "replacement grants cannot revive the frozen original Skill source"
+    );
+    f.app.shutdown.store(true, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(3), server)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn skill_frozen_business_proofs_exclude_exhausted_uncharged_alternatives() {
+    use std::collections::BTreeSet;
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let c = f.app.db.connect().await.unwrap();
+    let peer = "127.0.0.1".parse().unwrap();
+    let ctx = f
+        .app
+        .auth
+        .authenticate(&c, &f.token, peer, Uuid::new_v4())
+        .await
+        .unwrap();
+    let keys = [Uuid::new_v4(), Uuid::new_v4()];
+    let grants = [Uuid::new_v4(), Uuid::new_v4()];
+    for (key, grant) in keys.iter().zip(grants) {
+        c.execute("INSERT INTO credentials(id,owner_id,kind,hmac_key_id,verification_digest,status,inheritance_mode,conditions,expires_at,created_at,updated_at) VALUES($1,$2,'api_key','fixture',$3,'active','follow_parent','{\"max_calls\":1}',now()+interval '1 hour',now(),now())", &[&key,&ctx.subject,&&key.as_bytes()[..]]).await.unwrap();
+        c.execute("INSERT INTO grants(id,subject_id,issuer_id,issuer_credential_id,role_id,scope,status,created_at,updated_at) VALUES($1,$2,$2,$3,'Owner','{\"kind\":\"capability\",\"match\":\"all\"}','active',now(),now())", &[&grant,&ctx.subject,&key]).await.unwrap();
+    }
+    let prior = Uuid::new_v4();
+    let call = Uuid::new_v4();
+    for (id, credential) in [(prior, keys[0]), (call, ctx.credential)] {
+        c.execute("INSERT INTO calls(id,owner_id,credential_id,contract,input_digest,state,deadline_at,created_at) VALUES($1,$2,$3,'{}','fixture','succeeded',now()+interval '1 minute',now())", &[&id,&ctx.subject,&credential]).await.unwrap();
+    }
+    assert_eq!(
+        crate::identity::key_calls(&c, keys[0]).await.unwrap(),
+        1,
+        "the alternative was exhausted before this call"
+    );
+    for credential in ctx.chain.iter().copied().chain([keys[1]]) {
+        c.execute(
+            "INSERT INTO call_credential_charges(call_id,credential_id) VALUES($1,$2)",
+            &[&call, &credential],
+        )
+        .await
+        .unwrap();
+    }
+    let mut paths = Vec::new();
+    for (action, kind) in [
+        ("capability.invoke", "capability"),
+        ("skill.invoke", "skill"),
+    ] {
+        for grant in grants {
+            paths.push(crate::policy::Path {
+                rule: json!({"action":action,"resource":{"kind":kind,"match":"all"}}),
+                sources: BTreeSet::from([grant]),
+            });
+        }
+    }
+    let filtered = super::charged_business_paths(&c, &ctx, call, paths)
+        .await
+        .unwrap();
+    assert_eq!(filtered.len(), 2);
+    assert!(
+        filtered
+            .iter()
+            .all(|path| path.sources == BTreeSet::from([grants[1]])),
+        "exhausted uncharged alternatives must never enter frozen business authority"
+    );
+    // The currently charged call may fill its issuer's last slot. Rechecking
+    // admission budgets here would incorrectly withdraw its own valid proof.
+    assert_eq!(crate::identity::key_calls(&c, keys[1]).await.unwrap(), 1);
+    let repeated = super::charged_business_paths(&c, &ctx, call, filtered)
+        .await
+        .unwrap();
+    assert_eq!(repeated.len(), 2);
+    let live = crate::policy::Policy::new(&c, peer)
+        .revalidate(&repeated, ctx.credential)
+        .await
+        .unwrap();
+    assert!(auth::rules_allow(
+        &crate::policy::rules(&live),
+        "capability.invoke",
+        &auth::Resource::new("capability", "fixture@1.0.0", None),
+        peer
+    ));
+    c.execute(
+        "UPDATE grants SET status='revoked' WHERE id=$1",
+        &[&grants[1]],
+    )
+    .await
+    .unwrap();
+    auth::authorize(
+        &c,
+        &ctx,
+        "capability.invoke",
+        &auth::Resource::new("capability", "fixture@1.0.0", None),
+    )
+    .await
+    .unwrap();
+    let withdrawn = crate::policy::Policy::new(&c, peer)
+        .revalidate(&repeated, ctx.credential)
+        .await
+        .unwrap();
+    assert!(!auth::rules_allow(&crate::policy::rules(&withdrawn),"capability.invoke",&auth::Resource::new("capability","fixture@1.0.0",None),peer),"an uncharged current alternative must not sustain the admitted work after its charged proof is revoked");
 }

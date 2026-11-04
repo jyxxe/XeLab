@@ -72,6 +72,7 @@ pub fn audit_resource(
         "createVolume" => Some(("volume", &response["resource_id"])),
         "createBackup" => Some(("backup", &response["resource_id"])),
         "createSecret" => Some(("secret", &response["id"])),
+        "registerSkill" => Some(("skill", &response["id"])),
         "bindSecret" => Some(("secret", &response["spec"]["secret_id"])),
         _ => None,
     };
@@ -80,7 +81,11 @@ pub fn audit_resource(
             return Resource::new(kind, id, None).json();
         }
     }
+    if name == "registerSkill" {
+        return Resource::new("skill", "new", None).json();
+    }
     for (parameter, kind) in [
+        ("skill_id", "skill"),
         ("credential_id", "credential"),
         ("session_id", "credential"),
         ("group_id", "group"),
@@ -1040,12 +1045,22 @@ pub async fn call_sources(
     ctx: &Context,
     resource: &Resource,
 ) -> Result<BTreeSet<Uuid>> {
+    call_sources_for(c, ctx, "capability.invoke", resource).await
+}
+
+/// Keep proof-source charging identical for Skill and its underlying action.
+pub(crate) async fn call_sources_for(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    action: &str,
+    resource: &Resource,
+) -> Result<BTreeSet<Uuid>> {
     let paths = Policy::new(c, ctx.peer)
         .credential(ctx.credential, 0)
         .await?;
     let mut alternatives = Vec::new();
     for path in paths {
-        if !auth::rules_allow(&json!([path.rule]), "capability.invoke", resource, ctx.peer) {
+        if !auth::rules_allow(&json!([path.rule]), action, resource, ctx.peer) {
             continue;
         }
         let mut keys: BTreeSet<_> = ctx.chain.iter().copied().collect();

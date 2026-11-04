@@ -408,6 +408,28 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         .0,
         409
     );
+    let skill = ordinary_skill_lifecycle(
+        &router,
+        &db,
+        owner,
+        token,
+        &installed["installation_id"],
+        &manifest,
+        &called.1,
+        &deployment,
+    )
+    .await;
+    let registered_skill = api(
+        &router,
+        "getSkill",
+        &[("skill_id", skill.clone())],
+        Some(token),
+        Value::Null,
+        "read-registered-skill",
+        None,
+    )
+    .await;
+    assert_eq!(registered_skill.0, 200, "{}", registered_skill.1);
     let call_id = called.1["call_id"].as_str().unwrap();
     assert_eq!(
         api(
@@ -496,6 +518,22 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
             .unwrap()
             .get::<_, i64>(0),
         500
+    );
+    let after_restart = api(
+        &router,
+        "invokeSkill",
+        &[("skill_id", skill.clone())],
+        Some(token),
+        json!({"input":{"message":"fixed Skill after controller restart"},"timeout_ms":10000}),
+        "skill-after-restart",
+        None,
+    )
+    .await;
+    assert_eq!(after_restart.0, 200, "{}", after_restart.1);
+    assert_eq!(after_restart.1["skill_id"], skill);
+    assert_eq!(
+        after_restart.1["call"]["output"]["message"],
+        "fixed Skill after controller restart"
     );
     // A second independently implemented language/runtime reuses the same contract.
     let python_raw = fs::read("examples/generated-python/xelab/plugin.json").unwrap();
@@ -680,6 +718,20 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         .unwrap()
         .get::<_, i64>(0),
         2
+    );
+    let fixed_skill = api(
+        &router, "invokeSkill", &[("skill_id",skill.clone())], Some(token),
+        json!({"input":{"message":"fixed despite another healthy implementation"},"timeout_ms":10000}),
+        "skill-no-provider-drift", None,
+    ).await;
+    assert_eq!(fixed_skill.0, 200, "{}", fixed_skill.1);
+    assert_eq!(
+        fixed_skill.1["call"]["provider_instance_id"],
+        instance.to_string()
+    );
+    assert_ne!(
+        fixed_skill.1["call"]["provider_instance_id"],
+        python_instance.to_string()
     );
     let python_input = json!({"contract":manifest["capabilities"][0]["contract"],"input":{"message":"hello OCI"},"provider_deployment_id":python_deployment,"timeout_ms":10000});
     let python_result = api(
@@ -1331,6 +1383,55 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     )
     .await
     .unwrap();
+    let recovered_skill=restored_client.query_one("SELECT s.id,s.definition,s.definition_digest,s.installation_id,s.enabled,n.state,p.status FROM skills s JOIN installations n ON n.id=s.installation_id JOIN publishers p ON p.id=n.publisher_id WHERE s.id=$1", &[&skill.parse::<Uuid>().unwrap()]).await.unwrap();
+    assert_eq!(recovered_skill.get::<_, Uuid>("id").to_string(), skill);
+    assert_eq!(
+        recovered_skill.get::<_, Value>("definition"),
+        registered_skill.1["definition"]
+    );
+    assert_eq!(
+        recovered_skill.get::<_, String>("definition_digest"),
+        registered_skill.1["definition_digest"].as_str().unwrap()
+    );
+    assert_eq!(
+        recovered_skill
+            .get::<_, Uuid>("installation_id")
+            .to_string(),
+        registered_skill.1["installation_id"].as_str().unwrap()
+    );
+    assert!(
+        recovered_skill.get::<_, bool>("enabled"),
+        "saved Skill intent is history, not authority"
+    );
+    assert_eq!(
+        recovered_skill.get::<_, String>("status"),
+        "revoked",
+        "restored Skill must not revive publisher trust"
+    );
+    let recovered_auth = Auth::new(vec![42; 32]).unwrap();
+    assert!(
+        recovered_auth
+            .authenticate(
+                &restored_client,
+                token,
+                "127.0.0.1".parse().unwrap(),
+                Uuid::new_v4()
+            )
+            .await
+            .is_err(),
+        "restored Skill cannot revive old credentials"
+    );
+    assert_eq!(
+        restored_client
+            .query_one(
+                "SELECT count(*) FROM deployments WHERE spec->>'enabled'='true'",
+                &[]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
     assert!(
         recovered.check().await.is_err(),
         "physical recovery is still incomplete; metadata import must not open the gate"
@@ -1796,4 +1897,306 @@ async fn host_blob_component(
     assert_eq!(disabled.0, 202, "{}", disabled.1);
     operation(router, disabled.1["id"].as_str().unwrap(), token).await;
     println!("Host Blob: actual signed OCI -> delegated ReadBlob/WriteBlob -> verified HTTP download and call replay passed");
+}
+
+// This helper exercises the new registry/router with the signed artifact already
+// verified and actually running above. It deliberately uses the public API for
+// registration, permissions, enable/disable, replay and credential revocation.
+#[allow(clippy::too_many_arguments)]
+async fn ordinary_skill_lifecycle(
+    router: &Router,
+    db: &Db,
+    owner: Uuid,
+    token: &str,
+    installation: &Value,
+    manifest: &Value,
+    prior_capability_call: &Value,
+    deployment: &str,
+) -> String {
+    let register = json!({"installation_id":installation,"definition":manifest["skills"][0]});
+    let mut unsigned = register.clone();
+    unsigned["definition"]["description"] = json!("not covered by the original signed image");
+    let unsigned = api(
+        router,
+        "registerSkill",
+        &[],
+        Some(token),
+        unsigned,
+        "skill-unsigned-candidate",
+        None,
+    )
+    .await;
+    assert_eq!(unsigned.0, 409, "{}", unsigned.1);
+    assert_eq!(unsigned.1["error"]["code"], "CONTRACT_CONFLICT");
+    let created = api(
+        router,
+        "registerSkill",
+        &[],
+        Some(token),
+        register.clone(),
+        "skill-register",
+        None,
+    )
+    .await;
+    assert_eq!(created.0, 201, "{}", created.1);
+    contracts::validate("Skill", &created.1).unwrap();
+    let skill = created.1["id"].as_str().unwrap().to_owned();
+    let params = [("skill_id", skill.clone())];
+    let request = json!({"input":{"message":"real Skill over OCI"},"timeout_ms":10000,"idempotency_key":"stable-skill-business-key"});
+    let disabled = api(
+        router,
+        "invokeSkill",
+        &params,
+        Some(token),
+        request.clone(),
+        "skill-disabled",
+        None,
+    )
+    .await;
+    assert_eq!(disabled.0, 503, "{}", disabled.1);
+    let enabled = api(
+        router,
+        "setSkillEnabled",
+        &params,
+        Some(token),
+        json!({"enabled":true}),
+        "skill-enable",
+        Some(1),
+    )
+    .await;
+    assert_eq!(enabled.0, 200, "{}", enabled.1);
+    let skill_rule =
+        json!({"action":"skill.invoke","resource":{"kind":"skill","match":"ids","ids":[skill]}});
+    let cap = &manifest["capabilities"][0]["contract"];
+    let capability_rule = json!({"action":"capability.invoke","resource":{"kind":"capability","match":"ids","ids":[format!("{}@{}",cap["name"].as_str().unwrap(),cap["version"].as_str().unwrap())]}});
+    for (index, rules) in [json!([skill_rule]), json!([capability_rule])]
+        .into_iter()
+        .enumerate()
+    {
+        let key=api(router,"createApiKey",&[("account_id",owner.to_string())],Some(token),json!({"name":"one Skill permission layer","inheritance":{"mode":"selected","rules":rules},"conditions":{"expires_at":chrono::Utc::now()+chrono::Duration::days(1)}}),&format!("skill-one-layer-{index}"),None).await;
+        assert_eq!(key.0, 201, "{}", key.1);
+        let refused = api(
+            router,
+            "invokeSkill",
+            &params,
+            Some(key.1["secret"].as_str().unwrap()),
+            request.clone(),
+            "one-layer-call",
+            None,
+        )
+        .await;
+        assert_eq!(refused.0, 403, "{}", refused.1);
+    }
+    let key=api(router,"createApiKey",&[("account_id",owner.to_string())],Some(token),json!({"name":"fixed Skill caller","inheritance":{"mode":"selected","rules":[skill_rule,capability_rule]},"conditions":{"expires_at":chrono::Utc::now()+chrono::Duration::days(1)}}),"skill-caller-key",None).await;
+    assert_eq!(key.0, 201, "{}", key.1);
+    let caller = key.1["secret"].as_str().unwrap();
+    // The same HTTP key used by the earlier bare capability call cannot collide
+    // with this Skill-specific endpoint's idempotency namespace.
+    let called = api(
+        router,
+        "invokeSkill",
+        &params,
+        Some(token),
+        request.clone(),
+        "invoke-1",
+        None,
+    )
+    .await;
+    assert_eq!(called.0, 200, "{}", called.1);
+    contracts::validate("SkillCallResult", &called.1).unwrap();
+    assert_eq!(called.1["call"]["skill_id"], called.1["skill_id"]);
+    assert_eq!(
+        called.1["call"]["skill_definition_digest"],
+        called.1["definition_digest"]
+    );
+    let recorded = api(
+        router,
+        "getCall",
+        &[(
+            "call_id",
+            called.1["call"]["call_id"].as_str().unwrap().to_owned(),
+        )],
+        Some(token),
+        Value::Null,
+        "read-skill-call",
+        None,
+    )
+    .await;
+    assert_eq!(recorded.0, 200, "{}", recorded.1);
+    assert_eq!(recorded.1["result"], called.1["call"]);
+    assert_ne!(
+        called.1["call"]["call_id"],
+        prior_capability_call["call_id"]
+    );
+    assert_eq!(
+        called.1["call"]["provider_instance_id"],
+        prior_capability_call["provider_instance_id"]
+    );
+    assert_eq!(called.1["call"]["output"]["message"], "real Skill over OCI");
+    let replay = api(
+        router,
+        "invokeSkill",
+        &params,
+        Some(token),
+        request.clone(),
+        "invoke-1",
+        None,
+    )
+    .await;
+    assert_eq!(replay, called);
+    let mut changed = request.clone();
+    changed["input"]["message"] = json!("different");
+    let conflict = api(
+        router,
+        "invokeSkill",
+        &params,
+        Some(token),
+        changed,
+        "invoke-1",
+        None,
+    )
+    .await;
+    assert_eq!(conflict.0, 409, "{}", conflict.1);
+    let scoped = api(
+        router,
+        "invokeSkill",
+        &params,
+        Some(caller),
+        request.clone(),
+        "scoped-skill-call",
+        None,
+    )
+    .await;
+    assert_eq!(scoped.0, 200, "{}", scoped.1);
+    let c = db.connect().await.unwrap();
+    let journal=c.query_one("SELECT c.skill_id,c.skill_definition_digest,d.installation_id,c.idempotency_key FROM calls c JOIN instances i ON i.id=c.provider_instance_id JOIN deployments d ON d.id=i.deployment_id WHERE c.id=$1",&[&scoped.1["call"]["call_id"].as_str().unwrap().parse::<Uuid>().unwrap()]).await.unwrap();
+    assert_eq!(journal.get::<_, String>(3), "stable-skill-business-key");
+    assert_eq!(journal.get::<_, Uuid>(0).to_string(), skill);
+    assert_eq!(
+        journal.get::<_, String>(1),
+        created.1["definition_digest"].as_str().unwrap()
+    );
+    assert_eq!(
+        journal.get::<_, Uuid>(2).to_string(),
+        installation.as_str().unwrap()
+    );
+    let before = c
+        .query_one(
+            "SELECT concurrent_calls_used,daily_calls_used,spec FROM quotas WHERE account_id=$1",
+            &[&owner],
+        )
+        .await
+        .unwrap();
+    let mut exhausted: Value = before.get(2);
+    exhausted["maximum_concurrent_calls"] = json!(0);
+    c.execute(
+        "UPDATE quotas SET spec=$2 WHERE account_id=$1",
+        &[&owner, &exhausted],
+    )
+    .await
+    .unwrap();
+    let denied = api(
+        router,
+        "invokeSkill",
+        &params,
+        Some(token),
+        request.clone(),
+        "skill-quota-exhausted",
+        None,
+    )
+    .await;
+    assert_eq!(denied.0, 503, "{}", denied.1);
+    assert_eq!(denied.1["error"]["code"], "RESOURCE_EXHAUSTED");
+    let after = c
+        .query_one(
+            "SELECT concurrent_calls_used,daily_calls_used FROM quotas WHERE account_id=$1",
+            &[&owner],
+        )
+        .await
+        .unwrap();
+    assert_eq!(after.get::<_, i64>(0), before.get::<_, i64>(0));
+    assert_eq!(after.get::<_, i64>(1), before.get::<_, i64>(1));
+    c.execute(
+        "UPDATE quotas SET spec=$2 WHERE account_id=$1",
+        &[&owner, &before.get::<_, Value>(2)],
+    )
+    .await
+    .unwrap();
+    let off = api(
+        router,
+        "setSkillEnabled",
+        &params,
+        Some(token),
+        json!({"enabled":false}),
+        "skill-disable",
+        enabled.1["revision"].as_i64(),
+    )
+    .await;
+    assert_eq!(off.0, 200, "{}", off.1);
+    let denied = api(
+        router,
+        "invokeSkill",
+        &params,
+        Some(caller),
+        request.clone(),
+        "skill-after-disable",
+        None,
+    )
+    .await;
+    assert_eq!(denied.0, 503, "{}", denied.1);
+    let on = api(
+        router,
+        "setSkillEnabled",
+        &params,
+        Some(token),
+        json!({"enabled":true}),
+        "skill-reenable",
+        off.1["revision"].as_i64(),
+    )
+    .await;
+    assert_eq!(on.0, 200, "{}", on.1);
+    let restored = api(
+        router,
+        "invokeSkill",
+        &params,
+        Some(caller),
+        request.clone(),
+        "skill-restored",
+        None,
+    )
+    .await;
+    assert_eq!(restored.0, 200, "{}", restored.1);
+    let revoked = api(
+        router,
+        "revokeApiKey",
+        &[(
+            "credential_id",
+            key.1["credential"]["id"].as_str().unwrap().into(),
+        )],
+        Some(token),
+        Value::Null,
+        "skill-revoke-key",
+        key.1["credential"]["revision"].as_i64(),
+    )
+    .await;
+    assert_eq!(revoked.0, 204, "{}", revoked.1);
+    let denied = api(
+        router,
+        "invokeSkill",
+        &params,
+        Some(caller),
+        request,
+        "skill-restored",
+        None,
+    )
+    .await;
+    assert_eq!(
+        denied.0, 401,
+        "replay must reauthenticate revoked callers: {}",
+        denied.1
+    );
+    // Keep the registration enabled so the caller tests it after controller
+    // restart, while all routes retain this exact installation binding.
+    assert!(!deployment.is_empty());
+    skill
 }
