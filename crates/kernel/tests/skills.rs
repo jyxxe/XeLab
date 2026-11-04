@@ -701,6 +701,13 @@ async fn omitted_timeout_uses_fixed_skill_maximum_before_waiting_on_call_lock() 
     .expect("omitted timeout must not inherit the outer 120s wait");
     assert_eq!(refused.0, 504, "{}", refused.1);
     assert_eq!(refused.1["error"]["code"], "DEADLINE_EXCEEDED");
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let waiting: bool = lock.query_one("SELECT EXISTS(SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid WHERE a.datname=current_database() AND l.locktype='advisory' AND NOT l.granted)", &[]).await.unwrap().get(0);
+            if !waiting { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.expect("deadline must cancel the PostgreSQL waiter before its lock is released");
     lock.rollback().await.unwrap();
     assert_eq!(
         c.query_one("SELECT count(*) FROM calls", &[])
