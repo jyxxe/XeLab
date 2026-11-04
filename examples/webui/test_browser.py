@@ -13,6 +13,7 @@ from playwright.sync_api import sync_playwright
 from test_bridge import contribution, FRAME, PLUGIN
 
 PUBLIC = pathlib.Path(__file__).parent / "public"
+REFERENCE_PUBLIC = pathlib.Path(__file__).resolve().parents[1] / "ui-reference" / "public"
 SHELL = "https://shell.example.test"
 CORE = "https://core.example.test"
 BASE = "/ui/org.xelab.webui/"
@@ -61,6 +62,7 @@ class DesktopBrowser(unittest.TestCase):
         self.expected_challenge = None
         self.hold_preferences = False
         self.pending_preferences = []
+        self.real_reference = False
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
         self.page.route("**/*", self.route)
 
@@ -85,6 +87,14 @@ class DesktopBrowser(unittest.TestCase):
             route.fulfill(status=200, content_type=types[pathlib.Path(file).suffix], body=(PUBLIC / file).read_bytes())
             return
         if f"{url.scheme}://{url.netloc}" == PLUGIN:
+            if self.real_reference:
+                file = pathlib.Path(url.path).name
+                if file not in {"window.html", "widget.html", "app.js", "bridge.js", "styles.css"}:
+                    route.fulfill(status=404, body="not found")
+                    return
+                types = {".html": "text/html", ".css": "text/css", ".js": "text/javascript"}
+                route.fulfill(content_type=types[pathlib.Path(file).suffix], headers={"content-security-policy": f"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; frame-ancestors {SHELL}"}, body=(REFERENCE_PUBLIC / file).read_bytes())
+                return
             route.fulfill(status=200, content_type="text/html", headers={"content-security-policy": f"default-src 'none'; script-src 'unsafe-inline'; connect-src 'none'; frame-ancestors {SHELL}"}, body=FRAME)
             return
         if f"{url.scheme}://{url.netloc}" != CORE:
@@ -443,6 +453,57 @@ class DesktopBrowser(unittest.TestCase):
         self.assertEqual(len([call for call in self.calls if call["method"] == "POST"]), count)
         self.page.get_by_role("button", name="退出", exact=True).click()
         self.assertEqual(self.page.locator("#widgets").text_content(), "")
+
+    def test_reference_window_open_settles_before_strict_network_audit_close(self):
+        self.real_reference = True
+        observed = {"observer_failure": False, "error_counts": {}, "active_request_observers": 0, "active_response_observers": 0}
+        counts = {"plugin_headers": 0}
+        def audit(request):
+            observed["active_request_observers"] += 1
+            try:
+                if f"{urlparse(request.url).scheme}://{urlparse(request.url).netloc}" == PLUGIN:
+                    request.all_headers()
+                    counts["plugin_headers"] += 1
+            except Exception as error:
+                DRIVER.record_observer_failure(observed, "request_headers", error)
+            finally:
+                observed["active_request_observers"] -= 1
+        self.context.on("request", audit)
+        for identifier, kind in [("echo_window", "window"), ("echo_widget", "widget")]:
+            value = contribution(identifier, kind)
+            value["plugin_id"] = "org.xelab.ui-reference"
+            value["spec"]["title"] = "Reference echo" if kind == "window" else "Echo widget"
+            value["spec"]["entry_path"] = "/window.html" if kind == "window" else "/widget.html"
+            value["spec"]["skill_bindings"][0].update(name="org.xelab.ui-reference.echo", modes=["call"])
+            value["bindings"][0].update(skill_id=SKILL, modes=["call"])
+            value["frame_url"] = PLUGIN + "/ui/org.xelab.ui-reference" + value["spec"]["entry_path"]
+            value["contribution_digest"] = "sha256:" + hashlib.sha256(json.dumps(value["spec"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            self.contributions[identifier] = value
+        self.open()
+        self.page.get_by_role("button", name="打开应用启动器", exact=True).click()
+        self.page.get_by_role("button", name="启动插件页面", exact=True).click()
+        listing = self.page.locator('.window[data-app="contributions"]')
+        with self.page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith(PLUGIN + "/ui/org.xelab.ui-reference/widget.html")) as mounted:
+            listing.get_by_role("button", name="添加桌面组件", exact=True).click()
+        widget = mounted.value
+        widget.wait_for_function("() => document.querySelector('#call')?.disabled === false")
+        listing.get_by_role("button", name="关闭插件页面", exact=True).click()
+        with self.page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith(PLUGIN + "/ui/org.xelab.ui-reference/window.html")) as opened:
+            widget.locator("#open-window").click()
+        self.assertTrue(DRIVER.wait_for_widget_window(self.page, widget, opened.value, self.contributions["echo_window"]["deployment_id"]))
+        source = PLUGIN + "/ui/org.xelab.ui-reference/widget.html#" + opened.value.url.split("#", 1)[1]
+        with self.page.expect_event("framenavigated", predicate=lambda frame: frame.url == source) as navigated:
+            self.page.evaluate("src => {const frame=document.createElement('iframe');frame.id='source-probe';frame.hidden=true;frame.src=src;document.body.append(frame);}", source)
+        navigated.value.wait_for_load_state("load")
+        self.assertTrue(navigated.value.locator("#call").is_disabled())
+        self.page.locator("#source-probe").evaluate("element => element.remove()")
+        DRIVER.wait_for_observers(self.page, observed)
+        self.assertGreaterEqual(counts["plugin_headers"], 12)
+        self.context.close()
+        self.assertEqual(observed["active_request_observers"], 0)
+        self.assertEqual(observed["active_response_observers"], 0)
+        self.assertFalse(observed["observer_failure"], observed["error_counts"])
+        print(json.dumps({"component": "desktop_reference_window_observer_not_core", "plugin_headers": counts["plugin_headers"], "active_requests": observed["active_request_observers"], "active_responses": observed["active_response_observers"], "observer_failure": observed["observer_failure"]}, sort_keys=True))
 
     def test_mutating_401_never_refreshes_or_retries_business_request(self):
         self.open()
