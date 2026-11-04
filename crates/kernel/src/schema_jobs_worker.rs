@@ -20,6 +20,10 @@ const SCRATCH: &str = "/xelab-migration";
 const SCRATCH_BYTES: u64 = 67_108_864;
 const MAX_FENCE: i64 = 9_007_199_254_740_991;
 
+#[path = "schema_jobs_transition.rs"]
+mod transition;
+pub(crate) use transition::{commit_upgrade, run_upgrade, UpgradeReady};
+
 #[cfg(test)]
 #[path = "schema_jobs_tests.rs"]
 mod tests;
@@ -265,7 +269,18 @@ async fn mounts(
     let metadata: Value = row.get("installation_metadata");
     let manifest = &metadata["manifest"];
     let mut mounts = Vec::new();
-    for source in volumes::backup_sources(app, row.get("operation_id"), &ids(row)?).await? {
+    let sources = if row.get::<_, String>("kind") == "bootstrap" {
+        volumes::backup_sources(app, row.get("operation_id"), &ids(row)?).await?
+    } else {
+        let mut sources = Vec::new();
+        for volume in ids(row)? {
+            sources.push(
+                volumes::private_restore_path(app, row.get("operation_id"), volume, false).await?,
+            );
+        }
+        sources
+    };
+    for source in sources {
         let request = manifest["volumes"]
             .as_array()
             .unwrap()
@@ -527,7 +542,7 @@ async fn wait_health(
     row: &Row,
     artifact: &Artifact,
     fence: &db::DeploymentFence,
-) -> Result<()> {
+) -> Result<rpc::HealthResponse> {
     let end = tokio::time::Instant::now()
         + remaining(
             row,
@@ -546,7 +561,7 @@ async fn wait_health(
             .await
             .map_err(|_| Error::unavailable("Bootstrap health startup deadline expired"))?;
         match result {
-            Ok(_) => return Ok(()),
+            Ok(health) => return Ok(health),
             Err(error) => {
                 if tokio::time::Instant::now() >= end {
                     return Err(error);

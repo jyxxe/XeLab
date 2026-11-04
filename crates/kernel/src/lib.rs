@@ -1,3 +1,4 @@
+pub mod account_recovery;
 pub mod admission;
 pub mod api;
 pub mod artifact;
