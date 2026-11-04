@@ -95,6 +95,7 @@ OAuth、官方 WebUI 与 UI 桥尚未交付 main。开发分支 Schema 15 不等
 | Draft #41 `3ed37c67…` | [执行 41823170948](https://github.com/jyxxe/XeLab/actions/runs/41823170948) 实际 OCI 再现撤权等待到 deadline：执行未来持有共享授权事务时，监视分支等待排在独占撤权写入者后的新共享事务，却暂停轮询执行未来；并发 guard 修复及真实 PostgreSQL 屏障回归尚在验证 |
 | #41 `20e09827…` | 独立并发 guard 修复及实际 PostgreSQL/OCI 撤权回归通过；[执行 41827862054](https://github.com/jyxxe/XeLab/actions/runs/41827862054) 全步骤成功，PR 已合并；OCI 撤权约 739 ms，仍余 89261 ms，精确双事件 failed/INVALID_CREDENTIAL 和物理 fencing/配额均保留 |
 | main `41e495bf…` | [执行 41832456991](https://github.com/jyxxe/XeLab/actions/runs/41832456991) 失败：实际归档恢复通过，OCI 离线捕获返回 RESOURCE_EXHAUSTED；已修撤权仍及时完成，容量来源及已消费构建 tar 清理修正独立处理，不盲目重跑或放松门槛 |
+| Draft #42 `534d0a1b…` | [P0 捕获容量修正](https://github.com/jyxxe/XeLab/pull/42) 已正常合入 HTTP 开发分支；保留容量诊断与门槛，全部 immutable refs 核实后只删除已消费的精确 docker-save 传输 tar，HTTP 分支增加两份 HTTP 制品且逐层拒绝符号链接。[执行 41837147021](https://github.com/jyxxe/XeLab/actions/runs/41837147021) 尚待最终结果，不能计为已合并 main 或修复验收成功 |
 | HTTP 分支本地完整 workspace 尝试 | 库 150 通过/5 失败/3 显式忽略；1 项空 ContractRef 旧夹具按契约修正后通过；4 项归档/克隆因 overlay 目录属性列表长度/读取不一致拒绝，相同源码和检查在真实 tmpfs 隔离组件归档 2 项、克隆 3 项全部通过。保留原宿主失败，不冒充整轮 workspace 通过 |
 | HTTP 后续安全/兼容回归 | API→JSONB 1.0 额度/轮换、首帧 SSE 拒绝的实际 mTLS 组件 2 项通过；结果读取/重放的原始计费与 Blob ACL PostgreSQL 3 项、Identity 15/Skill 8/PostgreSQL 2 项通过；精确分支完整 CI 尚待执行 |
 | HTTP 开发分支 | [实现及命令](m3-http.md)、[持久化](m3-http-provenance.md)与[参考制品](../../examples/http/README.md)已存在；5 项契约 PostgreSQL、12 项 Python 及两个实际打包探针通过；核心/PG/独立 mTLS 两槽组件与 13 项安全场景、6 项契约、16 项网关/HTTP、4 项快照、Broker/API 回归和全-target Clippy 通过；真实内核 OCI、完整 workspace 执行与最终 CI 待确认 |
