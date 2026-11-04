@@ -6,9 +6,16 @@
 `dbb35cbc7c2c110c88de7ba16dc2d4569fad3ad2`，内部 Schema 14。
 这是开发与证据清单；未勾选项尚未完成，规范存在不代表运行代码已经交付。
 后续阶段须更新实际提交、PR、测试命令及结果，不能用本页代替运行证据。
-当前已合并基线为 `136cb02b503be9e7e2e5c49007dc609199cddc15`：
-[PR #39](https://github.com/jyxxe/XeLab/pull/39) 已交付注册管理及普通 OCI 非流式调用。
-流式实现仍在独立分支验收；HTTP、OAuth、官方 WebUI 与 UI 桥尚未交付。
+当前 main 为 `201fb5a92854cbcefe7e547dca121b89796f1506`：
+[PR #39](https://github.com/jyxxe/XeLab/pull/39)、
+[PR #40](https://github.com/jyxxe/XeLab/pull/40) 与
+[PR #41](https://github.com/jyxxe/XeLab/pull/41) 与
+[PR #42](https://github.com/jyxxe/XeLab/pull/42) 已合并，交付普通 OCI capability
+Skill 的七项公开操作，包括纯流 SSE，以及并发授权复核的撤权活性修复。
+#41、#42 精确提交 CI 成功；#42 保留实际容量诊断并清理已消费的精确传输 tar，
+不能据此断言已证明旧容量失败的根因。新 main 自身 CI 仍须单独确认。
+HTTP 已在开发分支接入源码并进行本地验证，尚未交付 main；
+OAuth、官方 WebUI 与 UI 桥尚未交付 main。开发分支 Schema 15 不等于 main 已迁移。
 
 ## 范围与协作
 
@@ -49,12 +56,12 @@
 - [x] Phase 0：完成适用 M1/M2 基线及真实组件 CI 回归，修复阻断开发的问题；本地宿主差异和正式验收边界见证据。
 - [x] M3-A：registerSkill、getSkill、listSkills、setSkillEnabled、archiveSkill；已随 #39 合并。
 - [x] M3-A：invokeSkill 经 SkillRouter → Broker → 真实固定 OCI 实例；已随 #39 合并。
-- [ ] M3-A：streamSkill 经相同 Broker 与固定真实 OCI 实例；功能及负向场景已有执行证据，完整 CI/正式合并尚待完成。
-- [ ] M3-A：签名/安装/Schema/版本冲突、skill.invoke 与目标动作同时授权、撤权取消及共享并发。
-- [ ] M3-A：独立插件注册→启用→授权→调用→禁用拒绝→恢复，覆盖重复请求、资源不足与实例重启。
-- [ ] M3-B：精确签名 HTTP 路由及 OpenAPI 摘要、Schema、required_action 验证。
-- [ ] M3-B：受控 GET/HEAD 静态代理、HTTP/SSE 流控、超时取消与生命周期收敛。
-- [ ] M3-B：真实 HTTP 插件及伪造头、路径穿越、Cookie、重定向、未声明协议负向测试。
+- [x] M3-A：streamSkill 经相同 Broker 与固定真实 OCI 实例；普通 capability 纯流 profile 已随 #40 合并。
+- [x] M3-A：普通 capability profile 的签名/安装/Schema/版本冲突、双层授权、撤权取消及共享并发；见 #39/#40 精确 CI，main 回归修复另列。
+- [x] M3-A：独立插件注册→启用→授权→调用→禁用拒绝→恢复，包含重复请求、资源不足与实例重启的实际 OCI 场景；一般非纯 capability 执行及 HostService 代理不计入本 profile。
+- [ ] M3-B：精确签名 HTTP 路由、不可变 OpenAPI、动作/Schema 和 HTTP Skill 已接入开发分支；完整验收与合并待完成。
+- [ ] M3-B：隔离 Host 静态 GET/HEAD、共享物理池、HTTP/SSE、超时/撤权与恢复源码已接入；最终真实集成待验收。
+- [ ] M3-B：独立 HTTP-only/混合插件、负向测试与 OCI 工具已落地；真实 HTTP OCI 已通过，恢复夹具修正后的完整 CI 尚待通过。
 - [ ] M3-C：Client 注册/查询/修改/禁用、精确 origin/redirect/scope 和默认 UI。
 - [ ] M3-C：可信登录/同意页、code + PKCE S256、短期单次 code、刷新轮换与重用检测。
 - [ ] M3-C：会话/账户/客户端绑定、Origin/CSRF/Cookie 检查及正常/拒绝流程测试。
@@ -80,12 +87,29 @@
 | main `dbb35cbc…` Issue 配置 | [Issue checks](https://github.com/jyxxe/XeLab/actions/runs/41796871110) 成功 |
 | main `dbb35cbc…` 内核回归 | [Kernel M1](https://github.com/jyxxe/XeLab/actions/runs/41796871078) 成功；正式生产/AWS 验收仍独立待执行 |
 | M3-A 非流式实现 `7ab2f0e…` | [PR #39](https://github.com/jyxxe/XeLab/pull/39) 已合并；精确提交的 [Kernel M1](https://github.com/jyxxe/XeLab/actions/runs/41804075279) 成功，包含真实 OCI、离线恢复与适用回归；[范围和命令](m3-skills.md) |
-| main `136cb02…` 合并后 CI | [Kernel M1](https://github.com/jyxxe/XeLab/actions/runs/41810812489) 记录时运行中；不能提前计为通过 |
+| main `136cb02…` 合并后 CI | [Kernel M1](https://github.com/jyxxe/XeLab/actions/runs/41810812489) 成功 |
 | 流式分支 `accc858…` 首次真实 OCI | [执行 41804847274](https://github.com/jyxxe/XeLab/actions/runs/41804847274) 失败：独立畸形流连续触发隔离，达到既有 5 次启动预算；测试已改为验证预算拒绝后通过公开停启恢复，不提高预算 |
 | 流式分支 `8c1c915…` 真实 OCI | [执行 41809262982](https://github.com/jyxxe/XeLab/actions/runs/41809262982) 中流式正常/畸形/取消/撤权/共享并发/断线及预算恢复场景通过；随后升级测试按单能力计数失败，整体 CI 仍失败，不能计为完整通过 |
+| M3-A 流式实现 `e95e584…` | [PR #40](https://github.com/jyxxe/XeLab/pull/40) 已合并；精确提交的 [Kernel M1](https://github.com/jyxxe/XeLab/actions/runs/41813120114) 成功，包含实际 OCI、恢复和适用回归 |
+| main `dca7c8d…` 合并后 CI | [执行 41816557404](https://github.com/jyxxe/XeLab/actions/runs/41816557404) 失败：live-revoke 场景暴露 Broker 定时复核与执行未来之间的授权锁活性问题；90 秒夹具亦复现，不能作为单纯测试超时处理；已由 #41 修复并合并，失败历史仍保留 |
+| Draft #41 `1399b619…` | [执行 41819988198](https://github.com/jyxxe/XeLab/actions/runs/41819988198) 在 image_archive 的宿主 I/O 阶段失败，尚未执行到 OCI/撤权回归；追加诊断不改变验证/限制，不能记为修复通过 |
+| Draft #41 `3ed37c67…` | [执行 41823170948](https://github.com/jyxxe/XeLab/actions/runs/41823170948) 实际 OCI 再现撤权等待到 deadline：执行未来持有共享授权事务时，监视分支等待排在独占撤权写入者后的新共享事务，却暂停轮询执行未来；并发 guard 修复及真实 PostgreSQL 屏障回归尚在验证 |
+| #41 `20e09827…` | 独立并发 guard 修复及实际 PostgreSQL/OCI 撤权回归通过；[执行 41827862054](https://github.com/jyxxe/XeLab/actions/runs/41827862054) 全步骤成功，PR 已合并；OCI 撤权约 739 ms，仍余 89261 ms，精确双事件 failed/INVALID_CREDENTIAL 和物理 fencing/配额均保留 |
+| main `41e495bf…` | [执行 41832456991](https://github.com/jyxxe/XeLab/actions/runs/41832456991) 失败：实际归档恢复通过，OCI 离线捕获返回 RESOURCE_EXHAUSTED；已修撤权仍及时完成，容量来源及已消费构建 tar 清理修正独立处理，不盲目重跑或放松门槛 |
+| #42 `534d0a1b…` | [P0 捕获容量修正](https://github.com/jyxxe/XeLab/pull/42) 已合并 main，精确提交[执行 41837147021](https://github.com/jyxxe/XeLab/actions/runs/41837147021) 全步骤成功。保留容量诊断与门槛，只在全部 immutable refs 核实后删除已消费的精确传输 tar；HTTP 分支增加两份 HTTP 制品且逐层拒绝符号链接。旧失败缺少实际容量数值，不能把此次成功当作已证明旧容量根因 |
+| main `201fb5a…` | [执行 41845259790](https://github.com/jyxxe/XeLab/actions/runs/41845259790) 尚待最终结果，不能以 #42 的 PR CI 替代 |
+| Draft #43 `c537bef…` | [执行 41841936407](https://github.com/jyxxe/XeLab/actions/runs/41841936407) 的实际 HTTP/static OCI、旧 OCI 生命周期、XFS 卷与进程恢复场景通过；随后平台恢复业务夹具用示例 Host 请求已改域名的内核，Owner 登录正确被拒 404，整体 CI 失败。夹具改为实际恢复配置 Host，生产隔离检查及恢复断言不变，新提交仍须完整验证 |
+| HTTP 分支本地完整 workspace 尝试 | 库 150 通过/5 失败/3 显式忽略；1 项空 ContractRef 旧夹具按契约修正后通过；4 项归档/克隆因 overlay 目录属性列表长度/读取不一致拒绝，相同源码和检查在真实 tmpfs 隔离组件归档 2 项、克隆 3 项全部通过。保留原宿主失败，不冒充整轮 workspace 通过 |
+| HTTP 后续安全/兼容回归 | API→JSONB 1.0 额度/轮换、首帧 SSE 拒绝的实际 mTLS 组件 2 项通过；结果读取/重放的原始计费与 Blob ACL PostgreSQL 3 项、Identity 15/Skill 8/PostgreSQL 2 项通过；精确分支完整 CI 尚待执行 |
+| HTTP 开发分支 | [实现及命令](m3-http.md)、[持久化](m3-http-provenance.md)与[参考制品](../../examples/http/README.md)已存在；5 项契约 PostgreSQL、12 项 Python 及两个实际打包探针通过；核心/PG/独立 mTLS 两槽组件与 13 项安全场景、6 项契约、16 项网关/HTTP、4 项快照、Broker/API 回归和全-target Clippy 通过；实际 HTTP/static OCI 与旧 OCI 生命周期已通过；修正恢复 Host 夹具后的完整 workspace 与最终 CI 待确认 |
 
-流式分支已正常合并上述 main，保留单调时钟 deadline、请求作用域数据库取消和
-实际后端退出断言；[流式实现说明](m3-skill-streams.md)记录范围及完整 CI 待验收项。
+流式实现保留单调时钟 deadline、请求作用域数据库取消和实际后端退出断言；
+[流式说明](m3-skill-streams.md)记录其已交付 profile。main 的失败与后续修复单独跟踪，
+不以历史绿灯覆盖最新失败。HTTP 核心组件的完整两槽运行及 13 项安全场景已分别通过，
+包含原 5 秒 Skill、同键重放、双层拒绝、实际 SSE、精确撤权、跨 owner 和冻结上下文拒绝。
+此前四路 debug 试验保留失败记录；签名制品/真实 OCI 四槽混合场景并未修改，仍待 CI。
+issuer-account 到期、缓存/快照与当前来源/计费回归通过，完整 workspace 与真实 OCI 仍待最终验证。
+这不构成完整 M3-B 验收，也不替代真实内核 OCI 或浏览器测试。
 
 本地检查命令为 `python3 tools/issues/validate.py`、
 `python3 -m unittest discover -s tools/issues -p 'test_*.py' -v`、

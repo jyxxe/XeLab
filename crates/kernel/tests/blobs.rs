@@ -1,5 +1,7 @@
 //! Real PostgreSQL, filesystem, HTTP and CLI Blob acceptance. Every test owns
 //! a disposable database and private directory; fault injection stays there.
+#[path = "support/http_host.rs"]
+mod http_host;
 use axum::{
     body::{to_bytes, Body},
     extract::ConnectInfo,
@@ -32,6 +34,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Option<Self> {
+        Self::new_with_origin(None).await
+    }
+    async fn new_with_origin(public_origin: Option<&str>) -> Option<Self> {
         xelab_kernel::init_crypto();
         let Ok(base) = std::env::var("XELAB_TEST_DATABASE_URL") else {
             eprintln!("SKIPPED: Blob integration tests require XELAB_TEST_DATABASE_URL");
@@ -55,6 +60,16 @@ impl Fixture {
             toml::from_str(include_str!("../../../docs/contracts/examples/kernel.toml")).unwrap();
         let mut value = serde_json::to_value(t).unwrap();
         value["storage"]["root_path"] = json!(root.path());
+        if let Some(origin) = public_origin {
+            value["server"]["public_origin"] = json!(origin);
+            value["server"]["listen"] = json!(format!(
+                "127.0.0.1:{}",
+                url::Url::parse(origin)
+                    .unwrap()
+                    .port_or_known_default()
+                    .unwrap()
+            ));
+        }
         let config = Config::from_value(value).unwrap();
         let mut c = db.connect().await.unwrap();
         let tx = c.transaction().await.unwrap();
@@ -112,6 +127,10 @@ impl Fixture {
         token: Option<&str>,
     ) -> (StatusCode, Value, Vec<u8>) {
         let mut builder = Request::builder()
+            .header(
+                "host",
+                http_host::authority(Some(self.app.config.text("server", "public_origin"))),
+            )
             .method(method)
             .uri(path)
             .header(
@@ -453,6 +472,10 @@ async fn unauthorized_objects_and_corrupt_content_fail_closed() {
     let path = Fixture::path(&blob);
     let body = json!({"name":"other scope","inheritance":{"mode":"selected","rules":[{"action":"blob.read","resource":{"kind":"blob","match":"ids","ids":[Uuid::new_v4()]}}]},"conditions":{"expires_at":chrono::Utc::now()+chrono::Duration::days(1)}});
     let mut request = Request::builder()
+        .header(
+            "host",
+            http_host::authority(Some(f.app.config.text("server", "public_origin"))),
+        )
         .method("POST")
         .uri(format!("/api/platform/v1/accounts/{}/api-keys", f.owner))
         .header("authorization", format!("Bearer {}", f.token))
@@ -522,7 +545,12 @@ async fn unauthorized_objects_and_corrupt_content_fail_closed() {
 }
 #[tokio::test]
 async fn real_https_cli_upload_and_verified_download_preserve_existing_files() {
-    let Some(f) = Fixture::new().await else {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!(
+        "https://localhost:{}",
+        listener.local_addr().unwrap().port()
+    );
+    let Some(f) = Fixture::new_with_origin(Some(&endpoint)).await else {
         return;
     };
     let key = rcgen::KeyPair::generate().unwrap();
@@ -538,11 +566,6 @@ async fn real_https_cli_upload_and_verified_download_preserve_existing_files() {
     )
     .await
     .unwrap();
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let endpoint = format!(
-        "https://localhost:{}",
-        listener.local_addr().unwrap().port()
-    );
     let server = tokio::spawn(
         axum_server::from_tcp_rustls(listener, tls).serve(
             f.router
@@ -807,6 +830,10 @@ async fn streaming_download_rechecks_revocation_before_delivering_more_bytes() {
     };
     let blob = f.upload(&vec![91; 200000], "stream").await;
     let mut request = Request::builder()
+        .header(
+            "host",
+            http_host::authority(Some(f.app.config.text("server", "public_origin"))),
+        )
         .uri(format!("{}/content", Fixture::path(&blob)))
         .header("authorization", format!("Bearer {}", f.token))
         .body(Body::empty())

@@ -10,6 +10,11 @@ use crate::{
 use serde_json::{json, Value};
 use std::{net::IpAddr, time::Duration};
 use uuid::Uuid;
+#[path = "broker_http.rs"]
+mod http;
+pub(crate) use http::check_route_approval as check_http_approval;
+pub use http::invoke as invoke_http;
+pub(crate) use http::target_resource as business_target;
 
 pub async fn invoke(
     app: &App,
@@ -89,6 +94,7 @@ async fn invoke_bounded(
     };
     let invocation = async {
         let mut effective = timeout;
+        let mut http_target = false;
         if let Some(skill) = skill {
             // This read can only narrow the time budget. It conveys no authority;
             // full signed binding and current authorization are checked inside
@@ -102,16 +108,40 @@ async fn invoke_bounded(
                 .await?;
             if let Some(row) = c
                 .query_opt(
-                    "SELECT definition->'maximum_timeout_ms' AS maximum FROM skills WHERE id=$1",
+                    "SELECT definition->'maximum_timeout_ms' AS maximum,definition->'target'->>'kind' AS target_kind FROM skills WHERE id=$1",
                     &[&skill],
                 )
                 .await?
             {
+                http_target = row.get::<_,Option<String>>("target_kind").as_deref()==Some("http");
                 let maximum: Option<Value> = row.get("maximum");
                 if let Some(maximum) = maximum.and_then(|v| unsigned(&v).ok()) {
                     effective = effective.min(maximum);
                 }
             }
+        }
+        if http_target {
+            if stream.is_some() {
+                return Err(Error::invalid(
+                    "HTTP Skills are nonstreaming fixed JSON operations",
+                ));
+            }
+            return tokio::time::timeout_at(
+                started + Duration::from_millis(effective),
+                http::execute_skill(
+                    app,
+                    token,
+                    peer,
+                    request_id,
+                    skill.ok_or_else(Error::denied)?,
+                    input,
+                    key,
+                    started,
+                    started + Duration::from_millis(effective),
+                ),
+            )
+            .await
+            .unwrap_or_else(|_| Err(expired()));
         }
         tokio::time::timeout_at(
             started + Duration::from_millis(effective),
@@ -276,7 +306,7 @@ async fn invoke_inner(
         let call_id=r.get::<_,Option<String>>("resource_id").and_then(|s|s.parse::<Uuid>().ok()).ok_or_else(||Error::conflict("Missing prior call"))?;
         if stream.is_some() { return Err(Error::conflict("Generation streams cannot be replayed; inspect the admitted Call").with_resource(call_id)); }
         let row=tx.query_one("SELECT state,result FROM calls WHERE id=$1",&[&call_id]).await?;
-        if row.get::<_,String>("state")=="succeeded"{let value = row.get::<_,Option<Value>>("result").ok_or_else(||Error::conflict("Call result is unavailable"))?; return skill_result(skill.as_ref(), value);}
+        if row.get::<_,String>("state")=="succeeded"{if skill.is_some(){check_skill_authority(&tx,&ctx,call_id).await?;}let value = row.get::<_,Option<Value>>("result").ok_or_else(||Error::conflict("Call result is unavailable"))?; return skill_result(skill.as_ref(), value);}
         return Err(Error::new("OUTCOME_UNKNOWN","Prior call is not a confirmed success; query its call ID",axum::http::StatusCode::CONFLICT).with_resource(call_id));
     }
     let cap = tx
@@ -338,53 +368,17 @@ async fn invoke_inner(
     if manifest["business_entry"] == "skill_required" && skill.is_none() {
         return Err(Error::denied());
     }
-    let active:i64=tx.query_one("SELECT count(*) FROM calls c WHERE provider_instance_id=$1 AND (state IN ('accepted','running') OR EXISTS(SELECT 1 FROM reservations r WHERE r.id=c.id AND r.kind='call' AND r.status<>'released'))",&[&instance]).await?.get(0);
-    let max = manifest["concurrency"]["max_active_requests"]
-        .as_i64()
-        .unwrap_or(1);
-    if active >= max {
-        return Err(Error::exhausted());
-    }
-    let accounts = account_chain(&tx, ctx.subject).await?;
-    let today = chrono::Utc::now().date_naive();
-    for account in &accounts {
-        let quota = tx
-            .query_one(
-                "SELECT * FROM quotas WHERE account_id=$1 FOR UPDATE",
-                &[account],
-            )
-            .await?;
-        let q: Value = quota.get("spec");
-        let daily = if quota.get::<_, chrono::NaiveDate>("daily_bucket") == today {
-            quota.get::<_, i64>("daily_calls_used")
-        } else {
-            0
-        };
-        if quota.get::<_, i64>("concurrent_calls_used")
-            >= q["maximum_concurrent_calls"].as_i64().unwrap()
-            || daily >= q["daily_calls"].as_i64().unwrap()
-        {
-            return Err(Error::exhausted());
-        }
-        tx.execute("UPDATE quotas SET concurrent_calls_used=concurrent_calls_used+1,daily_calls_used=$2::bigint+1,daily_bucket=$3 WHERE account_id=$1", &[account,&daily,&today]).await?;
-    }
-    let mut charged = crate::identity::call_sources(
+    let (accounts, charged) = reserve_business(
         &tx,
         &ctx,
+        instance,
+        &manifest,
+        "capability.invoke",
         &Resource::new("capability", format!("{name}@{version}"), None),
+        skill.as_ref(),
+        None,
     )
     .await?;
-    if let Some(skill) = &skill {
-        charged.extend(
-            crate::identity::call_sources_for(
-                &tx,
-                &ctx,
-                "skill.invoke",
-                &Resource::new("skill", skill.id, Some(skill.owner)),
-            )
-            .await?,
-        );
-    }
     let call = Uuid::new_v4();
     let timeout = input
         .get("timeout_ms")
@@ -622,73 +616,17 @@ async fn invoke_inner(
     if let Err(e) = check.await {
         result = Err(e);
     }
-    let (state, value, error) = match &result {
-        Ok(v) => ("succeeded", Some(v.clone()), None),
-        Err(e) => ("unknown", None, Some(e.detail())),
-    };
-    let changed = tx.execute("UPDATE calls SET state=$2,result=$3,error=$4,completed_at=CASE WHEN $2='succeeded' THEN now() ELSE NULL END WHERE id=$1 AND state='running'",&[&call,&state,&value,&error]).await?;
-    if changed != 1 {
-        let saved = tx
-            .query_one("SELECT error FROM calls WHERE id=$1", &[&call])
-            .await?
-            .get::<_, Option<Value>>(0);
-        if saved
-            .as_ref()
-            .is_some_and(|error| error["code"] == "CANCELED")
-        {
-            return Err(Error::new(
-                "CANCELED",
-                "Call cancellation was requested; physical outcome remains unknown",
-                axum::http::StatusCode::CONFLICT,
-            )
-            .with_resource(call));
-        }
-        return Err(Error::new(
-            "OUTCOME_UNKNOWN",
-            "Call was fenced by recovery",
-            axum::http::StatusCode::CONFLICT,
-        )
-        .with_resource(call));
-    }
-    // An error/timeout does not prove that the provider stopped executing.
-    // Recovery fences its process before returning the reserved call slot.
-    if result.is_ok() {
-        tx.execute(
-            "UPDATE reservations SET status='released' WHERE id=$1 AND kind='call'",
-            &[&call],
-        )
-        .await?;
-        for account in &accounts {
-            tx.execute("UPDATE quotas SET concurrent_calls_used=greatest(0,concurrent_calls_used-1) WHERE account_id=$1", &[account]).await?;
-        }
-    }
-    tx.execute(
-        "UPDATE rpc_delegations SET status='revoked' WHERE call_id=$1",
-        &[&call],
-    )
-    .await?;
-    tx.execute("UPDATE execution_delegations SET status='revoked' WHERE id IN(SELECT delegation_id FROM calls WHERE id=$1)", &[&call]).await?;
-    db::audit(
+    settle_business(
         &tx,
-        ctx.subject,
-        Some(ctx.credential),
-        request_id,
+        &ctx,
+        call,
+        &accounts,
         if skill.is_some() {
             "skill.invoke"
         } else {
             "capability.invoke"
         },
-        &Resource::new("call", call, Some(ctx.subject)).json(),
-        if result.is_ok() {
-            "succeeded"
-        } else {
-            "failed"
-        },
-        if result.is_ok() {
-            "CALL_COMPLETED"
-        } else {
-            "OUTCOME_UNKNOWN"
-        },
+        &result,
     )
     .await?;
     tx.commit().await?;
@@ -738,7 +676,7 @@ async fn check_live_call(
         .authenticate(&check, token, peer, request_id)
         .await?;
     check_skill_authority(&check, &current, call).await?;
-    crate::host_blobs::check_call_sources(&check, &current, call).await?;
+    http::check_route_approval(&check, app, call).await?;
     let status = check
         .query_one("SELECT state,error FROM calls WHERE id=$1", &[&call])
         .await?;
@@ -766,16 +704,28 @@ async fn check_live_call(
 }
 
 /// HostService reads authority from the admitted Call, not plugin JSON/headers.
-pub(crate) async fn check_skill_authority(
+async fn check_skill_binding(
     c: &(impl tokio_postgres::GenericClient + Sync),
     ctx: &crate::auth::Context,
     call: Uuid,
 ) -> Result<()> {
+    http::check_binding(c, ctx, call).await?;
     let row = c.query_opt(
-        "SELECT c.skill_id,c.skill_definition_digest,d.installation_id FROM calls c LEFT JOIN instances i ON i.id=c.provider_instance_id LEFT JOIN deployments d ON d.id=i.deployment_id WHERE c.id=$1",
+        "SELECT c.skill_id,c.skill_definition_digest,c.http_binding,d.installation_id FROM calls c LEFT JOIN instances i ON i.id=c.provider_instance_id LEFT JOIN deployments d ON d.id=i.deployment_id WHERE c.id=$1",
         &[&call],
     ).await?.ok_or_else(Error::denied)?;
     if let Some(skill) = row.get::<_, Option<Uuid>>("skill_id") {
+        if row.get::<_, Option<Value>>("http_binding").is_some() {
+            return crate::skills::check_admitted_http_binding(
+                c,
+                skill,
+                &row.get::<_, Option<String>>("skill_definition_digest")
+                    .ok_or_else(Error::denied)?,
+                row.get::<_, Option<Uuid>>("installation_id")
+                    .ok_or_else(Error::denied)?,
+            )
+            .await;
+        }
         let resolved = crate::skills::resolve_for_invoke(c, ctx, skill).await?;
         if Some(resolved.definition_digest)
             != row.get::<_, Option<String>>("skill_definition_digest")
@@ -800,6 +750,173 @@ fn skill_result(skill: Option<&crate::skills::ResolvedSkill>, call: Value) -> Re
 #[cfg(test)]
 #[path = "broker_schema_tests.rs"]
 mod schema_tests;
+
+/// One admission path for RPC and signed HTTP; all physical requests consume
+/// the same instance count and ancestor/source credential accounting.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn reserve_business(
+    tx: &tokio_postgres::Transaction<'_>,
+    ctx: &crate::auth::Context,
+    instance: Uuid,
+    manifest: &Value,
+    action: &str,
+    resource: &Resource,
+    skill: Option<&crate::skills::ResolvedSkill>,
+    authority: Option<&crate::auth::CurrentAuthority<'_, '_>>,
+) -> Result<(Vec<Uuid>, std::collections::BTreeSet<Uuid>)> {
+    let active:i64=tx.query_one("SELECT (SELECT count(*) FROM calls c WHERE provider_instance_id=$1 AND (state IN ('accepted','running') OR EXISTS(SELECT 1 FROM reservations r WHERE r.id=c.id AND r.kind='call' AND r.status<>'released')))+(SELECT count(*) FROM plugin_http_requests WHERE instance_id=$1)",&[&instance]).await?.get(0);
+    let max = manifest["concurrency"]["max_active_requests"]
+        .as_i64()
+        .unwrap_or(1);
+    if active >= max {
+        return Err(Error::exhausted());
+    }
+    let accounts = account_chain(tx, ctx.subject).await?;
+    let today = chrono::Utc::now().date_naive();
+    for account in &accounts {
+        let quota = tx
+            .query_one(
+                "SELECT * FROM quotas WHERE account_id=$1 FOR UPDATE",
+                &[account],
+            )
+            .await?;
+        let q: Value = quota.get("spec");
+        let daily = if quota.get::<_, chrono::NaiveDate>("daily_bucket") == today {
+            quota.get::<_, i64>("daily_calls_used")
+        } else {
+            0
+        };
+        if quota.get::<_, i64>("concurrent_calls_used")
+            >= q["maximum_concurrent_calls"].as_i64().unwrap()
+            || daily >= q["daily_calls"].as_i64().unwrap()
+        {
+            return Err(Error::exhausted());
+        }
+        tx.execute("UPDATE quotas SET concurrent_calls_used=concurrent_calls_used+1,daily_calls_used=$2::bigint+1,daily_bucket=$3 WHERE account_id=$1", &[account,&daily,&today]).await?;
+    }
+    let mut charged = if let Some(authority) = authority {
+        crate::identity::call_sources_from_paths(
+            tx,
+            ctx,
+            action,
+            resource,
+            authority.paths(tx, ctx, resource)?.to_vec(),
+        )
+        .await?
+    } else {
+        crate::identity::call_sources_for(tx, ctx, action, resource).await?
+    };
+    if let Some(skill) = skill {
+        let resource = Resource::new("skill", skill.id, Some(skill.owner));
+        charged.extend(if let Some(authority) = authority {
+            crate::identity::call_sources_from_paths(
+                tx,
+                ctx,
+                "skill.invoke",
+                &resource,
+                authority.paths(tx, ctx, &resource)?.to_vec(),
+            )
+            .await?
+        } else {
+            crate::identity::call_sources_for(tx, ctx, "skill.invoke", &resource).await?
+        });
+    }
+    Ok((accounts, charged))
+}
+
+/// A transport failure never proves physical completion. Only confirmed results
+/// release the shared reservation; Controller recovery fences unknown work.
+pub(crate) async fn settle_business(
+    tx: &(impl tokio_postgres::GenericClient + Sync),
+    ctx: &crate::auth::Context,
+    call: Uuid,
+    accounts: &[Uuid],
+    action: &str,
+    result: &Result<Value>,
+) -> Result<()> {
+    let (state, value, error) = match &result {
+        Ok(v) => ("succeeded", Some(v.clone()), None),
+        Err(e) => ("unknown", None, Some(e.detail())),
+    };
+    let changed = tx.execute("UPDATE calls SET state=$2,result=$3,error=$4,completed_at=CASE WHEN $2='succeeded' THEN now() ELSE NULL END WHERE id=$1 AND state='running'",&[&call,&state,&value,&error]).await?;
+    if changed != 1 {
+        let saved = tx
+            .query_one("SELECT error FROM calls WHERE id=$1", &[&call])
+            .await?
+            .get::<_, Option<Value>>(0);
+        if saved
+            .as_ref()
+            .is_some_and(|error| error["code"] == "CANCELED")
+        {
+            return Err(Error::new(
+                "CANCELED",
+                "Call cancellation was requested; physical outcome remains unknown",
+                axum::http::StatusCode::CONFLICT,
+            )
+            .with_resource(call));
+        }
+        return Err(Error::new(
+            "OUTCOME_UNKNOWN",
+            "Call was fenced by recovery",
+            axum::http::StatusCode::CONFLICT,
+        )
+        .with_resource(call));
+    }
+    // An error/timeout does not prove that the provider stopped executing.
+    // Recovery fences its process before returning the reserved call slot.
+    if result.is_ok() {
+        tx.execute(
+            "UPDATE reservations SET status='released' WHERE id=$1 AND kind='call'",
+            &[&call],
+        )
+        .await?;
+        for account in accounts {
+            tx.execute("UPDATE quotas SET concurrent_calls_used=greatest(0,concurrent_calls_used-1) WHERE account_id=$1", &[account]).await?;
+        }
+    }
+    tx.execute(
+        "UPDATE rpc_delegations SET status='revoked' WHERE call_id=$1",
+        &[&call],
+    )
+    .await?;
+    tx.execute("UPDATE execution_delegations SET status='revoked' WHERE id IN(SELECT delegation_id FROM calls WHERE id=$1)", &[&call]).await?;
+    db::audit(
+        tx,
+        ctx.subject,
+        Some(ctx.credential),
+        ctx.request,
+        action,
+        &Resource::new("call", call, Some(ctx.subject)).json(),
+        if result.is_ok() {
+            "succeeded"
+        } else {
+            "failed"
+        },
+        if result.is_ok() {
+            "CALL_COMPLETED"
+        } else {
+            "OUTCOME_UNKNOWN"
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "broker_http_tests.rs"]
+mod http_component_tests;
+
+/// Mandatory combined gate for admitted business delivery and HostService use.
+/// Metadata-only checks are private; no HTTP caller can omit original/current
+/// frozen proof validation, including calls with no Blob delegation context.
+pub(crate) async fn check_skill_authority(
+    c: &(impl tokio_postgres::GenericClient + Sync),
+    ctx: &crate::auth::Context,
+    call: Uuid,
+) -> Result<()> {
+    check_skill_binding(c, ctx, call).await?;
+    crate::host_blobs::check_call_sources(c, ctx, call).await
+}
 
 #[cfg(test)]
 #[path = "broker_monitor_tests.rs"]

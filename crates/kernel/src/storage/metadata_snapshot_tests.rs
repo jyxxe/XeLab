@@ -46,6 +46,110 @@ async fn empty(c: &mut Client) {
 }
 
 #[tokio::test]
+async fn actual_postgres_snapshot_preserves_bounded_http_contract_but_resets_live_approval() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let mut source = f.app.db.connect().await.unwrap();
+    let owner: Uuid = source
+        .query_one("SELECT created_by FROM backups WHERE id=$1", &[&f.backup])
+        .await
+        .unwrap()
+        .get(0);
+    let publisher = Uuid::new_v4();
+    let (_directory, mut manifest, mut raw) =
+        crate::http_contracts::tests::fixture_manifest(publisher);
+    // Exercise the supported maximum bytea payload. Binary COPY can carry this
+    // bounded member without confusing its doubled JSON hex projection for an
+    // oversized row; unrelated tables retain their existing row-size checks.
+    raw.resize(crate::plugin_http::MAXIMUM_CONTRACT_BYTES, b' ');
+    let hash = crate::contracts::digest(&raw);
+    for route in manifest["routes"].as_array_mut().unwrap() {
+        if route["kind"] == "http" {
+            route["http_contract_digest"] = serde_json::json!(hash);
+        }
+    }
+    for skill in manifest["skills"].as_array_mut().unwrap() {
+        if skill["target"]["kind"] == "http" {
+            skill["target"]["http_contract_digest"] = serde_json::json!(hash);
+        }
+    }
+    let installation = Uuid::new_v4();
+    let deployment = Uuid::new_v4();
+    source.execute("INSERT INTO publishers(id,name,key_id,public_key_pem,status,created_at,updated_at) VALUES($1,'snapshot HTTP publisher',$2,'component-only','trusted',now(),now())",&[&publisher,&format!("http-{publisher}")]).await.unwrap();
+    source.execute("INSERT INTO installations(id,plugin_id,version,publisher_id,image_digest,manifest_digest,manifest,state,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,'installed',now(),now())",&[&installation,&manifest["plugin_id"].as_str().unwrap(),&manifest["version"].as_str().unwrap(),&publisher,&crate::contracts::digest(b"component-only image"),&crate::contracts::digest(&serde_json::to_vec(&manifest).unwrap()),&manifest]).await.unwrap();
+    crate::http_contracts::store(&source, installation, &manifest, Some(&raw))
+        .await
+        .unwrap();
+    source.execute("INSERT INTO deployments(id,owner_id,installation_id,spec,phase,created_at,updated_at) VALUES($1,$2,$3,'{\"enabled\":false}','disabled',now(),now())",&[&deployment,&owner,&installation]).await.unwrap();
+    let credential: Uuid = source
+        .query_one(
+            "SELECT id FROM credentials WHERE owner_id=$1 LIMIT 1",
+            &[&owner],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    source.execute("INSERT INTO plugin_http_approvals(deployment_id,credential_id,peer,approval_digest,source_paths) VALUES($1,$2,'127.0.0.1',$3,'[]')",&[&deployment,&credential,&crate::contracts::digest(b"component-only approval")]).await.unwrap();
+    let mut bytes = Vec::new();
+    let summary = export_inner(&mut source, &mut bytes).await.unwrap();
+    let (_, mut destination, recovery) = target(f.backup).await;
+    import_inner(
+        &mut destination,
+        &mut bytes.as_slice(),
+        &summary,
+        recovery,
+        owner,
+        PASSWORD,
+    )
+    .await
+    .unwrap();
+    let restored = destination
+        .query_one(
+            "SELECT digest,raw FROM plugin_http_contracts WHERE installation_id=$1",
+            &[&installation],
+        )
+        .await
+        .unwrap();
+    assert_eq!(restored.get::<_, String>("digest"), hash);
+    assert_eq!(restored.get::<_, Vec<u8>>("raw"), raw);
+    assert!(crate::http_contracts::load(&destination, installation)
+        .await
+        .is_ok());
+    assert!(!destination
+        .query_one("SELECT EXISTS(SELECT 1 FROM plugin_http_approvals)", &[])
+        .await
+        .unwrap()
+        .get::<_, bool>(0));
+    assert_eq!(
+        destination
+            .query_one("SELECT status FROM publishers WHERE id=$1", &[&publisher])
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        "revoked"
+    );
+    assert_eq!(
+        destination
+            .query_one(
+                "SELECT spec->>'enabled' FROM deployments WHERE id=$1",
+                &[&deployment]
+            )
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        "false"
+    );
+    assert!(destination
+        .execute(
+            "DELETE FROM plugin_http_contracts WHERE installation_id=$1",
+            &[&installation]
+        )
+        .await
+        .is_err());
+}
+
+#[tokio::test]
 async fn actual_postgres_snapshot_round_trip_and_late_failure_rollback() {
     let Some(f) = Fixture::new().await else {
         return;

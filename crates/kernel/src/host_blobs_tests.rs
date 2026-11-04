@@ -143,6 +143,10 @@ impl Fixture {
             path = path.replace(&format!("{{{k}}}"), &v.to_string());
         }
         let mut builder = Request::builder()
+            .header(
+                "host",
+                crate::plugin_http_gateway::core_authority(&self.app.config).unwrap(),
+            )
             .method(method.to_uppercase().as_str())
             .uri(path)
             .header(
@@ -268,6 +272,10 @@ impl Fixture {
 impl Fixture {
     async fn source(&self, data: Vec<u8>) -> Uuid {
         let mut request = Request::builder()
+            .header(
+                "host",
+                crate::plugin_http_gateway::core_authority(&self.app.config).unwrap(),
+            )
             .method("POST")
             .uri("/api/platform/v1/blobs?content_type=application%2Foctet-stream")
             .header("authorization", format!("Bearer {}", self.token))
@@ -1088,8 +1096,12 @@ async fn skill_frozen_business_proofs_exclude_exhausted_uncharged_alternatives()
     }
     let prior = Uuid::new_v4();
     let call = Uuid::new_v4();
+    // Shared RPC/HTTP source freezing resolves the action from the fixed
+    // persisted Call target; even a ledger unit fixture needs a real ContractRef.
+    let contract = json!({"name":"fixture","version":"1.0.0","schema_digest":crate::contracts::digest(b"fixture contract")});
+    crate::contracts::validate("ContractRef", &contract).unwrap();
     for (id, credential) in [(prior, keys[0]), (call, ctx.credential)] {
-        c.execute("INSERT INTO calls(id,owner_id,credential_id,contract,input_digest,state,deadline_at,created_at) VALUES($1,$2,$3,'{}','fixture','succeeded',now()+interval '1 minute',now())", &[&id,&ctx.subject,&credential]).await.unwrap();
+        c.execute("INSERT INTO calls(id,owner_id,credential_id,contract,input_digest,state,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,'succeeded',now()+interval '1 minute',now())", &[&id,&ctx.subject,&credential,&contract,&crate::contracts::digest(b"fixture input")]).await.unwrap();
     }
     assert_eq!(
         crate::identity::key_calls(&c, keys[0]).await.unwrap(),
@@ -1163,3 +1175,6 @@ async fn skill_frozen_business_proofs_exclude_exhausted_uncharged_alternatives()
         .unwrap();
     assert!(!auth::rules_allow(&crate::policy::rules(&withdrawn),"capability.invoke",&auth::Resource::new("capability","fixture@1.0.0",None),peer),"an uncharged current alternative must not sustain the admitted work after its charged proof is revoked");
 }
+
+#[path = "m3_result_authority_tests.rs"]
+mod result_authority;

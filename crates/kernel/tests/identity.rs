@@ -1,4 +1,6 @@
 //! Real PostgreSQL + HTTP acceptance. Each test owns a separate database.
+#[path = "support/http_host.rs"]
+mod http_host;
 use axum::{
     body::{to_bytes, Body},
     extract::ConnectInfo,
@@ -722,6 +724,7 @@ async fn api(
         path.push_str(query);
     }
     let mut req = Request::builder()
+        .header("host", http_host::authority(None))
         .method(method.as_str())
         .uri(path)
         .header("idempotency-key", key);
@@ -1542,6 +1545,7 @@ async fn browser_session_cookie_requires_same_origin_for_mutation() {
         return;
     };
     let mut login = Request::builder()
+        .header("host", http_host::authority(None))
         .method("POST")
         .uri("/api/platform/v1/auth/login")
         .header("content-type", "application/json")
@@ -1560,6 +1564,10 @@ async fn browser_session_cookie_requires_same_origin_for_mutation() {
     }
     assert!(!set_cookie.contains("Domain="));
     let cookie = set_cookie.split(';').next().unwrap().to_owned();
+    let csrf = response.headers()["x-csrf-token"]
+        .to_str()
+        .unwrap()
+        .to_owned();
     let config: toml::Value =
         toml::from_str(include_str!("../../../docs/contracts/examples/kernel.toml")).unwrap();
     for (origin, status) in [
@@ -1568,9 +1576,11 @@ async fn browser_session_cookie_requires_same_origin_for_mutation() {
         (config["server"]["public_origin"].as_str(), 200),
     ] {
         let mut request = Request::builder()
+            .header("host", http_host::authority(None))
             .method("PATCH")
             .uri(format!("/api/platform/v1/accounts/{}", f.owner))
             .header("cookie", &cookie)
+            .header("x-csrf-token", &csrf)
             .header("content-type", "application/json")
             .header("if-match", "\"rev-1\"")
             .header("idempotency-key", Uuid::new_v4().to_string());

@@ -220,6 +220,11 @@ impl Session {
             tx.execute("UPDATE instances SET phase='stopped',health='unknown',runtime_id=NULL,revision=revision+1,updated_at=now() WHERE id=$1",&[&id]).await?;
             volumes::release_stopped(&tx, Some(id)).await?;
             admission::release_stopped(&tx, id).await?;
+            tx.execute(
+                "DELETE FROM plugin_http_requests WHERE instance_id=$1",
+                &[&id],
+            )
+            .await?;
         }
         tx.commit().await?;
         if let Some(error) = stop_error {
@@ -260,6 +265,7 @@ impl Session {
         // Global namespace/cgroup absence also confirms historical stopped rows
         // whose runtime identifiers or released-resource bookkeeping were stale.
         tx.execute("UPDATE instances SET runtime_id=NULL,revision=revision+1,updated_at=now() WHERE phase='stopped' AND runtime_id IS NOT NULL",&[]).await?;
+        tx.execute("DELETE FROM plugin_http_requests", &[]).await?;
         tx.execute(
             "UPDATE calls SET state='unknown',error=$1 WHERE state IN ('accepted','running')",
             &[&error],
@@ -330,6 +336,7 @@ impl Session {
                 ));
             }
             artifact::validate_runtime_profile(&manifest)?;
+            crate::http_contracts::verify_image(c, row.get("id"), &manifest, &root).await?;
             images.push(InstallationImage {
                 installation: row.get("id"),
                 image,
@@ -450,6 +457,7 @@ async fn source_preflight(c: &(impl GenericClient + Sync)) -> Result<()> {
     for row in c.query("SELECT volume_id FROM volume_allocations WHERE state<>'deleted' ORDER BY volume_id LIMIT 17", &[]).await? {
         formats::binding(c, row.get("volume_id")).await?;
     }
+    crate::http_contracts::validate_snapshot_bindings(c).await?;
     crate::skills::validate_snapshot_bindings(c).await?;
     for name in [
         "workflows",

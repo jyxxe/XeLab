@@ -527,7 +527,6 @@ async fn authorize_delivery_inner(
         .authenticate(&transaction, token, peer, request)
         .await?;
     crate::broker::check_skill_authority(&transaction, &ctx, call).await?;
-    crate::host_blobs::check_call_sources(&transaction, &ctx, call).await?;
     let status = transaction
         .query_one("SELECT deadline_at,error FROM calls WHERE id=$1", &[&call])
         .await?;

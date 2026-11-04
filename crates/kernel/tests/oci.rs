@@ -1,4 +1,6 @@
 //! Privileged, disposable-host component test. It never lowers daemon preflight limits.
+#[path = "support/http_host.rs"]
+mod http_host;
 use axum::{
     body::{to_bytes, Body},
     extract::ConnectInfo,
@@ -64,6 +66,7 @@ async fn api(
         path = path.replace(&format!("{{{name}}}"), value);
     }
     let mut req = Request::builder()
+        .header("host", http_host::authority(None))
         .method(method.as_str())
         .uri(path)
         .header("idempotency-key", key);
@@ -1017,12 +1020,26 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     .unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
+    // This real TLS listener has its own explicit trusted origin; the ordinary
+    // in-process fixture above continues to use the checked-in core origin.
+    let mut cli_value = app.config.value.clone();
+    cli_value["server"]["public_origin"] = json!(format!("https://{address}"));
+    cli_value["server"]["listen"] = json!(address.to_string());
+    let cli_config = Config::from_value(cli_value).unwrap();
+    let cli_app = Arc::new(App {
+        runtime: Runtime::new(cli_config.clone()),
+        config: cli_config,
+        db: app.db.clone(),
+        auth: app.auth.clone(),
+        leader: app.leader.clone(),
+        ready: AtomicBool::new(app.ready.load(Ordering::SeqCst)),
+        shutdown: AtomicBool::new(false),
+        blob_uploads: tokio::sync::Semaphore::new(4),
+    });
+    let cli_router = xelab_kernel::api::router(cli_app);
     let serve = tokio::spawn(
-        axum_server::from_tcp_rustls(listener, server_tls).serve(
-            router
-                .clone()
-                .into_make_service_with_connect_info::<SocketAddr>(),
-        ),
+        axum_server::from_tcp_rustls(listener, server_tls)
+            .serve(cli_router.into_make_service_with_connect_info::<SocketAddr>()),
     );
     let token_file = root.join("cli-token");
     fs::write(&token_file, token).unwrap();
@@ -1764,6 +1781,7 @@ async fn blob_http(
         path = path.replace("{blob_id}", id);
     }
     let mut request = Request::builder()
+        .header("host", http_host::authority(None))
         .method(method.as_str())
         .header("authorization", format!("Bearer {token}"));
     if operation == "uploadBlob" {
@@ -2959,6 +2977,7 @@ async fn stream_skill_request(
     last_event: bool,
 ) -> axum::response::Response {
     let mut request = Request::builder()
+        .header("host", http_host::authority(None))
         .method("POST")
         .uri(format!("/api/platform/v1/skills/{skill}/calls:stream"))
         .header("authorization", format!("Bearer {token}"))

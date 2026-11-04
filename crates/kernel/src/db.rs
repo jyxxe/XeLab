@@ -23,7 +23,8 @@ const SCHEMA_BACKUP_REGISTRATION: &str =
     include_str!("../migrations/0013_schema_backup_registration.sql");
 const RECOVERED_ACCOUNT_ACTIVATIONS: &str =
     include_str!("../migrations/0014_recovered_account_activations.sql");
-const MIGRATIONS: [&str; 14] = [
+const PLUGIN_HTTP_CONTRACTS: &str = include_str!("../migrations/0015_plugin_http_contracts.sql");
+const MIGRATIONS: [&str; 15] = [
     BASELINE,
     CALL_CHARGES,
     SECRET_AUTHORITY,
@@ -38,6 +39,7 @@ const MIGRATIONS: [&str; 14] = [
     VOLUME_SCHEMA_JOBS,
     SCHEMA_BACKUP_REGISTRATION,
     RECOVERED_ACCOUNT_ACTIVATIONS,
+    PLUGIN_HTTP_CONTRACTS,
 ];
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 pub const LEADER_LOCK: i64 = 0x58454c41424d3101;

@@ -1,6 +1,8 @@
 //! Real PostgreSQL/API regression for the ordinary Skill registry. Installed
 //! metadata is a fixture, not evidence that an OCI artifact executed; the real
 //! signed-image path is exercised by tests/oci.rs.
+#[path = "support/http_host.rs"]
+mod http_host;
 use axum::{
     body::{to_bytes, Body},
     extract::ConnectInfo,
@@ -196,6 +198,7 @@ async fn request(
         path = path.replace(&format!("{{{name}}}"), value);
     }
     let mut req = Request::builder()
+        .header("host", http_host::authority(None))
         .method(method.as_str())
         .uri(path)
         .header("idempotency-key", key);
@@ -636,6 +639,7 @@ async fn skill_required_provider_rejects_bare_and_forged_routes_and_preserves_un
         400
     );
     let mut req = Request::builder()
+        .header("host", http_host::authority(None))
         .method("POST")
         .uri("/api/platform/v1/calls")
         .header("authorization", format!("Bearer {}", f.token))
@@ -750,6 +754,7 @@ async fn skill_stream_rejects_nonstream_resume_filters_and_missing_target_author
     assert_eq!(refused.0, 400, "{}", refused.1);
     for (suffix, last_event) in [("", true), ("?unknown=1", false)] {
         let mut req = Request::builder()
+            .header("host", http_host::authority(None))
             .method("POST")
             .uri(format!(
                 "/api/platform/v1/skills/{skill}/calls:stream{suffix}"
@@ -838,6 +843,7 @@ async fn abandoned_stream_handler_cannot_admit_after_waiting_for_call_lock() {
     let held = c.transaction().await.unwrap();
     xelab_kernel::db::call_lock(&held).await.unwrap();
     let mut req = Request::builder()
+        .header("host", http_host::authority(None))
         .method("POST")
         .uri(format!(
             "/api/platform/v1/skills/{}/calls:stream",

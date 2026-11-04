@@ -159,6 +159,7 @@ async fn export_inner(c: &mut Client, out: &mut (impl AsyncWrite + Unpin)) -> Re
     tx.batch_execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .await?;
     db::verify_migration(&tx).await?;
+    crate::http_contracts::validate_snapshot_bindings(&tx).await?;
     if tx
         .query_one(
             "SELECT EXISTS(SELECT 1 FROM platform_recovery_state WHERE phase<>'ready')",
@@ -175,10 +176,19 @@ async fn export_inner(c: &mut Client, out: &mut (impl AsyncWrite + Unpin)) -> Re
     let mut total_rows = 0u64;
     for name in db::snapshot_tables() {
         let columns = layout(&tx, name).await?;
+        // A bytea OpenAPI member is at most 4 MiB. row_to_json hex-encodes it,
+        // so its text size is not the binary COPY row size. Account for its
+        // actual payload plus bounded scalar columns; retain the existing
+        // generic 8 MiB limit for every other table.
+        let maximum_row = if name == "plugin_http_contracts" {
+            "octet_length(raw)+octet_length(digest)+128".to_owned()
+        } else {
+            "octet_length(row_to_json(t)::text)".to_owned()
+        };
         let row = tx
             .query_one(
                 &format!(
-                    "SELECT count(*),coalesce(max(octet_length(row_to_json(t)::text)),0) FROM {} t",
+                    "SELECT count(*),coalesce(max({maximum_row}),0) FROM {} t",
                     relation(name)
                 ),
                 &[],
@@ -402,6 +412,7 @@ async fn import_inner(
         ))
         .await?;
     }
+    crate::http_contracts::validate_snapshot_bindings(&tx).await?;
     crate::skills::validate_snapshot_bindings(&tx).await?;
     recovery::reset_rows(&tx, owner, password, recovery).await?;
     tx.execute(

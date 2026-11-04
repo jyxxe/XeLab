@@ -2,7 +2,7 @@
 use crate::{
     api::{etag, path_id, read_object},
     auth::{self, Auth, Context, Resource},
-    contracts::{id, openapi, string, validate},
+    contracts::{id, openapi, string, unsigned, validate},
     db,
     error::{Error, Result},
     policy::{self, Policy},
@@ -1059,21 +1059,40 @@ pub(crate) async fn call_sources_for(
     let paths = Policy::new(c, ctx.peer)
         .credential(ctx.credential, 0)
         .await?;
+    call_sources_from_paths(c, ctx, action, resource, paths).await
+}
+
+pub(crate) async fn call_sources_from_paths(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    action: &str,
+    resource: &Resource,
+    paths: Vec<crate::policy::Path>,
+) -> Result<BTreeSet<Uuid>> {
     let mut alternatives = Vec::new();
-    for path in paths {
+    'candidate: for path in paths {
         if !auth::rules_allow(&json!([path.rule]), action, resource, ctx.peer) {
             continue;
         }
         let mut keys: BTreeSet<_> = ctx.chain.iter().copied().collect();
         let sources: Vec<_> = path.sources.into_iter().collect();
-        for row in c
+        let issuers = c
             .query(
                 "SELECT issuer_id,issuer_credential_id FROM grants WHERE id=ANY($1)",
                 &[&sources],
             )
-            .await?
-        {
-            keys.extend(auth::validate_sources(c, row.get(1), Some(row.get(0)), ctx.peer).await?);
+            .await?;
+        if issuers.len() != sources.len() {
+            return Err(Error::denied());
+        }
+        for row in issuers {
+            match auth::validate_sources(c, row.get(1), Some(row.get(0)), ctx.peer).await {
+                Ok(sources) => keys.extend(sources),
+                // A prepared alternative may expire while admission waits for
+                // the ledger. Other independent proofs remain eligible.
+                Err(error) if error.code == "INVALID_CREDENTIAL" => continue 'candidate,
+                Err(error) => return Err(error),
+            }
         }
         alternatives.push(keys);
     }
@@ -1093,8 +1112,12 @@ pub(crate) async fn call_sources_for(
                     .query_one("SELECT conditions FROM credentials WHERE id=$1", &[key])
                     .await?
                     .get(0);
-                let remaining = match conditions["max_calls"].as_i64() {
-                    Some(max) => key_calls(c, *key).await? < max,
+                let remaining = match conditions.get("max_calls") {
+                    Some(max) => {
+                        let used = u64::try_from(key_calls(c, *key).await?)
+                            .map_err(|_| Error::denied())?;
+                        used < unsigned(max)?
+                    }
                     None => true,
                 };
                 available.insert(*key, remaining);
@@ -1177,12 +1200,14 @@ async fn issue_key(
         if combined != proposed {
             return Err(Error::denied());
         }
-        if let Some(max) = old_conditions["max_calls"].as_i64() {
-            let remaining = max - key_calls(c, old).await?;
-            if body["conditions"]["max_calls"]
-                .as_i64()
-                .is_none_or(|max| max > remaining)
-            {
+        if let Some(max) = old_conditions.get("max_calls") {
+            let used = u64::try_from(key_calls(c, old).await?).map_err(|_| Error::denied())?;
+            let remaining = unsigned(max)?.saturating_sub(used);
+            let requested = body["conditions"]
+                .get("max_calls")
+                .map(unsigned)
+                .transpose()?;
+            if requested.is_none_or(|max| max > remaining) {
                 return Err(Error::denied());
             }
         }

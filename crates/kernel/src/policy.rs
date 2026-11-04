@@ -26,6 +26,7 @@ pub struct Policy<'a, C> {
     peer: IpAddr,
     evaluating_grants: HashSet<Uuid>,
     proving_self_grants: HashSet<Uuid>,
+    resource_owner: Option<(String, String, Uuid)>,
 }
 impl<'a, C: GenericClient + Sync> Policy<'a, C> {
     pub fn new(c: &'a C, peer: IpAddr) -> Self {
@@ -34,7 +35,20 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
             peer,
             evaluating_grants: HashSet::new(),
             proving_self_grants: HashSet::new(),
+            resource_owner: None,
         }
+    }
+
+    /// A stable plugin ID can have deployments owned by different accounts.
+    /// Only a trusted, fixed deployment/Call may supply its actual resource owner;
+    /// generic grant issuance and global resource ownership remain unchanged.
+    pub(crate) fn with_resource_owner(mut self, resource: &Resource) -> Self {
+        if resource.kind == "plugin" {
+            self.resource_owner = resource
+                .owner
+                .map(|owner| (resource.kind.clone(), resource.id.clone(), owner));
+        }
+        self
     }
 
     pub async fn account(&mut self, account: Uuid, depth: usize) -> Result<Vec<Path>> {
@@ -350,7 +364,19 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
     /// Re-evaluate every original grant alternative before intersecting current
     /// credential rights. Newly acquired grants cannot revive a withdrawn part.
     pub async fn revalidate(&mut self, saved: &[Path], credential: Uuid) -> Result<Vec<Path>> {
+        let current = self.credential(credential, 0).await?;
+        self.revalidate_current(saved, &current).await
+    }
+
+    /// Current rights may be supplied only by the transaction-bound authority
+    /// proof. Every original source is still walked before their intersection.
+    pub(crate) async fn revalidate_current(
+        &mut self,
+        saved: &[Path],
+        current: &[Path],
+    ) -> Result<Vec<Path>> {
         bounded(saved)?;
+        bounded(current)?;
         let mut live = Vec::new();
         for path in saved {
             let mut current = vec![path.clone()];
@@ -364,8 +390,7 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
             live.extend(current);
             bounded(&live)?;
         }
-        let current = self.credential(credential, 0).await?;
-        self.intersection(&live, &current).await
+        self.intersection(&live, current).await
     }
 
     pub async fn intersection(&self, left: &[Path], right: &[Path]) -> Result<Vec<Path>> {
@@ -420,12 +445,17 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
             let matches = if other["match"] == "ids" {
                 other["ids"].as_array().is_some_and(|a| a.contains(value))
             } else {
-                let owner = resource_owner(
-                    self.c,
-                    string(ids, "kind")?,
-                    value.as_str().ok_or_else(Error::denied)?,
-                )
-                .await?;
+                let kind = string(ids, "kind")?;
+                let id = value.as_str().ok_or_else(Error::denied)?;
+                let owner = if let Some((fixed_kind, fixed_id, owner)) = &self.resource_owner {
+                    if fixed_kind == kind && fixed_id == id {
+                        Some(*owner)
+                    } else {
+                        resource_owner(self.c, kind, id).await?
+                    }
+                } else {
+                    resource_owner(self.c, kind, id).await?
+                };
                 owner.is_some_and(|owner| other["owner_id"] == owner.to_string())
             };
             if matches {
