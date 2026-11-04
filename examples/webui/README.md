@@ -1,0 +1,32 @@
+# Official WebUI workload
+
+This is the independent `org.xelab.webui` OCI application. The kernel retains authentication, authorization, routing and lifecycle control. This directory introduces no kernel dependency or management bypass.
+
+The desktop uses browser ES modules and standard DOM/CSS without a frontend framework or package dependency. It includes a menu bar, Dock, searchable launcher, independent windows, pointer dragging, keyboard resizing/movement, minimize/maximize/restore/close/focus, narrow-screen layout and accessible labels. System/light/dark/custom themes and reduced motion/transparency use the current user's core UI preferences when that API is available. Unsaved settings are explicitly marked as previews.
+
+Built-in windows issue actual public API requests for signed installations, deployments/approval/configuration/enabling, fixed Skill registration/state/invocation, accounts and child accounts, effective permission/grant sources, quotas/system status, UI clients, default UI and Operation lookup. JSON request editors retain their HTTP idempotency key on manual retry; a response is displayed as the actual core result, including an asynchronous Operation rather than invented completion. Errors, denied access, unavailable dependencies and empty results have separate states. Unimplemented Batch, Workflow, micro-plugin and knowledge-base capabilities remain visibly unavailable.
+
+The browser performs authorization code + PKCE S256 through the exact configured trusted core origin. It never accepts platform passwords or reads the core login Cookie. Tokens and pending PKCE material are confined to this public client's tab session storage; refresh is single-flight, rotated credentials are not blindly retried, and logout clears private windows/state. The API module accepts only its closed operation map, exact parameters and the configured core origin. It is not an iframe HTTP bridge.
+
+Approved UI contributions open as cross-origin sandboxed windows or desktop widgets when the core discovery APIs are available. `xelab.ui/1` checks the exact source/origin, random view/nonce, protocol, sequence, closed parameters and byte/depth limits. Each view permits four in-flight requests and 120 requests per minute, keeps at most 256/15min deduplication records, and bounds retained result payloads to 32MiB. Evicted results never become new business executions. `skill.call` uses only the fixed alias/UUID/digest and host-injected deployment constraint; `window.open` permits only approved windows in that same fixed deployment. Batch methods return an explicit unsupported error.
+
+HTTP and RPC idempotency keys derive from the current subject, installation, deployment, contribution id/digest, method and caller key. They survive view reload without crossing deployments. Every call/result revalidates the fixed contribution; result delivery also reads the original Call as a current authorization proof without repeating a business POST. Credential rotation, logout, deployment/permission changes and frame reload invalidate the old channel. The official Client therefore needs current-account `session.read` and original-call `capability.call.read`, in addition to the actual Skill/target/UI permissions. Missing authority fails closed.
+
+Widget layout persists through the core preference API. Active frame limits, explicit reload after fixed-source changes, visibility events and lifecycle cleanup apply to widgets as well as windows. Periodic widget refresh is enabled only when readable immutable installation/Skill metadata proves all call bindings target pure ordinary capabilities; insufficient proof leaves periodic refresh disabled. Theme/viewport updates do not regenerate business calls.
+
+See [deployment and signing](DEPLOYMENT.md) for the actual UID 65532 Lifecycle/static workload, resource configuration, callback path, certificate requirements, image build/signing and remaining core integration gates.
+
+## Component verification
+
+Run from the repository root:
+
+```sh
+node --test examples/webui/test_api.mjs
+python3 -m unittest discover -s examples/webui -p 'test_server.py' -v
+python3 examples/webui/test_browser.py
+python3 examples/webui/test_bridge.py
+```
+
+The browser suites require Python Playwright and `/usr/bin/chromium`. They execute the actual desktop and independent cross-origin frames in Chromium with explicit core response fixtures. On 2026-11-04, 16 Node API/OAuth tests, 9 real loopback mTLS/static tests, 9 desktop browser tests and 7 isolated-bridge browser tests passed without skips. They cover window controls/mobile access, actual desktop window/widget bridge calls, fixed UUID/deployment/key binding, original-result read-proof denial, source/nonce/sequence/parameter attacks, deduplication/conflicts/limits, frame reload/revocation/account change, bounded shared-reference expansion, and 401 rejection without credential refresh or business retry. OAuth coverage includes trusted PKCE navigation, code/verifier exchange and wrong-state rejection. A native-browser fetch receiver error was found and fixed by these tests; Node mocks alone did not expose it.
+
+The separate packaged Docker component probe described in the deployment guide also passed generated Lifecycle RPC and mTLS static checks. These results do **not** establish actual signed installation through the kernel, real Owner OAuth consent, core-to-OCI management, a real third-party OCI page's end-to-end isolation, resource peak certification or complete M3-D/E acceptance. Those end-to-end tests require the HTTP/OAuth/WebUI core profiles, original-Call proof checks and declaration-bound CSP/callback activation and remain pending. AWS, independent-host recovery and formal RUN-03 are separately deferred or pending and are not covered by this application.

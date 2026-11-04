@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <title>XeLab 桌面</title>
+  <link rel="stylesheet" href="/ui/org.xelab.webui/styles.css">
+  <script type="module" src="/ui/org.xelab.webui/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#desktop">跳至桌面</a>
+  <header class="menubar">
+    <button id="launcher-toggle" class="brand" aria-haspopup="dialog">XeLab <span aria-hidden="true">⌘</span></button>
+    <span id="active-app">桌面</span>
+    <span class="menubar-spacer"></span>
+    <span id="connection" role="status">未连接</span>
+    <button id="theme-toggle" aria-label="打开主题设置">◐ 主题</button>
+    <button id="login">登录</button>
+    <time id="clock" aria-label="当前时间"></time>
+  </header>
+  <main id="desktop" tabindex="-1" aria-label="XeLab 桌面">
+    <section id="welcome" class="welcome">
+      <p class="eyebrow">YOUR LAB, CONNECTED</p>
+      <h1>桌面就绪。<br>连接你的 XeLab。</h1>
+      <p>插件、Skill 与系统状态，在一个工作空间中。<br>使用内核可信页面登录并授予本客户端权限。</p>
+      <button id="welcome-login" class="primary">前往可信登录 →</button>
+    </section>
+    <section id="widgets" aria-label="桌面组件"></section>
+    <section id="windows" aria-label="打开的窗口"></section>
+  </main>
+  <nav id="dock" class="dock" aria-label="应用 Dock"></nav>
+  <dialog id="launcher" aria-labelledby="launcher-title">
+    <header><h2 id="launcher-title">应用启动器</h2><button id="launcher-close" aria-label="关闭启动器">×</button></header>
+    <label class="search-label">查找应用<input id="app-search" type="search" placeholder="插件、Skill、设置…" autocomplete="off"></label>
+    <div id="app-grid" class="app-grid"></div>
+  </dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <noscript>此独立 WebUI 需要 JavaScript。核心 API 与 CLI 仍可独立使用。</noscript>
+</body>
+</html>

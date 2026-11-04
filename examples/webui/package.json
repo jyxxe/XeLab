@@ -1,0 +1,9 @@
+{
+  "name": "@xelab/webui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test_api.mjs",
+    "test:browser": "python3 test_browser.py && python3 test_bridge.py"
+  }
+}
