@@ -12,19 +12,43 @@ use axum::{
         IntoResponse, Response, Sse,
     },
 };
+use futures_util::Stream;
 use serde_json::{json, Value};
 use std::{
     convert::Infallible,
     net::{IpAddr, SocketAddr},
-    sync::{Arc, Mutex},
+    pin::Pin,
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
 const MAX_FRAME: usize = 1024 * 1024;
 // At most two queued frames, one producer frame, and one consumer frame.
 const BUFFER_FRAMES: usize = 2;
+// This execution profile also bounds unpolled HTTP bodies after Call recovery.
+const MAX_RESPONSES: usize = 64;
+
+fn acquire_response_slot(pool: Arc<Semaphore>) -> Result<OwnedSemaphorePermit> {
+    pool.try_acquire_owned().map_err(|_| Error::exhausted())
+}
+fn response_pool() -> Arc<Semaphore> {
+    static POOL: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    POOL.get_or_init(|| Arc::new(Semaphore::new(MAX_RESPONSES)))
+        .clone()
+}
+fn retain_response_slot(response: Response, permit: OwnedSemaphorePermit) -> Response {
+    let (parts, body) = response.into_parts();
+    let mut source = body.into_data_stream();
+    // poll_fn retains its closure, including the permit, even after EOF. The
+    // lease belongs to the response Body, not the producer or physical Call.
+    let body = Body::from_stream(futures_util::stream::poll_fn(move |context| {
+        let _held = &permit;
+        Pin::new(&mut source).poll_next(context)
+    }));
+    Response::from_parts(parts, body)
+}
 
 pub(crate) fn ensure_active(app: &App) -> Result<()> {
     if app.leader.is_closed()
@@ -49,6 +73,7 @@ struct State {
     sequence: u64,
     terminal: bool,
     accepted: bool,
+    stalled: bool,
 }
 #[derive(Clone)]
 pub(crate) struct Frame {
@@ -116,6 +141,7 @@ impl Output {
                 sequence: 0,
                 terminal: false,
                 accepted: false,
+                stalled: false,
             }),
         }
     }
@@ -189,7 +215,7 @@ impl Output {
     }
     pub(crate) async fn emit(&self, kind: &'static str, payload: Value) -> Result<()> {
         let _emission = self.emission.lock().await;
-        let (message, deadline, sequence) = {
+        let (message, deadline, sequence, stalled) = {
             let state = self
                 .state
                 .lock()
@@ -211,15 +237,15 @@ impl Output {
             let value = json!({"skill_id":identity.skill,"skill_version":identity.version,"definition_digest":identity.digest,
                 "event":{"call_id":identity.call,"sequence":sequence,"kind":kind,"payload":payload,"terminal":terminal}});
             let message = frame(&value, kind, identity.call, sequence, identity.deadline)?;
-            (message, identity.deadline, sequence)
+            (message, identity.deadline, sequence, state.stalled)
         };
         let remaining = (deadline - chrono::Utc::now()).num_milliseconds().max(0) as u64;
-        if remaining == 0 {
+        if stalled || remaining == 0 {
             if matches!(kind, "failed" | "canceled") {
                 self.sender.try_send(Ok(message)).map_err(|_| {
                     Error::new(
                         "CANCELED",
-                        "Skill stream consumer did not advance before deadline",
+                        "Skill stream consumer cannot receive its terminal event",
                         StatusCode::CONFLICT,
                     )
                 })?;
@@ -227,31 +253,55 @@ impl Output {
                 return Ok(());
             }
             return Err(Error::new(
-                "DEADLINE_EXCEEDED",
-                "Skill stream deadline elapsed",
-                StatusCode::GATEWAY_TIMEOUT,
+                if stalled {
+                    "RESOURCE_EXHAUSTED"
+                } else {
+                    "DEADLINE_EXCEEDED"
+                },
+                if stalled {
+                    "Skill stream consumer stalled"
+                } else {
+                    "Skill stream deadline elapsed"
+                },
+                if stalled {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::GATEWAY_TIMEOUT
+                },
             ));
         }
-        tokio::time::timeout(
+        let sent = tokio::time::timeout(
             Duration::from_millis(remaining.min(30000)),
             self.sender.send(Ok(message)),
         )
-        .await
-        .map_err(|_| {
-            Error::new(
-                "RESOURCE_EXHAUSTED",
-                "Skill stream consumer did not advance",
-                StatusCode::SERVICE_UNAVAILABLE,
-            )
-        })?
-        .map_err(|_| {
-            Error::new(
-                "CANCELED",
-                "Skill stream consumer disconnected",
-                StatusCode::CONFLICT,
-            )
-        })?;
+        .await;
+        match sent {
+            Err(_) => {
+                self.mark_stalled()?;
+                return Err(Error::new(
+                    "RESOURCE_EXHAUSTED",
+                    "Skill stream consumer did not advance",
+                    StatusCode::SERVICE_UNAVAILABLE,
+                ));
+            }
+            Ok(Err(_)) => {
+                self.mark_stalled()?;
+                return Err(Error::new(
+                    "CANCELED",
+                    "Skill stream consumer disconnected",
+                    StatusCode::CONFLICT,
+                ));
+            }
+            Ok(Ok(())) => (),
+        }
         self.mark_sent(kind, sequence)?;
+        Ok(())
+    }
+    fn mark_stalled(&self) -> Result<()> {
+        self.state
+            .lock()
+            .map_err(|_| Error::unavailable("Stream state is unavailable"))?
+            .stalled = true;
         Ok(())
     }
     fn mark_sent(&self, kind: &'static str, sequence: u64) -> Result<()> {
@@ -348,6 +398,7 @@ pub(crate) async fn handle(
     })?;
     let input = strict_json(&body, 4194304)?;
     validate("SkillInvokeRequest", &input)?;
+    let response_slot = acquire_response_slot(response_pool())?;
     let (sender, mut receiver) = mpsc::channel(BUFFER_FRAMES);
     let output = Arc::new(Output::new(sender));
     let actor = app.clone();
@@ -421,7 +472,7 @@ pub(crate) async fn handle(
     response
         .headers_mut()
         .insert("x-request-id", request_id.to_string().parse().unwrap());
-    Ok(response)
+    Ok(retain_response_slot(response, response_slot))
 }
 
 async fn authorize_delivery(
@@ -612,6 +663,95 @@ mod tests {
         assert_eq!(terminal.kind, "canceled");
         assert!(output.emit("item", json!({"value":3})).await.is_err());
     }
+    #[tokio::test]
+    async fn retained_response_holds_capacity_after_producer_finish_and_eof_until_body_drop() {
+        use futures_util::StreamExt;
+        let pool = Arc::new(Semaphore::new(1));
+        let permit = acquire_response_slot(pool.clone()).unwrap();
+        let (sender, receiver) = mpsc::channel(BUFFER_FRAMES);
+        let output = Output::new(sender);
+        output
+            .bind(
+                &skill(),
+                Uuid::new_v4(),
+                chrono::Utc::now() + chrono::Duration::seconds(120),
+            )
+            .unwrap();
+        output.emit("accepted", json!({})).await.unwrap();
+        let producer = tokio::spawn(async move {
+            output
+                .finish(Err(Error::new(
+                    "CANCELED",
+                    "requested",
+                    StatusCode::CONFLICT,
+                )))
+                .await;
+        });
+        producer.await.unwrap();
+        let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
+            receiver
+                .recv()
+                .await
+                .map(|frame| (Ok::<_, Infallible>(frame.unwrap().event()), receiver))
+        });
+        let response = retain_response_slot(Sse::new(stream).into_response(), permit);
+        assert!(
+            acquire_response_slot(pool.clone()).is_err(),
+            "producer completion cannot free retained response capacity"
+        );
+        let mut retained_body = response.into_body().into_data_stream();
+        let mut count = 0;
+        while let Some(frame) = retained_body.next().await {
+            frame.unwrap();
+            count += 1;
+        }
+        assert_eq!(count, 2);
+        assert!(
+            acquire_response_slot(pool.clone()).is_err(),
+            "EOF must not release the permit while the actual response Body is retained"
+        );
+        drop(retained_body);
+        assert!(
+            acquire_response_slot(pool).is_ok(),
+            "only Body drop releases retained transport capacity"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_consumer_does_not_receive_a_second_terminal_send_wait_or_sequence_gap() {
+        let (sender, mut receiver) = mpsc::channel(BUFFER_FRAMES);
+        let output = Arc::new(Output::new(sender));
+        output
+            .bind(
+                &skill(),
+                Uuid::new_v4(),
+                chrono::Utc::now() + chrono::Duration::seconds(120),
+            )
+            .unwrap();
+        output.emit("accepted", json!({})).await.unwrap();
+        output.emit("item", json!({"value":1})).await.unwrap();
+        let blocked = {
+            let output = output.clone();
+            tokio::spawn(async move { output.emit("item", json!({"value":2})).await })
+        };
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(31)).await;
+        let error = blocked.await.unwrap().unwrap_err();
+        assert_eq!(error.code, "RESOURCE_EXHAUSTED");
+        tokio::time::timeout(Duration::from_millis(1), output.finish(Err(error)))
+            .await
+            .expect("terminal finish must only try_send after the first slow-consumer timeout");
+        assert_eq!(output.state.lock().unwrap().sequence, 2);
+        assert!(output.state.lock().unwrap().stalled);
+        drop(output);
+        assert_eq!(receiver.recv().await.unwrap().unwrap().sequence, 1);
+        assert_eq!(receiver.recv().await.unwrap().unwrap().sequence, 2);
+        assert!(
+            receiver.recv().await.is_none(),
+            "producer closes without a false terminal result when the full consumer never advances"
+        );
+    }
+
     #[tokio::test]
     async fn queued_business_data_is_fenced_by_readiness_shutdown_and_actual_leader_loss() {
         let Some(f) = crate::backups::tests::Fixture::new().await else {
