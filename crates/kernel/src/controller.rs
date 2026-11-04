@@ -758,9 +758,18 @@ async fn finish_deployment_operations(
     id: Uuid,
     enabled: bool,
 ) -> Result<()> {
-    c.execute("UPDATE operations SET state='succeeded',progress_percent=100,result=$2,updated_at=now(),revision=revision+1 WHERE resource_id=$1 AND kind IN ('createDeployment','setDeploymentEnabled') AND state IN ('pending','running') AND EXISTS(SELECT 1 FROM deployments WHERE id=$3 AND (spec->>'enabled')::boolean=$4)",&[&id.to_string(),&json!({"deployment_id":id}),&id,&enabled]).await?;
+    let Some(row) = c.query_opt("SELECT to_jsonb(d) FROM deployments d WHERE d.id=$1 AND (d.spec->>'enabled')::boolean=$2 AND EXISTS(SELECT 1 FROM operations o WHERE o.resource_id=d.id::text AND o.kind IN ('createDeployment','setDeploymentEnabled') AND o.state IN ('pending','running'))", &[&id,&enabled]).await? else { return Ok(()); };
+    let raw: Value = row.get(0);
+    let result = crate::api::object_value(&raw, "Deployment")?;
+    // The projected result and completion must describe the same observation.
+    // A concurrent intent/revision change leaves this operation for a new tick.
+    c.execute("UPDATE operations SET state='succeeded',progress_percent=100,result=$2,updated_at=now(),revision=revision+1 WHERE resource_id=$1 AND kind IN ('createDeployment','setDeploymentEnabled') AND state IN ('pending','running') AND EXISTS(SELECT 1 FROM deployments d WHERE d.id=$3 AND (d.spec->>'enabled')::boolean=$4 AND to_jsonb(d)=$5)",&[&id.to_string(),&result,&id,&enabled,&raw]).await?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "deployment_operation_tests.rs"]
+mod operation_tests;
 
 #[cfg(test)]
 mod pagination_tests {
