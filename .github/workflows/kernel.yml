@@ -9,7 +9,9 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # Serial policy fixtures plus privileged OCI/XFS recovery exceed the old
+    # one-hour job budget; signed request/runtime deadlines stay unchanged.
+    timeout-minutes: 90
     services:
       postgres:
         image: postgres:16
