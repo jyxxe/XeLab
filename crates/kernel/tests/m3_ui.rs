@@ -517,6 +517,7 @@ impl tracing::field::Visit for ControllerFields {
                 "UNCERTAIN_WORK_FENCE",
                 "HEALTH_REJECTED",
                 "HEALTH_THRESHOLD_STOP",
+                "STATIC_UNSETTLED",
             ],
             "stage" => &[
                 "recovery",
@@ -525,6 +526,10 @@ impl tracing::field::Visit for ControllerFields {
                 "initialize",
                 "get_health",
                 "http_probe",
+                "transport_setup",
+                "fetch",
+                "authority_monitor",
+                "lease_complete",
             ],
             _ => return,
         };
@@ -539,6 +544,8 @@ impl tracing::field::Visit for ControllerFields {
             "static_expired",
             "failures",
             "threshold",
+            "elapsed_ms",
+            "phase_ms",
         ]
         .contains(&field.name())
         {
@@ -566,7 +573,10 @@ impl tracing::field::Visit for ControllerFields {
 }
 impl<S: tracing::Subscriber> Layer<S> for ControllerEvents {
     fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-        if event.metadata().target() != "xelab.controller_transition" {
+        if !matches!(
+            event.metadata().target(),
+            "xelab.controller_transition" | "xelab.static_transition"
+        ) {
             return;
         }
         let mut fields = ControllerFields::default();
@@ -646,6 +656,7 @@ fn controller_diagnostics_are_bounded_and_role_mapped_without_raw_fields() {
             tracing::info!(target: "xelab.controller_transition", code="untrusted-value", stage="untrusted-value");
         }
         tracing::info!(target: "xelab.controller_transition", code="UNCERTAIN_WORK_FENCE", stage="recovery", deployment_id=%deployment, instance_id=%instance, call_unknown=0i64, static_unknown=1i64);
+        tracing::info!(target: "xelab.static_transition", code="STATIC_UNSETTLED", stage="authority_monitor", deployment_id=%deployment, elapsed_ms=10001u64, phase_ms=3000u64, secret="never-print");
     });
     let safe = collector.snapshot(&[DiagnosticTarget {
         role: "ui_reference",
@@ -655,12 +666,16 @@ fn controller_diagnostics_are_bounded_and_role_mapped_without_raw_fields() {
     assert_eq!(safe["status"], "init_failed");
     assert_eq!(safe["init_failures"], 1);
     assert_eq!(safe["events"].as_array().unwrap().len(), 32);
-    assert_eq!(safe["dropped"], 2);
+    assert_eq!(safe["dropped"], 3);
     assert_eq!(safe["events"][0]["role"], "unknown");
     assert_eq!(safe["events"][0]["code"], "other");
     assert_eq!(safe["events"][31]["role"], "ui_reference");
-    assert_eq!(safe["events"][31]["code"], "UNCERTAIN_WORK_FENCE");
-    assert_eq!(safe["events"][31]["static_unknown"], 1);
+    assert_eq!(safe["events"][30]["code"], "UNCERTAIN_WORK_FENCE");
+    assert_eq!(safe["events"][30]["static_unknown"], 1);
+    assert_eq!(safe["events"][31]["code"], "STATIC_UNSETTLED");
+    assert_eq!(safe["events"][31]["stage"], "authority_monitor");
+    assert_eq!(safe["events"][31]["elapsed_ms"], 10001);
+    assert_eq!(safe["events"][31]["phase_ms"], 3000);
     let encoded = serde_json::to_string(&safe).unwrap();
     for forbidden in [
         "never-print".to_owned(),
@@ -1380,24 +1395,54 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
         let mut attack_usage:Option<(i64,i64,i64)>=None;
         let mut attack_checked=false;
         let mut withdrawn_usage:Option<(i64,i64)>=None;
+        let mut owner_default_cleared=false;
+        let mut child_default_restored=false;
         let output=tokio::time::timeout(Duration::from_secs(300),async {
             loop {
                 tokio::select! {
                     result=&mut output=>break result.unwrap(),
                     _=tokio::time::sleep(Duration::from_millis(100))=>{
                         let state=fs::read(&progress).ok().and_then(|bytes|serde_json::from_slice::<Value>(&bytes).ok());
+                        if !owner_default_cleared && state.as_ref().is_some_and(|state|state["phase"]=="await_owner_nondefault_ui") {
+                            assert!(!child_default_restored && !attack_checked && !revoked,"The nondefault shell phase must precede all contribution actions");
+                            let current=status(api(&router,&host,"getDefaultUi",&[],Some(&token),Value::Null,"read-owner-default",None).await,200,"getDefaultUi");
+                            assert!(current["deployment_id"]==web_deployment,"The known WebUI must initially be default");
+                            let cleared=status(api(&router,&host,"setDefaultUi",&[],Some(&token),json!({"deployment_id":null}),"clear-default-for-owner",current["revision"].as_i64()).await,200,"setDefaultUi");
+                            assert!(cleared["deployment_id"].is_null(),"The default must be cleared through the public API");
+                            let confirmed=status(api(&router,&host,"getDefaultUi",&[],Some(&token),Value::Null,"confirm-owner-nondefault",None).await,200,"getDefaultUi");
+                            assert!(confirmed["deployment_id"].is_null(),"The owner shell must run while no default is selected");
+                            status(api(&router,&host,"redirectDefaultUi",&[],None,Value::Null,"nondefault-root-unavailable",None).await,503,"redirectDefaultUi");
+                            owner_default_cleared=true;
+                            report["checks"]["owner_shell_has_no_default_ui_during_contribution_actions"]=json!(true);
+                            tls::atomic_file(&control,br#"{"phase":"owner_nondefault_ui_ready","cleared":true}"#,0o600).unwrap();
+                        }
                         if attack_usage.is_none() && state.as_ref().is_some_and(|state|state["phase"]=="await_attack_snapshot") {
+                            assert!(owner_default_cleared && !child_default_restored,"Owner attacks must execute in the nondefault shell phase");
                             let usage=business_usage(&c,owner).await;assert_eq!(usage.2,0,"Attack snapshot requires no pending legitimate call");attack_usage=Some(usage);
                             tls::atomic_file(&control,br#"{"phase":"attack_snapshot_ready"}"#,0o600).unwrap();
                         }
                         if !attack_checked && state.as_ref().is_some_and(|state|state["phase"]=="await_attack_verification") {
+                            assert!(owner_default_cleared && !child_default_restored,"Owner channel verification must remain nondefault");
                             let before=attack_usage.expect("The browser must synchronize before channel attacks");let after=business_usage(&c,owner).await;
                             assert_eq!(after.0-before.0,1,"Channel attacks must not allocate extra Call rows");assert_eq!(after.1-before.1,1,"Channel attacks must not consume extra daily quota");assert_eq!(after.2,0,"Channel attacks must not leak concurrent quota");
                             tls::atomic_file(&control,&serde_json::to_vec(&json!({"phase":"attack_verified","calls_delta":after.0-before.0,"daily_delta":after.1-before.1,"concurrent":after.2})).unwrap(),0o600).unwrap();attack_checked=true;
                             report["checks"]["channel_attacks_allocate_only_the_legitimate_call_and_quota"]=json!(true);
                         }
+                        if !child_default_restored && state.as_ref().is_some_and(|state|state["phase"]=="await_child_default_ui") {
+                            assert!(owner_default_cleared && attack_checked && !revoked,"Restore default only after the owner contribution proof and before child login");
+                            let current=status(api(&router,&host,"getDefaultUi",&[],Some(&token),Value::Null,"read-child-default",None).await,200,"getDefaultUi");
+                            assert!(current["deployment_id"].is_null(),"The owner contribution phase must not silently restore default UI");
+                            status(api(&router,&host,"setDefaultUi",&[],Some(&token),json!({"deployment_id":web_deployment}),"restore-default-for-child",current["revision"].as_i64()).await,200,"setDefaultUi");
+                            let confirmed=status(api(&router,&host,"getDefaultUi",&[],Some(&token),Value::Null,"confirm-child-default",None).await,200,"getDefaultUi");
+                            assert!(confirmed["deployment_id"]==web_deployment,"Child root navigation must use the original WebUI");
+                            status(api(&router,&host,"redirectDefaultUi",&[],None,Value::Null,"child-root-redirect-ready",None).await,302,"redirectDefaultUi");
+                            child_default_restored=true;
+                            report["checks"]["default_ui_restored_before_child_root_login"]=json!(true);
+                            tls::atomic_file(&control,br#"{"phase":"child_default_ui_ready","restored":true}"#,0o600).unwrap();
+                        }
                         if !revoked && state.as_ref().is_some_and(|state|state["phase"]=="await_revoke") {
                             assert!(attack_checked,"The owner channel attack evidence must be verified first");
+                            assert!(owner_default_cleared && child_default_restored,"Child revocation follows real nondefault and restored root login phases");
                             let remaining=Value::Array(child_rules.as_array().unwrap().iter().filter(|rule|rule["action"]!="skill.invoke").cloned().collect());
                             let usage=c.query_one("SELECT (SELECT count(*) FROM calls WHERE owner_id=$1) AS calls,daily_calls_used FROM quotas WHERE account_id=$1",&[&Uuid::parse_str(&child_id).unwrap()]).await.unwrap();
                             withdrawn_usage=Some((usage.get("calls"),usage.get("daily_calls_used")));
@@ -1415,6 +1460,7 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
         assert!(output.status.success() && browser_report["status"]=="passed","M3 browser failed at safe step={}",browser_report["step"].as_str().unwrap_or("unknown"));
         assert!(revoked,"The actual inheritance withdrawal must have executed");
         assert!(attack_checked,"Actual channel attack admission/accounting evidence is required");
+        assert!(owner_default_cleared && child_default_restored,"Both public default UI transitions are required");
         let usage=c.query_one("SELECT (SELECT count(*) FROM calls WHERE owner_id=$1) AS calls,daily_calls_used,concurrent_calls_used FROM quotas WHERE account_id=$1",&[&Uuid::parse_str(&child_id).unwrap()]).await.unwrap();
         assert_eq!(withdrawn_usage,Some((usage.get::<_,i64>("calls"),usage.get::<_,i64>("daily_calls_used"))));assert_eq!(usage.get::<_,i64>("concurrent_calls_used"),0);
         report["checks"]["withdrawn_calls_do_not_allocate_or_charge"]=json!(true);

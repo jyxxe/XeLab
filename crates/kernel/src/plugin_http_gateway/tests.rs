@@ -469,6 +469,7 @@ async fn static_slot_counts_rpc_and_http_leases_and_abandonment_is_not_released(
         "/ui/org.xelab.gateway-fixture/index.html",
         &HeaderMap::new(),
         tokio::time::Instant::now(),
+        None,
     )
     .await
     .unwrap_err();
@@ -488,15 +489,17 @@ async fn static_slot_counts_rpc_and_http_leases_and_abandonment_is_not_released(
         "/ui/org.xelab.gateway-fixture/index.html",
         &HeaderMap::new(),
         tokio::time::Instant::now(),
+        None,
     )
     .await
     .unwrap_err();
     assert_eq!(error.code, "RESOURCE_EXHAUSTED");
-    drop(StaticLease {
-        app: app.clone(),
+    drop(StaticLease::new(
+        app.clone(),
         id,
-        settled: false,
-    });
+        deployment,
+        tokio::time::Instant::now(),
+    ));
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let state: String = connection
@@ -523,11 +526,7 @@ async fn static_slot_counts_rpc_and_http_leases_and_abandonment_is_not_released(
             .get::<_, i64>(0),
         1
     );
-    let mut completed = StaticLease {
-        app,
-        id,
-        settled: false,
-    };
+    let mut completed = StaticLease::new(app, id, deployment, tokio::time::Instant::now());
     assert!(completed.complete().await.is_err());
     assert_eq!(
         connection

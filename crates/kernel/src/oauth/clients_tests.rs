@@ -42,6 +42,9 @@ fn callback_registration_requires_exact_https_origins_and_unambiguous_oauth_quer
         "https://ui.example.org/callback?state=other",
         "https://ui.example.org/callback?error=other",
         "https://ui.example.org/callback?error_description=other",
+        "https://ui.example.org/callback?xelab_frame=other",
+        "https://ui.example.org/callback?%78elab_frame=other",
+        "https://ui.example.org/callback?XELAB_FRAME=other",
     ] {
         let mut invalid = spec();
         invalid["redirect_uris"] = json!([callback]);

@@ -39,6 +39,26 @@ function canonical(value, maximum=16*1024*1024+65536) {
 async function sha256(value){return[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value)))].map(byte=>byte.toString(16).padStart(2,'0')).join('');}
 function path(value) {return typeof value==='string'&&value.length<=256&&/^\/[A-Za-z0-9_./-]*$/.test(value)&&!value.includes('//')&&!value.split('/').some(part=>part==='.'||part==='..');}
 function modes(value) {return Array.isArray(value)&&value.length>=1&&value.length<=2&&new Set(value).size===value.length&&value.every(mode=>['call','batch'].includes(mode));}
+function base64Bytes(value,maximum) {
+  if(!/^[A-Za-z0-9_-]+$/.test(value)||value.length>maximum||value.length%4===1)throw new Error('Invalid framing encoding');
+  const binary=atob(value.replaceAll('-','+').replaceAll('_','/').padEnd(Math.ceil(value.length/4)*4,'='));
+  if(btoa(binary).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'')!==value)throw new Error('Noncanonical framing encoding');
+  return Uint8Array.from(binary,char=>char.charCodeAt(0));
+}
+function framingQuery(query,contributionId) {
+  if(query==='')return true;
+  const prefix='?xelab_frame=';
+  if(!query.startsWith(prefix))return false;
+  const value=query.slice(prefix.length),parts=/^v1\.([A-Za-z0-9_-]{1,768})\.([A-Za-z0-9_-]{43})$/.exec(value);
+  if(value.length>1024||!parts)return false;
+  try{
+    const text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(base64Bytes(parts[1],768));
+    const selector=JSON.parse(text);
+    return fields(selector,['client_id','contribution_id','origin_index'])&&validText(selector.client_id,128)&&!/[\u0000-\u001f\u007f-\u009f]/.test(selector.client_id)
+      &&selector.contribution_id===contributionId&&integer(selector.origin_index,0,7)
+      &&canonical(selector,1024)===text&&base64Bytes(parts[2],43).byteLength===32;
+  }catch{return false;}
+}
 function dimensions(value,kind) {
   if(kind==='window') {
     if(!fields(value,['width','height','min_width','min_height','max_width','max_height','resizable'])||typeof value.resizable!=='boolean')return false;
@@ -77,7 +97,7 @@ export function validateContribution(value, {parentOrigin,coreOrigin}) {
   let url,origin;
   try{url=new URL(copy.frame_url);origin=new URL(copy.frame_origin);}catch{throw problem('BINDING_UNAVAILABLE','缺少独立 HTTPS 页面来源。');}
   if(url.protocol!=='https:'||origin.protocol!=='https:'||origin.origin!==copy.frame_origin||url.href!==copy.frame_url||url.origin!==copy.frame_origin
-      ||url.username||url.password||url.search||url.hash||url.origin===parentOrigin||url.origin===coreOrigin
+      ||url.username||url.password||!framingQuery(url.search||(copy.frame_url.includes('?')?'?':''),spec.id)||url.hash||url.origin===parentOrigin||url.origin===coreOrigin
       ||url.pathname!==`/ui/${copy.plugin_id}${spec.entry_path}`)throw problem('PERMISSION_DENIED','插件页面必须具有核心分配的独立来源和固定路径。');
   return copy;
 }

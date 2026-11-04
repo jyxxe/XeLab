@@ -1,6 +1,6 @@
 # XeLab Kernel：M1/M2 与 M3 Skill、HTTP、OAuth/WebUI
 
-这是基于现有 **2.8.0 契约**的 Rust 实现，crate 版本为 0.1.0。已交付 M1 普通插件、身份与管理闭环，以及 M2 卷、Blob、Secret、部署备份/恢复、整体离线恢复和内部格式监督器。main 已合并普通 OCI Skill 的七项公开操作及 PR #43 的声明式 HTTP、PR #44 的 OAuth/Client/UI 控制面，追加迁移至内部 Schema **16**；历史 SQL 及校验和不变。本工作树还包含 PR #45–47 的独立 WebUI/消息桥、普通副作用/QueryResult、HTTP Skill 方法与流扩展，源码实现不代表它们的真实 OCI 门禁已经通过。逐项结果、精确提交和 CI 快照见[持续进度](../../docs/implementation/m3-progress.md)及[目标 #38](https://github.com/jyxxe/XeLab/issues/38)，不能宣布完整 M3 完成。正式生产、AWS/独立宿主和完整格式迁移验收仍独立待完成；公开版本化制品安装入口仍关闭。
+这是基于现有 **2.8.0 契约**的 Rust 实现，crate 版本为 0.1.0。已实现 M1 普通插件、身份与管理闭环，以及 M2 卷、Blob、Secret、部署备份/恢复、整体离线恢复和内部格式监督器。M3 源码提供普通 OCI Skill 的七项公开操作、声明式 HTTP、OAuth/Client/UI 控制面及独立 WebUI/消息桥；内部 Schema 为 **16**，历史 SQL 及校验和不变。源码功能范围与实际验收状态分别记录：逐项测试、精确提交、PR 集成和 main CI 以有时间戳的[持续进度](../../docs/implementation/m3-progress.md)及[目标 #38](https://github.com/jyxxe/XeLab/issues/38)最新证据为准，不能仅凭实现代码宣布完整 M3 完成。正式生产、AWS/独立宿主和完整格式迁移验收仍独立待完成；公开版本化制品安装入口仍关闭。
 
 ## 已实现与边界
 

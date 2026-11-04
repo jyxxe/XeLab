@@ -14,6 +14,8 @@ RouteSpec.kind=http 必须声明 http_contract_digest；镜像内 `/xelab/http/o
 
 static/webui 仅提供获批 HTTP 文件及页面，GET/HEAD 转发受清单前缀和来源规则限制；业务写接口仍须 http 契约。容器内静态文件路径由插件负责，但内核拒绝路径穿越、编码斜杠和头部注入。
 
+UI贡献的核心生成frame_url可携唯一保留的 `xelab_frame` 嵌入政策参数，格式与绑定见[贡献规范](../plugins/ui-contributions.md)。它只适用于固定签名贡献入口的GET/HEAD；网关验证真实Client/父源及两端当前审批和制品后移除全部query，再访问内部固定路径。它不能授权业务、冒充OAuth回调或转发给插件；除既有精确注册的OAuth回调外，其他静态query及业务query仍拒绝。公开CSP不枚举全局部署来源，frame-ancestors不使用通配来源；非默认动态壳通过该精确政策继续工作。
+
 ## 转发规则
 
 外部身份头和原始用户 Bearer 被移除；网关建立目标插件可验证的固定委托。允许的请求头为 Content-Type、Accept、If-None-Match、Range（仅静态实现支持时）及契约列出的非敏感自定义头。hop-by-hop 头禁止转发。

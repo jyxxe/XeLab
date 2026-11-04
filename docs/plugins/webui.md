@@ -14,6 +14,8 @@ WebUI 为独立 OCI 部署，资源计入插件池，可安装、禁用、升级
 
 官方壳先创建 disabled 部署再注册其精确 Client 来源。初建业务配置可以保留 client_id=null；取得公开 Client ID 后，通过受限 updateDeployment 写入完整配置，再审批和启用。null 不能使运行中插件 Ready；Initialize 仍要求有效 Client ID。此引导不使用虚假的外部回调，也不要求在安装前预知内核生成的部署 UUID。
 
+需要动态承载第三方贡献的所有OCI WebUI壳均使用这一公开运行时配置键：`config.client_id` 必须是该固定部署实际使用的active公共Client ID。核心按持久OAuth access的Client/Origin绑定与该配置精确比较，不能从多个matching Client中任选。该framing profile同样适用于非默认自定义壳；没有对应绑定时不签发私有动态父源政策，静态公开壳和CLI仍可独立工作。[贡献规范](ui-contributions.md)规定证明的固定query与当前审批绑定；证明不是用户身份或业务授权。
+
 `/api/platform/v1/`、`/oauth/`、`/auth/ui/`、`/health/` 为内核保留，插件路由不能覆盖。平台 `/` GET 仅 302 到 DefaultUi 的入口；未配置或 UI 不可用返回 503/明确错误，不影响管理 API。
 
 ## 公共客户端
