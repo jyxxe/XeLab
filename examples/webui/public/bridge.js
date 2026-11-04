@@ -110,7 +110,7 @@ function backendError(error) {
 
 export class BridgeHost {
   #iframe;#api;#fixed;#signature;#subject;#current;#open;#onState;#parent;#core;#theme;
-  #id;#nonce;#incoming=0;#outgoing=0;#initialized=false;#closed=false;#inflight=0;#queued=0;#highest=0;#cache=new Map();#cachedBytes=0;#acceptQueue=Promise.resolve();#events=new Map();#animation;#rate=[];#listener;#loadListener;#loaded=false;#handshake;#poll;#controller=new AbortController();#visible=true;
+  #id;#nonce;#incoming=0;#outgoing=0;#initialized=false;#closed=false;#inflight=0;#queued=0;#highest=0;#cache=new Map();#cachedBytes=0;#acceptQueue=Promise.resolve();#events=new Map();#animation;#rate=[];#listener;#loadListener;#loaded=false;#loading;#handshake;#poll;#controller=new AbortController();#visible=true;
   constructor({iframe,api,contribution,subjectId,isCurrent,openWindow,onState=()=>{},theme,parentOrigin=location.origin,coreOrigin,viewId=crypto.randomUUID()}) {
     if(!UUID.test(subjectId)||typeof isCurrent!=='function'||parentOrigin!==location.origin||new URL(parentOrigin).protocol!=='https:'||new URL(coreOrigin).protocol!=='https:'||new URL(coreOrigin).origin!==coreOrigin||parentOrigin===coreOrigin)throw problem('PERMISSION_DENIED','当前账户或宿主来源不可用。');
     this.#fixed=validateContribution(contribution,{parentOrigin,coreOrigin});this.#signature=canonical(this.#fixed);
@@ -127,10 +127,18 @@ export class BridgeHost {
       await this.#verify();
       const url=new URL(this.#fixed.frame_url);
       url.hash=new URLSearchParams({protocol:PROTOCOL,view_id:this.#id,channel_nonce:this.#nonce,parent_origin:this.#parent}).toString();
-      this.#loadListener=()=>{if(this.#loaded)this.close('unavailable');else this.#loaded=true;};
+      this.#loadListener=()=>{
+        if(this.#closed)return;
+        if(this.#loaded){this.close('unavailable');return;}
+        this.#loaded=true;clearTimeout(this.#loading);
+        // The protocol grants ten seconds after document load. Fetching the
+        // page has its own unchanged ten-second bound and consumes no handshake
+        // budget; an already verified early ready needs no second timer.
+        if(!this.#initialized)this.#handshake=setTimeout(()=>this.close('unavailable'),10000);
+      };
       this.#iframe.addEventListener('load',this.#loadListener);
+      this.#loading=setTimeout(()=>this.close('unavailable'),10000);
       this.#iframe.src=url.href;
-      this.#handshake=setTimeout(()=>this.close('unavailable'),10000);
       this.#poll=setInterval(()=>{this.#verify().catch(()=>this.close('unavailable'));},5000);
       this.#onState('loading');
     }catch(error){this.close('unavailable');throw error;}
@@ -259,6 +267,6 @@ export class BridgeHost {
   async refresh(){if(this.#initialized&&this.#visible&&this.#fixed.spec.kind==='widget'){await this.#verify();if(!this.#closed)this.#send('event',{event:'widget.refresh',params:{}});}}
   close(reason='close'){
     if(this.#closed)return;
-    if(this.#outgoing<Number.MAX_SAFE_INTEGER)this.#send('event',{event:'host.dispose',params:{reason}});this.#closed=true;this.#controller.abort();clearTimeout(this.#handshake);clearInterval(this.#poll);cancelAnimationFrame(this.#animation);this.#events.clear();window.removeEventListener('message',this.#listener);this.#iframe.removeEventListener('load',this.#loadListener);this.#cache.clear();this.#cachedBytes=0;this.#nonce='';this.#iframe.remove();this.#onState('closed',reason);
+    if(this.#outgoing<Number.MAX_SAFE_INTEGER)this.#send('event',{event:'host.dispose',params:{reason}});this.#closed=true;this.#controller.abort();clearTimeout(this.#loading);clearTimeout(this.#handshake);clearInterval(this.#poll);cancelAnimationFrame(this.#animation);this.#events.clear();window.removeEventListener('message',this.#listener);this.#iframe.removeEventListener('load',this.#loadListener);this.#cache.clear();this.#cachedBytes=0;this.#nonce='';this.#iframe.remove();this.#onState('closed',reason);
   }
 }

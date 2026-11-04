@@ -70,13 +70,107 @@ def record_observer_failure(observed, phase, error):
     buckets[key] = min(buckets.get(key, 0) + 1, 65535)
 
 
-def wait_for_observers(page, observed):
+class SkillBodyAudit:
+    """Read actual selected response bodies outside Playwright event callbacks."""
+    def __init__(self, core, skill, report, observed):
+        self.core, self.skill = core, skill
+        self.report, self.observed = report, observed
+        self.requests, self.queue, self.calls = {}, [], []
+        self.expected_successes = self.expected_attempts = 0
+
+    def selected(self, request):
+        return (url_origin(request.url) == self.core and request.method == "POST"
+                and urllib.parse.urlsplit(request.url).path == f"/api/platform/v1/skills/{self.skill}/calls")
+
+    def request(self, request):
+        if not self.selected(request):
+            return None
+        if request not in self.requests:
+            self.requests[request] = {"finished": False, "failed": False, "response": None, "read": False, "failure_recorded": False}
+            self.report["http"]["skill_post_attempts"] += 1
+        return self.requests[request]
+
+    def response(self, response):
+        state = self.request(response.request)
+        if state is not None and response.status == 200 and state["response"] is None:
+            state["response"] = response
+            self.queue.append(state)
+
+    def finished(self, request):
+        state = self.request(request)
+        if state is not None:
+            state["finished"] = True
+
+    def failed(self, request):
+        state = self.request(request)
+        if state is not None:
+            state["failed"] = True
+
+    def expect(self, successes, attempts=None):
+        self.expected_successes = successes
+        self.expected_attempts = successes if attempts is None else attempts
+
+    def read_completed(self):
+        # Body RPCs may pump more callbacks. Iterate snapshots, and preserve
+        # strong Response/Request references until each actual body is read.
+        for state in list(self.requests.values()):
+            if state["failed"] and not state["failure_recorded"]:
+                state["failure_recorded"] = True
+                record_observer_failure(self.observed, "response_skill_body", CheckFailed("selected_skill_request_failed"))
+        for state in list(self.queue):
+            if state["read"] or not (state["finished"] or state["failed"]):
+                continue
+            state["read"] = True
+            if state["failed"]:
+                continue
+            self.observed["active_response_observers"] += 1
+            try:
+                # Response.json already waits internally; requestfinished is
+                # recorded above, so never issue a second response.finished RPC.
+                value = state["response"].json()
+                call = value.get("call") if isinstance(value, dict) else None
+                identifier = call.get("call_id") if isinstance(call, dict) else None
+                if (not isinstance(value, dict) or value.get("skill_id") != self.skill or not isinstance(identifier, str)
+                        or str(uuid.UUID(identifier)) != identifier
+                        or call.get("skill_id", self.skill) != self.skill
+                        or identifier in self.calls):
+                    raise CheckFailed("selected_skill_response_identity")
+                self.calls.append(identifier)
+                self.report["http"]["actual_skill_successes"] += 1
+                self.report["http"]["unique_skill_call_ids"] = len(set(self.calls))
+            except Exception as error:
+                record_observer_failure(self.observed, "response_skill_body", error)
+            finally:
+                self.observed["active_response_observers"] -= 1
+        self.queue[:] = [state for state in self.queue if not state["read"]]
+        self.report["body_observation"] = {
+            "expected_successes": self.expected_successes, "expected_attempts": self.expected_attempts,
+            "actual_successes": self.report["http"]["actual_skill_successes"],
+            "unique_call_ids": len(set(self.calls)), "attempts": self.report["http"]["skill_post_attempts"],
+            "queued_bodies": len(self.queue),
+            "unfinished_requests": sum(not (state["finished"] or state["failed"]) for state in self.requests.values()),
+        }
+
+    def complete(self):
+        return (self.report["http"]["actual_skill_successes"] == self.expected_successes
+                and len(set(self.calls)) == self.expected_successes
+                and self.report["http"]["skill_post_attempts"] == self.expected_attempts
+                and not self.queue
+                and all(state["finished"] and not state["failed"] for state in self.requests.values()))
+
+
+def wait_for_observers(page, observed, bodies=None):
     deadline = time.monotonic() + 5
     while True:
-        # A read-only protocol round trip pumps pending observer callbacks.
-        # No fixed sleep or successful-result assumption replaces the counters.
+        # This outer protocol pump dispatches pending header/lifecycle events;
+        # zero active callbacks alone never proves a selected JSON body exists.
         page.evaluate("() => true")
-        if observed["active_request_observers"] == 0 and observed["active_response_observers"] == 0:
+        if bodies is not None:
+            bodies.read_completed()
+            if observed.get("observer_failure"):
+                raise CheckFailed("network_observation_failed")
+        if (observed["active_request_observers"] == 0 and observed["active_response_observers"] == 0
+                and (bodies is None or bodies.complete())):
             return
         if time.monotonic() >= deadline:
             raise CheckFailed("network_observation_did_not_settle")
@@ -103,14 +197,14 @@ def wait_for_widget_window(page, widget, frame, deployment_id, contribution_id="
         raise
 
 
-def close_windows(page, report, observed=None):
+def close_windows(page, report, observed=None, bodies=None):
     report["step"] = "desktop_close_actual_windows"
     for _ in range(16):
         if not page.locator("#windows section.window").count():
             report["checks"]["all_windows_close"] = True
             return
         if observed is not None:
-            wait_for_observers(page, observed)
+            wait_for_observers(page, observed, bodies)
         focused = page.locator('#windows section.window[data-focused="true"]:visible')
         if not focused.count():
             # A minimized window must be restored through its real Dock control.
@@ -220,17 +314,15 @@ def run(config, report):
              f"/api/platform/v1/accounts/{config['child_id']}": "child_account"}
     observed = {"password_outside_core": False, "core_cookie_on_plugin": False, "observer_failure": False, "request_headers_failed": False, "request_body_failed": False, "response_skill_body_failed": False, "active_request_observers": 0, "active_response_observers": 0, "page_errors": 0, "error_counts": {}, "error_buckets": {}}
     report["observation"] = observed
-    calls = []
+    bodies = SkillBodyAudit(core, config["skill_id"], report, observed)
+    calls = bodies.calls
 
     def observe_request(request):
         observed["active_request_observers"] += 1
         phase = "request_origin"
         try:
             location = url_origin(request.url)
-            if location == core and urllib.parse.urlsplit(request.url).path == f"/api/platform/v1/skills/{config['skill_id']}/calls" and request.method == "POST":
-                # Count admission attempts even if they fail, remain pending,
-                # time out, or never receive a successful HTTP response.
-                report["http"]["skill_post_attempts"] += 1
+            bodies.request(request)
             phase = "request_body"
             body = request.post_data
             if body and "password" in body and location != core:
@@ -272,14 +364,11 @@ def run(config, report):
                 report["http"]["preference_writes"] += 1
             elif "/ui/contributions" in parsed.path and response.status == 200:
                 report["http"]["contribution_reads"] += 1
-            elif parsed.path == f"/api/platform/v1/skills/{config['skill_id']}/calls" and response.request.method == "POST" and response.status == 200:
+            elif parsed.path == f"/api/platform/v1/skills/{config['skill_id']}/calls" and response.request.method == "POST":
+                # No body RPC in this callback: retain the actual response until
+                # requestfinished, then audit it in the outer protocol pump.
                 phase = "response_skill_body"
-                value = response.json()
-                call = value.get("call", {})
-                if value.get("skill_id") == config["skill_id"] and isinstance(call.get("call_id"), str):
-                    calls.append(call["call_id"])
-                    report["http"]["actual_skill_successes"] += 1
-                    report["http"]["unique_skill_call_ids"] = len(set(calls))
+                bodies.response(response)
         except Exception as error:
             record_observer_failure(observed, phase, error)
         finally:
@@ -289,6 +378,8 @@ def run(config, report):
         result = browser.new_context(viewport={"width": 1440, "height": 1000})
         result.on("request", observe_request)
         result.on("response", observe_response)
+        result.on("requestfinished", bodies.finished)
+        result.on("requestfailed", bodies.failed)
         result.on("page", lambda page: page.on("pageerror", lambda _: observed.__setitem__("page_errors", observed["page_errors"] + 1)))
         return result
 
@@ -343,20 +434,21 @@ def run(config, report):
         frame.locator("#call").wait_for(state="visible")
         frame.wait_for_function("() => document.querySelector('#call')?.disabled === false")
         if identifier == "echo_widget":
-            close_windows(page, report, observed)
+            close_windows(page, report, observed, bodies)
         require(url_origin(frame.url) == reference, identifier + "_actual_isolated_origin")
         require(frame.evaluate("() => { try { parent.document.body; return false; } catch { return true; } }"), identifier + "_parent_dom_blocked")
         require(frame.evaluate("() => { try { parent.sessionStorage.length; return false; } catch { return true; } }"), identifier + "_parent_credential_storage_blocked")
         return frame
 
-    def echo(frame, message, label):
+    def echo(frame, message, label, expected_successes):
         report["step"] = label
+        bodies.expect(expected_successes)
         frame.locator("#message").fill(message)
         frame.locator("#call").click()
         frame.wait_for_function("() => document.querySelector('#state')?.textContent === 'Skill call completed.'")
         require(frame.locator("#result").inner_text() == message, label)
         require(frame.locator("img").count() == 0, label + "_text_not_html")
-        wait_for_observers(page, observed)
+        wait_for_observers(page, observed, bodies)
 
     def fetch(page, path, method="GET", body=None):
         return page.evaluate(FETCH, {"core": core, "client": config["client_id"], "path": path, "method": method, "body": body, "key": str(uuid.uuid4())})
@@ -385,41 +477,43 @@ def run(config, report):
         resources = open_app(page, "resources", "系统状态")
         resources.locator("pre.result").wait_for()
         require('"kernel_cpu_millis": 4000' in resources.inner_text() and '"kernel_memory_bytes": 17179869184' in resources.inner_text(), "desktop_reads_actual_node_reservations")
-        close_windows(page, report, observed)
+        close_windows(page, report, observed, bodies)
         plugins = open_app(page, "plugins", "插件中心")
         report["step"] = "desktop_wait_actual_plugin_catalog"
         plugins.get_by_role("heading", name="M3 official WebUI", exact=True).wait_for()
         plugins.get_by_role("heading", name="M3 independent UI reference", exact=True).wait_for()
         require("org.xelab.webui" in plugins.inner_text() and "org.xelab.ui-reference" in plugins.inner_text(), "desktop_reads_actual_installed_plugins")
-        close_windows(page, report, observed)
+        close_windows(page, report, observed, bodies)
         accounts = open_app(page, "accounts", "账户与权限")
         accounts.locator("pre.result").wait_for()
         require(config["owner_id"] in accounts.inner_text(), "desktop_reads_actual_owner_identity")
-        close_windows(page, report, observed)
+        close_windows(page, report, observed, bodies)
         skills = open_app(page, "skills", "Skill")
         card = skills.locator("article.card").filter(has=page.get_by_role("heading", name="org.xelab.ui-reference.echo", exact=True))
         card.get_by_role("button", name="调用测试", exact=True).click()
         editor = page.locator('section.window[data-app="editor-invokeSkill"]').last
         intent = str(uuid.uuid4())
         editor.get_by_role("textbox", name="请求 JSON", exact=True).fill(json.dumps({"input": {"message": "Actual management UI Skill call"}, "provider_deployment_id": config["reference_deployment_id"], "idempotency_key": intent, "timeout_ms": 10000}))
+        bodies.expect(1)
         editor.get_by_role("button", name="提交", exact=True).click()
         editor.locator("pre.result").wait_for()
         require("Actual management UI Skill call" in editor.inner_text(), "desktop_invokes_actual_fixed_skill")
-        close_windows(page, report, observed)
+        wait_for_observers(page, observed, bodies)
+        close_windows(page, report, observed, bodies)
         settings = open_app(page, "settings", "设置")
         settings.get_by_role("combobox", name="主题模式", exact=True).select_option("dark")
         settings.get_by_role("checkbox", name="减少动画", exact=True).check()
         settings.get_by_role("button", name="保存到当前账户", exact=True).click()
         page.wait_for_function("() => [...document.querySelectorAll('.theme-preview-note')].some(value => value.textContent.includes('已保存到核心'))")
-        close_windows(page, report, observed)
+        close_windows(page, report, observed, bodies)
         settings = open_app(page, "settings", "设置")
         require(settings.get_by_role("combobox", name="主题模式", exact=True).input_value() == "dark" and settings.get_by_role("checkbox", name="减少动画", exact=True).is_checked(), "actual_theme_preferences_survive_reread")
-        close_windows(page, report, observed)
+        close_windows(page, report, observed, bodies)
         unavailable = open_app(page, "tasks", "任务与知识库", dock=False)
         require(future_features_unavailable(unavailable), "future_execution_features_remain_unavailable")
-        close_windows(page, report, observed)
+        close_windows(page, report, observed, bodies)
         window = contribution_frame(page)
-        echo(window, "Actual OCI iframe <img src=x onerror=alert(1)>", "window_bridge_calls_real_http_skill")
+        echo(window, "Actual OCI iframe <img src=x onerror=alert(1)>", "window_bridge_calls_real_http_skill", 2)
         report["step"] = "real_channel_nonce_replay_and_source_rejection"
         coordinator_barrier(page, "await_attack_snapshot", "attack_snapshot_ready")
         before = report["http"]["skill_post_attempts"]
@@ -441,16 +535,16 @@ def run(config, report):
         sibling.evaluate("""meta => parent.postMessage({protocol:meta.protocol,view_id:meta.view_id,channel_nonce:meta.channel_nonce,seq:3,type:'request',request_id:2,method:'skill.call',params:{binding_alias:'echo',input:{message:'Same origin wrong source must not execute'},idempotency_key:'forged-sibling-source',timeout_ms:10000}},meta.parent_origin)""", channel)
         # A subsequent legitimate request/response is the event and network
         # barrier; elapsed silence and successful-only counters are insufficient.
-        echo(window, "Actual channel survives rejected messages", "valid_call_after_replay_rejection")
+        echo(window, "Actual channel survives rejected messages", "valid_call_after_replay_rejection", 3)
         page.locator("#source-probe").evaluate("element => element.remove()")
         require(report["http"]["skill_post_attempts"] == before + 1, "channel_attacks_create_no_skill_post_attempt")
         proof = coordinator_barrier(page, "await_attack_verification", "attack_verified")
         require(proof.get("calls_delta") == 1 and proof.get("daily_delta") == 1 and proof.get("concurrent") == 0,
                 "channel_attacks_create_no_call_or_quota_charge")
         require(window.evaluate("async core => { try { await fetch(core+'/api/platform/v1/node'); return false; } catch { return true; } }", core), "third_party_connect_src_none")
-        close_windows(page, report, observed)
+        close_windows(page, report, observed, bodies)
         widget = contribution_frame(page, "echo_widget")
-        echo(widget, "Actual OCI widget Skill call", "widget_bridge_calls_real_http_skill")
+        echo(widget, "Actual OCI widget Skill call", "widget_bridge_calls_real_http_skill", 4)
         report["window_open_observation"] = {"stage": "window_open_click"}
         try:
             with page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith(reference_base + "window.html")) as opened:
@@ -460,7 +554,7 @@ def run(config, report):
             raise
         require(wait_for_widget_window(page, widget, opened.value, config["reference_deployment_id"], report=report)
                 and url_origin(opened.value.url) == reference, "widget_opens_same_fixed_deployment_window")
-        wait_for_observers(page, observed)
+        wait_for_observers(page, observed, bodies)
         require(report["http"]["actual_skill_successes"] >= 3, "owner_actual_skill_requests_observed")
         require(report["http"]["preference_writes"] >= 2, "core_preferences_and_widget_layout_persisted")
         owner_call = calls[0]
@@ -470,17 +564,19 @@ def run(config, report):
         require(fetch(page, f"/api/platform/v1/accounts/{config['owner_id']}")["status"] in (403, 404), "child_cannot_read_owner_account")
         require(fetch(page, "/api/platform/v1/calls/" + owner_call)["status"] in (403, 404), "child_cannot_read_owner_call_result")
         frame = contribution_frame(page)
-        echo(frame, "Actual limited child Skill call", "limited_child_bridge_call_before_withdrawal")
+        echo(frame, "Actual limited child Skill call", "limited_child_bridge_call_before_withdrawal", 5)
+        wait_for_observers(page, observed, bodies)
         require(coordinator_barrier(page, "await_revoke", "revoked").get("revoked") is True, "actual_inheritance_withdrawal_acknowledged")
         report["step"] = "actual_revocation_closes_old_channel"
         page.wait_for_function("() => document.querySelectorAll('#windows iframe').length === 0", timeout=15000)
         require(page.get_by_text("页面通道已关闭", exact=True).count() >= 1, "withdrawal_invalidates_old_iframe_channel")
-        wait_for_observers(page, observed)
+        wait_for_observers(page, observed, bodies)
         before = report["http"]["actual_skill_successes"]
+        bodies.expect(5, 6)
         denied = fetch(page, f"/api/platform/v1/skills/{config['skill_id']}/calls", "POST", {"input": {"message": "Must be denied after real withdrawal"}, "provider_deployment_id": config["reference_deployment_id"], "idempotency_key": str(uuid.uuid4()), "timeout_ms": 10000})
         require(denied["status"] == 403 and denied["code"] == "PERMISSION_DENIED", "withdrawn_child_new_skill_call_denied")
         require(report["http"]["actual_skill_successes"] == before, "withdrawal_produces_no_success_result")
-        wait_for_observers(page, observed)
+        wait_for_observers(page, observed, bodies)
         child_context.close()
         require(report["http"]["oauth_token_successes"] >= 2 and report["http"]["callback_successes"] >= 2, "actual_owner_and_child_code_pkce_exchanges")
         browser.close()
