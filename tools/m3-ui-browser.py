@@ -34,6 +34,42 @@ def future_features_unavailable(window):
             and state.get_by_text("未安装或实现的后续执行系统没有可展示的运行结果。", exact=True).count() == 1)
 
 
+def record_observer_failure(observed, phase, error):
+    observed["observer_failure"] = True
+    flag = {"request_headers": "request_headers_failed", "request_body": "request_body_failed", "response_skill_body": "response_skill_body_failed"}.get(phase)
+    if flag:
+        observed[flag] = True
+    name = type(error).__name__
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", name):
+        name = "OtherError"
+    counts = observed["error_counts"]
+    key = phase + ":" + name
+    if key not in counts and len(counts) >= 16:
+        key = "other"
+    counts[key] = min(counts.get(key, 0) + 1, 65535)
+
+
+def wait_for_observers(page, observed):
+    deadline = time.monotonic() + 5
+    while True:
+        # A read-only protocol round trip pumps pending observer callbacks.
+        # No fixed sleep or successful-result assumption replaces the counters.
+        page.evaluate("() => true")
+        if observed["active_request_observers"] == 0 and observed["active_response_observers"] == 0:
+            return
+        if time.monotonic() >= deadline:
+            raise CheckFailed("network_observation_did_not_settle")
+
+
+def wait_for_widget_window(page, widget, frame, deployment_id, contribution_id="echo_window"):
+    widget.get_by_text("The host opened this deployment’s echo window.", exact=True).wait_for()
+    opened = page.locator(f'section.window[data-app="plugin:{deployment_id}:{contribution_id}"]')
+    opened.wait_for()
+    frame.locator("#call").wait_for(state="visible")
+    frame.wait_for_function("() => document.querySelector('#call')?.disabled === false")
+    return opened.locator("iframe").element_handle().content_frame() == frame
+
+
 def close_windows(page, report):
     report["step"] = "desktop_close_actual_windows"
     for _ in range(16):
@@ -138,7 +174,7 @@ def run(config, report):
     hosts = [urllib.parse.urlsplit(value).hostname for value in (core, ui, reference)]
     resolver = ",".join(f"MAP {host} {config['connect_ip']}" for host in hosts)
     report["playwright_version"] = importlib.metadata.version("playwright")
-    report["http"] = {"oauth_token_successes": 0, "callback_successes": 0, "actual_skill_successes": 0, "skill_post_attempts": 0, "node_reads": 0, "preference_writes": 0, "contribution_reads": 0, "read_statuses": {}, "preflight_statuses": {}}
+    report["http"] = {"oauth_token_successes": 0, "callback_successes": 0, "actual_skill_successes": 0, "unique_skill_call_ids": 0, "skill_post_attempts": 0, "node_reads": 0, "preference_writes": 0, "contribution_reads": 0, "read_statuses": {}, "preflight_statuses": {}}
     reads = {"/api/platform/v1/installations": "installation_list",
              "/api/platform/v1/deployments": "deployment_list",
              "/api/platform/v1/skills": "skill_list",
@@ -147,31 +183,43 @@ def run(config, report):
              "/api/platform/v1/ui/contributions": "contribution_list",
              f"/api/platform/v1/accounts/{config['owner_id']}": "owner_account",
              f"/api/platform/v1/accounts/{config['child_id']}": "child_account"}
-    observed = {"password_outside_core": False, "core_cookie_on_plugin": False, "observer_failure": False, "page_errors": 0}
+    observed = {"password_outside_core": False, "core_cookie_on_plugin": False, "observer_failure": False, "request_headers_failed": False, "request_body_failed": False, "response_skill_body_failed": False, "active_request_observers": 0, "active_response_observers": 0, "page_errors": 0, "error_counts": {}}
+    report["observation"] = observed
     calls = []
 
     def observe_request(request):
+        observed["active_request_observers"] += 1
+        phase = "request_origin"
         try:
             location = url_origin(request.url)
-            headers = request.all_headers()
             if location == core and urllib.parse.urlsplit(request.url).path == f"/api/platform/v1/skills/{config['skill_id']}/calls" and request.method == "POST":
                 # Count admission attempts even if they fail, remain pending,
                 # time out, or never receive a successful HTTP response.
                 report["http"]["skill_post_attempts"] += 1
-            if location in (ui, reference) and "__Host-xelab_auth=" in headers.get("cookie", ""):
-                observed["core_cookie_on_plugin"] = True
-            if request.post_data and "password" in request.post_data and location != core:
+            phase = "request_body"
+            body = request.post_data
+            if body and "password" in body and location != core:
                 observed["password_outside_core"] = True
-        except Exception:
-            observed["observer_failure"] = True
+            if location in (ui, reference):
+                phase = "request_headers"
+                headers = request.all_headers()
+                if "__Host-xelab_auth=" in headers.get("cookie", ""):
+                    observed["core_cookie_on_plugin"] = True
+        except Exception as error:
+            record_observer_failure(observed, phase, error)
+        finally:
+            observed["active_request_observers"] -= 1
 
     def observe_response(response):
+        observed["active_response_observers"] += 1
+        phase = "response_origin"
         try:
             parsed = urllib.parse.urlsplit(response.url)
             if url_origin(response.url) == ui and parsed.path == "/ui/org.xelab.webui/callback" and response.status == 200:
                 report["http"]["callback_successes"] += 1
             if url_origin(response.url) != core:
                 return
+            phase = "response_read"
             if response.request.method in ("GET", "OPTIONS") and parsed.path in reads:
                 try:
                     value = response.json()
@@ -190,13 +238,17 @@ def run(config, report):
             elif "/ui/contributions" in parsed.path and response.status == 200:
                 report["http"]["contribution_reads"] += 1
             elif parsed.path == f"/api/platform/v1/skills/{config['skill_id']}/calls" and response.request.method == "POST" and response.status == 200:
+                phase = "response_skill_body"
                 value = response.json()
                 call = value.get("call", {})
                 if value.get("skill_id") == config["skill_id"] and isinstance(call.get("call_id"), str):
                     calls.append(call["call_id"])
                     report["http"]["actual_skill_successes"] += 1
-        except Exception:
-            observed["observer_failure"] = True
+                    report["http"]["unique_skill_call_ids"] = len(set(calls))
+        except Exception as error:
+            record_observer_failure(observed, phase, error)
+        finally:
+            observed["active_response_observers"] -= 1
 
     def context(browser):
         result = browser.new_context(viewport={"width": 1440, "height": 1000})
@@ -349,6 +401,7 @@ def run(config, report):
             page.evaluate("""({metadata,url}) => {const frame=document.createElement('iframe');frame.id='source-probe';frame.hidden=true;frame.setAttribute('sandbox','allow-scripts allow-same-origin');frame.src=url+'#'+new URLSearchParams(metadata);document.body.append(frame);}""", {"metadata": channel, "url": reference_base + "widget.html"})
         sibling = sibling_navigation.value
         sibling.locator("#state").wait_for(state="attached")
+        sibling.wait_for_load_state("load")
         sibling.evaluate("""meta => parent.postMessage({protocol:meta.protocol,view_id:meta.view_id,channel_nonce:meta.channel_nonce,seq:3,type:'request',request_id:2,method:'skill.call',params:{binding_alias:'echo',input:{message:'Same origin wrong source must not execute'},idempotency_key:'forged-sibling-source',timeout_ms:10000}},meta.parent_origin)""", channel)
         # A subsequent legitimate request/response is the event and network
         # barrier; elapsed silence and successful-only counters are insufficient.
@@ -364,7 +417,9 @@ def run(config, report):
         echo(widget, "Actual OCI widget Skill call", "widget_bridge_calls_real_http_skill")
         with page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith(reference_base + "window.html")) as opened:
             widget.locator("#open-window").click()
-        require(url_origin(opened.value.url) == reference, "widget_opens_same_fixed_deployment_window")
+        require(wait_for_widget_window(page, widget, opened.value, config["reference_deployment_id"])
+                and url_origin(opened.value.url) == reference, "widget_opens_same_fixed_deployment_window")
+        wait_for_observers(page, observed)
         require(report["http"]["actual_skill_successes"] >= 3, "owner_actual_skill_requests_observed")
         require(report["http"]["preference_writes"] >= 2, "core_preferences_and_widget_layout_persisted")
         owner_call = calls[0]
@@ -379,15 +434,20 @@ def run(config, report):
         report["step"] = "actual_revocation_closes_old_channel"
         page.wait_for_function("() => document.querySelectorAll('#windows iframe').length === 0", timeout=15000)
         require(page.get_by_text("页面通道已关闭", exact=True).count() >= 1, "withdrawal_invalidates_old_iframe_channel")
+        wait_for_observers(page, observed)
         before = report["http"]["actual_skill_successes"]
         denied = fetch(page, f"/api/platform/v1/skills/{config['skill_id']}/calls", "POST", {"input": {"message": "Must be denied after real withdrawal"}, "provider_deployment_id": config["reference_deployment_id"], "idempotency_key": str(uuid.uuid4()), "timeout_ms": 10000})
         require(denied["status"] == 403 and denied["code"] == "PERMISSION_DENIED", "withdrawn_child_new_skill_call_denied")
         require(report["http"]["actual_skill_successes"] == before, "withdrawal_produces_no_success_result")
+        wait_for_observers(page, observed)
         child_context.close()
         require(report["http"]["oauth_token_successes"] >= 2 and report["http"]["callback_successes"] >= 2, "actual_owner_and_child_code_pkce_exchanges")
-        require(not observed["password_outside_core"] and not observed["core_cookie_on_plugin"] and not observed["observer_failure"], "password_cookie_and_network_observation_boundaries")
-        require(observed["page_errors"] == 0, "no_uncaught_browser_execution_error")
         browser.close()
+        require(observed["active_request_observers"] == 0 and observed["active_response_observers"] == 0, "all_network_observations_completed")
+        require(not observed["password_outside_core"] and not observed["core_cookie_on_plugin"] and not observed["observer_failure"], "password_cookie_and_network_observation_boundaries")
+        require(report["http"]["actual_skill_successes"] == 5 and len(set(calls)) == 5
+                and report["http"]["skill_post_attempts"] == 6, "all_five_unique_skill_responses_observed")
+        require(observed["page_errors"] == 0, "no_uncaught_browser_execution_error")
 
 
 def main():
