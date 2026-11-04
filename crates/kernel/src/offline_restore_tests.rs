@@ -13,6 +13,8 @@ use std::{
     time::Duration,
 };
 const PASSWORD: &str = "fresh standalone platform recovery password";
+#[path = "offline_restore_business_tests.rs"]
+mod business;
 fn private(path: &Path, bytes: &[u8]) {
     fs::write(path, bytes).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
@@ -113,6 +115,78 @@ fn unmount_views(root: &Path) {
         );
     }
 }
+
+async fn versioned_data_and_binding(target: &Target, info: &Value) -> Result<()> {
+    let volume: Uuid = info["versioned_volume_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let source = target
+        .manifest
+        .volumes
+        .iter()
+        .find(|v| v.object.volume == volume)
+        .unwrap();
+    assert_eq!(source.data_schema_version.as_deref(), Some("1"));
+    let expected = source.format_binding.clone();
+    assert!(expected.is_some());
+    let c = target.session.db.connect().await?;
+    super::super::formats::check(&c, volume, &expected).await?;
+    let row = c
+        .query_one(
+            "SELECT root_id,project_id,schema_proof FROM volume_allocations WHERE volume_id=$1",
+            &[&volume],
+        )
+        .await?;
+    let proof: Value = row.get("schema_proof");
+    let mut store = crate::storage::xfs::ProjectStore::open(
+        &target.session.runtime.config.root().join("volumes"),
+    )?;
+    let filesystem = store.status()?.filesystem_uuid;
+    store.namespace_identity(filesystem, row.get("root_id"), false)?;
+    let data = store.data_path(volume, row.get::<_, i32>("project_id") as u32)?;
+    drop(store);
+    let bytes = fs::read(data.join("store.json"))?;
+    assert_eq!(digest(&bytes), info["versioned_data_digest"]);
+    let value: Value = serde_json::from_slice(&bytes)?;
+    assert_eq!(value["schema"], "1");
+    assert_eq!(value["items"].as_array().unwrap().len(), 1);
+    let mut corrupt = proof.clone();
+    corrupt["recovery_test_tamper"] = json!(true);
+    c.execute(
+        "UPDATE volume_allocations SET schema_proof=$2 WHERE volume_id=$1",
+        &[&volume, &corrupt],
+    )
+    .await?;
+    assert!(
+        target
+            .complete(
+                info["owner_id"].as_str().unwrap().parse().unwrap(),
+                PASSWORD
+            )
+            .await
+            .is_err(),
+        "changed historical format proof must keep recovery closed"
+    );
+    assert!(target.session.db.check().await.is_err());
+    c.execute(
+        "UPDATE volume_allocations SET schema_proof=$2 WHERE volume_id=$1",
+        &[&volume, &proof],
+    )
+    .await?;
+    super::super::formats::check(&c, volume, &expected).await?;
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM publishers WHERE status='trusted'",
+            &[]
+        )
+        .await?
+        .get::<_, i64>(0),
+        0
+    );
+    Ok(())
+}
 #[tokio::test]
 #[ignore = "requires owned fresh XFS, PostgreSQL, actual source report, S3 and disposable containerd; tools/test-xfs.sh"]
 async fn actual_platform_recovery_rebuilds_fresh_state_and_resumes_after_process_death() {
@@ -188,6 +262,8 @@ async fn actual_platform_recovery_rebuilds_fresh_state_and_resumes_after_process
     value["storage"]["root_path"] = json!(root);
     value["runtime"]["socket"] = json!(engine.path().join("containerd.sock"));
     value["runtime"]["namespace"] = json!("xelab-platform-target");
+    value["runtime"]["network_cidr"] = json!("172.29.240.0/24");
+    value["server"]["host_rpc_listen"] = json!("172.29.240.1:7443");
     value["server"]["public_origin"] = json!("https://recovered.example.org:8443");
     let key = KeyPair::generate().unwrap();
     let mut ca = CertificateParams::new(vec!["fresh-recovery-ca".into()]).unwrap();
@@ -258,10 +334,13 @@ if runtime.ctr(&["version".into()]).await.is_ok(){started=true;break;}tokio::tim
         let mut store=crate::storage::xfs::ProjectStore::open(&root.join("volumes"))?;let filesystem=store.status()?.filesystem_uuid;assert_ne!(filesystem,source_fs);store.namespace_identity(filesystem,row.get("root_id"),false)?;let data=store.data_path(volume,project as u32)?;drop(store);
         let sentinel=data.join("sentinel");let before=fs::metadata(&sentinel)?;fs::write(&sentinel,b"tampered")?;assert!(target.complete(owner,PASSWORD).await.is_err());assert!(db.check().await.is_err(),"corrupt target must retain gate");
         fs::write(&sentinel,b"whole-platform recovery from encrypted object set")?;let times=[libc::timespec{tv_sec:before.atime(),tv_nsec:before.atime_nsec()},libc::timespec{tv_sec:before.mtime(),tv_nsec:before.mtime_nsec()}];let path=std::ffi::CString::new(sentinel.as_os_str().as_bytes()).unwrap();assert_eq!(unsafe{libc::utimensat(libc::AT_FDCWD,path.as_ptr(),times.as_ptr(),libc::AT_SYMLINK_NOFOLLOW)},0);
+        versioned_data_and_binding(&target,&info).await?;
         let completed=target.complete(owner,PASSWORD).await?;assert_eq!(completed.gate,"ready");assert!(!completed.runtime_started);assert!(!completed.off_host);db.check().await?;
         assert_eq!(fs::metadata(data.join("same-inode"))?.ino(),fs::metadata(&sentinel)?.ino());assert_eq!(fs::read_link(data.join("relative-link"))?,Path::new("sentinel"));let sparse=fs::File::open(data.join("sparse"))?;assert_eq!(sparse.metadata()?.len(),8*1024*1024*1024);let mut tail=[0;4];sparse.read_exact_at(&mut tail,8*1024*1024*1024-4)?;assert_eq!(&tail,b"tail");
         assert_eq!(c.query_one("SELECT count(*) FROM credentials WHERE status='active'",&[]).await?.get::<_,i64>(0),0);assert_eq!(c.query_one("SELECT count(*) FROM deployments WHERE spec->>'enabled'='true'",&[]).await?.get::<_,i64>(0),0);assert!(c.query_one("SELECT write_fence FROM volumes WHERE id=$1",&[&volume]).await?.get::<_,i64>(0)>=3);
         assert_eq!(target.completed_receipt().await?.recovery_id,recovery);
+        drop(target);
+        business::resume(&config,&db,&info).await?;
         println!("Whole recovery: actual encrypted metadata/OCI/Blob/XFS, fresh DB/CAS/filesystem and keys, real process death/resume, target corruption refused, old authority revoked; compatible off_host=false, not independent-host/AWS acceptance");
         Ok(())
     }.await;

@@ -13,7 +13,7 @@ sudo xelabctl platform-restore --config /etc/xelab/kernel.toml --receipt-file /r
 
 新恢复 Owner 密码从标准输入读取；不得等于该 Owner 在源快照中的旧密码。候选 Owner 必须是清单及元数据库中已存在、未归档的独立根用户，保留原账户 UUID、资源归属与树，不伪造账户创建时间。回执文件要求当前 root 所有、0600、单链接；保存源备份回执时应使用私有权限。
 
-操作者先独立隔离旧宿主，并明确传入 `--source-host-fenced`。目标须使用可信当前 Schema 的空 PostgreSQL、root 私有的全新存储根和空专用 containerd namespace，无存活实例或遗留插件 cgroup。源存在卷根时，需新的专用、空 XFS 文件系统，UUID 与源不同；当前仅接受 `none` 数据 Schema。恢复限于相同 PostgreSQL 主版本和精确迁移/列布局，不执行输入中的 DDL，也不自动升级插件数据。
+操作者先独立隔离旧宿主，并明确传入 `--source-host-fenced`。目标须使用可信当前 Schema 的空 PostgreSQL、root 私有的全新存储根和空专用 containerd namespace，无存活实例或遗留插件 cgroup。源存在卷根时，需新的专用、空 XFS 文件系统，UUID 与源不同；接受 `none` 卷，以及原格式、插件/发布者和历史证明均与认证清单一致的已验证格式卷；详见[格式恢复](m2-platform-formats.md)。恢复不执行数据格式转换。恢复限于相同 PostgreSQL 主版本和精确迁移/列布局，不执行输入中的 DDL，也不自动升级插件数据。
 
 主密钥从单独恢复的 32 字节私有文件读取；HMAC、工作负载 CA 与服务器私钥由目标独立配置。仓库只读打开：标记必须已经存在且精确匹配源仓库 UUID，不在空目标数据库注册或创建一个新仓库身份来冒充源。生产 CLI 沿用标准 AWS 配置，不接收测试对象服务覆盖。
 

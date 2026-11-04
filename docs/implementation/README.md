@@ -13,6 +13,7 @@
 - [M2 新卷恢复、预留与受控切换](m2-restores.md)
 - [M2 离线元数据库快照与恢复身份隔离](m2-platform-recovery.md)
 - [M2 恢复后的历史用户重新激活](m2-recovered-accounts.md)
+- [M2 已验证格式卷的全平台备份/恢复](m2-platform-formats.md)
 - [真实 AWS 格式迁移组件演练入口（待资源执行）](m2-aws-format-acceptance.md)
 - [M2 实际 OCI 镜像归档与空内容库导入](m2-image-backups.md)
 - [M2 离线源冻结与元数据导出](m2-offline-source.md)

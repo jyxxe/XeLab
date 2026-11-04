@@ -87,7 +87,7 @@ Kernel CI 保留原有 PostgreSQL 和 OCI 用例，并独立执行此真实 XFS 
 直接放入要求低延迟的 Controller tick；未来服务需有界阻塞工作队列。
 
 当前文件系统用例仅覆盖 RUN-04 的硬配额基础，不能宣称 RUN-04、RUN-05、
-RUN-06、BACKUP-01 或 M2-A 全部通过。Blob、Secret、备份恢复尚未实现。
+RUN-06、BACKUP-01 或 M2-A 全部通过。本页对应最初的后端交付范围；后续[Blob](m2-blobs.md)、[Secret](m2-secrets.md)与[整体备份/恢复](m2-platform-restores.md)已有独立实现及证据，不能从本页推导完整 M2 已验收。
 
 ## 实现依据
 
