@@ -527,8 +527,12 @@ async fn dispatch(
         "getCall" => {
             let call = path_id(&params, "call_id")?;
             let r = tx
-                .query_one("SELECT state,result,error FROM calls WHERE id=$1", &[&call])
+                .query_one("SELECT state,result,error,skill_id,http_binding FROM calls WHERE id=$1", &[&call])
                 .await?;
+            if r.get::<_,Option<Value>>("result").is_some() && (r.get::<_,Option<Uuid>>("skill_id").is_some()||r.get::<_,Option<Value>>("http_binding").is_some()) {
+                broker::check_skill_authority(&tx,&ctx,call).await.map_err(|error|if matches!(error.code,"PERMISSION_DENIED"|"INVALID_CREDENTIAL"|"RESOURCE_NOT_FOUND"|"STATE_CONFLICT"){Error::denied()}else{error})?;
+                if r.get::<_,Option<Value>>("http_binding").is_some() {broker::check_http_approval(&tx,app,call).await.map_err(|error|if matches!(error.code,"PERMISSION_DENIED"|"INVALID_CREDENTIAL"|"RESOURCE_NOT_FOUND"|"STATE_CONFLICT"){Error::denied()}else{error})?;}
+            }
             (
                 json!({"call_id":call,"state":r.get::<_,String>(0),"result":r.get::<_,Option<Value>>(1),"error":r.get::<_,Option<Value>>(2)}),
                 200,

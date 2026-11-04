@@ -402,7 +402,7 @@ async fn execute_inner(
     if let Some(prior)=tx.query_opt("SELECT fingerprint,resource_id,safe_response,response_status FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method=$3 AND path=$4 AND key=$5 AND expires_at>now() FOR UPDATE",&[&ctx.subject,&ctx.credential,&method,&path,&key]).await?{
         if prior.get::<_,String>("fingerprint")!=fingerprint{return Err(Error::new("IDEMPOTENCY_CONFLICT","HTTP key was already bound to different input",StatusCode::CONFLICT));}
         let call=prior.get::<_,Option<String>>("resource_id").and_then(|s|s.parse::<Uuid>().ok()).ok_or_else(Error::denied)?;
-        crate::host_blobs::check_call_sources(&tx,&ctx,call).await?;
+        check_skill_authority(&tx,&ctx,call).await?;
         let saved=tx.query_one("SELECT state,result FROM calls WHERE id=$1",&[&call]).await?;
         if saved.get::<_,String>("state")!="succeeded"{return Err(Error::new("OUTCOME_UNKNOWN","Prior HTTP call is not a confirmed success",StatusCode::CONFLICT).with_resource(call));}
         let value:Value=saved.get::<_,Option<Value>>("result").ok_or_else(Error::denied)?;

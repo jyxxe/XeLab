@@ -502,7 +502,7 @@ pub(crate) async fn check_call_sources(
     call: Uuid,
 ) -> Result<()> {
     let row = c.query_opt(
-        "SELECT c.owner_id,c.credential_id,c.http_binding,c.skill_id,s.created_by,x.source_paths FROM calls c LEFT JOIN skills s ON s.id=c.skill_id LEFT JOIN host_rpc_contexts x ON x.call_id=c.id WHERE c.id=$1",
+        "SELECT c.owner_id,c.credential_id,c.http_binding,c.skill_id,s.created_by,x.source_paths,x.read_blob_ids FROM calls c LEFT JOIN skills s ON s.id=c.skill_id LEFT JOIN host_rpc_contexts x ON x.call_id=c.id WHERE c.id=$1",
         &[&call],
     ).await?.ok_or_else(Error::denied)?;
     let skill = row.get::<_, Option<Uuid>>("skill_id");
@@ -523,6 +523,35 @@ pub(crate) async fn check_call_sources(
         .revalidate(&saved(frozen)?, ctx.credential)
         .await?;
     let rules = policy::rules(&paths);
+    let ids: Value = row
+        .get::<_, Option<Value>>("read_blob_ids")
+        .ok_or_else(Error::denied)?;
+    let ids = ids.as_array().ok_or_else(Error::denied)?;
+    if ids.len() > 256 {
+        return Err(Error::denied());
+    }
+    for id in ids {
+        let id = id
+            .as_str()
+            .and_then(|id| id.parse::<Uuid>().ok())
+            .ok_or_else(Error::denied)?;
+        let blob = c
+            .query_opt(
+                &format!(
+                    "SELECT owner_id FROM blobs WHERE id=$1 AND {}",
+                    crate::blobs::LIVE
+                ),
+                &[&id],
+            )
+            .await?
+            .ok_or_else(Error::denied)?;
+        let resource = Resource::new("blob", id, Some(blob.get("owner_id")));
+        // `paths` is the intersection of current rights and the original
+        // frozen Blob proof. A newly acquired grant cannot unlock old results.
+        if !auth::rules_allow(&rules, "blob.read", &resource, ctx.peer) {
+            return Err(Error::denied());
+        }
+    }
     if !auth::rules_allow(&rules, &action, &resource, ctx.peer) {
         return Err(Error::denied());
     }
