@@ -448,14 +448,33 @@ pub async fn capture(
 ) -> Result<Receipt> {
     require_host_admin()?;
     let c = session.db.connect().await?;
-    source_preflight(&c).await?;
-    check_secret_keys(&c, &digest(master.as_ref())).await?;
-    let (blobs, blob_root, store) = blobs(&session).await?;
-    let images = session.installation_images(&c).await?;
+    let at_stage = |stage: &'static str, error: Error| {
+        tracing::error!(
+            stage,
+            reason_code = error.code,
+            "Offline platform capture failed"
+        );
+        error
+    };
+    source_preflight(&c)
+        .await
+        .map_err(|error| at_stage("source_preflight", error))?;
+    check_secret_keys(&c, &digest(master.as_ref()))
+        .await
+        .map_err(|error| at_stage("secret_key_check", error))?;
+    let (blobs, blob_root, store) = blobs(&session)
+        .await
+        .map_err(|error| at_stage("blob_inventory", error))?;
+    let images = session
+        .installation_images(&c)
+        .await
+        .map_err(|error| at_stage("image_inventory", error))?;
     let image_bytes = if images.is_empty() {
         0
     } else {
-        image_reservation(&session.runtime, &images).await?
+        image_reservation(&session.runtime, &images)
+            .await
+            .map_err(|error| at_stage("image_reservation", error))?
     };
     let backup = Uuid::new_v4();
     let key_ref = digest(master.as_ref());
@@ -470,36 +489,54 @@ pub async fn capture(
             context: Value::Null,
         },
     )?);
+    let mut stage = "reserve_metadata";
     let result=async{
         // Reserve physical staging bytes before draining any source process.
         let metadata_file=workspace.reserve_file(false,META_RESERVATION,image_bytes+HEADROOM)?;
+        stage="reserve_images";
         let image_file=if image_bytes>0{Some(workspace.reserve_file(true,image_bytes,HEADROOM)?)}else{None};
+        stage="freeze_source";
         let frozen=session.freeze_source().await?;
         workspace.update_header("frozen",Value::Null)?;
         let sources=frozen.volume_sources().await?;
+        stage="export_metadata";
         let mut output=tokio::fs::File::from_std(metadata_file);
         let metadata_summary=frozen.export_metadata(&mut output).await?;output.sync_all().await?;drop(output);
         let mut used:BTreeSet<Uuid>=blobs.iter().map(|b|b.id).collect();
         let metadata=RawReference{object:fresh(&mut used),plaintext:backup_crypto::Summary{bytes:metadata_summary.bytes,digest:format!("sha256:{}",metadata_summary.sha256)},ciphertext:None};
+        stage="export_images";
         let images=if let Some(file)=image_file{let mut refs:Vec<String>=frozen.images().iter().map(|i|i.image.clone()).collect();refs.sort();refs.dedup();let mut file=tokio::fs::File::from_std(file);let archive=session.runtime.export_images(&refs,&mut file,image_bytes).await?;Some(ImageReference{data:RawReference{object:fresh(&mut used),plaintext:backup_crypto::Summary{bytes:archive.bytes,digest:archive.sha256.clone()},ciphertext:None},archive})}else{None};
+        stage="build_volume_manifest";
         let mut volumes=Vec::new();
         for source in &sources{volumes.push(VolumeReference{object:backup_transfer::Object{backup,object:fresh(&mut used),volume:source.id,maximum_data:source.capacity_bytes,maximum_archive:64*1024*1024*1024},spec:source.spec.clone(),data_schema_version:source.data_schema_version.clone(),format_binding:super::formats::binding(&c,source.id).await?,filesystem_uuid:source.filesystem_uuid,source_project_id:source.project_id,verified:None});}
+        stage="build_snapshot_state";
         let owners=c.query("SELECT id FROM accounts WHERE kind='user' AND parent_id IS NULL AND independent_owner AND status<>'archived' ORDER BY id LIMIT 129",&[]).await?;
         if owners.is_empty()||owners.len()>128{return Err(Error::conflict("Recovery Owner candidate set exceeds its bound"));}
         let state=State{manifest:Manifest{format:1,kind:"platform".into(),backup_id:backup,repository_id:repo.id,master_key_reference:key_ref.clone(),created_at:chrono::Utc::now(),stopped_lsn:frozen.stopped_lsn().to_owned(),metadata,metadata_summary,installations:frozen.images().to_vec(),images,volumes,blob_count:blobs.len()as u64,blob_root,recovery_owners:owners.into_iter().map(|r|r.get(0)).collect(),off_host:repo.objects.off_host()},manifest_object:fresh(&mut used),manifest_digest:None};
         if serde_json::to_vec(&state)?.len()>900000{return Err(Error::exhausted());}
         state.validate(&workspace.header()?,false)?;
+        stage="record_transfer_manifest";
         register(&workspace,&state,&blobs)?;
         workspace.update_header("transferring",serde_json::to_value(&state)?)?;
         let journal=Arc::new(ObjectJournal{workspace:workspace.clone(),session:Arc::downgrade(&session)});
         let pool=backup_transfer::Pool::with_journal(journal.clone());let raw=pool.raw(Some(journal));
+        stage="upload_metadata";
         upload_file(&workspace,&raw,&repo,backup,&state.manifest.metadata,workspace.staged_file(false)?,&master).await?;
+        stage="upload_images";
         if let Some(image)=&state.manifest.images{upload_file(&workspace,&raw,&repo,backup,&image.data,workspace.staged_file(true)?,&master).await?;}
+        stage="upload_volumes";
         for (source,volume) in sources.iter().zip(&state.manifest.volumes){let upload=initiate(&workspace,&repo,backup,volume.object.object).await?;let value=pool.upload(repo.objects.clone(),source.path.clone(),volume.object,Zeroizing::new(*master),upload,std::time::Duration::from_secs(3600))?.wait().await?;workspace.verified(volume.object.object,&value.plaintext,&value.ciphertext)?;session.check_leader()?;}
+        stage="upload_blobs";
         for blob in &blobs{let store=store.as_ref().ok_or_else(||Error::conflict("Blob root was lost"))?;let reference=RawReference{object:blob.id,plaintext:blob.plain.clone(),ciphertext:None};upload_file(&workspace,&raw,&repo,backup,&reference,store.open_object(blob.id)?,&master).await?;session.check_leader()?;}
+        stage="publish_verified_manifest";
         finish(&session,&workspace,&repo,&master,state,false).await
     }.await;
-    if result.is_err() {
+    if let Err(error) = &result {
+        tracing::error!(
+            stage,
+            reason_code = error.code,
+            "Offline platform capture failed"
+        );
         if let Ok(header) = workspace.header() {
             let all = workspace
                 .records()
