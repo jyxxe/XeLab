@@ -144,6 +144,33 @@ impl Fixture {
     fn registration(&self) -> Value {
         json!({"installation_id":self.installation,"definition":self.manifest["skills"][0]})
     }
+    async fn stream_manifest(&self) -> Value {
+        // Metadata-only admission fixture. The independent signed OCI image is
+        // exercised by tests/oci.rs; this does not assert runtime success.
+        let mut manifest = self.manifest.clone();
+        manifest["capabilities"][0]["stream_item_schema"] = json!({"type":"object","properties":{"message":{"type":"string"}},"required":["message"],"additionalProperties":false});
+        manifest["skills"][0]["stream_item_schema"] =
+            manifest["capabilities"][0]["stream_item_schema"].clone();
+        manifest["skills"][0]["name"] = json!(format!(
+            "{}.stream",
+            manifest["plugin_id"].as_str().unwrap()
+        ));
+        xelab_kernel::artifact::validate_profile(&manifest).unwrap();
+        let c = self.db.connect().await.unwrap();
+        c.execute(
+            "UPDATE installations SET manifest=$2 WHERE id=$1",
+            &[&self.installation, &manifest],
+        )
+        .await
+        .unwrap();
+        c.execute(
+            "UPDATE capability_contracts SET spec=$1",
+            &[&manifest["capabilities"][0]],
+        )
+        .await
+        .unwrap();
+        manifest
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -199,6 +226,40 @@ async fn request(
             serde_json::from_slice(&bytes).unwrap()
         },
     )
+}
+
+async fn waiting_advisory_backend(c: &tokio_postgres::Client) -> i32 {
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Some(row) = c.query_opt("SELECT pid FROM pg_locks WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND NOT granted ORDER BY pid LIMIT 1",&[]).await.unwrap() {
+                return row.get(0);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("call actor reached the held admission lock")
+}
+
+async fn assert_backend_terminated(c: &tokio_postgres::Client, pid: i32) {
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let exists: bool = c
+                .query_one(
+                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1)",
+                    &[&pid],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if !exists {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("abandoned admission backend must exit while its lock holder remains active");
 }
 
 #[tokio::test]
@@ -716,29 +777,7 @@ async fn skill_stream_rejects_nonstream_resume_filters_and_missing_target_author
             .get::<_, i64>(0),
         0
     );
-    // This is metadata-only admission evidence. A signed OCI provider is tested
-    // separately by the privileged oci target; no runtime success is fabricated.
-    let mut manifest = f.manifest.clone();
-    manifest["capabilities"][0]["stream_item_schema"] = json!({"type":"object","properties":{"message":{"type":"string"}},"required":["message"],"additionalProperties":false});
-    manifest["skills"][0]["stream_item_schema"] =
-        manifest["capabilities"][0]["stream_item_schema"].clone();
-    manifest["skills"][0]["name"] = json!(format!(
-        "{}.stream",
-        manifest["plugin_id"].as_str().unwrap()
-    ));
-    xelab_kernel::artifact::validate_profile(&manifest).unwrap();
-    c.execute(
-        "UPDATE installations SET manifest=$2 WHERE id=$1",
-        &[&f.installation, &manifest],
-    )
-    .await
-    .unwrap();
-    c.execute(
-        "UPDATE capability_contracts SET spec=$1",
-        &[&manifest["capabilities"][0]],
-    )
-    .await
-    .unwrap();
+    let manifest = f.stream_manifest().await;
     let stream=f.call("registerSkill",&[],&f.token,json!({"installation_id":f.installation,"definition":manifest["skills"][0],"enabled":true}),None).await;
     assert_eq!(stream.0, 201, "{}", stream.1);
     let stream_id = stream.1["id"].as_str().unwrap().to_owned();
@@ -775,6 +814,91 @@ async fn skill_stream_rejects_nonstream_resume_filters_and_missing_target_author
             .get::<_, i64>(0),
         0
     );
+}
+
+#[tokio::test]
+async fn abandoned_stream_handler_cannot_admit_after_waiting_for_call_lock() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let manifest = f.stream_manifest().await;
+    let registered=f.call("registerSkill",&[],&f.token,json!({"installation_id":f.installation,"definition":manifest["skills"][0],"enabled":true}),None).await;
+    assert_eq!(registered.0, 201, "{}", registered.1);
+    let deployment = Uuid::new_v4();
+    let instance = Uuid::new_v4();
+    let mut c = f.db.connect().await.unwrap();
+    let contract = &manifest["capabilities"][0]["contract"];
+    let spec = json!({"installation_id":f.installation,"enabled":true,"limits":manifest["minimum_resources"]});
+    c.execute("INSERT INTO deployments(id,owner_id,installation_id,spec,phase,created_at,updated_at) VALUES($1,$2,$3,$4,'ready',now(),now())",&[&deployment,&f.owner,&f.installation,&spec]).await.unwrap();
+    c.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,created_at,updated_at) VALUES($1,$2,1,0,'ready','alive',$3,now(),now())",&[&instance,&deployment,&spec["limits"]]).await.unwrap();
+    c.execute("INSERT INTO provider_records(instance_id,name,version,availability,features,observed_generation,observed_at) VALUES($1,$2,$3,'ready','[]',1,now())",&[&instance,&contract["name"].as_str().unwrap(),&contract["version"].as_str().unwrap()]).await.unwrap();
+    // The metadata target could admit a Call but has no physical RPC service.
+    // Abandonment must prevent the durable Call, rather than relying on that
+    // deliberately unavailable runtime to fail after admission.
+    let held = c.transaction().await.unwrap();
+    xelab_kernel::db::call_lock(&held).await.unwrap();
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/platform/v1/skills/{}/calls:stream",
+            registered.1["id"].as_str().unwrap()
+        ))
+        .header("authorization", format!("Bearer {}", f.token))
+        .header("content-type", "application/json")
+        .header("idempotency-key", "abandon-before-stream-admission")
+        .body(Body::from(
+            serde_json::to_vec(
+                &json!({"input":{"message":"must never dispatch"},"timeout_ms":10000}),
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+    req.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:50000".parse::<SocketAddr>().unwrap(),
+    ));
+    let router = f.router.clone();
+    let handling = tokio::spawn(async move { router.oneshot(req).await.unwrap() });
+    let observer = f.db.connect().await.unwrap();
+    let waiting_backend = waiting_advisory_backend(&observer).await;
+    assert!(!handling.is_finished());
+    handling.abort();
+    assert!(handling.await.unwrap_err().is_cancelled());
+    // Dropping a query future does not by itself stop tokio-postgres's detached
+    // connection driver. Prove the server backend is gone before releasing the
+    // lock; merely observing zero admitted Calls would miss that resource leak.
+    assert_backend_terminated(&observer, waiting_backend).await;
+    held.rollback().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Synchronize with any actor that resumed after lock release before reading
+    // counters, so scheduler delays cannot produce a false zero-count pass.
+    let finished = c.transaction().await.unwrap();
+    xelab_kernel::db::call_lock(&finished).await.unwrap();
+    assert_eq!(
+        finished
+            .query_one("SELECT count(*) FROM calls", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    assert_eq!(
+        finished
+            .query_one("SELECT count(*) FROM reservations WHERE kind='call'", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    let quota = finished
+        .query_one(
+            "SELECT concurrent_calls_used,daily_calls_used FROM quotas WHERE account_id=$1",
+            &[&f.owner],
+        )
+        .await
+        .unwrap();
+    assert_eq!(quota.get::<_, i64>(0), 0);
+    assert_eq!(quota.get::<_, i64>(1), 0);
+    finished.rollback().await.unwrap();
 }
 
 #[tokio::test]
@@ -919,20 +1043,25 @@ async fn omitted_timeout_uses_fixed_skill_maximum_before_waiting_on_call_lock() 
     let params = [("skill_id", created.1["id"].as_str().unwrap().to_owned())];
     let lock = c.transaction().await.unwrap();
     xelab_kernel::db::call_lock(&lock).await.unwrap();
-    let refused = tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        f.call(
-            "invokeSkill",
-            &params,
-            &f.token,
-            json!({"input":{"message":"use the fixed default deadline"}}),
-            None,
-        ),
-    )
-    .await
-    .expect("omitted timeout must not inherit the outer 120s wait");
+    let observer = f.db.connect().await.unwrap();
+    let (refused, waiting_backend) =
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            tokio::join!(
+                f.call(
+                    "invokeSkill",
+                    &params,
+                    &f.token,
+                    json!({"input":{"message":"use the fixed default deadline"}}),
+                    None,
+                ),
+                waiting_advisory_backend(&observer)
+            )
+        })
+        .await
+        .expect("omitted timeout must not inherit the outer 120s wait");
     assert_eq!(refused.0, 504, "{}", refused.1);
     assert_eq!(refused.1["error"]["code"], "DEADLINE_EXCEEDED");
+    assert_backend_terminated(&observer, waiting_backend).await;
     lock.rollback().await.unwrap();
     assert_eq!(
         c.query_one("SELECT count(*) FROM calls", &[])

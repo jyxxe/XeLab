@@ -2244,6 +2244,12 @@ async fn ordinary_skill_stream_lifecycle(
     assert_eq!(response.headers()["cache-control"], "no-store");
     let events = collect_skill_events(response.into_body()).await;
     assert_eq!(events.len(), 5);
+    assert_eq!(events[0]["skill_id"], skill);
+    assert_eq!(events[0]["skill_version"], manifest["skills"][1]["version"]);
+    assert_eq!(
+        events[0]["definition_digest"],
+        created.1["definition_digest"]
+    );
     assert_eq!(events[0]["event"]["kind"], "accepted");
     for index in 0..3 {
         assert_eq!(events[index + 1]["event"]["kind"], "item");
@@ -2253,6 +2259,11 @@ async fn ordinary_skill_stream_lifecycle(
     assert_eq!(
         events[4]["event"]["payload"]["output"],
         json!({"message":"stream over real OCI"})
+    );
+    assert_eq!(events[4]["event"]["payload"]["skill_id"], skill);
+    assert_eq!(
+        events[4]["event"]["payload"]["skill_definition_digest"],
+        created.1["definition_digest"]
     );
     let call = events[0]["event"]["call_id"].as_str().unwrap();
     let replay = stream_skill_request(router, token, skill, &request, "real-stream", false).await;
@@ -2304,13 +2315,19 @@ async fn ordinary_skill_stream_lifecycle(
         let events = collect_skill_events(response.into_body()).await;
         assert_eq!(events[0]["event"]["kind"], "accepted");
         assert_eq!(events.last().unwrap()["event"]["kind"], "failed");
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| event["event"]["kind"] == "item")
-                .count(),
-            items
-        );
+        let delivered: Vec<_> = events
+            .iter()
+            .filter(|event| event["event"]["kind"] == "item")
+            .collect();
+        assert!(delivered.len() <= items, "malformed item reached caller");
+        // Recovery can fence the instance before the already verified prefix
+        // drains; every item that is delivered must retain its signed schema.
+        for (index, event) in delivered.iter().enumerate() {
+            assert_eq!(
+                event["event"]["payload"],
+                json!({"index":index,"message":"untrusted output"})
+            );
+        }
         assert!(events
             .iter()
             .all(|event| event["event"]["kind"] != "completed"));
@@ -2529,6 +2546,129 @@ async fn ordinary_skill_stream_lifecycle(
         401,
         "revoked stream replay reauthenticates"
     );
+    let maximum = manifest["concurrency"]["max_active_requests"]
+        .as_u64()
+        .unwrap();
+    assert!((1..=4).contains(&maximum), "bounded reference pool");
+    let before_pool = c
+        .query_one(
+            "SELECT concurrent_calls_used,daily_calls_used FROM quotas WHERE account_id=$1",
+            &[&owner],
+        )
+        .await
+        .unwrap();
+    let pool_input = json!({"input":{"message":"shared stream pool","count":64,"delay_ms":1000},"timeout_ms":10000});
+    let mut active_streams = Vec::new();
+    let mut active_calls = Vec::new();
+    for index in 0..maximum {
+        let response = stream_skill_request(
+            router,
+            token,
+            skill,
+            &pool_input,
+            &format!("stream-pool-{index}"),
+            false,
+        )
+        .await;
+        assert_eq!(response.status(), 200, "reference pool admission {index}");
+        let mut stream = response.into_body().into_data_stream();
+        let first = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let accepted: Value = serde_json::from_str(
+            std::str::from_utf8(&first)
+                .unwrap()
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .unwrap(),
+        )
+        .unwrap();
+        contracts::validate("SkillStreamEvent", &accepted).unwrap();
+        assert_eq!(accepted["event"]["kind"], "accepted");
+        active_calls.push(
+            accepted["event"]["call_id"]
+                .as_str()
+                .unwrap()
+                .parse::<Uuid>()
+                .unwrap(),
+        );
+        active_streams.push(stream);
+    }
+    let charged = c
+        .query_one(
+            "SELECT concurrent_calls_used,daily_calls_used FROM quotas WHERE account_id=$1",
+            &[&owner],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        charged.get::<_, i64>(0),
+        before_pool.get::<_, i64>(0) + maximum as i64
+    );
+    assert_eq!(
+        charged.get::<_, i64>(1),
+        before_pool.get::<_, i64>(1) + maximum as i64
+    );
+    let full = stream_skill_request(
+        router,
+        token,
+        skill,
+        &pool_input,
+        "stream-pool-exhausted",
+        false,
+    )
+    .await;
+    assert_eq!(full.status(), 503);
+    let full: Value =
+        serde_json::from_slice(&to_bytes(full.into_body(), 1048576).await.unwrap()).unwrap();
+    assert_eq!(full["error"]["code"], "RESOURCE_EXHAUSTED");
+    let unary = api(
+        router,
+        "invokeSkill",
+        &[("skill_id", skill.into())],
+        Some(token),
+        pool_input,
+        "unary-shares-stream-pool",
+        None,
+    )
+    .await;
+    assert_eq!(unary.0, 503, "{}", unary.1);
+    assert_eq!(unary.1["error"]["code"], "RESOURCE_EXHAUSTED");
+    let unchanged = c
+        .query_one(
+            "SELECT concurrent_calls_used,daily_calls_used FROM quotas WHERE account_id=$1",
+            &[&owner],
+        )
+        .await
+        .unwrap();
+    assert_eq!(unchanged.get::<_, i64>(0), charged.get::<_, i64>(0));
+    assert_eq!(unchanged.get::<_, i64>(1), charged.get::<_, i64>(1));
+    drop(active_streams);
+    let mut recovered = false;
+    for _ in 0..120 {
+        let row=c.query_one("SELECT count(*) AS released,EXISTS(SELECT 1 FROM calls c JOIN provider_records p ON p.instance_id=c.provider_instance_id JOIN instances i ON i.id=p.instance_id WHERE c.id=ANY($1) AND p.availability='ready' AND i.phase='ready') AS ready FROM calls c JOIN reservations r ON r.id=c.id WHERE c.id=ANY($1) AND c.state='unknown' AND r.status='released'",&[&active_calls]).await.unwrap();
+        if row.get::<_, i64>("released") == maximum as i64 && row.get::<_, bool>("ready") {
+            recovered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(
+        recovered,
+        "disconnected streams retain physical slots until actual OCI fencing"
+    );
+    assert_eq!(
+        c.query_one(
+            "SELECT concurrent_calls_used FROM quotas WHERE account_id=$1",
+            &[&owner]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        before_pool.get::<_, i64>(0)
+    );
     let restored = stream_skill_request(
         router,
         token,
@@ -2542,7 +2682,7 @@ async fn ordinary_skill_stream_lifecycle(
     let restored = collect_skill_events(restored.into_body()).await;
     assert_eq!(restored.len(), 3);
     assert_eq!(restored.last().unwrap()["event"]["kind"], "completed");
-    println!("Skill SSE: actual signed OCI accepted/items/completion, no regeneration replay, malformed sequence/schema/digest/EOF rejection, explicit cancel, live credential revocation, no quota leak and fenced capacity recovery passed");
+    println!("Skill SSE: actual signed OCI accepted/items/completion, no regeneration replay, malformed identity/sequence/schema/digest/EOF rejection, explicit cancel, live credential revocation, shared unary/stream pool exhaustion, consumer disconnect, no quota leak and fenced capacity recovery passed");
 }
 
 async fn stream_skill_request(

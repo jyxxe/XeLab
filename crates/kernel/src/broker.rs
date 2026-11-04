@@ -93,7 +93,13 @@ async fn invoke_bounded(
             // This read can only narrow the time budget. It conveys no authority;
             // full signed binding and current authorization are checked inside
             // admission. Read before waiting for the shared business call lock.
-            let c = app.db.connect().await?;
+            let c = app
+                .db
+                .connect_scoped(
+                    (started + Duration::from_millis(timeout))
+                        .saturating_duration_since(tokio::time::Instant::now()),
+                )
+                .await?;
             if let Some(row) = c
                 .query_opt(
                     "SELECT definition->'maximum_timeout_ms' AS maximum FROM skills WHERE id=$1",
@@ -119,6 +125,7 @@ async fn invoke_bounded(
                 skill,
                 stream,
                 wall_started,
+                started + Duration::from_millis(effective),
             ),
         )
         .await
@@ -126,9 +133,19 @@ async fn invoke_bounded(
     };
     // Also bound metadata lookup itself by the caller/default outer budget.
     // Dropping admission rolls back; admitted work retains its durable slot.
-    tokio::time::timeout_at(started + Duration::from_millis(timeout), invocation)
-        .await
-        .unwrap_or_else(|_| Err(expired()))
+    let bounded = tokio::time::timeout_at(started + Duration::from_millis(timeout), invocation);
+    let result = if let Some(stream) = stream {
+        tokio::select! {
+            biased;
+            _ = stream.abandoned_before_admission() => {
+                return Err(Error::new("CANCELED", "Skill stream consumer disconnected before admission", axum::http::StatusCode::CONFLICT));
+            }
+            result = bounded => result,
+        }
+    } else {
+        bounded.await
+    };
+    result.unwrap_or_else(|_| Err(expired()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -142,6 +159,7 @@ async fn invoke_inner(
     skill_id: Option<Uuid>,
     stream: Option<&crate::skill_streams::Output>,
     started: chrono::DateTime<chrono::Utc>,
+    deadline_bound: tokio::time::Instant,
 ) -> Result<Value> {
     validate(
         if skill_id.is_some() {
@@ -153,7 +171,10 @@ async fn invoke_inner(
     )?;
     // HTTP replay scope and the plugin's stable business key are distinct.
     let business_key = input["idempotency_key"].as_str().unwrap_or(key);
-    let mut c = app.db.connect().await?;
+    let mut c = app
+        .db
+        .connect_scoped(deadline_bound.saturating_duration_since(tokio::time::Instant::now()))
+        .await?;
     let tx = c.transaction().await?;
     db::call_lock(&tx).await?;
     let ctx = app.auth.authenticate(&tx, token, peer, request_id).await?;
@@ -417,6 +438,9 @@ async fn invoke_inner(
     }
     tx.execute("DELETE FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method='POST' AND path=$4 AND key=$3 AND expires_at<=now()",&[&ctx.subject,&ctx.credential,&key,&path]).await?;
     tx.execute("INSERT INTO idempotency_records(subject_id,credential_id,method,path,key,fingerprint,resource_id,expires_at,created_at) VALUES($1,$2,'POST',$6,$3,$4,$5,now()+interval '24 hours',now())",&[&ctx.subject,&ctx.credential,&key,&fingerprint,&call.to_string(),&path]).await?;
+    if let Some(stream) = stream {
+        stream.ensure_open()?;
+    }
     tx.commit().await?;
     let remaining =
         || Duration::from_millis((deadline - chrono::Utc::now()).num_milliseconds().max(0) as u64);
@@ -451,7 +475,13 @@ async fn invoke_inner(
             binding_id: String::new(),
         });
         if skill.is_some() {
-            check_live_call(app, token, peer, request_id, call, instance, generation).await?;
+            check_live_call(
+                app, token, peer, request_id, call, instance, generation, deadline,
+            )
+            .await?;
+        }
+        if let Some(stream) = stream {
+            stream.ensure_open()?;
         }
         request.set_timeout(remaining());
         let response = if let Some(output) = stream {
@@ -474,8 +504,10 @@ async fn invoke_inner(
                         validate_business(&definition["stream_item_schema"], &item)?;
                         let skill = skill.as_ref().ok_or_else(Error::denied)?;
                         validate_business(&skill.definition["stream_item_schema"], &item)?;
-                        check_live_call(app, token, peer, request_id, call, instance, generation)
-                            .await?;
+                        check_live_call(
+                            app, token, peer, request_id, call, instance, generation, deadline,
+                        )
+                        .await?;
                         output.emit("item", item).await?;
                     }
                     Some(rpc::invoke_chunk::Body::Completed(response)) => {
@@ -536,7 +568,7 @@ async fn invoke_inner(
                 _ = tokio::time::sleep(Duration::from_millis(100)), if skill.is_some() => {
                     // Revoke in-flight work promptly. Retain its physical slot until
                     // the controller confirms process fencing, as for RPC timeouts.
-                    check_live_call(app, token, peer, request_id, call, instance, generation).await?;
+                    check_live_call(app, token, peer, request_id, call, instance, generation, deadline).await?;
                 }
             }
         }
@@ -553,7 +585,10 @@ async fn invoke_inner(
     if app.leader.is_closed() {
         return Err(Error::unavailable("Controller leadership is lost").with_resource(call));
     }
-    let mut c = app.db.connect().await?;
+    let mut c = app
+        .db
+        .connect_scoped(deadline_bound.saturating_duration_since(tokio::time::Instant::now()))
+        .await?;
     let tx = c.transaction().await?;
     db::call_lock(&tx).await?;
     let check = async {
@@ -660,8 +695,17 @@ async fn check_live_call(
     call: Uuid,
     instance: Uuid,
     generation: i64,
+    deadline: chrono::DateTime<chrono::Utc>,
 ) -> Result<()> {
-    let mut connection = app.db.connect().await?;
+    crate::skill_streams::ensure_active(app)?;
+    let mut connection = app
+        .db
+        .connect_scoped(
+            (deadline - chrono::Utc::now())
+                .to_std()
+                .unwrap_or(Duration::ZERO),
+        )
+        .await?;
     let check = connection.transaction().await?;
     let current = app
         .auth
@@ -691,6 +735,7 @@ async fn check_live_call(
         return Err(Error::unavailable("Fixed Skill deployment is unavailable"));
     }
     check.commit().await?;
+    crate::skill_streams::ensure_active(app)?;
     Ok(())
 }
 

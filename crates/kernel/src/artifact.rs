@@ -319,6 +319,24 @@ impl Artifact {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn streaming_profile_rejects_side_effects_and_external_item_schemas() {
+        let mut manifest: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/secret-manifest.json")).unwrap();
+        manifest["requested_rules"] = json!([]);
+        manifest["capabilities"][0]["stream_item_schema"] = json!({"type":"string"});
+        validate_profile(&manifest).unwrap();
+        let mut referenced = manifest.clone();
+        referenced["capabilities"][0]["stream_item_schema"] =
+            json!({"$ref":"https://example.invalid/item.json"});
+        assert!(validate_profile(&referenced).is_err());
+        manifest["data_schema_version"] = json!("1");
+        manifest["volumes"] = json!([{"name":"data","mount_path":"/data","access":"rw","scope":"deployment","minimum_bytes":1048576}]);
+        for side_effect in ["idempotent", "non_idempotent"] {
+            manifest["capabilities"][0]["side_effect"] = json!(side_effect);
+            assert!(validate_runtime_profile(&manifest).is_err());
+        }
+    }
+    #[test]
     fn versioned_execution_profile_keeps_public_installation_closed() {
         let mut manifest: Value =
             serde_json::from_str(include_str!("../tests/fixtures/secret-manifest.json")).unwrap();

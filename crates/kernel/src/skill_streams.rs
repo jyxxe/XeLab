@@ -26,6 +26,16 @@ const MAX_FRAME: usize = 1024 * 1024;
 // At most two queued frames, one producer frame, and one consumer frame.
 const BUFFER_FRAMES: usize = 2;
 
+pub(crate) fn ensure_active(app: &App) -> Result<()> {
+    if app.leader.is_closed()
+        || app.shutdown.load(std::sync::atomic::Ordering::SeqCst)
+        || !app.ready.load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return Err(Error::unavailable("Kernel is not ready"));
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 struct Identity {
     skill: Uuid,
@@ -153,6 +163,29 @@ impl Output {
     }
     pub(crate) async fn closed(&self) {
         self.sender.closed().await;
+    }
+    pub(crate) fn ensure_open(&self) -> Result<()> {
+        if self.sender.is_closed() {
+            return Err(Error::new(
+                "CANCELED",
+                "Skill stream consumer disconnected",
+                StatusCode::CONFLICT,
+            ));
+        }
+        Ok(())
+    }
+    pub(crate) async fn abandoned_before_admission(&self) {
+        self.closed().await;
+        let admitted = self
+            .state
+            .lock()
+            .map(|state| state.identity.is_some())
+            .unwrap_or(false);
+        if admitted {
+            // Once admitted the Broker finalizer must retain accounting and
+            // revoke its delegation; its existing execution monitor owns cancel.
+            std::future::pending::<()>().await;
+        }
     }
     pub(crate) async fn emit(&self, kind: &'static str, payload: Value) -> Result<()> {
         let _emission = self.emission.lock().await;
@@ -291,9 +324,7 @@ pub(crate) async fn handle(
     {
         return Err(Error::denied());
     }
-    if !app.ready.load(std::sync::atomic::Ordering::SeqCst) || app.leader.is_closed() {
-        return Err(Error::unavailable("Kernel is not ready"));
-    }
+    ensure_active(&app)?;
     let token = api::bearer(headers)?.to_owned();
     let key = api::header(headers, "idempotency-key")?.to_owned();
     validate_business(
@@ -400,12 +431,21 @@ async fn authorize_delivery(
     request: Uuid,
     frame: &Frame,
 ) -> Result<()> {
+    ensure_active(app).map_err(|error| error.with_resource(frame.call))?;
     let remaining = (frame.deadline - chrono::Utc::now())
         .to_std()
         .unwrap_or(Duration::ZERO);
-    tokio::time::timeout(
+    let result = tokio::time::timeout(
         remaining,
-        authorize_delivery_inner(app, token, peer, request, frame.call),
+        authorize_delivery_inner(
+            app,
+            token,
+            peer,
+            request,
+            frame.call,
+            matches!(frame.kind, "item" | "completed"),
+            remaining,
+        ),
     )
     .await
     .unwrap_or_else(|_| {
@@ -414,7 +454,10 @@ async fn authorize_delivery(
             "Skill stream deadline elapsed during delivery authorization",
             StatusCode::GATEWAY_TIMEOUT,
         ))
-    })
+    });
+    ensure_active(app)
+        .and(result)
+        .map_err(|error| error.with_resource(frame.call))
 }
 
 async fn authorize_delivery_inner(
@@ -423,8 +466,10 @@ async fn authorize_delivery_inner(
     peer: IpAddr,
     request: Uuid,
     call: Uuid,
+    business: bool,
+    remaining: Duration,
 ) -> Result<()> {
-    let mut connection = app.db.connect().await?;
+    let mut connection = app.db.connect_scoped(remaining).await?;
     let transaction = connection.transaction().await?;
     let ctx = app
         .auth
@@ -452,6 +497,17 @@ async fn authorize_delivery_inner(
             "Skill stream deadline elapsed",
             StatusCode::GATEWAY_TIMEOUT,
         ));
+    }
+    if business {
+        // A queue is not authority to keep delivering after its exact physical
+        // provider stops, changes generation, or loses deployment approval.
+        let live: bool = transaction.query_one(
+            "SELECT EXISTS(SELECT 1 FROM calls c JOIN rpc_delegations r ON r.call_id=c.id JOIN instances i ON i.id=c.provider_instance_id AND i.id=r.instance_id AND i.generation=r.generation JOIN deployments d ON d.id=i.deployment_id WHERE c.id=$1 AND i.phase='ready' AND d.archived_at IS NULL AND d.spec->>'enabled'='true')",
+            &[&call],
+        ).await?.get(0);
+        if !live {
+            return Err(Error::unavailable("Fixed Skill deployment is unavailable"));
+        }
     }
     transaction.commit().await?;
     Ok(())
@@ -539,7 +595,7 @@ mod tests {
             .bind(
                 &skill(),
                 Uuid::new_v4(),
-                chrono::Utc::now() + chrono::Duration::milliseconds(100),
+                chrono::Utc::now() + chrono::Duration::seconds(1),
             )
             .unwrap();
         output.emit("accepted", json!({})).await.unwrap();
@@ -555,5 +611,80 @@ mod tests {
         assert_eq!(terminal.sequence, 3);
         assert_eq!(terminal.kind, "canceled");
         assert!(output.emit("item", json!({"value":3})).await.is_err());
+    }
+    #[tokio::test]
+    async fn queued_business_data_is_fenced_by_readiness_shutdown_and_actual_leader_loss() {
+        let Some(f) = crate::backups::tests::Fixture::new().await else {
+            return;
+        };
+        let (sender, mut receiver) = mpsc::channel(BUFFER_FRAMES);
+        let output = Output::new(sender);
+        output
+            .bind(
+                &skill(),
+                Uuid::new_v4(),
+                chrono::Utc::now() + chrono::Duration::seconds(30),
+            )
+            .unwrap();
+        output.emit("accepted", json!({})).await.unwrap();
+        output
+            .emit("item", json!({"private":"must not escape"}))
+            .await
+            .unwrap();
+        receiver.recv().await.unwrap().unwrap();
+        let queued = receiver.recv().await.unwrap().unwrap();
+        let peer = "127.0.0.1".parse().unwrap();
+        f.app
+            .ready
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            authorize_delivery(&f.app, &f.token, peer, Uuid::new_v4(), &queued)
+                .await
+                .unwrap_err()
+                .code,
+            "NOT_READY"
+        );
+        f.app.ready.store(true, std::sync::atomic::Ordering::SeqCst);
+        f.app
+            .shutdown
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            authorize_delivery(&f.app, &f.token, peer, Uuid::new_v4(), &queued)
+                .await
+                .unwrap_err()
+                .code,
+            "NOT_READY"
+        );
+        f.app
+            .shutdown
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let pid: i32 = f
+            .app
+            .leader
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let c = f.app.db.connect().await.unwrap();
+        assert!(c
+            .query_one("SELECT pg_terminate_backend($1)", &[&pid])
+            .await
+            .unwrap()
+            .get::<_, bool>(0));
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !f.app.leader.is_closed() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let error = authorize_delivery(&f.app, &f.token, peer, Uuid::new_v4(), &queued)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "NOT_READY");
+        let failed = queued.fail(error).unwrap();
+        assert_eq!(failed.kind, "failed");
+        assert_eq!(failed.sequence, queued.sequence);
+        assert!(!failed.data.contains("must not escape"));
     }
 }

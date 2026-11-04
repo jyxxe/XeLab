@@ -42,15 +42,22 @@ HTTP 200 之后的错误使用终帧；若连接已断开或消费者不再推�
 
 ## 有界资源与取消
 
-单个序列化业务事件上限 1 MiB，队列容量为 2；连同生产者及消费者各一块，
+单个序列化业务事件（包括 Skill 信封及 completed 结果）上限 1 MiB，
+item 必须为信封留出空间；capability 的更大 maximum_output_bytes 不能放宽流的单块限制。
+队列容量为 2；连同生产者及消费者各一块，
 至多四块业务缓冲，低于契约的 16 块上限。RPC 解码另设单块上限。
 事件校验或发送失败不会消耗未交付的序号。
 队列满时暂停读取插件 RPC；消费者 30 秒不推进或整体 deadline 先到则终止。
 交付鉴权的数据库等待也受原始 deadline 限制，不能靠持续心跳延长业务调用。
+取消敏感查询使用请求作用域连接：丢弃时向准确的 PostgreSQL backend 发送取消，
+有界清理后关闭驱动，并保留服务端 statement_timeout 兜底。
 HTTP `Cache-Control` 为 `no-store`，15 秒注释心跳不占业务序号。
 
 断线、撤权、禁用 Skill/部署、明确 `cancelCall` 或 deadline 会停止后续交付、
 丢弃 RPC 流并撤销委托。参考插件检查接收端关闭、取消、排空和 deadline。
+客户端在准入锁等待时断线会立即丢弃准入任务，事务回滚且不派发 RPC。
+若断线恰逢数据库提交，可能留下已持久准入而尚未派发的 Call；
+派发前再次检查接收端，保留该不确定记录并按原 deadline 与控制器围栏回收。
 `cancelCall` 记录取消意图并返回 204；已派发调用保持 `unknown`，
 错误标记为 `CANCELED`，不会谎称已撤销实际副作用。
 活动物理预约只由既有 Controller 在确认实例进程停止后释放。
@@ -74,8 +81,11 @@ python3 docs/tools/validate_docs.py --strict
 
 PostgreSQL 测试需要独立的 `XELAB_TEST_DATABASE_URL`。
 元数据 API 测试覆盖非流式 Skill 拒绝流调用、Last-Event-ID、非法查询、
-无提供者不扣账、取消权限及跨账户拒绝，不据此声称运行了 OCI。
+无提供者不扣账、取消权限及跨账户拒绝、等待准入时断线，
+并在锁仍由其他事务持有时核实被取消的 backend 已退出，不据此声称运行了 OCI。
 传输单元测试实际填满有界队列、验证消费者推进、终态和超大帧不跳号。
+另通过真实 PostgreSQL 终止 leader 连接，验证已排队业务帧在就绪撤销、
+停止或失去 leadership 后转换为无业务载荷的失败终帧。
 
 已有 [Kernel M1 工作流](../../.github/workflows/kernel.yml) 构建签名 Rust OCI 参考制品，
 真实 `signed_oci_plugin_runs_through_the_management_api_and_recovers` 场景执行：
