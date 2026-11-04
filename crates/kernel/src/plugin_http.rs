@@ -397,10 +397,15 @@ fn stream_payload_schema(
     expected: &Value,
 ) -> bool {
     fn selected(value: &Value, kind: &str) -> bool {
-        value["properties"]["kind"]["const"] == kind
-            || value["properties"]["kind"]["enum"]
-                .as_array()
-                .is_some_and(|values| values.len() == 1 && values[0] == kind)
+        let selector = &value["properties"]["kind"];
+        // Extra validation keywords can make an apparent kind discriminator
+        // false (const=item plus minLength=5, conflicting enum/type, etc.).
+        // Only these exact, non-vacuous discriminator forms attest payloads.
+        selector.as_object().is_some_and(|object| object.len() == 1)
+            && (selector["const"] == kind
+                || selector["enum"]
+                    .as_array()
+                    .is_some_and(|values| values.len() == 1 && values[0] == kind))
     }
     let condition = &schema["if"];
     let discriminator_only = condition.as_object().is_some_and(|value| {

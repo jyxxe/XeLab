@@ -672,6 +672,45 @@ fn http_stream_and_fixed_method_candidates_keep_distinct_signed_schema_authoriti
         error.message,
         "Bodyless HTTP response cannot declare content"
     );
+    // A false extra guard must not make a merely present then.payload
+    // schema look authoritative for all item frames.
+    let original: Value = serde_json::from_slice(
+        &std::fs::read(directory.path().join("xelab/http/openapi.json")).unwrap(),
+    )
+    .unwrap();
+    for variant in 0..5 {
+        let mut doc = original.clone();
+        let branches = doc["paths"]["/plugins/org.xelab.http-echo/events"]["post"]["responses"]
+            ["200"]["content"]["text/event-stream"]["schema"]["allOf"]
+            .as_array_mut()
+            .unwrap();
+        let branch = branches
+            .iter_mut()
+            .find(|branch| branch["if"]["properties"]["kind"]["const"] == "item")
+            .unwrap();
+        match variant {
+            0 => branch["if"]["properties"]["kind"]["minLength"] = json!(5),
+            1 => branch["if"]["properties"]["kind"]["enum"] = json!(["completed"]),
+            2 => branch["if"]["type"] = json!("array"),
+            3 => branch["if"]["required"] = json!(["kind", "absent"]),
+            _ => branch["if"]["properties"]["absent"] = json!({"const":true}),
+        }
+        let raw = serde_json::to_vec(&doc).unwrap();
+        let hash = digest(&raw);
+        let mut claimed = manifest.clone();
+        claimed["routes"][0]["http_contract_digest"] = json!(hash);
+        for candidate in claimed["skills"].as_array_mut().unwrap() {
+            candidate["target"]["http_contract_digest"] = json!(hash);
+        }
+        let error = Registry::compile(&claimed, Some(&raw))
+            .err()
+            .expect("Conditional false guards must not attest the Skill payload schema");
+        assert_eq!(
+            error.message,
+            "HTTP Skill schemas must match its fixed signed operation and success response",
+            "variant {variant}"
+        );
+    }
     let mut altered = definitions[1].clone();
     altered["target"]["http_contract_digest"] = json!(digest(b"different stream"));
     assert!(registry.bind_skill(&altered).is_err());
