@@ -233,6 +233,12 @@ class Echo(lifecycle.PluginLifecycleServicer, capability.CapabilityServiceServic
         key = self.migration_key(request, context, "apply")
         with self.lock:
             try:
+                if "--migration-fail-after-write" in sys.argv or "--migration-observe-apply" in sys.argv:
+                    path = self.store.scratch / "apply-attempts.json"
+                    attempts = read(path)[1] if path.exists() else {"plan_id": request.plan_id, "count": 0}
+                    if attempts["plan_id"] != request.plan_id or not 0 <= attempts["count"] < 16:
+                        raise ValueError("Apply acceptance counter binding differs")
+                    atomic(path, {"plan_id": request.plan_id, "count": attempts["count"] + 1})
                 self.store.bind(request.plan_id, key, os.environ["XELAB_DEPLOYMENT_ID"])
                 def after_write():
                     if "--migration-fail-after-write" in sys.argv:

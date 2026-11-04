@@ -11,7 +11,7 @@ def encoded(value):
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
-def build(root, publisher, platform="linux/amd64", implementation="rust", request_secret=False, volume_access=None, request_blob=False, plugin_version="1.0.0", failed_startup=False, data_schema=None, migration_fail_after_write=False, migration_pause_after_initialize=False):
+def build(root, publisher, platform="linux/amd64", implementation="rust", request_secret=False, volume_access=None, request_blob=False, plugin_version="1.0.0", failed_startup=False, data_schema=None, migration_fail_after_write=False, migration_pause_after_initialize=False, migration_observe_apply=False):
     if data_schema not in (None, "1", "2"):
         raise ValueError("Unsupported reference business schema")
     if data_schema is not None and (implementation != "python" or volume_access != "rw" or request_blob or request_secret):
@@ -20,6 +20,8 @@ def build(root, publisher, platform="linux/amd64", implementation="rust", reques
         raise ValueError("The migration outcome fault requires the explicit version 2 business format")
     if migration_pause_after_initialize and (data_schema != "1" or failed_startup):
         raise ValueError("The initialization crash probe requires the explicit version 1 business format")
+    if migration_observe_apply and (data_schema is None or failed_startup):
+        raise ValueError("The Apply observer requires an explicit business format")
     publisher = str(uuid.UUID(publisher))
     schema = {"type": "object", "properties": {"message": {"type": "string", "maxLength": 1024}}, "required": ["message"], "additionalProperties": False}
     input_schema = json.loads(json.dumps(schema))
@@ -65,6 +67,8 @@ def build(root, publisher, platform="linux/amd64", implementation="rust", reques
         manifest["entrypoint"].append("--migration-fail-after-write")
     if migration_pause_after_initialize:
         manifest["entrypoint"].append("--migration-pause-after-initialize")
+    if migration_observe_apply:
+        manifest["entrypoint"].append("--migration-observe-apply")
     (root / "xelab" / "plugin.json").write_bytes(encoded(manifest))
     return manifest
 
@@ -83,6 +87,7 @@ if __name__ == "__main__":
     parser.add_argument("--data-schema", choices=["1", "2"], help="Reference DataMigration format; kernel admission remains disabled until its durable coordinator is complete")
     parser.add_argument("--migration-fail-after-write", action="store_true", help="Explicit acceptance artifact returning an ambiguous RPC outcome after a real committed write")
     parser.add_argument("--migration-pause-after-initialize", action="store_true", help="Explicit crash-test artifact pausing after fsynced initialization and tracing migration phases in private scratch")
+    parser.add_argument("--migration-observe-apply", action="store_true", help="Explicit acceptance artifact recording Apply RPC attempts in private scratch")
     args = parser.parse_args()
-    build(args.output, args.publisher_id, args.platform, args.implementation, args.request_secret, args.volume_access, args.request_blob, args.plugin_version, args.failed_startup, args.data_schema, args.migration_fail_after_write, args.migration_pause_after_initialize)
+    build(args.output, args.publisher_id, args.platform, args.implementation, args.request_secret, args.volume_access, args.request_blob, args.plugin_version, args.failed_startup, args.data_schema, args.migration_fail_after_write, args.migration_pause_after_initialize, args.migration_observe_apply)
 
