@@ -147,6 +147,23 @@ test('JSON responses are bounded before and during body reading', async () => {
   await assert.rejects(() => readJson(new Response('<html>not JSON</html>')), error => error.code === 'INVALID_RESPONSE');
 });
 
+test('JSON decoding enforces exact byte limits and strict UTF-8 across network chunks', async () => {
+  const value = {message: '雪🙂'};
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  const streamed = (payload, cut) => new Response(new ReadableStream({start(controller) {
+    controller.enqueue(payload.slice(0, cut));
+    controller.enqueue(payload.slice(cut));
+    controller.close();
+  }}), {headers: {'content-type': 'application/json'}});
+  for (let cut = 1; cut < bytes.length; cut++) {
+    assert.deepEqual(await readJson(streamed(bytes, cut), bytes.length), value);
+  }
+  await assert.rejects(() => readJson(streamed(bytes, 1), bytes.length - 1), error => error.code === 'PAYLOAD_TOO_LARGE');
+  await assert.rejects(() => readJson(streamed(new Uint8Array([34, 255, 34]), 1)), error => error.code === 'INVALID_RESPONSE');
+  await assert.rejects(() => readJson(streamed(new TextEncoder().encode('{'), 1)), error => error.code === 'INVALID_RESPONSE');
+  assert.equal(await readJson(new Response(null, {status: 204})), null);
+});
+
 test('OAuth navigation uses S256, random state, exact callback and registered Client ceiling only', async () => {
   const state = flow(async () => { throw new Error('No token request expected'); });
   await state.session.startLogin();

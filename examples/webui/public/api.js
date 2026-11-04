@@ -138,24 +138,30 @@ export async function readJson(response, maximum = 16 * 1024 * 1024 + 65536) {
   }
   let text;
   if (response.body?.getReader) {
-    const reader = response.body.getReader();
-    const chunks = [];
+    // Check the byte cap before native allocation while preserving the original
+    // Response's native body consumer. Its tee branch retains the bounded body;
+    // the counting branch does not keep a second JavaScript chunks array.
+    const reader = response.clone().body.getReader();
     let bytes = 0;
+    let all;
+    const cancelBranches = () => Promise.allSettled([
+      Promise.resolve().then(() => reader.cancel()),
+      Promise.resolve().then(() => response.body.cancel()),
+    ]);
     try {
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
         bytes += value.byteLength;
-        if (bytes > maximum) {
-          await reader.cancel();
-          throw new ApiError('PAYLOAD_TOO_LARGE', '核心响应超过显示限制。', response.status);
-        }
-        chunks.push(value);
+        if (bytes > maximum) throw new ApiError('PAYLOAD_TOO_LARGE', '核心响应超过显示限制。', response.status);
       }
+      all = new Uint8Array(await response.arrayBuffer());
+      if (all.byteLength !== bytes) throw new ApiError('INVALID_RESPONSE', '核心响应字节计数不一致。', response.status);
+    } catch (error) {
+      // A tee cancellation waits for both branches; cancel them together.
+      await cancelBranches();
+      throw error;
     } finally { reader.releaseLock(); }
-    const all = new Uint8Array(bytes);
-    let offset = 0;
-    for (const chunk of chunks) { all.set(chunk, offset); offset += chunk.byteLength; }
     try { text = new TextDecoder('utf-8', { fatal: true }).decode(all); }
     catch { throw new ApiError('INVALID_RESPONSE', '核心响应不是有效 UTF-8。', response.status); }
   } else {
