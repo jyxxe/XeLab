@@ -1,13 +1,19 @@
 //! Actual signed OCI initialization before whole-platform capture. No schema
 //! state, proof, provider readiness or successful migration row is seeded.
 use super::*;
-use xelab_kernel::{schema_jobs, storage::xfs::ProjectStore, volumes};
+use xelab_kernel::{storage::xfs::ProjectStore, volumes};
 
 pub struct Source {
     pub volume: Uuid,
     pub deployment: Uuid,
     pub data_digest: String,
-    pub worker: tokio::task::JoinHandle<()>,
+    pub schema: String,
+}
+
+impl Source {
+    pub fn report(&self) -> Value {
+        json!({"volume_id":self.volume,"deployment_id":self.deployment,"data_digest":self.data_digest,"schema":self.schema})
+    }
 }
 
 pub async fn data_path(app: &App, volume: Uuid) -> std::path::PathBuf {
@@ -45,14 +51,18 @@ pub async fn create(
     token: &str,
     publisher: Uuid,
     signing: &SigningKey,
+    schema: &str,
 ) -> Source {
     let c = app.db.connect().await.unwrap();
-    let image = std::env::var("XELAB_TEST_PLATFORM_SCHEMA_IMAGE")
+    let image = std::env::var(format!("XELAB_TEST_PLATFORM_SCHEMA_{schema}_IMAGE"))
         .expect("actual imported whole-platform schema image");
-    let raw = fs::read("examples/generated-platform-schema/xelab/plugin.json").unwrap();
+    let raw = fs::read(format!(
+        "examples/generated-platform-schema-{schema}/xelab/plugin.json"
+    ))
+    .unwrap();
     let manifest: Value = serde_json::from_slice(&raw).unwrap();
     contracts::validate("Manifest", &manifest).unwrap();
-    assert_eq!(manifest["data_schema_version"], "1");
+    assert_eq!(manifest["data_schema_version"], schema);
     assert_eq!(manifest["publisher_id"], publisher.to_string());
     let digest = artifact::image_ref(&image).unwrap();
     let pem = signing
@@ -105,7 +115,7 @@ pub async fn create(
         0o600,
     )
     .unwrap();
-    let volume = api(router,"createVolume",&[],Some(token),json!({"name":"data","capacity_bytes":8388608,"access":"single_writer","scope":"deployment"}),"whole-versioned-volume",None).await;
+    let volume = api(router,"createVolume",&[],Some(token),json!({"name":"data","capacity_bytes":8388608,"access":"single_writer","scope":"deployment"}),&format!("whole-versioned-{schema}-volume"),None).await;
     assert_eq!(volume.0, 202, "{}", volume.1);
     let allocation: Uuid = volume.1["id"].as_str().unwrap().parse().unwrap();
     for _ in 0..120 {
@@ -123,7 +133,7 @@ pub async fn create(
     }
     operation(router, &allocation.to_string(), token).await;
     let volume: Uuid = volume.1["resource_id"].as_str().unwrap().parse().unwrap();
-    let deployment = api(router,"createDeployment",&[],Some(token),json!({"installation_id":installation,"display_name":"whole-platform versioned source","enabled":false,"replicas":1,"limits":{"cpu_millis":100,"memory_bytes":134217728,"ephemeral_bytes":1048576,"pids":64},"config":{},"volume_ids":[volume]}),"whole-versioned-deployment",None).await;
+    let deployment = api(router,"createDeployment",&[],Some(token),json!({"installation_id":installation,"display_name":"whole-platform versioned source","enabled":false,"replicas":1,"limits":{"cpu_millis":100,"memory_bytes":134217728,"ephemeral_bytes":1048576,"pids":64},"config":{},"volume_ids":[volume]}),&format!("whole-versioned-{schema}-deployment"),None).await;
     assert_eq!(deployment.0, 202, "{}", deployment.1);
     operation(router, deployment.1["id"].as_str().unwrap(), token).await;
     let deployment: Uuid = deployment.1["resource_id"]
@@ -138,7 +148,7 @@ pub async fn create(
         &params,
         Some(token),
         Value::Null,
-        "whole-versioned-current",
+        &format!("whole-versioned-{schema}-current"),
         None,
     )
     .await;
@@ -148,19 +158,18 @@ pub async fn create(
         &params,
         Some(token),
         json!({"rules":[],"egress":[]}),
-        "whole-versioned-approve",
+        &format!("whole-versioned-{schema}-approve"),
         current.1["revision"].as_i64(),
     )
     .await;
     assert_eq!(approved.0, 200, "{}", approved.1);
-    let worker = tokio::spawn(schema_jobs::run(app.clone()));
     let current = api(
         router,
         "getDeployment",
         &params,
         Some(token),
         Value::Null,
-        "whole-versioned-approved",
+        &format!("whole-versioned-{schema}-approved"),
         None,
     )
     .await;
@@ -170,19 +179,26 @@ pub async fn create(
         &params,
         Some(token),
         json!({"enabled":true}),
-        "whole-versioned-enable",
+        &format!("whole-versioned-{schema}-enable"),
         current.1["revision"].as_i64(),
     )
     .await;
     assert_eq!(enabled.0, 202, "{}", enabled.1);
     operation(router, enabled.1["id"].as_str().unwrap(), token).await;
-    let called = api(router,"invokeCapability",&[],Some(token),json!({"contract":manifest["capabilities"][0]["contract"],"input":{"message":"versioned data before whole recovery"},"provider_deployment_id":deployment,"timeout_ms":30000}),"whole-versioned-write",None).await;
+    let called = api(router,"invokeCapability",&[],Some(token),json!({"contract":manifest["capabilities"][0]["contract"],"input":{"message":"versioned data before whole recovery"},"provider_deployment_id":deployment,"timeout_ms":30000}),&format!("whole-versioned-{schema}-write"),None).await;
     assert_eq!(called.0, 200, "{}", called.1);
     let path = data_path(app, volume).await;
     let bytes = fs::read(path.join("store.json")).unwrap();
     let value: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(value["schema"], "1");
-    assert_eq!(value["items"].as_array().unwrap().len(), 1);
+    assert_eq!(value["schema"], schema);
+    assert_eq!(
+        match schema {
+            "1" => value["items"].as_array().unwrap().len(),
+            "2" => value["records"].as_object().unwrap().len(),
+            _ => panic!("unsupported reference format"),
+        },
+        1
+    );
     assert_eq!(
         c.query_one(
             "SELECT schema_state FROM volume_allocations WHERE volume_id=$1",
@@ -203,6 +219,6 @@ pub async fn create(
         volume,
         deployment,
         data_digest: contracts::digest(&bytes),
-        worker,
+        schema: schema.to_owned(),
     }
 }

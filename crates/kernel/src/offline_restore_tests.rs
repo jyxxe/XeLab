@@ -117,76 +117,85 @@ fn unmount_views(root: &Path) {
 }
 
 async fn versioned_data_and_binding(target: &Target, info: &Value) -> Result<()> {
-    let volume: Uuid = info["versioned_volume_id"]
-        .as_str()
-        .unwrap()
-        .parse()
-        .unwrap();
-    let source = target
-        .manifest
-        .volumes
-        .iter()
-        .find(|v| v.object.volume == volume)
-        .unwrap();
-    assert_eq!(source.data_schema_version.as_deref(), Some("1"));
-    let expected = source.format_binding.clone();
-    assert!(expected.is_some());
-    let c = target.session.db.connect().await?;
-    super::super::formats::check(&c, volume, &expected).await?;
-    let row = c
-        .query_one(
-            "SELECT root_id,project_id,schema_proof FROM volume_allocations WHERE volume_id=$1",
-            &[&volume],
+    let sources = info["versioned_sources"].as_array().unwrap();
+    assert_eq!(sources.len(), 2);
+    for source_info in sources {
+        let volume: Uuid = source_info["volume_id"].as_str().unwrap().parse().unwrap();
+        let schema = source_info["schema"].as_str().unwrap();
+        let source = target
+            .manifest
+            .volumes
+            .iter()
+            .find(|v| v.object.volume == volume)
+            .unwrap();
+        assert_eq!(source.data_schema_version.as_deref(), Some(schema));
+        let expected = source.format_binding.clone();
+        assert!(expected.is_some());
+        let c = target.session.db.connect().await?;
+        super::super::formats::check(&c, volume, &expected).await?;
+        let row = c
+            .query_one(
+                "SELECT root_id,project_id,schema_proof FROM volume_allocations WHERE volume_id=$1",
+                &[&volume],
+            )
+            .await?;
+        let proof: Value = row.get("schema_proof");
+        let mut store = crate::storage::xfs::ProjectStore::open(
+            &target.session.runtime.config.root().join("volumes"),
+        )?;
+        let filesystem = store.status()?.filesystem_uuid;
+        store.namespace_identity(filesystem, row.get("root_id"), false)?;
+        let data = store.data_path(volume, row.get::<_, i32>("project_id") as u32)?;
+        drop(store);
+        let bytes = fs::read(data.join("store.json"))?;
+        assert_eq!(digest(&bytes), source_info["data_digest"]);
+        let value: Value = serde_json::from_slice(&bytes)?;
+        assert_eq!(value["schema"], schema);
+        assert_eq!(
+            match schema {
+                "1" => value["items"].as_array().unwrap().len(),
+                "2" => value["records"].as_object().unwrap().len(),
+                _ => panic!("unsupported reference format"),
+            },
+            1
+        );
+        let mut corrupt = proof.clone();
+        corrupt["recovery_test_tamper"] = json!(true);
+        c.execute(
+            "UPDATE volume_allocations SET schema_proof=$2 WHERE volume_id=$1",
+            &[&volume, &corrupt],
         )
         .await?;
-    let proof: Value = row.get("schema_proof");
-    let mut store = crate::storage::xfs::ProjectStore::open(
-        &target.session.runtime.config.root().join("volumes"),
-    )?;
-    let filesystem = store.status()?.filesystem_uuid;
-    store.namespace_identity(filesystem, row.get("root_id"), false)?;
-    let data = store.data_path(volume, row.get::<_, i32>("project_id") as u32)?;
-    drop(store);
-    let bytes = fs::read(data.join("store.json"))?;
-    assert_eq!(digest(&bytes), info["versioned_data_digest"]);
-    let value: Value = serde_json::from_slice(&bytes)?;
-    assert_eq!(value["schema"], "1");
-    assert_eq!(value["items"].as_array().unwrap().len(), 1);
-    let mut corrupt = proof.clone();
-    corrupt["recovery_test_tamper"] = json!(true);
-    c.execute(
-        "UPDATE volume_allocations SET schema_proof=$2 WHERE volume_id=$1",
-        &[&volume, &corrupt],
-    )
-    .await?;
-    assert!(
-        target
-            .complete(
-                info["owner_id"].as_str().unwrap().parse().unwrap(),
-                PASSWORD
-            )
-            .await
-            .is_err(),
-        "changed historical format proof must keep recovery closed"
-    );
-    assert!(target.session.db.check().await.is_err());
-    c.execute(
-        "UPDATE volume_allocations SET schema_proof=$2 WHERE volume_id=$1",
-        &[&volume, &proof],
-    )
-    .await?;
-    super::super::formats::check(&c, volume, &expected).await?;
-    assert_eq!(
-        c.query_one(
-            "SELECT count(*) FROM publishers WHERE status='trusted'",
-            &[]
+        assert!(
+            target
+                .complete(
+                    info["owner_id"].as_str().unwrap().parse().unwrap(),
+                    PASSWORD
+                )
+                .await
+                .is_err(),
+            "changed historical format proof must keep recovery closed"
+        );
+        assert!(target.session.db.check().await.is_err());
+        c.execute(
+            "UPDATE volume_allocations SET schema_proof=$2 WHERE volume_id=$1",
+            &[&volume, &proof],
         )
-        .await?
-        .get::<_, i64>(0),
-        0
-    );
+        .await?;
+        super::super::formats::check(&c, volume, &expected).await?;
+        assert_eq!(
+            c.query_one(
+                "SELECT count(*) FROM publishers WHERE status='trusted'",
+                &[]
+            )
+            .await?
+            .get::<_, i64>(0),
+            0
+        );
+    }
     Ok(())
 }
+
 #[tokio::test]
 #[ignore = "requires owned fresh XFS, PostgreSQL, actual source report, S3 and disposable containerd; tools/test-xfs.sh"]
 async fn actual_platform_recovery_rebuilds_fresh_state_and_resumes_after_process_death() {
@@ -232,7 +241,10 @@ async fn actual_platform_recovery_rebuilds_fresh_state_and_resumes_after_process
             rlim_cur: 0,
             rlim_max: 0,
         };
-        unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) };
+        unsafe {
+            assert_eq!(libc::setrlimit(libc::RLIMIT_CORE, &limit), 0);
+            assert_eq!(libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0), 0);
+        }
         std::process::abort();
     }
     let info = report();

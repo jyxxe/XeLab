@@ -19,4 +19,5 @@ __pycache__/
 /examples/generated-aws-source/
 /examples/generated-aws-target/
 
-/examples/generated-platform-schema/
+/examples/generated-platform-schema-1/
+/examples/generated-platform-schema-2/

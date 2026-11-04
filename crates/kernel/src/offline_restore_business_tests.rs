@@ -96,20 +96,169 @@ async fn finish(router: &Router, token: &str, id: Uuid) -> Result<()> {
     ))
 }
 
+async fn exercise_source(
+    app: &Arc<crate::api::App>,
+    router: &Router,
+    token: &str,
+    c: &tokio_postgres::Client,
+    source: &Value,
+) -> Result<()> {
+    let volume: Uuid = source["volume_id"].as_str().unwrap().parse().unwrap();
+    let deployment: Uuid = source["deployment_id"].as_str().unwrap().parse().unwrap();
+    let schema = source["schema"].as_str().unwrap();
+    let publisher=c.query_one("SELECT p.id,p.name,p.key_id,p.public_key_pem,p.status,i.manifest FROM deployments d JOIN installations i ON i.id=d.installation_id JOIN publishers p ON p.id=i.publisher_id WHERE d.id=$1", &[&deployment]).await?;
+    let manifest: Value = publisher.get("manifest");
+    assert_eq!(manifest["data_schema_version"], schema);
+    let current = request(
+        router,
+        Some(token),
+        "getDeployment",
+        Some(deployment),
+        Value::Null,
+        None,
+    )
+    .await?;
+    assert_eq!(current.0, 200, "{}", current.1);
+    assert_eq!(current.1["spec"]["enabled"], false);
+    if publisher.get::<_, String>("status") == "revoked" {
+        let denied = request(
+            router,
+            Some(token),
+            "setDeploymentEnabled",
+            Some(deployment),
+            json!({"enabled":true}),
+            current.1["revision"].as_i64(),
+        )
+        .await?;
+        assert_ne!(
+            denied.0, 202,
+            "restored format does not restore publisher authority"
+        );
+        let trusted=request(router,Some(token),"trustPublisher",None,json!({"name":publisher.get::<_,String>("name"),"key_id":publisher.get::<_,String>("key_id"),"public_key_pem":publisher.get::<_,String>("public_key_pem")}),None).await?;
+        assert_eq!(trusted.0, 200, "{}", trusted.1);
+    } else {
+        assert_eq!(
+            publisher.get::<_, String>("status"),
+            "trusted",
+            "only explicit current Owner trust from the earlier source can be reused"
+        );
+    }
+    let current = request(
+        router,
+        Some(token),
+        "getDeployment",
+        Some(deployment),
+        Value::Null,
+        None,
+    )
+    .await?;
+    let approved = request(
+        router,
+        Some(token),
+        "approvePlugin",
+        Some(deployment),
+        json!({"rules":[],"egress":[]}),
+        current.1["revision"].as_i64(),
+    )
+    .await?;
+    assert_eq!(approved.0, 200, "{}", approved.1);
+    let current = request(
+        router,
+        Some(token),
+        "getDeployment",
+        Some(deployment),
+        Value::Null,
+        None,
+    )
+    .await?;
+    let enabled = request(
+        router,
+        Some(token),
+        "setDeploymentEnabled",
+        Some(deployment),
+        json!({"enabled":true}),
+        current.1["revision"].as_i64(),
+    )
+    .await?;
+    assert_eq!(enabled.0, 202, "{}", enabled.1);
+    finish(
+        router,
+        token,
+        enabled.1["id"].as_str().unwrap().parse().unwrap(),
+    )
+    .await?;
+    let row = c
+        .query_one(
+            "SELECT root_id,project_id FROM volume_allocations WHERE volume_id=$1",
+            &[&volume],
+        )
+        .await?;
+    let mut store = crate::storage::xfs::ProjectStore::open(&app.config.root().join("volumes"))?;
+    let filesystem = store.status()?.filesystem_uuid;
+    store.namespace_identity(filesystem, row.get("root_id"), false)?;
+    let data = store.data_path(volume, row.get::<_, i32>("project_id") as u32)?;
+    drop(store);
+    let before: Value = serde_json::from_slice(&fs::read(data.join("store.json"))?)?;
+    let called=request(router,Some(token),"invokeCapability",None,json!({"contract":manifest["capabilities"][0]["contract"],"input":{"message":format!("business write after whole-platform schema{schema} recovery")},"provider_deployment_id":deployment,"timeout_ms":30000}),None).await?;
+    assert_eq!(called.0, 200, "{}", called.1);
+    let after: Value = serde_json::from_slice(&fs::read(data.join("store.json"))?)?;
+    assert_eq!(after["schema"], schema);
+    match schema {
+        "1" => {
+            assert_eq!(after["items"].as_array().unwrap().len(), 2);
+            assert_eq!(after["items"][0], before["items"][0]);
+            assert_eq!(after["items"][1]["id"], called.1["call_id"]);
+        }
+        "2" => {
+            let records = after["records"].as_object().unwrap();
+            assert_eq!(records.len(), 2);
+            for (id, value) in before["records"].as_object().unwrap() {
+                assert_eq!(&records[id], value);
+            }
+            assert!(records.contains_key(called.1["call_id"].as_str().unwrap()));
+        }
+        _ => panic!("unsupported reference format"),
+    }
+    let current = request(
+        router,
+        Some(token),
+        "getDeployment",
+        Some(deployment),
+        Value::Null,
+        None,
+    )
+    .await?;
+    let disabled = request(
+        router,
+        Some(token),
+        "setDeploymentEnabled",
+        Some(deployment),
+        json!({"enabled":false}),
+        current.1["revision"].as_i64(),
+    )
+    .await?;
+    assert_eq!(disabled.0, 202, "{}", disabled.1);
+    finish(
+        router,
+        token,
+        disabled.1["id"].as_str().unwrap().parse().unwrap(),
+    )
+    .await?;
+    assert!(app.runtime.inventory().await?.is_empty());
+    let budget = c
+        .query_one(
+            "SELECT reserved_cpu_millis,reserved_memory_bytes FROM node_budget",
+            &[],
+        )
+        .await?;
+    assert_eq!(budget.get::<_, i64>(0), 0);
+    assert_eq!(budget.get::<_, i64>(1), 0);
+    println!("Whole schema{schema} recovery: original data retained and fresh current-Owner-approved OCI/Broker disk write passed; no format Apply or old authority revival");
+    Ok(())
+}
+
 pub(super) async fn resume(config: &Config, db: &Db, info: &Value) -> Result<()> {
-    let volume: Uuid = info["versioned_volume_id"]
-        .as_str()
-        .unwrap()
-        .parse()
-        .unwrap();
-    let deployment: Uuid = info["versioned_deployment_id"]
-        .as_str()
-        .unwrap()
-        .parse()
-        .unwrap();
     let owner: Uuid = info["owner_id"].as_str().unwrap().parse().unwrap();
-    // The completed target has been dropped. Reacquire a real leader; only its
-    // bounded connection-close race may be retried, never an unrelated error.
     let leader = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             match db.leader().await {
@@ -129,8 +278,7 @@ pub(super) async fn resume(config: &Config, db: &Db, info: &Value) -> Result<()>
     let mut c = db.connect().await?;
     let tx = c.transaction().await?;
     db::auth_lock(&tx, true).await?;
-    // As in the other privileged components, this is a synthetic test pool,
-    // never evidence of actual production daemon 4C/16GiB reservations.
+    // Synthetic component pool only, never production RUN03 evidence.
     crate::admission::initialize(&tx, &config.value["resources"], 8000, 34359738368).await?;
     tx.commit().await?;
     let (_, key) = config.secrets()?;
@@ -148,49 +296,42 @@ pub(super) async fn resume(config: &Config, db: &Db, info: &Value) -> Result<()>
     app.runtime.prepare_host_service_network().await?;
     let router = crate::api::router(app.clone());
     let controller = tokio::spawn(crate::controller::run(app.clone()));
-    let result=async {
-        for _ in 0..120 {if app.ready.load(Ordering::SeqCst){break;}tokio::time::sleep(Duration::from_millis(250)).await;}
+    let result = async {
+        for _ in 0..120 {
+            if app.ready.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
         assert!(app.ready.load(Ordering::SeqCst));
-        let login=request(&router,None,"login",None,json!({"account_id":owner,"password":PASSWORD}),None).await?;
-        assert_eq!(login.0,200,"{}",login.1);
-        let token=login.1["access_token"].as_str().unwrap();
-        let publisher=c.query_one("SELECT p.id,p.name,p.key_id,p.public_key_pem,p.status,i.manifest FROM deployments d JOIN installations i ON i.id=d.installation_id JOIN publishers p ON p.id=i.publisher_id WHERE d.id=$1", &[&deployment]).await?;
-        assert_eq!(publisher.get::<_,String>("status"),"revoked");
-        let manifest:Value=publisher.get("manifest");
-        let current=request(&router,Some(token),"getDeployment",Some(deployment),Value::Null,None).await?;
-        assert_eq!(current.0,200,"{}",current.1);
-        assert_eq!(current.1["spec"]["enabled"],false);
-        let denied=request(&router,Some(token),"setDeploymentEnabled",Some(deployment),json!({"enabled":true}),current.1["revision"].as_i64()).await?;
-        assert_ne!(denied.0,202,"revoked publisher cannot execute just because its data was recovered");
-        let trusted=request(&router,Some(token),"trustPublisher",None,json!({"name":publisher.get::<_,String>("name"),"key_id":publisher.get::<_,String>("key_id"),"public_key_pem":publisher.get::<_,String>("public_key_pem")}),None).await?;
-        assert_eq!(trusted.0,200,"{}",trusted.1);
-        let current=request(&router,Some(token),"getDeployment",Some(deployment),Value::Null,None).await?;
-        let approved=request(&router,Some(token),"approvePlugin",Some(deployment),json!({"rules":[],"egress":[]}),current.1["revision"].as_i64()).await?;
-        assert_eq!(approved.0,200,"{}",approved.1);
-        let current=request(&router,Some(token),"getDeployment",Some(deployment),Value::Null,None).await?;
-        let enabled=request(&router,Some(token),"setDeploymentEnabled",Some(deployment),json!({"enabled":true}),current.1["revision"].as_i64()).await?;
-        assert_eq!(enabled.0,202,"{}",enabled.1);
-        finish(&router,token,enabled.1["id"].as_str().unwrap().parse().unwrap()).await?;
-        let row=c.query_one("SELECT root_id,project_id FROM volume_allocations WHERE volume_id=$1", &[&volume]).await?;
-        let mut store=crate::storage::xfs::ProjectStore::open(&config.root().join("volumes"))?;
-        let filesystem=store.status()?.filesystem_uuid;store.namespace_identity(filesystem,row.get("root_id"),false)?;
-        let data=store.data_path(volume,row.get::<_,i32>("project_id")as u32)?;drop(store);
-        let before:Value=serde_json::from_slice(&fs::read(data.join("store.json"))?)?;
-        let called=request(&router,Some(token),"invokeCapability",None,json!({"contract":manifest["capabilities"][0]["contract"],"input":{"message":"business write after whole-platform format recovery"},"provider_deployment_id":deployment,"timeout_ms":30000}),None).await?;
-        assert_eq!(called.0,200,"{}",called.1);
-        let after:Value=serde_json::from_slice(&fs::read(data.join("store.json"))?)?;
-        assert_eq!(after["schema"],"1");assert_eq!(after["items"].as_array().unwrap().len(),2);
-        assert_eq!(after["items"][0],before["items"][0]);assert_eq!(after["items"][1]["id"],called.1["call_id"]);
-        let current=request(&router,Some(token),"getDeployment",Some(deployment),Value::Null,None).await?;
-        let disabled=request(&router,Some(token),"setDeploymentEnabled",Some(deployment),json!({"enabled":false}),current.1["revision"].as_i64()).await?;
-        assert_eq!(disabled.0,202,"{}",disabled.1);
-        finish(&router,token,disabled.1["id"].as_str().unwrap().parse().unwrap()).await?;
-        assert!(app.runtime.inventory().await?.is_empty());
-        let budget=c.query_one("SELECT reserved_cpu_millis,reserved_memory_bytes FROM node_budget", &[]).await?;
-        assert_eq!(budget.get::<_,i64>(0),0);assert_eq!(budget.get::<_,i64>(1),0);
-        println!("Whole format recovery: schema1 bytes/proof retained, old publisher denied until explicit current Owner trust/approval, real OCI healthy and Broker disk write succeeded; no Apply/relabel or old-authority revival; synthetic capacity is not RUN-03");
+        assert_eq!(
+            c.query_one(
+                "SELECT count(*) FROM publishers WHERE status='trusted'",
+                &[]
+            )
+            .await?
+            .get::<_, i64>(0),
+            0
+        );
+        let login = request(
+            &router,
+            None,
+            "login",
+            None,
+            json!({"account_id":owner,"password":PASSWORD}),
+            None,
+        )
+        .await?;
+        assert_eq!(login.0, 200, "{}", login.1);
+        let token = login.1["access_token"].as_str().unwrap();
+        let sources = info["versioned_sources"].as_array().unwrap();
+        assert_eq!(sources.len(), 2);
+        for source in sources {
+            exercise_source(&app, &router, token, &c, source).await?;
+        }
         Ok(())
-    }.await;
+    }
+    .await;
     app.shutdown.store(true, Ordering::SeqCst);
     controller
         .await
