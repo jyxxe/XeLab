@@ -132,6 +132,9 @@ pub async fn exercise() {
                     // schema supervisor, database leader and retained host lease.
                     // No graceful shutdown, worker cancellation or metadata edit.
                     unsafe {
+                        // A piped host core handler can ignore RLIMIT_CORE.
+                        // Disable dumpability before aborting a credential owner.
+                        assert_eq!(libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0), 0);
                         libc::raise(libc::SIGABRT);
                     }
                     panic!("SIGABRT returned unexpectedly");
