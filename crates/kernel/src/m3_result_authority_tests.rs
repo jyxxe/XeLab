@@ -9,6 +9,12 @@ use crate::{
 use std::collections::BTreeSet;
 use tokio_postgres::Client;
 
+// These three tests validate frozen result authority, not throughput or
+// concurrency. Keep their independent KDF/policy-heavy metadata fixtures from
+// competing with each other; request deadlines and all production limits stay
+// unchanged. Real shared-instance concurrency has its own OCI acceptance.
+static RESULT_FIXTURE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn grant(c: &Client, issuer: &Context, subject: Uuid, action: &str, resource: Value) -> Uuid {
     let group = Uuid::new_v4();
     let id = Uuid::new_v4();
@@ -324,7 +330,18 @@ impl Completed {
         })
     }
 
+    async fn observe_provider(&self) {
+        // Explicit runtime metadata is this component's prerequisite. There is
+        // no provider process sending heartbeats; each request must reach the
+        // current authorization gate rather than an expired readiness fixture.
+        // No phase, generation, approval or authority is changed here.
+        let c = self.fixture.app.db.connect().await.unwrap();
+        c.execute("UPDATE instances SET last_heartbeat_at=now() WHERE id=(SELECT provider_instance_id FROM calls WHERE id=$1)", &[&self.call]).await.unwrap();
+        c.execute("UPDATE provider_records SET observed_at=now() WHERE instance_id=(SELECT provider_instance_id FROM calls WHERE id=$1)", &[&self.call]).await.unwrap();
+    }
+
     async fn get(&self) -> (u16, Value) {
+        self.observe_provider().await;
         self.fixture
             .call(
                 "getCall",
@@ -337,6 +354,7 @@ impl Completed {
             .await
     }
     async fn replay(&self) -> (u16, Value) {
+        self.observe_provider().await;
         self.fixture
             .call(
                 "invokeSkill",
@@ -356,6 +374,7 @@ impl Completed {
 }
 
 async fn original_business_proof_cannot_be_replaced(http: bool) {
+    let _fixture_isolation = RESULT_FIXTURE.lock().await;
     let Some(f) = Completed::new(http).await else {
         return;
     };
@@ -465,6 +484,7 @@ async fn actual_postgres_http_get_and_replay_preserve_original_charged_authority
 #[tokio::test]
 async fn actual_postgres_input_blob_revocation_blocks_stored_results_and_rolls_back_new_admission()
 {
+    let _fixture_isolation = RESULT_FIXTURE.lock().await;
     let Some(f) = Completed::new(false).await else {
         return;
     };
@@ -502,23 +522,27 @@ async fn actual_postgres_input_blob_revocation_blocks_stored_results_and_rolls_b
     )
     .await
     .is_err());
-    for denied in [
-        f.get().await,
-        f.replay().await,
-        f.fixture
-            .call(
-                "invokeSkill",
-                &[("skill_id", f.skill)],
-                f.request.clone(),
-                None,
-                "fresh-after-input-revocation",
-                None,
-            )
-            .await,
-    ] {
+    for denied in [f.get().await, f.replay().await] {
         assert_eq!(denied.0, 403, "{}", denied.1);
         assert!(!denied.1.to_string().contains("secret completed result"));
     }
+    // This test has no running provider process. Refresh its explicit runtime
+    // observation immediately before admission so the negative path reaches
+    // Blob authorization rather than an unrelated expired readiness fixture.
+    f.observe_provider().await;
+    let denied = f
+        .fixture
+        .call(
+            "invokeSkill",
+            &[("skill_id", f.skill)],
+            f.request.clone(),
+            None,
+            "fresh-after-input-revocation",
+            None,
+        )
+        .await;
+    assert_eq!(denied.0, 403, "{}", denied.1);
+    assert!(!denied.1.to_string().contains("secret completed result"));
     assert_eq!(
         before,
         f.counters().await,
