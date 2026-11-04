@@ -50,6 +50,8 @@ class DesktopBrowser(unittest.TestCase):
         self.contributions = {}
         self.call_result = None
         self.status_overrides = {}
+        self.refresh_enabled = False
+        self.abort_business = False
         self.errors = []
         self.expected_challenge = None
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
@@ -94,6 +96,9 @@ class DesktopBrowser(unittest.TestCase):
         status = 200
         if url.path == "/oauth/token":
             fields = parse_qs(request.post_data or "", keep_blank_values=True)
+            if self.refresh_enabled and fields == {"grant_type": ["refresh_token"], "client_id": ["browser-component"], "refresh_token": ["component-refresh"]}:
+                route.fulfill(status=200, headers=headers, content_type="application/json", body=json.dumps({"access_token": "component-rotated-access", "refresh_token": "component-rotated-refresh", "token_type": "Bearer", "expires_in": 900, "scope": "client:browser-component"}))
+                return
             verifier = fields.get("code_verifier", [""])[0]
             challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
             if (request.method != "POST" or set(fields) != {"grant_type", "client_id", "code", "redirect_uri", "code_verifier"}
@@ -127,6 +132,9 @@ class DesktopBrowser(unittest.TestCase):
                               "availability": "ready", "reason_codes": [],
                               "definition": {"name": "component.echo", "version": "1.0.0"}}], "next_cursor": None}
         elif url.path.endswith(f"/skills/{SKILL}/calls"):
+            if self.abort_business:
+                route.abort("failed")
+                return
             data = {"skill_id": SKILL, "skill_version": "1.0.0", "definition_digest": "sha256:" + "a" * 64,
                     "call": {"call_id": DEPLOYMENT, "contract": {"name": "component.echo", "version": "1.0.0",
                              "schema_digest": "sha256:" + "b" * 64}, "provider_instance_id": ACCOUNT,
@@ -138,6 +146,12 @@ class DesktopBrowser(unittest.TestCase):
         elif url.path.endswith("/deployments"):
             data = {"items": [{"id": DEPLOYMENT, "revision": 1, "phase": "disabled", "conditions": [],
                               "spec": {"display_name": "fixture deployment", "enabled": False}}], "next_cursor": None}
+        elif url.path == f"/api/platform/v1/deployments/{DEPLOYMENT}" and request.method == "PUT":
+            body = json.loads(request.post_data)
+            if set(body) != {"spec"}:
+                status, data = 400, {"error": {"code": "INVALID_ARGUMENT", "message": "DeploymentPatch requires spec", "retryable": False}}
+            else:
+                status, data = 202, {"id": ACCOUNT, "state": "pending", "kind": "update_deployment"}
         elif url.path.endswith("/installations"):
             data = {"items": [{"id": ACCOUNT, "plugin_id": '<img src=x onerror="alert(1)">',
                               "version": "1.0.0", "state": "installed", "image_digest": "sha256:" + "b" * 64}], "next_cursor": None}
@@ -147,14 +161,14 @@ class DesktopBrowser(unittest.TestCase):
             status, data = 503, {"error": {"code": "NOT_READY", "message": "component fixture has no implementation", "retryable": False}}
         route.fulfill(status=status, headers=headers, content_type="application/json", body=json.dumps(data))
 
-    def open(self, authenticated=True):
+    def open(self, authenticated=True, expires_ms=900000, refresh_token=None):
         if authenticated:
             self.context.add_init_script("""if (location.origin === 'https://shell.example.test') {
               sessionStorage.setItem('xelab.oauth:https://core.example.test:browser-component', JSON.stringify({
                 core_origin:'https://core.example.test',client_id:'browser-component',
-                access_token:'component-token',refresh_token:null,expires_at:Date.now()+900000,
+                access_token:'component-token',refresh_token:REFRESH_VALUE,expires_at:Date.now()+EXPIRY_VALUE,
                 scope:'client:browser-component'}));
-            }""")
+            }""".replace("REFRESH_VALUE", json.dumps(refresh_token)).replace("EXPIRY_VALUE", str(expires_ms)))
         self.page.goto(SHELL + BASE)
         self.page.locator(".dock button").first.wait_for()
         if authenticated:
@@ -274,6 +288,25 @@ class DesktopBrowser(unittest.TestCase):
         self.page.wait_for_function("document.documentElement.dataset.theme === 'dark'")
         self.assertEqual(self.page.locator("html").get_attribute("data-theme"), "dark")
 
+    def test_disabled_deployment_configuration_uses_public_patch_shape(self):
+        self.open()
+        plugins = self.app("插件中心")
+        plugins.get_by_role("button", name="配置", exact=True).click()
+        editor = self.page.locator('.window[data-app="editor-updateDeployment"]')
+        editor.get_by_text("先停用部署并等待实例排空", exact=False).wait_for()
+        body = json.loads(editor.get_by_label("请求 JSON", exact=True).input_value())
+        self.assertEqual(body, {"spec": {"display_name": "fixture deployment", "enabled": False}})
+        body["spec"]["config"] = {"core_origin": CORE, "client_id": "browser-component"}
+        editor.get_by_label("请求 JSON", exact=True).fill(json.dumps(body))
+        editor.get_by_role("button", name="提交", exact=True).click()
+        editor.get_by_text('"kind": "update_deployment"', exact=False).wait_for()
+        writes = [call for call in self.calls if call["method"] == "PUT"]
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0]["path"], f"/api/platform/v1/deployments/{DEPLOYMENT}")
+        self.assertEqual(json.loads(writes[0]["body"]), body)
+        self.assertEqual(writes[0]["headers"]["if-match"], '"rev-1"')
+        self.assertTrue(writes[0]["headers"]["idempotency-key"])
+
     def test_data_is_text_denied_unavailable_logout_and_mobile_controls(self):
         self.open()
         plugins = self.app("插件中心")
@@ -358,6 +391,28 @@ class DesktopBrowser(unittest.TestCase):
         self.assertEqual(len([call for call in self.calls if call["method"] == "POST" and call["path"].endswith("/calls")]), 1)
         self.assertEqual(len([call for call in self.calls if call["path"] == "/oauth/token"]), 0)
         self.assertEqual(self.page.locator(".window").count(), 0)
+
+    def test_unknown_mutation_editor_is_locked_after_preflight_credential_rotation(self):
+        self.page.clock.install()
+        self.refresh_enabled = True
+        self.abort_business = True
+        self.open(expires_ms=45000, refresh_token="component-refresh")
+        skills = self.app("Skill")
+        skills.get_by_role("button", name="调用测试", exact=True).click()
+        editor = self.page.locator('.window[data-app="editor-invokeSkill"]')
+        original_key = editor.locator('.code').text_content()
+        editor.get_by_role("button", name="提交", exact=True).click()
+        editor.get_by_text("请求失败", exact=True).wait_for()
+        self.assertEqual(len([call for call in self.calls if call["method"] == "POST"]), 1)
+        self.page.clock.fast_forward(16000)
+        resources = self.app("系统状态")
+        resources.get_by_text('"component-only"', exact=False).wait_for()
+        editor.get_by_text("原请求已锁定", exact=True).wait_for()
+        self.assertTrue(editor.get_by_role("button", name="提交", exact=True).is_disabled())
+        self.assertEqual(len([call for call in self.calls if call["path"].endswith("/calls") and call["method"] == "POST"]), 1)
+        self.assertEqual(len([call for call in self.calls if call["path"] == "/oauth/token"]), 1)
+        self.assertEqual(editor.locator('.code').text_content(), original_key)
+        self.assertTrue(self.page.get_by_role("button", name="退出", exact=True).is_visible())
 
 
 if __name__ == "__main__":
