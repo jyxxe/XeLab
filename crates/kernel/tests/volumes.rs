@@ -28,6 +28,8 @@ use xelab_kernel::{
     storage::xfs::{Limits, ProjectStore},
     volumes,
 };
+#[path = "support/aws_format_transitions.rs"]
+mod aws_format_transitions;
 #[path = "support/kernel_process_death.rs"]
 mod kernel_process_death;
 #[path = "support/schema_bootstrap.rs"]
@@ -45,6 +47,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(real: bool) -> Option<Self> {
+        Self::new_with_capacity(real, None).await
+    }
+    async fn new_with_capacity(real: bool, capacity: Option<(i64, i64)>) -> Option<Self> {
         xelab_kernel::init_crypto();
         let Ok(base) = std::env::var("XELAB_TEST_DATABASE_URL") else {
             eprintln!("SKIPPED: volume metadata tests need PostgreSQL");
@@ -111,8 +116,10 @@ impl Fixture {
         )
         .await
         .unwrap();
-        // Metadata pool is only for component tests, never RUN-03 evidence.
-        admission::initialize(&tx, &config.value["resources"], 8000, 34359738368)
+        // Ordinary components use a synthetic pool; the explicit AWS drill
+        // supplies measured host capacity without changing production floors.
+        let (cpu, memory) = capacity.unwrap_or((8000, 34359738368));
+        admission::initialize(&tx, &config.value["resources"], cpu, memory)
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -166,7 +173,13 @@ impl Fixture {
             .map(|(p, m, _)| (p.clone(), m.to_uppercase()))
             .unwrap();
         if let Some(id) = id {
-            for p in ["volume_id", "deployment_id", "operation_id", "account_id"] {
+            for p in [
+                "volume_id",
+                "deployment_id",
+                "operation_id",
+                "account_id",
+                "backup_id",
+            ] {
                 path = path.replace(&format!("{{{p}}}"), &id.to_string());
             }
         }
@@ -268,6 +281,12 @@ async fn unsupported_storage_never_publishes_a_volume_or_allocation() {
         .await;
     assert_eq!(listed.0, 200, "{}", listed.1);
     assert_eq!(listed.1["items"], json!([]));
+}
+
+#[tokio::test]
+#[ignore = "requires explicit real AWS credentials, disposable privileged host and tools/test-aws-format.sh"]
+async fn actual_aws_backed_format_upgrade_unknown_apply_and_incompatible_rollback() {
+    aws_format_transitions::exercise().await;
 }
 
 #[tokio::test]

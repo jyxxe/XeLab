@@ -159,6 +159,7 @@ class MigrationRpc(unittest.TestCase):
         self.refused(self.client.Apply, wrong, grpc.StatusCode.FAILED_PRECONDITION)
         with patch("sys.argv", ["server.py", "--migration-fail-after-write"]):
             self.refused(self.client.Apply, apply, grpc.StatusCode.UNAVAILABLE)
+        self.assertEqual(read(self.scratch / "apply-attempts.json")[1], {"plan_id": plan.plan_id, "count": 1})
         self.assertEqual(read(self.data / "store.json")[1]["schema"], "2")
         self.server.stop(0).wait()
         self.start()  # Fresh Python service state, same persisted private files.
