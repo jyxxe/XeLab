@@ -155,9 +155,17 @@ export class BridgeHost {
     if(this.#closed||event.source!==this.#iframe.contentWindow||event.origin!==this.#fixed.frame_origin||event.origin==='null'||event.ports.length)return;
     const message=event.data;
     if(!plain(message)||message.protocol!==PROTOCOL||message.view_id!==this.#id||message.channel_nonce!==this.#nonce)return;
-    let encoded;
-    try{encoded=canonical(message,1024*1024);}catch{this.close('unavailable');return;}
     if(!integer(message.seq,1,Number.MAX_SAFE_INTEGER)||message.seq<=this.#incoming)return;
+    if(message.type==='ready'&&(this.#initialized||message.seq!==1||this.#incoming>0))return;
+    if(this.#initialized&&message.type==='request'){
+      if(!integer(message.request_id,1,Number.MAX_SAFE_INTEGER)||!METHODS.has(message.method)){this.close('unavailable');return;}
+      // Rate admission precedes traversal/encoding of untrusted business input.
+      // Rejected floods cannot repeatedly expand a large shared-reference tree.
+      const now=performance.now();this.#rate=this.#rate.filter(time=>now-time<60000);
+      if(this.#rate.length>=120){this.#respond(message,{ok:false,error:fail('RATE_LIMITED','页面请求速率达到上限。')});return;}
+      this.#rate.push(now);
+    }
+    try{canonical(message,1024*1024);}catch{this.close('unavailable');return;}
     this.#incoming=message.seq;
     if(message.type==='ready'){
       if(this.#initialized||message.seq!==1||!fields(message,['protocol','view_id','channel_nonce','seq','type']))return;
@@ -167,9 +175,6 @@ export class BridgeHost {
       this.#onState('active');return;
     }
     if(!this.#initialized||!fields(message,['protocol','view_id','channel_nonce','seq','type','request_id','method','params'])||message.type!=='request'||!integer(message.request_id,1,Number.MAX_SAFE_INTEGER)||!METHODS.has(message.method)){this.close('unavailable');return;}
-    const now=performance.now();this.#rate=this.#rate.filter(time=>now-time<60000);
-    if(this.#rate.length>=120){this.#respond(message,{ok:false,error:fail('RATE_LIMITED','页面请求速率达到上限。')});return;}
-    this.#rate.push(now);
     if(!checkParams(message.method,message.params)){this.#respond(message,{ok:false,error:fail('PROTOCOL_ERROR','桥方法参数不符合固定契约。')});return;}
     if(this.#queued>=4||(!this.#cache.has(message.request_id)&&this.#queued+this.#inflight>=4)){this.#respond(message,{ok:false,error:fail('RATE_LIMITED','页面最多4个在途请求。')});return;}
     // Preserve accepted request-id order while asynchronous SHA-256 is running.

@@ -279,6 +279,9 @@ window.bridge=new BridgeHost({{iframe:frame,api,contribution,subjectId:{json.dum
             self.assertEqual(self.responses(frame, identifier)[-1]["error"]["code"], "METHOD_NOT_ALLOWED")
         self.send(frame, "batch.get", {"binding_alias": "echo", "batch_id": INSTALLATION}, 121)
         self.assertEqual(self.responses(frame, 121)[-1]["error"]["code"], "RATE_LIMITED")
+        frame.evaluate("""()=>{let value={leaf:'x'};for(let i=0;i<30;i++)value={a:value,b:value};emit('skill.call',{binding_alias:'echo',input:value,idempotency_key:'rate-bound-dag'},122)}""")
+        self.assertEqual(self.responses(frame, 122)[-1]["error"]["code"], "RATE_LIMITED")
+        self.assertEqual(self.page.locator("#frames iframe").count(), 1, "rate denial precedes shared-tree expansion and leaves the valid channel intact")
         self.assertEqual(self.posts(), [])
 
     def test_shared_reference_expansion_and_large_messages_are_bounded(self):
