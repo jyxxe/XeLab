@@ -207,7 +207,7 @@ class DesktopBrowser(unittest.TestCase):
         report = {"checks": {}, "http": {"actual_skill_successes": 0, "unique_skill_call_ids": 0, "skill_post_attempts": 0}}
         observed = {"observer_failure": False, "error_counts": {}, "active_request_observers": 0, "active_response_observers": 0}
         bodies = DRIVER.SkillBodyAudit(CORE, SKILL, report, observed)
-        self.context.on("request", bodies.request)
+        self.context.on("request", lambda request: bodies.request(request, "component"))
         self.context.on("response", bodies.response)
         self.context.on("requestfinished", bodies.finished)
         self.context.on("requestfailed", bodies.failed)
@@ -235,6 +235,40 @@ class DesktopBrowser(unittest.TestCase):
         self.assertEqual(bodies.calls, [DEPLOYMENT])
         self.assertEqual(bodies.queue, [])
         self.assertFalse(observed["observer_failure"], observed["error_counts"])
+
+    def test_duplicate_actual_routed_skill_body_is_fatal_with_safe_reason(self):
+        # This is the component Core adapter, deliberately returning the same
+        # Call UUID for two distinct browser POSTs. It is not real Core evidence.
+        report, observed, bodies = self.skill_body_audit()
+        self.open()
+        expression = """async ({core,skill,key}) => {
+          const response=await fetch(core+'/api/platform/v1/skills/'+skill+'/calls',{
+            method:'POST',headers:{Authorization:'Bearer component-token','Content-Type':'application/json','Idempotency-Key':key},
+            body:JSON.stringify({input:{message:key},idempotency_key:key})});
+          await response.json(); return response.status;
+        }"""
+        bodies.expect(1)
+        self.assertEqual(self.page.evaluate(expression, {"core": CORE, "skill": SKILL, "key": "first-component-intent"}), 200)
+        DRIVER.wait_for_observers(self.page, observed, bodies)
+        bodies.expect(2)
+        self.assertEqual(self.page.evaluate(expression, {"core": CORE, "skill": SKILL, "key": "different-component-intent"}), 200)
+        with self.assertRaises(DRIVER.CheckFailed):
+            DRIVER.wait_for_observers(self.page, observed, bodies)
+        self.assertTrue(observed["observer_failure"])
+        self.assertTrue(observed["response_skill_body_failed"])
+        self.assertEqual(observed["skill_body_reasons"], {"Duplicate": 1})
+        diagnostic = observed["skill_body_failure_stats"][0]
+        self.assertEqual(diagnostic["duplicate_index"], 0)
+        self.assertEqual(diagnostic["context_label"], "component")
+        self.assertEqual(diagnostic["expected_successes"], 2)
+        self.assertTrue(diagnostic["finished"])
+        self.assertTrue(diagnostic["echo_matches_request"])
+        self.assertEqual(report["http"], {"actual_skill_successes": 1, "unique_skill_call_ids": 1, "skill_post_attempts": 2})
+        self.assertEqual(report["body_observation"]["failed_requests"], 0)
+        self.assertTrue(report["body_observation"]["all_requests_finished"])
+        safe = json.dumps({"report": report, "observed": observed})
+        for private in (SKILL, DEPLOYMENT, CORE, "first-component-intent", "different-component-intent", "component-token"):
+            self.assertNotIn(private, safe)
 
     def test_management_editor_closes_only_after_real_json_body_audit(self):
         report, observed, bodies = self.skill_body_audit()

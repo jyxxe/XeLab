@@ -82,12 +82,14 @@ class SkillBodyAudit:
         return (url_origin(request.url) == self.core and request.method == "POST"
                 and urllib.parse.urlsplit(request.url).path == f"/api/platform/v1/skills/{self.skill}/calls")
 
-    def request(self, request):
+    def request(self, request, context_label=None):
         if not self.selected(request):
             return None
         if request not in self.requests:
-            self.requests[request] = {"finished": False, "failed": False, "response": None, "read": False, "failure_recorded": False}
+            self.requests[request] = {"finished": False, "failed": False, "response": None, "read": False, "verified": False, "failure_recorded": False, "context_label": "unlabeled", "finished_before_failed": False, "failed_before_finished": False, "failure_snapshot": None, "echo_matches_request": None}
             self.report["http"]["skill_post_attempts"] += 1
+        if context_label in ("owner", "child", "component"):
+            self.requests[request]["context_label"] = context_label
         return self.requests[request]
 
     def response(self, response):
@@ -99,16 +101,44 @@ class SkillBodyAudit:
     def finished(self, request):
         state = self.request(request)
         if state is not None:
+            if state["failed"] and not state["finished"]:
+                state["failed_before_finished"] = True
             state["finished"] = True
 
     def failed(self, request):
         state = self.request(request)
         if state is not None:
+            if not state["failed"]:
+                state["finished_before_failed"] = state["finished"]
+                state["failure_snapshot"] = {"context_label": state["context_label"], "expected_successes": self.expected_successes, "finished": state["finished"], "read": state["read"], "body_verified": state["verified"]}
             state["failed"] = True
 
     def expect(self, successes, attempts=None):
         self.expected_successes = successes
         self.expected_attempts = successes if attempts is None else attempts
+
+    def record_reason(self, reason, state, duplicate_index=None):
+        # Fixed bounded labels and booleans only: never include an identity,
+        # request/response body, URL, header or original exception message.
+        reasons = ("SelectedRequestFailed", "ResponseNotObject", "SkillMismatch", "CallNotObject", "CallIdMissing", "CallIdInvalid", "NotCanonical", "CallSkillMismatch", "Duplicate")
+        if reason not in reasons:
+            raise CheckFailed("invalid_body_diagnostic_reason")
+        counts = self.observed.setdefault("skill_body_reasons", {})
+        counts[reason] = min(counts.get(reason, 0) + 1, 65535)
+        item = dict(state["failure_snapshot"]) if reason == "SelectedRequestFailed" else {
+            "context_label": state["context_label"], "expected_successes": self.expected_successes,
+            "finished": state["finished"], "read": state["read"], "body_verified": state["verified"],
+        }
+        item.update(reason=reason, echo_matches_request=state["echo_matches_request"])
+        if duplicate_index is not None and 0 <= duplicate_index <= 4:
+            item["duplicate_index"] = duplicate_index
+        failures = self.observed.setdefault("skill_body_failure_stats", [])
+        if len(failures) < 6:
+            failures.append(item)
+
+    def reject(self, reason, state, duplicate_index=None):
+        self.record_reason(reason, state, duplicate_index)
+        raise CheckFailed(reason)
 
     def read_completed(self):
         # Body RPCs may pump more callbacks. Iterate snapshots, and preserve
@@ -116,7 +146,8 @@ class SkillBodyAudit:
         for state in list(self.requests.values()):
             if state["failed"] and not state["failure_recorded"]:
                 state["failure_recorded"] = True
-                record_observer_failure(self.observed, "response_skill_body", CheckFailed("selected_skill_request_failed"))
+                self.record_reason("SelectedRequestFailed", state)
+                record_observer_failure(self.observed, "response_skill_body", CheckFailed("SelectedRequestFailed"))
         for state in list(self.queue):
             if state["read"] or not (state["finished"] or state["failed"]):
                 continue
@@ -128,13 +159,39 @@ class SkillBodyAudit:
                 # Response.json already waits internally; requestfinished is
                 # recorded above, so never issue a second response.finished RPC.
                 value = state["response"].json()
-                call = value.get("call") if isinstance(value, dict) else None
-                identifier = call.get("call_id") if isinstance(call, dict) else None
-                if (not isinstance(value, dict) or value.get("skill_id") != self.skill or not isinstance(identifier, str)
-                        or str(uuid.UUID(identifier)) != identifier
-                        or call.get("skill_id", self.skill) != self.skill
-                        or identifier in self.calls):
-                    raise CheckFailed("selected_skill_response_identity")
+                if not isinstance(value, dict):
+                    self.reject("ResponseNotObject", state)
+                call = value.get("call")
+                # Optional echo correlation is diagnostic only, never a new
+                # acceptance condition. Values stay private even on failure.
+                try:
+                    request_value = json.loads(state["response"].request.post_data or "null")
+                    source = request_value.get("input", {}).get("message")
+                    target = call.get("output", {}).get("message") if isinstance(call, dict) else None
+                    if isinstance(source, str) and isinstance(target, str):
+                        state["echo_matches_request"] = source == target
+                except Exception:
+                    pass
+                if value.get("skill_id") != self.skill:
+                    self.reject("SkillMismatch", state)
+                if not isinstance(call, dict):
+                    self.reject("CallNotObject", state)
+                identifier = call.get("call_id")
+                if identifier is None:
+                    self.reject("CallIdMissing", state)
+                if not isinstance(identifier, str):
+                    self.reject("CallIdInvalid", state)
+                try:
+                    canonical = str(uuid.UUID(identifier))
+                except ValueError:
+                    self.reject("CallIdInvalid", state)
+                if canonical != identifier:
+                    self.reject("NotCanonical", state)
+                if call.get("skill_id", self.skill) != self.skill:
+                    self.reject("CallSkillMismatch", state)
+                if identifier in self.calls:
+                    self.reject("Duplicate", state, self.calls.index(identifier))
+                state["verified"] = True
                 self.calls.append(identifier)
                 self.report["http"]["actual_skill_successes"] += 1
                 self.report["http"]["unique_skill_call_ids"] = len(set(self.calls))
@@ -149,6 +206,12 @@ class SkillBodyAudit:
             "unique_call_ids": len(set(self.calls)), "attempts": self.report["http"]["skill_post_attempts"],
             "queued_bodies": len(self.queue),
             "unfinished_requests": sum(not (state["finished"] or state["failed"]) for state in self.requests.values()),
+            "finished_requests": sum(state["finished"] for state in self.requests.values()),
+            "failed_requests": sum(state["failed"] for state in self.requests.values()),
+            "all_requests_finished": all(state["finished"] for state in self.requests.values()),
+            "finished_before_failed": any(state["finished_before_failed"] for state in self.requests.values()),
+            "finished_before_failed_requests": sum(state["finished_before_failed"] for state in self.requests.values()),
+            "failed_before_finished_requests": sum(state["failed_before_finished"] for state in self.requests.values()),
         }
 
     def complete(self):
@@ -317,12 +380,12 @@ def run(config, report):
     bodies = SkillBodyAudit(core, config["skill_id"], report, observed)
     calls = bodies.calls
 
-    def observe_request(request):
+    def observe_request(request, context_label=None):
         observed["active_request_observers"] += 1
         phase = "request_origin"
         try:
             location = url_origin(request.url)
-            bodies.request(request)
+            bodies.request(request, context_label)
             phase = "request_body"
             body = request.post_data
             if body and "password" in body and location != core:
@@ -374,9 +437,9 @@ def run(config, report):
         finally:
             observed["active_response_observers"] -= 1
 
-    def context(browser):
+    def context(browser, label):
         result = browser.new_context(viewport={"width": 1440, "height": 1000})
-        result.on("request", observe_request)
+        result.on("request", lambda request: observe_request(request, label))
         result.on("response", observe_response)
         result.on("requestfinished", bodies.finished)
         result.on("requestfailed", bodies.failed)
@@ -385,7 +448,7 @@ def run(config, report):
 
     def login(browser, account, password, label):
         report["step"] = label + "_default_ui_navigation"
-        ctx = context(browser)
+        ctx = context(browser, label)
         page = ctx.new_page()
         page.set_default_timeout(25000)
         response = page.goto(core + "/", wait_until="domcontentloaded")
