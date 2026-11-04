@@ -69,7 +69,7 @@ impl Fixture {
         manifest["publisher_id"] = json!(publisher);
         manifest["requested_rules"] = json!([]);
         let cap = manifest["capabilities"][0].clone();
-        manifest["skills"] = json!([{"name":format!("{}.echo",manifest["plugin_id"].as_str().unwrap()),"version":"1.0.0","description":"Fixed ordinary echo","input_schema":cap["input_schema"],"output_schema":cap["output_schema"],"stream_item_schema":null,"target":{"kind":"capability","plugin_id":manifest["plugin_id"],"contract":cap["contract"]},"mapping":"identity","maximum_timeout_ms":1000,"input_blobs":false,"tags":[]}]);
+        manifest["skills"] = json!([{"name":format!("{}.echo",manifest["plugin_id"].as_str().unwrap()),"version":"1.0.0","description":"Fixed ordinary echo","input_schema":cap["input_schema"],"output_schema":cap["output_schema"],"stream_item_schema":null,"target":{"kind":"capability","plugin_id":manifest["plugin_id"],"contract":cap["contract"]},"mapping":"identity","maximum_timeout_ms":10000,"input_blobs":false,"tags":[]}]);
         xelab_kernel::artifact::validate_profile(&manifest).unwrap();
         let installation = Uuid::new_v4();
         let hash = contracts::digest(&serde_json::to_vec(&manifest).unwrap());
@@ -381,7 +381,7 @@ async fn both_authorization_layers_precede_admission_and_no_failure_leaks_quota(
         400
     );
     let mut oversize = request_body;
-    oversize["timeout_ms"] = json!(2000);
+    oversize["timeout_ms"] = json!(20000);
     assert_eq!(
         f.call("invokeSkill", &params, &f.token, oversize, None)
             .await
@@ -494,7 +494,7 @@ async fn scoped_child_visibility_and_live_inheritance_revocation() {
             "updateInheritance",
             &[("account_id", account.to_string())],
             &f.token,
-            json!({"mode":"selected","rules":[]}),
+            json!({"mode":"selected","rules":[{"action":"skill.read","resource":{"kind":"skill","match":"ids","ids":[Uuid::new_v4()]}}]}),
             current.1["revision"].as_i64(),
         )
         .await;
@@ -585,7 +585,7 @@ async fn skill_required_provider_rejects_bare_and_forged_routes_and_preserves_un
     // This provider intentionally has no process. The trusted Skill route may
     // reach Broker dispatch, but cannot claim successful execution or free an
     // uncertain instance slot. The OCI test covers actual successful execution.
-    let input = json!({"input":{"message":"route reached missing runtime"},"timeout_ms":1000});
+    let input = json!({"input":{"message":"route reached missing runtime"},"timeout_ms":10000,"idempotency_key":"stable-business-key-distinct-from-http"});
     let failed = request(
         &f.router,
         "invokeSkill",
@@ -599,11 +599,17 @@ async fn skill_required_provider_rejects_bare_and_forged_routes_and_preserves_un
     assert_ne!(failed.0, 200, "{}", failed.1);
     assert_ne!(failed.0, 403, "{}", failed.1);
     let row = c
-        .query_one("SELECT id,skill_id,state FROM calls", &[])
+        .query_one("SELECT id,skill_id,state,idempotency_key FROM calls", &[])
         .await
-        .unwrap();
+        .unwrap_or_else(|error| {
+            panic!("expected committed uncertain call after dispatch failure {failed:?}: {error}")
+        });
     assert_eq!(row.get::<_, Uuid>(1).to_string(), skill);
     assert_eq!(row.get::<_, String>(2), "unknown");
+    assert_eq!(
+        row.get::<_, String>(3),
+        "stable-business-key-distinct-from-http"
+    );
     let replay = request(
         &f.router,
         "invokeSkill",
@@ -621,7 +627,7 @@ async fn skill_required_provider_rejects_bare_and_forged_routes_and_preserves_un
         "invokeSkill",
         &params,
         Some(&f.token),
-        json!({"input":{"message":"must await physical fencing"},"timeout_ms":1000}),
+        json!({"input":{"message":"must await physical fencing"},"timeout_ms":10000}),
         None,
         "another-call-before-fence",
     )

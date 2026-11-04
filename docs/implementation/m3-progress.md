@@ -75,7 +75,7 @@
 | main `dbb35cbc…` 标签同步 | [Sync issue labels](https://github.com/jyxxe/XeLab/actions/runs/41796871248) 成功；已读取并核对 22 个受管标签 |
 | main `dbb35cbc…` Issue 配置 | [Issue checks](https://github.com/jyxxe/XeLab/actions/runs/41796871110) 成功 |
 | main `dbb35cbc…` 内核回归 | [Kernel M1](https://github.com/jyxxe/XeLab/actions/runs/41796871078) 记录时运行中，尚不能计为通过 |
-| M3 运行证据 | 初始基线尚无；各阶段必须追加精确提交与实际运行记录 |
+| M3-A 首个实现 | [PR #39](https://github.com/jyxxe/XeLab/pull/39) 已提交；注册管理与非流式调用已编码，最终 CI/合并仍待完成；[范围和命令](m3-skills.md) |
 
 本地检查命令为 `python3 tools/issues/validate.py`、
 `python3 -m unittest discover -s tools/issues -p 'test_*.py' -v`、

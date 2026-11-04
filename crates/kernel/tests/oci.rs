@@ -1882,7 +1882,7 @@ async fn ordinary_skill_lifecycle(
     contracts::validate("Skill", &created.1).unwrap();
     let skill = created.1["id"].as_str().unwrap().to_owned();
     let params = [("skill_id", skill.clone())];
-    let request = json!({"input":{"message":"real Skill over OCI"},"timeout_ms":10000});
+    let request = json!({"input":{"message":"real Skill over OCI"},"timeout_ms":10000,"idempotency_key":"stable-skill-business-key"});
     let disabled = api(
         router,
         "invokeSkill",
@@ -1989,7 +1989,8 @@ async fn ordinary_skill_lifecycle(
     .await;
     assert_eq!(scoped.0, 200, "{}", scoped.1);
     let c = db.connect().await.unwrap();
-    let journal=c.query_one("SELECT c.skill_id,c.skill_definition_digest,d.installation_id FROM calls c JOIN instances i ON i.id=c.provider_instance_id JOIN deployments d ON d.id=i.deployment_id WHERE c.id=$1",&[&scoped.1["call"]["call_id"].as_str().unwrap().parse::<Uuid>().unwrap()]).await.unwrap();
+    let journal=c.query_one("SELECT c.skill_id,c.skill_definition_digest,d.installation_id,c.idempotency_key FROM calls c JOIN instances i ON i.id=c.provider_instance_id JOIN deployments d ON d.id=i.deployment_id WHERE c.id=$1",&[&scoped.1["call"]["call_id"].as_str().unwrap().parse::<Uuid>().unwrap()]).await.unwrap();
+    assert_eq!(journal.get::<_, String>(3), "stable-skill-business-key");
     assert_eq!(journal.get::<_, Uuid>(0).to_string(), skill);
     assert_eq!(
         journal.get::<_, String>(1),

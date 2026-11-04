@@ -327,6 +327,39 @@ impl Fixture {
         tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,idempotency_key,state,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,'running',$8,now())",&[&call,&ctx.subject,&ctx.credential,&instance,&contract,&contracts::digest(&serde_json::to_vec(&input).unwrap()),&Uuid::new_v4().to_string(),&deadline]).await.unwrap();
         if let Some(skill) = skill {
             tx.execute("UPDATE calls SET skill_id=$2,skill_definition_digest=(SELECT definition_digest FROM skills WHERE id=$2) WHERE id=$1", &[&call,&skill]).await.unwrap();
+            let mut charged = crate::identity::call_sources(
+                &tx,
+                &ctx,
+                &auth::Resource::new(
+                    "capability",
+                    format!(
+                        "{}@{}",
+                        contract["name"].as_str().unwrap(),
+                        contract["version"].as_str().unwrap()
+                    ),
+                    None,
+                ),
+            )
+            .await
+            .unwrap();
+            charged.extend(
+                crate::identity::call_sources_for(
+                    &tx,
+                    &ctx,
+                    "skill.invoke",
+                    &auth::Resource::new("skill", skill, Some(ctx.subject)),
+                )
+                .await
+                .unwrap(),
+            );
+            for credential in charged {
+                tx.execute(
+                    "INSERT INTO call_credential_charges(call_id,credential_id) VALUES($1,$2)",
+                    &[&call, &credential],
+                )
+                .await
+                .unwrap();
+            }
         }
         let token = self
             .app
@@ -1031,4 +1064,102 @@ async fn skill_blob_inputs_and_live_original_skill_authority_are_enforced_over_m
         .unwrap()
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn skill_frozen_business_proofs_exclude_exhausted_uncharged_alternatives() {
+    use std::collections::BTreeSet;
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let c = f.app.db.connect().await.unwrap();
+    let peer = "127.0.0.1".parse().unwrap();
+    let ctx = f
+        .app
+        .auth
+        .authenticate(&c, &f.token, peer, Uuid::new_v4())
+        .await
+        .unwrap();
+    let keys = [Uuid::new_v4(), Uuid::new_v4()];
+    let grants = [Uuid::new_v4(), Uuid::new_v4()];
+    for (key, grant) in keys.iter().zip(grants) {
+        c.execute("INSERT INTO credentials(id,owner_id,kind,hmac_key_id,verification_digest,status,inheritance_mode,conditions,expires_at,created_at,updated_at) VALUES($1,$2,'api_key','fixture',$3,'active','follow_parent','{\"max_calls\":1}',now()+interval '1 hour',now(),now())", &[&key,&ctx.subject,&&key.as_bytes()[..]]).await.unwrap();
+        c.execute("INSERT INTO grants(id,subject_id,issuer_id,issuer_credential_id,role_id,scope,status,created_at,updated_at) VALUES($1,$2,$2,$3,'Owner','{\"kind\":\"capability\",\"match\":\"all\"}','active',now(),now())", &[&grant,&ctx.subject,&key]).await.unwrap();
+    }
+    let prior = Uuid::new_v4();
+    let call = Uuid::new_v4();
+    for (id, credential) in [(prior, keys[0]), (call, ctx.credential)] {
+        c.execute("INSERT INTO calls(id,owner_id,credential_id,contract,input_digest,state,deadline_at,created_at) VALUES($1,$2,$3,'{}','fixture','succeeded',now()+interval '1 minute',now())", &[&id,&ctx.subject,&credential]).await.unwrap();
+    }
+    assert_eq!(
+        crate::identity::key_calls(&c, keys[0]).await.unwrap(),
+        1,
+        "the alternative was exhausted before this call"
+    );
+    for credential in ctx.chain.iter().copied().chain([keys[1]]) {
+        c.execute(
+            "INSERT INTO call_credential_charges(call_id,credential_id) VALUES($1,$2)",
+            &[&call, &credential],
+        )
+        .await
+        .unwrap();
+    }
+    let mut paths = Vec::new();
+    for (action, kind) in [
+        ("capability.invoke", "capability"),
+        ("skill.invoke", "skill"),
+    ] {
+        for grant in grants {
+            paths.push(crate::policy::Path {
+                rule: json!({"action":action,"resource":{"kind":kind,"match":"all"}}),
+                sources: BTreeSet::from([grant]),
+            });
+        }
+    }
+    let filtered = super::charged_business_paths(&c, &ctx, call, paths)
+        .await
+        .unwrap();
+    assert_eq!(filtered.len(), 2);
+    assert!(
+        filtered
+            .iter()
+            .all(|path| path.sources == BTreeSet::from([grants[1]])),
+        "exhausted uncharged alternatives must never enter frozen business authority"
+    );
+    // The currently charged call may fill its issuer's last slot. Rechecking
+    // admission budgets here would incorrectly withdraw its own valid proof.
+    assert_eq!(crate::identity::key_calls(&c, keys[1]).await.unwrap(), 1);
+    let repeated = super::charged_business_paths(&c, &ctx, call, filtered)
+        .await
+        .unwrap();
+    assert_eq!(repeated.len(), 2);
+    let live = crate::policy::Policy::new(&c, peer)
+        .revalidate(&repeated, ctx.credential)
+        .await
+        .unwrap();
+    assert!(auth::rules_allow(
+        &crate::policy::rules(&live),
+        "capability.invoke",
+        &auth::Resource::new("capability", "fixture@1.0.0", None),
+        peer
+    ));
+    c.execute(
+        "UPDATE grants SET status='revoked' WHERE id=$1",
+        &[&grants[1]],
+    )
+    .await
+    .unwrap();
+    auth::authorize(
+        &c,
+        &ctx,
+        "capability.invoke",
+        &auth::Resource::new("capability", "fixture@1.0.0", None),
+    )
+    .await
+    .unwrap();
+    let withdrawn = crate::policy::Policy::new(&c, peer)
+        .revalidate(&repeated, ctx.credential)
+        .await
+        .unwrap();
+    assert!(!auth::rules_allow(&crate::policy::rules(&withdrawn),"capability.invoke",&auth::Resource::new("capability","fixture@1.0.0",None),peer),"an uncharged current alternative must not sustain the admitted work after its charged proof is revoked");
 }

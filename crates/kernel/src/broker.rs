@@ -55,14 +55,8 @@ async fn invoke_inner(
         },
         input,
     )?;
-    if input
-        .get("idempotency_key")
-        .is_some_and(|value| value != key)
-    {
-        return Err(Error::invalid(
-            "Body and header idempotency keys must agree",
-        ));
-    }
+    // HTTP replay scope and the plugin's stable business key are distinct.
+    let business_key = input["idempotency_key"].as_str().unwrap_or(key);
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
     db::call_lock(&tx).await?;
@@ -265,7 +259,7 @@ async fn invoke_inner(
             axum::http::StatusCode::GATEWAY_TIMEOUT,
         ));
     }
-    tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,idempotency_key,state,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,'running',$8,now())",&[&call,&ctx.subject,&ctx.credential,&instance,&contract,&digest(&bytes),&key,&deadline]).await?;
+    tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,idempotency_key,state,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,'running',$8,now())",&[&call,&ctx.subject,&ctx.credential,&instance,&contract,&digest(&bytes),&business_key,&deadline]).await?;
     if let Some(skill) = &skill {
         tx.execute(
             "UPDATE calls SET skill_id=$2,skill_definition_digest=$3 WHERE id=$1",
@@ -299,6 +293,9 @@ async fn invoke_inner(
             .is_none_or(|s| s.definition["input_blobs"] == true),
     )
     .await?;
+    if skill.is_some() {
+        crate::host_blobs::check_call_sources(&tx, &ctx, call).await?;
+    }
     tx.execute("DELETE FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method='POST' AND path=$4 AND key=$3 AND expires_at<=now()",&[&ctx.subject,&ctx.credential,&key,&path]).await?;
     tx.execute("INSERT INTO idempotency_records(subject_id,credential_id,method,path,key,fingerprint,resource_id,expires_at,created_at) VALUES($1,$2,'POST',$6,$3,$4,$5,now()+interval '24 hours',now())",&[&ctx.subject,&ctx.credential,&key,&fingerprint,&call.to_string(),&path]).await?;
     tx.commit().await?;
@@ -312,7 +309,7 @@ async fn invoke_inner(
         context.request_id = ctx.request.to_string();
         context.delegation_token = delegation;
         context.deadline_unix_ms = deadline.timestamp_millis();
-        context.idempotency_key = key.to_owned();
+        context.idempotency_key = business_key.to_owned();
         let mut request = tonic::Request::new(rpc::InvokeRequest {
             context: Some(context),
             call_id: call.to_string(),

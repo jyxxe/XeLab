@@ -295,6 +295,7 @@ pub(crate) async fn grant_skill_call(
     ];
     // Preserve the original Skill permission proof alongside the underlying
     // capability proof, so later grants cannot revive a revoked source path.
+    let is_skill = skill.is_some();
     if let Some(skill) = skill {
         bounds.push(json!({"action":"skill.invoke","resource":{"kind":"skill","match":"ids","ids":[skill.get::<_,Uuid>("skill_id")]}}));
     }
@@ -346,12 +347,65 @@ pub(crate) async fn grant_skill_call(
     }
     let mut p = Policy::new(c, ctx.peer);
     let current = p.credential(ctx.credential, 0).await?;
-    let paths = p.intersection(&current, &caps(&json!(bounds))?).await?;
+    let mut paths = p.intersection(&current, &caps(&json!(bounds))?).await?;
+    if is_skill {
+        paths = charged_business_paths(c, ctx, call, paths).await?;
+    }
     let peer = ctx.peer.to_string();
     c.execute("INSERT INTO host_rpc_contexts(call_id,peer,source_paths,read_blob_ids) VALUES($1,$2::text::inet,$3,$4)",&[&call,&peer,&json!(paths),&json!(ids)]).await?;
     c.execute("UPDATE execution_delegations SET maximum_rules=$2 WHERE id=(SELECT delegation_id FROM calls WHERE id=$1)",&[&call,&policy::rules(&paths)]).await?;
     Ok(())
 }
+// Lifetime limits are checked when Broker chooses/charges each business proof.
+// Freezing every currently visible alternative would preserve even an exhausted,
+// uncharged issuer and could revive work after its charged source is withdrawn.
+async fn charged_business_paths(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    call: Uuid,
+    paths: Vec<Path>,
+) -> Result<Vec<Path>> {
+    let charged: BTreeSet<Uuid> = c
+        .query(
+            "SELECT credential_id FROM call_credential_charges WHERE call_id=$1",
+            &[&call],
+        )
+        .await?
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    let mut filtered = Vec::new();
+    for path in paths {
+        if !matches!(
+            path.rule["action"].as_str(),
+            Some("capability.invoke" | "skill.invoke")
+        ) {
+            filtered.push(path);
+            continue;
+        }
+        let mut required: BTreeSet<Uuid> = ctx.chain.iter().copied().collect();
+        let sources: Vec<_> = path.sources.iter().copied().collect();
+        let issuers = c
+            .query(
+                "SELECT issuer_id,issuer_credential_id FROM grants WHERE id=ANY($1)",
+                &[&sources],
+            )
+            .await?;
+        if issuers.len() != sources.len() {
+            continue;
+        }
+        for issuer in issuers {
+            required.extend(
+                auth::validate_sources(c, issuer.get(1), Some(issuer.get(0)), ctx.peer).await?,
+            );
+        }
+        if required.is_subset(&charged) {
+            filtered.push(path);
+        }
+    }
+    Ok(filtered)
+}
+
 /// Recheck the admitted Skill call's frozen authorization alternatives. Current
 /// unrelated grants do not replace a withdrawn original capability/Skill source.
 pub(crate) async fn check_call_sources(

@@ -222,7 +222,7 @@ pub async fn authorize(
                 c,
                 ctx,
                 "plugin.install",
-                &Resource::new("plugin", row.get::<_, String>(0), None),
+                &Resource::new("plugin", row.get::<_, String>(0), Some(ctx.subject)),
             )
             .await
         }
