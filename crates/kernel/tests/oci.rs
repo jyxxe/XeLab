@@ -2673,7 +2673,7 @@ async fn ordinary_skill_stream_lifecycle(
         router,
         token,
         skill,
-        &json!({"input":{"message":"stream after fenced revocation","count":1},"timeout_ms":10000}),
+        &json!({"input":{"message":"stream after fenced revocation","count":1.0},"timeout_ms":10000}),
         "stream-after-source-revoke",
         false,
     )

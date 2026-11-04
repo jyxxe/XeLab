@@ -190,8 +190,18 @@ impl CapabilityService for Echo {
             .map_err(|_| Status::invalid_argument("Invalid input"))?;
         validate_business(&cap["input_schema"], &input)
             .map_err(|_| Status::invalid_argument("Input schema differs"))?;
-        let count = input["count"].as_u64().unwrap_or(3);
-        let delay = std::time::Duration::from_millis(input["delay_ms"].as_u64().unwrap_or(0));
+        // JSON Schema integers also include integral forms such as 1.0. The
+        // signed schema above bounds both values to small exact integers.
+        let count = input["count"]
+            .as_f64()
+            .map(|value| value as u64)
+            .unwrap_or(3);
+        let delay = std::time::Duration::from_millis(
+            input["delay_ms"]
+                .as_f64()
+                .map(|value| value as u64)
+                .unwrap_or(0),
+        );
         let fault = input["fault"].as_str().unwrap_or("none").to_owned();
         let message = input["message"].as_str().unwrap().to_owned();
         let call = request.call_id;
