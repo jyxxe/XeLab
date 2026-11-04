@@ -160,6 +160,7 @@ pub(super) async fn register(
     publisher: Uuid,
     variant: &str,
     variable: &str,
+    expected_schema: &str,
 ) -> (Uuid, Value, String) {
     assert_eq!(unsafe { libc::geteuid() }, 0);
     assert_eq!(std::env::var("XELAB_XFS_TEST").unwrap(), "1");
@@ -167,7 +168,7 @@ pub(super) async fn register(
     let image = std::env::var(variable).expect("CI-imported versioned reference image");
     let raw = fs::read(format!("examples/generated-{variant}/xelab/plugin.json")).unwrap();
     let manifest: Value = serde_json::from_slice(&raw).unwrap();
-    assert_eq!(manifest["data_schema_version"], "1");
+    assert_eq!(manifest["data_schema_version"], expected_schema);
     assert_eq!(manifest["publisher_id"], publisher.to_string());
     let digest = artifact::image_ref(&image).unwrap();
     let trusted = c
@@ -246,7 +247,7 @@ pub(super) async fn register(
 pub async fn exercise(f: &Fixture, publisher: Uuid) {
     let c = f.app.db.connect().await.unwrap();
     let (installation, manifest, manifest_digest) =
-        register(f, publisher, "schema", "XELAB_TEST_SCHEMA_IMAGE").await;
+        register(f, publisher, "schema", "XELAB_TEST_SCHEMA_IMAGE", "1").await;
     f.app.shutdown.store(false, Ordering::SeqCst);
     f.app.ready.store(false, Ordering::SeqCst);
     let controller = tokio::spawn(controller::run(f.app.clone()));
@@ -419,6 +420,7 @@ pub async fn exercise(f: &Fixture, publisher: Uuid) {
         publisher,
         "schema-transition",
         "XELAB_TEST_SCHEMA_TRANSITION_IMAGE",
+        "2",
     )
     .await;
     assert_eq!(changing_manifest["data_schema_version"], "2");
