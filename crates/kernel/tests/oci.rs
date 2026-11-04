@@ -115,6 +115,53 @@ async fn operation(router: &Router, id: &str, token: &str) -> Value {
     panic!("operation {id} did not finish");
 }
 
+// Controlled process restarts can change observation revisions between GET and
+// PUT. Retry only a confirmed precondition rejection with unchanged intent;
+// never replay an accepted or uncertain mutation with a new fingerprint.
+async fn disable_after_observation(
+    router: &Router,
+    params: &[(&str, String)],
+    token: &str,
+    key: &str,
+) -> (u16, Value) {
+    let mut expected = None;
+    for _ in 0..10 {
+        let current = api(
+            router,
+            "getDeployment",
+            params,
+            Some(token),
+            Value::Null,
+            "read-before-disable",
+            None,
+        )
+        .await;
+        assert_eq!(current.0, 200, "{}", current.1);
+        match &expected {
+            Some(spec) => assert_eq!(
+                spec, &current.1["spec"],
+                "do not retry over a changed deployment intent"
+            ),
+            None => expected = Some(current.1["spec"].clone()),
+        }
+        let response = api(
+            router,
+            "setDeploymentEnabled",
+            params,
+            Some(token),
+            json!({"enabled":false}),
+            key,
+            current.1["revision"].as_i64(),
+        )
+        .await;
+        if response.0 == 412 && response.1["error"]["code"] == "ETAG_MISMATCH" {
+            continue;
+        }
+        return response;
+    }
+    panic!("observation revisions did not settle for a fenced disable request");
+}
+
 #[tokio::test]
 #[ignore = "requires root, containerd, nftables and a disposable Linux host; see README"]
 async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
@@ -946,50 +993,11 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         String::from_utf8_lossy(&component.stderr)
     );
     println!("{}", String::from_utf8_lossy(&component.stdout));
-    let python_value = api(
-        &router,
-        "getDeployment",
-        &python_params,
-        Some(token),
-        Value::Null,
-        "read-python",
-        None,
-    )
-    .await
-    .1;
-    let disabled = api(
-        &router,
-        "setDeploymentEnabled",
-        &python_params,
-        Some(token),
-        json!({"enabled":false}),
-        "disable-python",
-        python_value["revision"].as_i64(),
-    )
-    .await;
+    let disabled =
+        disable_after_observation(&router, &python_params, token, "disable-python").await;
     assert_eq!(disabled.0, 202, "{}", disabled.1);
     operation(&router, disabled.1["id"].as_str().unwrap(), token).await;
-    let deployment_value = api(
-        &router,
-        "getDeployment",
-        &params,
-        Some(token),
-        Value::Null,
-        "read",
-        None,
-    )
-    .await
-    .1;
-    let disabled = api(
-        &router,
-        "setDeploymentEnabled",
-        &params,
-        Some(token),
-        json!({"enabled":false}),
-        "disable-1",
-        deployment_value["revision"].as_i64(),
-    )
-    .await;
+    let disabled = disable_after_observation(&router, &params, token, "disable-1").await;
     assert_eq!(disabled.0, 202, "{}", disabled.1);
     operation(&router, disabled.1["id"].as_str().unwrap(), token).await;
     assert!(!app.runtime.running(instance).await.unwrap());
