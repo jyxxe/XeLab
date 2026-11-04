@@ -32,4 +32,8 @@ scope 是排序去重的空格分隔预注册句柄：`client:<public_client_id>
 
 可信同意页原生提交 URL 编码表单，以便浏览器跟随一次性 302 回调。其 `authorization_request_id`、`approved` 语义与 JSON 一致，`approved` 仅接受 `true`/`false`。JSON 使用 `X-CSRF-Token`、`Idempotency-Key` 头；原生表单可使用同名传输字段，各字段与对应头必须二选一。核心先核验精确 Origin、当前 Cookie 会话、CSRF 与幂等元数据，再移除元数据并校验原有 ConsentDecision，不新增该 JSON 的字段。重复或冲突来源拒绝；一次性授权码及 Location 不持久化为可重放明文，同键重试不能重新取回 code。接口与表单 Schema 见 [submitConsent](../api/operations/auth/submitConsent.md)。
 
+可信登录页使用 `Referrer-Policy: no-referrer`；原生同意页的响应头与 HTML meta 使用 `same-origin`，使浏览器同源 POST 保留准确 Origin，同时跨源回调不携带 Referer。不得将 `Origin: null` 当成可信内核来源，也不通过取消 Origin/CSRF 检查适配浏览器行为。
+
+同意页的 CSP `form-action` 只包含 `'self'` 和该请求已核验的精确回调 origin，以允许浏览器跟随原生表单的跨源 302。实际 Location 仍只能由核心按注册的完整 URI 和固定请求生成；不允许通配来源或调用方提交任意目标。登录页的 `form-action` 仍仅为 `'self'`。
+
 登录按账户与来源分别限制为每分钟 5 次失败，超限 429/Retry-After；成功不抹去审计。MFA/外部 IdP 联邦属于后续认证适配扩展，当前接口未宣称实现。

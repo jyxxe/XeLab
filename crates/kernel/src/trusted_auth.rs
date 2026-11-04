@@ -11,6 +11,7 @@ use uuid::Uuid;
 pub(crate) struct Page {
     pub html: String,
     pub content_security_policy: String,
+    referrer_policy: &'static str,
 }
 
 impl Page {
@@ -20,7 +21,7 @@ impl Page {
             .header("content-security-policy", self.content_security_policy)
             .header("cache-control", "no-store")
             .header("pragma", "no-cache")
-            .header("referrer-policy", "no-referrer")
+            .header("referrer-policy", self.referrer_policy)
             .header("x-frame-options", "DENY")
             .header("x-content-type-options", "nosniff")
             .header("x-request-id", request.to_string())
@@ -65,14 +66,23 @@ fn nonce() -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-fn page(title: &str, body: &str, script: &str) -> Page {
+fn page(
+    title: &str,
+    body: &str,
+    script: &str,
+    referrer_policy: &'static str,
+    callback_origin: Option<&str>,
+) -> Page {
     let nonce = nonce();
+    let form_action = callback_origin
+        .map(|origin| format!("'self' {origin}"))
+        .unwrap_or_else(|| "'self'".into());
     let content_security_policy = format!(
-        "default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'; worker-src 'none'"
+        "default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action {form_action}; object-src 'none'; worker-src 'none'"
     );
     let html = format!(
         r#"<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>{title} · XeLab</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="{referrer_policy}"><title>{title} · XeLab</title>
 <style nonce="{nonce}">
 :root{{color-scheme:light dark;font:16px/1.6 system-ui,sans-serif;background:#f2f4f8;color:#152033}}*{{box-sizing:border-box}}body{{margin:0;padding:clamp(16px,5vw,64px)}}main{{max-width:640px;margin:auto;padding:clamp(20px,4vw,40px);background:#fff;border:1px solid #c9d2df;border-radius:16px}}h1{{line-height:1.25}}label{{display:block;margin-top:20px;font-weight:600}}input{{display:block;width:100%;font:inherit;padding:10px;border:1px solid #65738a;border-radius:6px}}button{{font:inherit;cursor:pointer;padding:10px 18px;border:2px solid #285abc;border-radius:6px;background:#285abc;color:#fff;margin:20px 8px 0 0}}button.secondary{{background:transparent;color:inherit}}button:disabled{{cursor:wait;opacity:.65}}:focus-visible{{outline:3px solid #d87800;outline-offset:3px}}[role=alert]{{min-height:1.6em;color:#a32417}}.boundary{{padding:12px;border-left:4px solid #285abc;background:#eef3ff}}dt{{font-weight:600;margin-top:12px}}dd{{margin:0;overflow-wrap:anywhere}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.85rem}}.actions{{display:flex;flex-wrap:wrap}}@media(prefers-color-scheme:dark){{:root{{background:#111722;color:#e9edf5}}main{{background:#1a2434;border-color:#53617a}}.boundary{{background:#223454}}[role=alert]{{color:#ffb5a9}}}}@media(prefers-reduced-motion:reduce){{*{{scroll-behavior:auto}}}}
 </style></head><body><main>{body}</main><script nonce="{nonce}">{script}</script></body></html>"#,
@@ -81,6 +91,7 @@ fn page(title: &str, body: &str, script: &str) -> Page {
     Page {
         html,
         content_security_policy,
+        referrer_policy,
     }
 }
 
@@ -139,7 +150,7 @@ form.addEventListener('submit', async event => {{
 }});"#,
         script_string(resume)?,
     );
-    Ok(page("可信登录", body, &script))
+    Ok(page("可信登录", body, &script, "no-referrer", None))
 }
 
 /// Native form submission is intentional: a JSON fetch cannot expose a manual
@@ -183,7 +194,18 @@ pub(crate) fn consent(view: Consent<'_>) -> Result<Page> {
         csrf = escape(view.csrf_token),
         key = view.idempotency_key,
     );
-    Ok(page("可信授权", &body, "'use strict';"))
+    // Chromium sends Origin:null for a native POST under no-referrer. Keep the
+    // origin on this same-core form submission while suppressing Referer on the
+    // cross-origin registered callback. The exact Origin/CSRF gate stays intact.
+    // form-action also covers Chromium's redirect after the POST. Only the
+    // registered callback's parsed origin is allowed alongside this core.
+    Ok(page(
+        "可信授权",
+        &body,
+        "'use strict';",
+        "same-origin",
+        Some(&redirect.origin().ascii_serialization()),
+    ))
 }
 
 #[cfg(test)]
@@ -210,6 +232,9 @@ mod tests {
             .content_security_policy
             .contains("frame-ancestors 'none'"));
         assert!(!rendered.content_security_policy.contains("unsafe-inline"));
+        assert!(rendered
+            .content_security_policy
+            .contains("form-action 'self';"));
         assert_ne!(
             rendered.content_security_policy,
             login(None).unwrap().content_security_policy
@@ -217,6 +242,7 @@ mod tests {
         let response = rendered.into_response(Uuid::new_v4()).unwrap();
         assert_eq!(response.headers()["cache-control"], "no-store");
         assert_eq!(response.headers()["x-frame-options"], "DENY");
+        assert_eq!(response.headers()["referrer-policy"], "no-referrer");
         assert!(!response.headers().contains_key("set-cookie"));
     }
     #[test]
@@ -245,5 +271,19 @@ mod tests {
         assert!(rendered.html.contains("application/x-www-form-urlencoded"));
         assert!(!rendered.html.contains("fetch("));
         assert!(!rendered.html.contains("postMessage"));
+        assert!(rendered
+            .content_security_policy
+            .contains("form-action 'self' https://ui.example;"));
+        assert!(!rendered
+            .content_security_policy
+            .contains("https://ui.example/callback"));
+        assert!(!rendered.content_security_policy.contains('*'));
+        assert!(rendered
+            .html
+            .contains("name=\"referrer\" content=\"same-origin\""));
+        assert_eq!(
+            rendered.into_response(Uuid::new_v4()).unwrap().headers()["referrer-policy"],
+            "same-origin"
+        );
     }
 }
