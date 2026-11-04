@@ -14,7 +14,7 @@ import unittest
 import uuid
 
 import build_artifact
-from http_server import BUSINESS_PATH, EVENTS_PATH, HOLD_PATH, STATIC_PATH, KernelHTTPServer, State
+from http_server import BUSINESS_PATH, CREATED_PATH, DISCARD_PATH, EVENTS_PATH, HOLD_PATH, READ_PATH, STATIC_PATH, KernelHTTPServer, State
 
 
 class HTTPTests(unittest.TestCase):
@@ -77,6 +77,21 @@ class HTTPTests(unittest.TestCase):
             return response.status, dict(response.getheaders()), response.read()
         finally:
             connection.close()
+
+    def test_declared_fixed_methods_bodyless_input_and_created_status(self):
+        cases = [("GET", READ_PATH, b"", 200, {"message": "HTTP fixed read"}),
+                 ("PUT", CREATED_PATH, b'{"message":"created"}', 201, {"message": "created"}),
+                 ("PATCH", CREATED_PATH, b'{"message":"patched"}', 200, {"message": "patched"}),
+                 ("DELETE", DISCARD_PATH, b"", 204, None)]
+        for method, path, body, expected, value in cases:
+            with self.subTest(method=method):
+                status, _, result = self.request(method=method, path=path, body=body)
+                self.assertEqual(status, expected)
+                self.assertEqual(json.loads(result) if result else None, value)
+        self.assertEqual(self.request(method="GET", path=READ_PATH, body=b"unexpected")[0], 400)
+        self.assertEqual(self.request(method="POST", path=READ_PATH)[0], 405)
+        self.assertEqual(self.request(method="DELETE", path=BUSINESS_PATH, body=b"")[0], 405)
+        self.assertEqual(self.state.active, 0)
 
     def test_real_echo_and_strict_shape(self):
         status, headers, raw = self.request(body='{"message":"你好"}'.encode())

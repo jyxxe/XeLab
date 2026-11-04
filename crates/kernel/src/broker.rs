@@ -161,11 +161,6 @@ async fn invoke_bounded(
             }
         }
         if http_target {
-            if stream.is_some() {
-                return Err(Error::invalid(
-                    "HTTP Skills are nonstreaming fixed JSON operations",
-                ));
-            }
             return tokio::time::timeout_at(
                 started + Duration::from_millis(effective),
                 http::execute_skill(
@@ -178,6 +173,7 @@ async fn invoke_bounded(
                     key,
                     started,
                     started + Duration::from_millis(effective),
+                    stream,
                     browser_origin,
                 ),
             )

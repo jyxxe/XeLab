@@ -314,7 +314,6 @@ impl Registry {
             || definition["target"]["plugin_id"] != self.plugin
             || !string(definition, "name")?.starts_with(&format!("{}.", self.plugin))
             || definition["mapping"] != "identity"
-            || !definition["stream_item_schema"].is_null()
             || !self.candidates.contains(definition)
         {
             return Err(Error::invalid(
@@ -329,28 +328,137 @@ impl Registry {
                     && definition["target"]["http_contract_digest"] == op.contract_digest
             })
             .ok_or_else(|| Error::invalid("HTTP Skill operation binding is unavailable"))?;
-        if op
+        let streaming = !definition["stream_item_schema"].is_null();
+        let input_matches = match &op.input {
+            Some(schema) => schema.value() == &definition["input_schema"],
+            // Identity mapping of a declared bodyless operation is null. It
+            // never turns an input object into a URL, query, or request header.
+            None => compile_business(&definition["input_schema"])?.is_valid(&Value::Null),
+        };
+        let successes: Vec<_> = op
             .responses
-            .get(&200)
-            .and_then(|response| response.media_type.as_deref())
-            != Some("application/json")
-            || op.method != Method::POST
-            || op
-                .input
-                .as_ref()
-                .is_none_or(|schema| schema.value() != &definition["input_schema"])
-            || op
-                .responses
-                .get(&200)
-                .and_then(|response| response.schema.as_ref())
-                .is_none_or(|schema| schema.value() != &definition["output_schema"])
-        {
+            .iter()
+            .filter(|(status, _)| (200..300).contains(*status))
+            .collect();
+        let response_matches = !successes.is_empty()
+            && successes.iter().all(|(status, response)| {
+                if streaming {
+                    **status == 200
+                        && response.media_type.as_deref() == Some("text/event-stream")
+                        && response.schema.as_ref().is_some_and(|schema| {
+                            stream_payload_schema(
+                                schema.value(),
+                                "item",
+                                None,
+                                &definition["stream_item_schema"],
+                            ) && stream_payload_schema(
+                                schema.value(),
+                                "completed",
+                                Some("output"),
+                                &definition["output_schema"],
+                            )
+                        })
+                } else if **status == 204 {
+                    compile_business(&definition["output_schema"])
+                        .is_ok_and(|schema| schema.is_valid(&Value::Null))
+                } else {
+                    response.media_type.as_deref() == Some("application/json")
+                        && response
+                            .schema
+                            .as_ref()
+                            .is_some_and(|schema| schema.value() == &definition["output_schema"])
+                }
+            });
+        if !input_matches || !response_matches {
             return Err(Error::invalid(
-                "HTTP Skill requires the fixed POST JSON to 200 JSON schemas",
+                "HTTP Skill schemas must match its fixed signed operation and success response",
             ));
+        }
+        // The signed HTTP stream schema describes complete StreamEvents.
+        // The separately signed Skill schemas describe item payloads/final
+        // output. Both validators are required at execution; neither replaces
+        // the other or grants the plugin authority to claim Skill identity.
+        for field in ["input_schema", "output_schema", "stream_item_schema"] {
+            if field != "stream_item_schema" || streaming {
+                compile_business(&definition[field])?;
+            }
         }
         Ok(op)
     }
+}
+
+/// Resolve explicit per-kind payload constraints in self-contained JSON Schema.
+/// No new OpenAPI extension or caller-controlled mapping is introduced. A
+/// generic StreamEvent/JsonValue envelope alone cannot attest business schemas.
+fn stream_payload_schema(
+    schema: &Value,
+    kind: &str,
+    field: Option<&str>,
+    expected: &Value,
+) -> bool {
+    fn selected(value: &Value, kind: &str) -> bool {
+        value["properties"]["kind"]["const"] == kind
+            || value["properties"]["kind"]["enum"]
+                .as_array()
+                .is_some_and(|values| values.len() == 1 && values[0] == kind)
+    }
+    let payload = if selected(&schema["if"], kind) {
+        schema
+            .get("then")
+            .and_then(|value| value.get("properties"))
+            .and_then(|value| value.get("payload"))
+    } else if selected(schema, kind) {
+        schema
+            .get("properties")
+            .and_then(|value| value.get("payload"))
+    } else {
+        None
+    };
+    if payload
+        .and_then(|payload| match field {
+            Some(field) => payload
+                .get("properties")
+                .and_then(|properties| properties.get(field)),
+            None => Some(payload),
+        })
+        .is_some_and(|schema| schema == expected)
+    {
+        return true;
+    }
+    // allOf constraints are mandatory, while oneOf/anyOf are safe here only
+    // when each branch selected for the same kind declares the same business
+    // shape. Do not accept a weaker alternative beside the attested schema.
+    if schema["allOf"].as_array().is_some_and(|branches| {
+        branches
+            .iter()
+            .any(|branch| stream_payload_schema(branch, kind, field, expected))
+    }) {
+        return true;
+    }
+    for key in ["oneOf", "anyOf"] {
+        if let Some(branches) = schema[key].as_array() {
+            let relevant: Vec<_> = branches
+                .iter()
+                .filter(|branch| {
+                    let discriminator = &branch["properties"]["kind"];
+                    !discriminator
+                        .get("const")
+                        .is_some_and(|value| value != kind)
+                        && !discriminator["enum"]
+                            .as_array()
+                            .is_some_and(|values| !values.iter().any(|value| value == kind))
+                })
+                .collect();
+            if !relevant.is_empty()
+                && relevant
+                    .iter()
+                    .all(|branch| stream_payload_schema(branch, kind, field, expected))
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn nonempty(value: &Value) -> bool {

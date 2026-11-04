@@ -30,7 +30,7 @@ def build(root, publisher, platform="linux/amd64", plugin_version="1.0.0", inclu
         "minimum_resources": {"cpu_millis": 100, "memory_bytes": 67108864, "ephemeral_bytes": 1048576, "pids": 64},
         "health": {"startup_timeout_ms": 60000, "interval_ms": 5000, "timeout_ms": 2000, "failure_threshold": 3},
         "routes": [
-            {"path_prefix": "/plugins/" + PLUGIN_ID + "/", "methods": ["POST"], "kind": "http", "required_action": "plugin.http.invoke",
+            {"path_prefix": "/plugins/" + PLUGIN_ID + "/", "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"], "kind": "http", "required_action": "plugin.http.invoke",
              "maximum_body_bytes": 8192, "timeout_ms": 10000, "http_contract_digest": digest, "authentication": "user"},
             {"path_prefix": "/ui/" + PLUGIN_ID + "/", "methods": ["GET", "HEAD"], "kind": "static",
              "required_action": "plugin.http.invoke", "maximum_body_bytes": 0, "timeout_ms": 10000, "authentication": "public"},
@@ -46,6 +46,30 @@ def build(root, publisher, platform="linux/amd64", plugin_version="1.0.0", inclu
             "mapping": "identity", "maximum_timeout_ms": 10000, "input_blobs": False, "tags": ["http", "echo"],
         }],
     }
+    stream_operation = contract["paths"]["/plugins/" + PLUGIN_ID + "/events"]["post"]
+    stream_schema = stream_operation["responses"]["200"]["content"]["text/event-stream"]["schema"]
+    item_schema = next(branch["then"]["properties"]["payload"] for branch in stream_schema["allOf"]
+                       if branch.get("if", {}).get("properties", {}).get("kind", {}).get("const") == "item")
+    manifest["skills"].append({
+        "name": PLUGIN_ID + ".events", "version": plugin_version,
+        "description": "Stream fixed signed HTTP messages with bounded items and a validated final output",
+        "input_schema": stream_operation["requestBody"]["content"]["application/json"]["schema"],
+        "output_schema": operation["responses"]["200"]["content"]["application/json"]["schema"],
+        "stream_item_schema": item_schema,
+        "target": {"kind": "http", "plugin_id": PLUGIN_ID, "http_operation_id": stream_operation["operationId"], "http_contract_digest": digest},
+        "mapping": "identity", "maximum_timeout_ms": 10000, "input_blobs": False, "tags": ["http", "stream"],
+    })
+    for method, suffix, success in [("get", "read", "200"), ("put", "created", "201"), ("patch", "created", "200"), ("delete", "discard", "204")]:
+        fixed = contract["paths"]["/plugins/" + PLUGIN_ID + "/" + suffix][method]
+        manifest["skills"].append({
+            "name": PLUGIN_ID + "." + method, "version": plugin_version,
+            "description": "Invoke the exact signed " + method.upper() + " operation",
+            "input_schema": fixed.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema", {"type": "null"}),
+            "output_schema": fixed["responses"][success].get("content", {}).get("application/json", {}).get("schema", {"type": "null"}),
+            "stream_item_schema": None,
+            "target": {"kind": "http", "plugin_id": PLUGIN_ID, "http_operation_id": fixed["operationId"], "http_contract_digest": digest},
+            "mapping": "identity", "maximum_timeout_ms": 10000, "input_blobs": False, "tags": ["http", method],
+        })
     if include_rpc:
         name, version = PLUGIN_ID + ".rpc", "1.0.0"
         input_schema = contract["paths"]["/plugins/" + PLUGIN_ID + "/hold"]["post"]["requestBody"]["content"]["application/json"]["schema"]

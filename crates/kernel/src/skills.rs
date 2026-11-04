@@ -104,11 +104,13 @@ pub(crate) fn validate_candidate(manifest: &Value, definition: &Value) -> Result
         return Err(conflict());
     }
     if definition["target"]["kind"] == "http" {
-        if definition["mapping"] != "identity" || !definition["stream_item_schema"].is_null() {
+        if definition["mapping"] != "identity" {
             return Err(conflict());
         }
-        for field in ["input_schema", "output_schema"] {
-            compile_business(&definition[field])?;
+        for field in ["input_schema", "output_schema", "stream_item_schema"] {
+            if field != "stream_item_schema" || !definition[field].is_null() {
+                compile_business(&definition[field])?;
+            }
         }
         definition_digest(definition)?;
         return Ok(());

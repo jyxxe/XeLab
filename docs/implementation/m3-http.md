@@ -21,8 +21,10 @@ Registry 只注册明确的方法和字面路径，前缀不是业务 catch-all�
 拒绝重复 JSON key、引用型 Schema、编码或点段路径、未声明操作和协议升级。
 
 当前 profile 支持 JSON 业务操作、声明式 `200 text/event-stream`、
-以及 static GET/HEAD；HTTP Skill 只绑定固定 POST/JSON→200/JSON，
-输入输出 Schema 与原签名候选完全相同。路径模板、查询参数、业务 HEAD、
+以及 static GET/HEAD；HTTP Skill 固定操作的方法与所有成功状态，
+JSON 正文/输出和 SSE 的 item/output Schema 与签名候选及 OpenAPI 精确核对。
+无正文操作使用 null identity 输入，204 返回 null，不能由输入选择 URL 或方法。
+路径模板、查询参数、业务 HEAD、
 静态 Range、WebSocket、插件 Cookie 和重定向明确拒绝。
 WebUI、UI Contribution、OAuth 与 UI 桥还没有因此获得准入。
 data_schema_version 非 none 的公开制品门禁继续关闭。
@@ -94,6 +96,15 @@ accepted 首帧，连续序号，恰好一个终帧。逐帧验证签名 Schema 
 缺终帧、错误来源/序号、畸形输出及 completed 后数据均失败。
 Last-Event-ID 不支持恢复，同一 HTTP 幂等键不重新生成或拼接旧流。
 
+HTTP `streamSkill` 通过同一 HTTP Broker 接入已有有界 Skill SSE 输出，
+后端事件仍使用原 `plugin_id.http` 契约并固定 Call/instance；
+核心逐帧验证完整签名 StreamEvent 和精确 item Schema，仅由核心填入 Skill UUID/摘要。
+完成输出另验 Skill output Schema，确认 EOF、原权限与持久提交后才包装 completed。
+同一流键返回原 Call 冲突而不重复扣费，选错流式/非流式入口在准入前拒绝。
+取消、断线或畸形流仍保留 unknown 和原进程资源，实际 Controller 围栏后才能释放。
+Skill 队列交付也复核当前 HTTP 审批，不让已入队结果越过撤权。
+
+
 单帧上限 1 MiB，有界队列与消费者 30 秒停滞限制遵循
 [流控契约](../communication/streaming.md)。入口 actor 限制为 32，
 每个 JSON 请求至多 16 MiB 且取签名路由更低限制。
@@ -150,3 +161,9 @@ Python 参考插件 12 项测试及 HTTP-only/混合两个实际打包探针通�
 该修正的完整 CI 与最终 main CI 仍须通过。
 这些组件结果不替代真实 OCI、浏览器或生产验收。
 AWS/独立宿主与 RUN-03 继续按[持续进度](m3-progress.md)单独待验收。
+
+
+补齐完整 HTTP Skill profile 的回归入口：`cargo test --lib plugin_http::tests`、
+`cargo test --lib signed_http_skill_stream_and_fixed_methods_execute_with_original_authority_and_accounting`，
+以及 `cargo test --test http -- --ignored --nocapture` 的签名真实 OCI 场景。
+后者要求隔离宿主与既有真实两镜像准备步骤，不能把默认 ignored 或元数据组件当作 OCI 通过。

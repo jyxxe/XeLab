@@ -30,6 +30,8 @@ WebSocket 不属于本版通用路由协议；HTTP/SSE 已覆盖明确需求。�
 
 禁用路由后拒绝新请求，在途按 deadline/drain 策略处理。流式输出已开始后禁止切换提供者。插件退出时关闭无效连接并传播取消，不能让网关无限保留句柄。
 
-声明式 `200 text/event-stream` 的媒体 Schema 描述每个 `data` 的自包含 StreamEvent，`event/id/data` 必须一致，accepted 首帧、sequence 从 1 连续递增、恰好一个终帧。内核逐帧验证签名 Schema、固定 Call/提供者及当前权限，确认 EOF 和持久化成功后才交付 completed；EOF 缺终帧、终帧后继续数据或结构错误均失败。禁止 Last-Event-ID 恢复，沿用[通用背压上限](streaming.md)，心跳不构成业务授权。HTTP Skill 首版仍只绑定固定 POST/JSON→200/JSON。
+声明式 `200 text/event-stream` 的媒体 Schema 描述每个 `data` 的自包含 StreamEvent，`event/id/data` 必须一致，accepted 首帧、sequence 从 1 连续递增、恰好一个终帧。内核逐帧验证签名 Schema、固定 Call/提供者及当前权限，确认 EOF 和持久化成功后才交付 completed；EOF 缺终帧、终帧后继续数据或结构错误均失败。禁止 Last-Event-ID 恢复，沿用[通用背压上限](streaming.md)，心跳不构成业务授权。HTTP Skill 同样可固定到已声明的 SSE 操作，外部响应使用 SkillStreamEvent，后端仍只能产生原 HTTP StreamEvent，不能自报 Skill UUID/摘要。
+
+HTTP Skill 的 identity 映射只使用固定操作的方法、字面路径及 JSON 正文，不将业务输入转换成 URL、查询或请求头。GET 等无正文操作要求 `input=null`，204 结果要求可验证的 null 输出；JSON 操作的所有已声明成功状态须与固定 Skill 输出 Schema 一致，不仅限于 POST/200。流式候选的 OpenAPI 自包含 StreamEvent Schema 还须通过标准 JSON Schema 的按 kind 条件分支明确约束 `item.payload` 和 `completed.payload.output`，分别与签名 Skill 的 item/output Schema 精确一致；通用 JsonValue 信封不充当业务 Schema。注册时比较，执行时同时验证完整签名事件、Skill item/output、固定调用和提供者。完成后的虚拟 ContractRef 由核心构造，插件只证明原 `plugin_id.http`/版本/HTTP 契约摘要。流中断/取消不证明副作用已回滚，Call 保持 unknown 及原提供者围栏；相同流键只允许核查原 Call，不重新发送或拼接。
 
 所有真实业务转发复用 Broker 的实例共享并发、祖先配额、来源凭证计费和 Call 围栏。静态 GET/HEAD 使用同一物理实例池的轻量请求预留，不伪造公共主体或用户日调用；已确认传输结束或已证明进程停止后才释放。用户断线或请求结果不明关闭上游并保持未知预留至物理围栏，不自动重试。响应 Body 的独立有界容量持续到 Body 被销毁，不随物理 Call 提前回收。
