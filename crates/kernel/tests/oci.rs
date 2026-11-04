@@ -107,6 +107,13 @@ async fn operation(router: &Router, id: &str, token: &str) -> Value {
         .await;
         assert_eq!(status, 200, "{value}");
         if value["state"] == "succeeded" {
+            if matches!(
+                value["kind"].as_str(),
+                Some("createDeployment" | "setDeploymentEnabled")
+            ) {
+                contracts::validate("Deployment", &value["result"]).unwrap();
+                assert_eq!(value["result"]["id"], value["resource_id"]);
+            }
             return value["result"].clone();
         }
         assert_ne!(value["state"], "failed", "{value}");
@@ -259,8 +266,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         json!({"cpu_millis":500,"memory_bytes":134217728,"ephemeral_bytes":1048576,"pids":64});
     let (status,created)=api(&router,"createDeployment",&[],Some(token),json!({"installation_id":installed["installation_id"],"display_name":"echo","enabled":false,"limits":limits,"config":{},"volume_ids":[]}),"deploy-1",None).await;
     assert_eq!(status, 202, "{created}");
-    let deployment = operation(&router, created["id"].as_str().unwrap(), token).await
-        ["deployment_id"]
+    let deployment = operation(&router, created["id"].as_str().unwrap(), token).await["id"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -467,7 +473,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     let created=api(&router,"createDeployment",&[],Some(token),json!({"installation_id":installed["installation_id"],"display_name":"independent Python","enabled":false,"limits":limits,"config":{},"volume_ids":[]}),"deploy-python",None).await;
     assert_eq!(created.0, 202, "{}", created.1);
     let python_deployment: Uuid = operation(&router, created.1["id"].as_str().unwrap(), token)
-        .await["deployment_id"]
+        .await["id"]
         .as_str()
         .unwrap()
         .parse()
@@ -1623,8 +1629,7 @@ async fn host_blob_component(
     let installed = operation(router, install.1["id"].as_str().unwrap(), token).await;
     let created=api(router,"createDeployment",&[],Some(token),json!({"installation_id":installed["installation_id"],"display_name":"Host Blob component","enabled":false,"limits":{"cpu_millis":100,"memory_bytes":67108864,"ephemeral_bytes":1048576,"pids":64},"config":{},"volume_ids":[]}),"host-blob-deploy",None).await;
     assert_eq!(created.0, 202, "{}", created.1);
-    let deployment = operation(router, created.1["id"].as_str().unwrap(), token).await
-        ["deployment_id"]
+    let deployment = operation(router, created.1["id"].as_str().unwrap(), token).await["id"]
         .as_str()
         .unwrap()
         .to_owned();

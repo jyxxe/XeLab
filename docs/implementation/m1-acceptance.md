@@ -77,6 +77,20 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 本修复不关闭 RUN-03 生产宿主压力验收。自授回归记录路径数和耗时，不代表完整授权图或大规模数据库的吞吐基准；v1 未记录的 Grant 计费来源也不能追溯恢复，升级处理见运行指南。
 
+## 部署异步操作结果
+
+createDeployment 和 setDeploymentEnabled 的成功结果按现有契约返回完整 Deployment，
+包括 id、完整 spec、revision、观察代次、阶段及条件；不再新写入只有 deployment_id
+的片段。对象投影与 getDeployment 共用校验。客户端应读取 resource_id 或 result.id。
+已存储终态结果及幂等响应不回写，旧操作仍保留其原结果。
+
+控制器仅完成仍待处理、且当前 enabled 意图与本次观察一致的操作，并核对生成结果
+时的完整部署快照。旧启停观察不能完成相反的新意图，迟到处理不改写终态。
+本地真实 HTTP/PostgreSQL 已验证创建、启用/禁用结果符合 Deployment、默认字段完整，
+相反意图保持 pending，终态不重写。该数据库用例的阶段是元数据夹具，不是 OCI
+健康/停止证明；真实 OCI 用例另在每个成功创建/启停操作轮询处校验结果，远端待执行。
+这项修复不代替 RUN-03 独立宿主验收。
+
 ## Controller 稳定化（PR #4 遗留项）
 
 - 启用部署与停用/归档清理使用独立的 `(created_at,id)` 游标和固定上界，每轮各最多处理 16 项。每项结束后检查 250 ms 时间片；未消费的分页记录保留给下轮，单项错误仍推进游标。已完成清理且无实例/待办的禁用记录不再反复协调。
