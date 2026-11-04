@@ -343,7 +343,7 @@ async fn both_authorization_layers_precede_admission_and_no_failure_leaks_quota(
         json!({"action":"skill.invoke","resource":{"kind":"skill","match":"ids","ids":[skill]}});
     let capability_rule = json!({"action":"capability.invoke","resource":{"kind":"capability","match":"ids","ids":[format!("{}@{}",contract["name"].as_str().unwrap(),contract["version"].as_str().unwrap())]}});
     let request_body =
-        json!({"input":{"message":"metadata-only admission probe"},"timeout_ms":1000});
+        json!({"input":{"message":"metadata-only admission probe"},"timeout_ms":10000.0});
     for rules in [json!([skill_rule]), json!([capability_rule])] {
         let key = f.key(rules).await;
         let refused = f
@@ -662,5 +662,61 @@ async fn skill_required_provider_rejects_bare_and_forged_routes_and_preserves_un
         .unwrap()
         .get::<_, i64>(0),
         1
+    );
+}
+
+#[tokio::test]
+async fn omitted_timeout_uses_fixed_skill_maximum_before_waiting_on_call_lock() {
+    let Some(mut f) = Fixture::new().await else {
+        return;
+    };
+    f.manifest["skills"][0]["maximum_timeout_ms"] = json!(1000.0);
+    let mut c = f.db.connect().await.unwrap();
+    c.execute(
+        "UPDATE installations SET manifest=$2 WHERE id=$1",
+        &[&f.installation, &f.manifest],
+    )
+    .await
+    .unwrap();
+    let mut registration = f.registration();
+    registration["enabled"] = json!(true);
+    let created = f
+        .call("registerSkill", &[], &f.token, registration, None)
+        .await;
+    assert_eq!(created.0, 201, "{}", created.1);
+    let params = [("skill_id", created.1["id"].as_str().unwrap().to_owned())];
+    let lock = c.transaction().await.unwrap();
+    xelab_kernel::db::call_lock(&lock).await.unwrap();
+    let refused = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        f.call(
+            "invokeSkill",
+            &params,
+            &f.token,
+            json!({"input":{"message":"use the fixed default deadline"}}),
+            None,
+        ),
+    )
+    .await
+    .expect("omitted timeout must not inherit the outer 120s wait");
+    assert_eq!(refused.0, 504, "{}", refused.1);
+    assert_eq!(refused.1["error"]["code"], "DEADLINE_EXCEEDED");
+    lock.rollback().await.unwrap();
+    assert_eq!(
+        c.query_one("SELECT count(*) FROM calls", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    assert_eq!(
+        c.query_one(
+            "SELECT concurrent_calls_used,daily_calls_used FROM quotas WHERE account_id=$1",
+            &[&f.owner]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        0
     );
 }
