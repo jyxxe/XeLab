@@ -457,7 +457,7 @@ class DesktopBrowser(unittest.TestCase):
     def test_reference_window_open_settles_before_strict_network_audit_close(self):
         self.real_reference = True
         observed = {"observer_failure": False, "error_counts": {}, "active_request_observers": 0, "active_response_observers": 0}
-        counts = {"plugin_headers": 0}
+        counts = {"plugin_headers": 0, "core_json": 0, "skill_json": 0}
         def audit(request):
             observed["active_request_observers"] += 1
             try:
@@ -469,6 +469,23 @@ class DesktopBrowser(unittest.TestCase):
             finally:
                 observed["active_request_observers"] -= 1
         self.context.on("request", audit)
+        def audit_body(response):
+            observed["active_response_observers"] += 1
+            phase = "response_read"
+            try:
+                parsed = urlparse(response.url)
+                if f"{parsed.scheme}://{parsed.netloc}" == CORE and response.request.method != "OPTIONS":
+                    if parsed.path.endswith("/calls"):
+                        phase = "response_skill_body"
+                    response.json()
+                    counts["core_json"] += 1
+                    if phase == "response_skill_body":
+                        counts["skill_json"] += 1
+            except Exception as error:
+                DRIVER.record_observer_failure(observed, phase, error)
+            finally:
+                observed["active_response_observers"] -= 1
+        self.context.on("response", audit_body)
         for identifier, kind in [("echo_window", "window"), ("echo_widget", "widget")]:
             value = contribution(identifier, kind)
             value["plugin_id"] = "org.xelab.ui-reference"
@@ -480,6 +497,14 @@ class DesktopBrowser(unittest.TestCase):
             value["contribution_digest"] = "sha256:" + hashlib.sha256(json.dumps(value["spec"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
             self.contributions[identifier] = value
         self.open()
+        skills = self.app("Skill")
+        skills.get_by_role("button", name="调用测试", exact=True).click()
+        editor = self.page.locator('.window[data-app="editor-invokeSkill"]')
+        editor.get_by_role("textbox", name="请求 JSON", exact=True).fill(json.dumps({"input": {"message": "Observed response before window abort"}, "idempotency_key": "component-observer-body"}))
+        editor.get_by_role("button", name="提交", exact=True).click()
+        editor.locator("pre.result").wait_for()
+        DRIVER.close_windows(self.page, {"checks": {}}, observed)
+        self.assertEqual(counts["skill_json"], 1)
         self.page.get_by_role("button", name="打开应用启动器", exact=True).click()
         self.page.get_by_role("button", name="启动插件页面", exact=True).click()
         listing = self.page.locator('.window[data-app="contributions"]')
@@ -503,7 +528,7 @@ class DesktopBrowser(unittest.TestCase):
         self.assertEqual(observed["active_request_observers"], 0)
         self.assertEqual(observed["active_response_observers"], 0)
         self.assertFalse(observed["observer_failure"], observed["error_counts"])
-        print(json.dumps({"component": "desktop_reference_window_observer_not_core", "plugin_headers": counts["plugin_headers"], "active_requests": observed["active_request_observers"], "active_responses": observed["active_response_observers"], "observer_failure": observed["observer_failure"]}, sort_keys=True))
+        print(json.dumps({"component": "desktop_reference_window_observer_not_core", "plugin_headers": counts["plugin_headers"], "core_json": counts["core_json"], "skill_json": counts["skill_json"], "active_requests": observed["active_request_observers"], "active_responses": observed["active_response_observers"], "observer_failure": observed["observer_failure"]}, sort_keys=True))
 
     def test_mutating_401_never_refreshes_or_retries_business_request(self):
         self.open()

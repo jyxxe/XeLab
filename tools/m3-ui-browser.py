@@ -34,6 +34,22 @@ def future_features_unavailable(window):
             and state.get_by_text("未安装或实现的后续执行系统没有可展示的运行结果。", exact=True).count() == 1)
 
 
+def error_bucket(error):
+    message = str(error)[:8192].lower()
+    for bucket, phrases in [
+        ("FrameDetached", ("frame was detached", "frame has been detached", "frame is detached")),
+        ("TargetClosed", ("target page, context or browser has been closed", "target closed")),
+        ("ExecutionContextDestroyed", ("execution context was destroyed",)),
+        ("StrictLocator", ("strict mode violation",)),
+        ("MissingResource", ("no resource with given identifier", "no data found for resource")),
+        ("Evicted", ("evicted from inspector cache",)),
+        ("Redirect", ("body is unavailable for redirect",)),
+    ]:
+        if any(phrase in message for phrase in phrases):
+            return bucket
+    return "Other"
+
+
 def record_observer_failure(observed, phase, error):
     observed["observer_failure"] = True
     flag = {"request_headers": "request_headers_failed", "request_body": "request_body_failed", "response_skill_body": "response_skill_body_failed"}.get(phase)
@@ -47,6 +63,11 @@ def record_observer_failure(observed, phase, error):
     if key not in counts and len(counts) >= 16:
         key = "other"
     counts[key] = min(counts.get(key, 0) + 1, 65535)
+    buckets = observed.setdefault("error_buckets", {})
+    key = phase + ":" + error_bucket(error)
+    if key not in buckets and len(buckets) >= 16:
+        key = "other"
+    buckets[key] = min(buckets.get(key, 0) + 1, 65535)
 
 
 def wait_for_observers(page, observed):
@@ -61,21 +82,35 @@ def wait_for_observers(page, observed):
             raise CheckFailed("network_observation_did_not_settle")
 
 
-def wait_for_widget_window(page, widget, frame, deployment_id, contribution_id="echo_window"):
-    widget.get_by_text("The host opened this deployment’s echo window.", exact=True).wait_for()
-    opened = page.locator(f'section.window[data-app="plugin:{deployment_id}:{contribution_id}"]')
-    opened.wait_for()
-    frame.locator("#call").wait_for(state="visible")
-    frame.wait_for_function("() => document.querySelector('#call')?.disabled === false")
-    return opened.locator("iframe").element_handle().content_frame() == frame
+def wait_for_widget_window(page, widget, frame, deployment_id, contribution_id="echo_window", report=None):
+    observation = {}
+    if report is not None:
+        report["window_open_observation"] = observation
+    try:
+        observation["stage"] = "widget_ack"
+        widget.get_by_text("The host opened this deployment’s echo window.", exact=True).wait_for()
+        observation["stage"] = "fixed_parent"
+        opened = page.locator(f'section.window[data-app="plugin:{deployment_id}:{contribution_id}"]')
+        opened.wait_for()
+        observation["stage"] = "frame_call_visible"
+        frame.locator("#call").wait_for(state="visible")
+        observation["stage"] = "frame_call_ready"
+        frame.wait_for_function("() => document.querySelector('#call')?.disabled === false")
+        observation["stage"] = "frame_identity"
+        return opened.locator("iframe").element_handle().content_frame() == frame
+    except Exception as error:
+        observation["error_bucket"] = error_bucket(error)
+        raise
 
 
-def close_windows(page, report):
+def close_windows(page, report, observed=None):
     report["step"] = "desktop_close_actual_windows"
     for _ in range(16):
         if not page.locator("#windows section.window").count():
             report["checks"]["all_windows_close"] = True
             return
+        if observed is not None:
+            wait_for_observers(page, observed)
         focused = page.locator('#windows section.window[data-focused="true"]:visible')
         if not focused.count():
             # A minimized window must be restored through its real Dock control.
@@ -183,7 +218,7 @@ def run(config, report):
              "/api/platform/v1/ui/contributions": "contribution_list",
              f"/api/platform/v1/accounts/{config['owner_id']}": "owner_account",
              f"/api/platform/v1/accounts/{config['child_id']}": "child_account"}
-    observed = {"password_outside_core": False, "core_cookie_on_plugin": False, "observer_failure": False, "request_headers_failed": False, "request_body_failed": False, "response_skill_body_failed": False, "active_request_observers": 0, "active_response_observers": 0, "page_errors": 0, "error_counts": {}}
+    observed = {"password_outside_core": False, "core_cookie_on_plugin": False, "observer_failure": False, "request_headers_failed": False, "request_body_failed": False, "response_skill_body_failed": False, "active_request_observers": 0, "active_response_observers": 0, "page_errors": 0, "error_counts": {}, "error_buckets": {}}
     report["observation"] = observed
     calls = []
 
@@ -308,7 +343,7 @@ def run(config, report):
         frame.locator("#call").wait_for(state="visible")
         frame.wait_for_function("() => document.querySelector('#call')?.disabled === false")
         if identifier == "echo_widget":
-            close_windows(page, report)
+            close_windows(page, report, observed)
         require(url_origin(frame.url) == reference, identifier + "_actual_isolated_origin")
         require(frame.evaluate("() => { try { parent.document.body; return false; } catch { return true; } }"), identifier + "_parent_dom_blocked")
         require(frame.evaluate("() => { try { parent.sessionStorage.length; return false; } catch { return true; } }"), identifier + "_parent_credential_storage_blocked")
@@ -321,6 +356,7 @@ def run(config, report):
         frame.wait_for_function("() => document.querySelector('#state')?.textContent === 'Skill call completed.'")
         require(frame.locator("#result").inner_text() == message, label)
         require(frame.locator("img").count() == 0, label + "_text_not_html")
+        wait_for_observers(page, observed)
 
     def fetch(page, path, method="GET", body=None):
         return page.evaluate(FETCH, {"core": core, "client": config["client_id"], "path": path, "method": method, "body": body, "key": str(uuid.uuid4())})
@@ -349,17 +385,17 @@ def run(config, report):
         resources = open_app(page, "resources", "系统状态")
         resources.locator("pre.result").wait_for()
         require('"kernel_cpu_millis": 4000' in resources.inner_text() and '"kernel_memory_bytes": 17179869184' in resources.inner_text(), "desktop_reads_actual_node_reservations")
-        close_windows(page, report)
+        close_windows(page, report, observed)
         plugins = open_app(page, "plugins", "插件中心")
         report["step"] = "desktop_wait_actual_plugin_catalog"
         plugins.get_by_role("heading", name="M3 official WebUI", exact=True).wait_for()
         plugins.get_by_role("heading", name="M3 independent UI reference", exact=True).wait_for()
         require("org.xelab.webui" in plugins.inner_text() and "org.xelab.ui-reference" in plugins.inner_text(), "desktop_reads_actual_installed_plugins")
-        close_windows(page, report)
+        close_windows(page, report, observed)
         accounts = open_app(page, "accounts", "账户与权限")
         accounts.locator("pre.result").wait_for()
         require(config["owner_id"] in accounts.inner_text(), "desktop_reads_actual_owner_identity")
-        close_windows(page, report)
+        close_windows(page, report, observed)
         skills = open_app(page, "skills", "Skill")
         card = skills.locator("article.card").filter(has=page.get_by_role("heading", name="org.xelab.ui-reference.echo", exact=True))
         card.get_by_role("button", name="调用测试", exact=True).click()
@@ -369,19 +405,19 @@ def run(config, report):
         editor.get_by_role("button", name="提交", exact=True).click()
         editor.locator("pre.result").wait_for()
         require("Actual management UI Skill call" in editor.inner_text(), "desktop_invokes_actual_fixed_skill")
-        close_windows(page, report)
+        close_windows(page, report, observed)
         settings = open_app(page, "settings", "设置")
         settings.get_by_role("combobox", name="主题模式", exact=True).select_option("dark")
         settings.get_by_role("checkbox", name="减少动画", exact=True).check()
         settings.get_by_role("button", name="保存到当前账户", exact=True).click()
         page.wait_for_function("() => [...document.querySelectorAll('.theme-preview-note')].some(value => value.textContent.includes('已保存到核心'))")
-        close_windows(page, report)
+        close_windows(page, report, observed)
         settings = open_app(page, "settings", "设置")
         require(settings.get_by_role("combobox", name="主题模式", exact=True).input_value() == "dark" and settings.get_by_role("checkbox", name="减少动画", exact=True).is_checked(), "actual_theme_preferences_survive_reread")
-        close_windows(page, report)
+        close_windows(page, report, observed)
         unavailable = open_app(page, "tasks", "任务与知识库", dock=False)
         require(future_features_unavailable(unavailable), "future_execution_features_remain_unavailable")
-        close_windows(page, report)
+        close_windows(page, report, observed)
         window = contribution_frame(page)
         echo(window, "Actual OCI iframe <img src=x onerror=alert(1)>", "window_bridge_calls_real_http_skill")
         report["step"] = "real_channel_nonce_replay_and_source_rejection"
@@ -412,12 +448,17 @@ def run(config, report):
         require(proof.get("calls_delta") == 1 and proof.get("daily_delta") == 1 and proof.get("concurrent") == 0,
                 "channel_attacks_create_no_call_or_quota_charge")
         require(window.evaluate("async core => { try { await fetch(core+'/api/platform/v1/node'); return false; } catch { return true; } }", core), "third_party_connect_src_none")
-        close_windows(page, report)
+        close_windows(page, report, observed)
         widget = contribution_frame(page, "echo_widget")
         echo(widget, "Actual OCI widget Skill call", "widget_bridge_calls_real_http_skill")
-        with page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith(reference_base + "window.html")) as opened:
-            widget.locator("#open-window").click()
-        require(wait_for_widget_window(page, widget, opened.value, config["reference_deployment_id"])
+        report["window_open_observation"] = {"stage": "window_open_click"}
+        try:
+            with page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith(reference_base + "window.html")) as opened:
+                widget.locator("#open-window").click()
+        except Exception as error:
+            report["window_open_observation"]["error_bucket"] = error_bucket(error)
+            raise
+        require(wait_for_widget_window(page, widget, opened.value, config["reference_deployment_id"], report=report)
                 and url_origin(opened.value.url) == reference, "widget_opens_same_fixed_deployment_window")
         wait_for_observers(page, observed)
         require(report["http"]["actual_skill_successes"] >= 3, "owner_actual_skill_requests_observed")
