@@ -26495,7 +26495,7 @@
         "x-asynchronous": false,
         "x-sensitive-response": false,
         "x-authorization": {
-          "resource_kind": "plugin",
+          "resource_kind": "instance",
           "resource_source": "collection：逐对象过滤；创建对象以已验证 subject 为 proposed owner",
           "conditions": "默认拒绝；校验对象归属、完整祖先/源凭证链、固定上限、当前授权版本和额度；特殊字段条件见接口说明。"
         }

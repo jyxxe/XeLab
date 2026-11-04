@@ -203,3 +203,17 @@ F 的 node_budget 明确使用 8000 CPU millis/32GiB 的**合成元数据池**�
 插件确实由 Runtime 在真实 cgroup 运行，测试还直接读取两实例的 `cpu.max`、`memory.max`、`pids.max` 并比较批准值，重启后复核 reference。
 只有整体测试成功输出 `M3_UI_EVIDENCE` 才产生这些执行证据；仅编译、DB 限额或 Docker 配置值均不能代替。
 即使通过也不证明生产 4C16G 预留/峰值负载；正式 [RUN-03](run03-host.md)、独立宿主恢复仍待适格宿主，真实 AWS 演练 **DEFERRED**，恢复条件见 [M3 总进度](m3-progress.md)。
+
+## 真实浏览器发现的目录接口缺口
+
+首次 OCI/浏览器执行发现插件中心目录仍经未实现分派返回 503，桌面正确显示不可用；现补齐
+listPublishers/listInstallations/listDeployments/listInstances，复用 Authorizer/Policy、Origin、实际对象 owner 和既有 DTO。
+安装按 plugin ID、部署/实例按各自对象与 owner 授权；listInstances 规范类型同步为 instance，无新字段或迁移。
+
+SQL 先选当前可见对象，再逐对象复核规则；不泄露私有 ID/总数。按 `(created_at,id)`、创建水位分页，旧状态实时读取。
+每页最多 200 项/8MiB；15 分钟游标用现有 ring AES-GCM、领域派生 Auth 密钥与随机 nonce，绑定主体、完整凭证链、
+Origin、对端、过滤、页大小及授权/来源版本。撤权、同范围新授权或版本变化后须从第一页重读。
+
+新增 PostgreSQL + 生产 App.router OAuth/CORS 回归执行真实 Client/PKCE/同意，检查受限 Owner 两部署、子账户过滤、
+跨源/跨主体拒绝、私有过滤存在性隔离、游标篡改/过期/过滤/授权变化、创建水位与状态更新。
+这些元数据组件不声称 OCI 整体验收；修正后的最终提交仍须通过真实 CI。

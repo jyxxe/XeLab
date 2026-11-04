@@ -32,6 +32,19 @@ def url_origin(value):
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
+def safe_read_summary(status, value):
+    """Keep only bounded protocol facts, never response data or error text."""
+    result = {"status": status}
+    if isinstance(value, dict):
+        if 200 <= status < 300 and isinstance(value.get("items"), list):
+            result["item_count"] = len(value["items"])
+        error = value.get("error")
+        code = error.get("code") if isinstance(error, dict) else None
+        if status >= 400 and isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", code):
+            result["error_code"] = code
+    return result
+
+
 def fixture(path):
     metadata = path.lstat()
     if (not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600
@@ -100,7 +113,15 @@ def run(config, report):
     hosts = [urllib.parse.urlsplit(value).hostname for value in (core, ui, reference)]
     resolver = ",".join(f"MAP {host} {config['connect_ip']}" for host in hosts)
     report["playwright_version"] = importlib.metadata.version("playwright")
-    report["http"] = {"oauth_token_successes": 0, "callback_successes": 0, "actual_skill_successes": 0, "skill_post_attempts": 0, "node_reads": 0, "preference_writes": 0, "contribution_reads": 0}
+    report["http"] = {"oauth_token_successes": 0, "callback_successes": 0, "actual_skill_successes": 0, "skill_post_attempts": 0, "node_reads": 0, "preference_writes": 0, "contribution_reads": 0, "read_statuses": {}}
+    reads = {"/api/platform/v1/installations": "installation_list",
+             "/api/platform/v1/deployments": "deployment_list",
+             "/api/platform/v1/skills": "skill_list",
+             "/api/platform/v1/sessions": "current_sessions",
+             "/api/platform/v1/me/ui-preferences": "current_preferences",
+             "/api/platform/v1/ui/contributions": "contribution_list",
+             f"/api/platform/v1/accounts/{config['owner_id']}": "owner_account",
+             f"/api/platform/v1/accounts/{config['child_id']}": "child_account"}
     observed = {"password_outside_core": False, "core_cookie_on_plugin": False, "observer_failure": False, "page_errors": 0}
     calls = []
 
@@ -126,6 +147,14 @@ def run(config, report):
                 report["http"]["callback_successes"] += 1
             if url_origin(response.url) != core:
                 return
+            if response.request.method == "GET" and parsed.path in reads:
+                try:
+                    value = response.json()
+                except Exception:
+                    value = None
+                entries = report["http"]["read_statuses"].setdefault(reads[parsed.path], [])
+                entries.append(safe_read_summary(response.status, value))
+                del entries[:-8]
             if parsed.path == "/oauth/token" and response.status == 200:
                 report["http"]["oauth_token_successes"] += 1
             elif parsed.path == "/api/platform/v1/node" and response.status == 200:
@@ -252,6 +281,7 @@ def run(config, report):
         require('"kernel_cpu_millis": 4000' in resources.inner_text() and '"kernel_memory_bytes": 17179869184' in resources.inner_text(), "desktop_reads_actual_node_reservations")
         close_windows(page)
         plugins = open_app(page, "plugins", "插件中心")
+        report["step"] = "desktop_wait_actual_plugin_catalog"
         plugins.get_by_role("heading", name="M3 official WebUI", exact=True).wait_for()
         plugins.get_by_role("heading", name="M3 independent UI reference", exact=True).wait_for()
         require("org.xelab.webui" in plugins.inner_text() and "org.xelab.ui-reference" in plugins.inner_text(), "desktop_reads_actual_installed_plugins")
