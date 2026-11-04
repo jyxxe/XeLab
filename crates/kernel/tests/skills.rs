@@ -144,6 +144,33 @@ impl Fixture {
     fn registration(&self) -> Value {
         json!({"installation_id":self.installation,"definition":self.manifest["skills"][0]})
     }
+    async fn stream_manifest(&self) -> Value {
+        // Metadata-only admission fixture. The independent signed OCI image is
+        // exercised by tests/oci.rs; this does not assert runtime success.
+        let mut manifest = self.manifest.clone();
+        manifest["capabilities"][0]["stream_item_schema"] = json!({"type":"object","properties":{"message":{"type":"string"}},"required":["message"],"additionalProperties":false});
+        manifest["skills"][0]["stream_item_schema"] =
+            manifest["capabilities"][0]["stream_item_schema"].clone();
+        manifest["skills"][0]["name"] = json!(format!(
+            "{}.stream",
+            manifest["plugin_id"].as_str().unwrap()
+        ));
+        xelab_kernel::artifact::validate_profile(&manifest).unwrap();
+        let c = self.db.connect().await.unwrap();
+        c.execute(
+            "UPDATE installations SET manifest=$2 WHERE id=$1",
+            &[&self.installation, &manifest],
+        )
+        .await
+        .unwrap();
+        c.execute(
+            "UPDATE capability_contracts SET spec=$1",
+            &[&manifest["capabilities"][0]],
+        )
+        .await
+        .unwrap();
+        manifest
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -199,6 +226,40 @@ async fn request(
             serde_json::from_slice(&bytes).unwrap()
         },
     )
+}
+
+async fn waiting_advisory_backend(c: &tokio_postgres::Client) -> i32 {
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if let Some(row) = c.query_opt("SELECT pid FROM pg_locks WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND NOT granted ORDER BY pid LIMIT 1",&[]).await.unwrap() {
+                return row.get(0);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("call actor reached the held admission lock")
+}
+
+async fn assert_backend_terminated(c: &tokio_postgres::Client, pid: i32) {
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let exists: bool = c
+                .query_one(
+                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1)",
+                    &[&pid],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if !exists {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("abandoned admission backend must exit while its lock holder remains active");
 }
 
 #[tokio::test]
@@ -342,6 +403,8 @@ async fn both_authorization_layers_precede_admission_and_no_failure_leaks_quota(
     let skill_rule =
         json!({"action":"skill.invoke","resource":{"kind":"skill","match":"ids","ids":[skill]}});
     let capability_rule = json!({"action":"capability.invoke","resource":{"kind":"capability","match":"ids","ids":[format!("{}@{}",contract["name"].as_str().unwrap(),contract["version"].as_str().unwrap())]}});
+    // Exercise permission precedence rather than racing the CI database against
+    // a short admission deadline while other regression targets run.
     let request_body =
         json!({"input":{"message":"metadata-only admission probe"},"timeout_ms":10000.0});
     for rules in [json!([skill_rule]), json!([capability_rule])] {
@@ -666,6 +729,299 @@ async fn skill_required_provider_rejects_bare_and_forged_routes_and_preserves_un
 }
 
 #[tokio::test]
+async fn skill_stream_rejects_nonstream_resume_filters_and_missing_target_authority() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let created = f.call("registerSkill",&[],&f.token,json!({"installation_id":f.installation,"definition":f.manifest["skills"][0],"enabled":true}),None).await;
+    assert_eq!(created.0, 201, "{}", created.1);
+    let skill = created.1["id"].as_str().unwrap().to_owned();
+    let request =
+        json!({"input":{"message":"only a declared stream is admissible"},"timeout_ms":10000});
+    let refused = f
+        .call(
+            "streamSkill",
+            &[("skill_id", skill.clone())],
+            &f.token,
+            request.clone(),
+            None,
+        )
+        .await;
+    assert_eq!(refused.0, 400, "{}", refused.1);
+    for (suffix, last_event) in [("", true), ("?unknown=1", false)] {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(format!(
+                "/api/platform/v1/skills/{skill}/calls:stream{suffix}"
+            ))
+            .header("authorization", format!("Bearer {}", f.token))
+            .header("content-type", "application/json")
+            .header("idempotency-key", Uuid::new_v4().to_string());
+        if last_event {
+            req = req.header("last-event-id", "");
+        }
+        let mut req = req
+            .body(Body::from(serde_json::to_vec(&request).unwrap()))
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(
+            "127.0.0.1:50000".parse::<SocketAddr>().unwrap(),
+        ));
+        let response = f.router.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), 400);
+    }
+    let c = f.db.connect().await.unwrap();
+    assert_eq!(
+        c.query_one("SELECT count(*) FROM calls", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    let manifest = f.stream_manifest().await;
+    let stream=f.call("registerSkill",&[],&f.token,json!({"installation_id":f.installation,"definition":manifest["skills"][0],"enabled":true}),None).await;
+    assert_eq!(stream.0, 201, "{}", stream.1);
+    let stream_id = stream.1["id"].as_str().unwrap().to_owned();
+    let cap = &manifest["capabilities"][0]["contract"];
+    let skill_rule = json!({"action":"skill.invoke","resource":{"kind":"skill","match":"ids","ids":[stream_id]}});
+    let capability_rule = json!({"action":"capability.invoke","resource":{"kind":"capability","match":"ids","ids":[format!("{}@{}",cap["name"].as_str().unwrap(),cap["version"].as_str().unwrap())]}});
+    for rule in [skill_rule, capability_rule] {
+        let key = f.key(json!([rule])).await;
+        let refused = f
+            .call(
+                "streamSkill",
+                &[("skill_id", stream_id.clone())],
+                key["secret"].as_str().unwrap(),
+                request.clone(),
+                None,
+            )
+            .await;
+        assert_eq!(refused.0, 403, "{}", refused.1);
+    }
+    let unavailable = f
+        .call(
+            "streamSkill",
+            &[("skill_id", stream_id)],
+            &f.token,
+            request,
+            None,
+        )
+        .await;
+    assert_eq!(unavailable.0, 503, "{}", unavailable.1);
+    assert_eq!(
+        c.query_one("SELECT count(*) FROM calls", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+}
+
+#[tokio::test]
+async fn abandoned_stream_handler_cannot_admit_after_waiting_for_call_lock() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let manifest = f.stream_manifest().await;
+    let registered=f.call("registerSkill",&[],&f.token,json!({"installation_id":f.installation,"definition":manifest["skills"][0],"enabled":true}),None).await;
+    assert_eq!(registered.0, 201, "{}", registered.1);
+    let deployment = Uuid::new_v4();
+    let instance = Uuid::new_v4();
+    let mut c = f.db.connect().await.unwrap();
+    let contract = &manifest["capabilities"][0]["contract"];
+    let spec = json!({"installation_id":f.installation,"enabled":true,"limits":manifest["minimum_resources"]});
+    c.execute("INSERT INTO deployments(id,owner_id,installation_id,spec,phase,created_at,updated_at) VALUES($1,$2,$3,$4,'ready',now(),now())",&[&deployment,&f.owner,&f.installation,&spec]).await.unwrap();
+    c.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,created_at,updated_at) VALUES($1,$2,1,0,'ready','alive',$3,now(),now())",&[&instance,&deployment,&spec["limits"]]).await.unwrap();
+    c.execute("INSERT INTO provider_records(instance_id,name,version,availability,features,observed_generation,observed_at) VALUES($1,$2,$3,'ready','[]',1,now())",&[&instance,&contract["name"].as_str().unwrap(),&contract["version"].as_str().unwrap()]).await.unwrap();
+    // The metadata target could admit a Call but has no physical RPC service.
+    // Abandonment must prevent the durable Call, rather than relying on that
+    // deliberately unavailable runtime to fail after admission.
+    let held = c.transaction().await.unwrap();
+    xelab_kernel::db::call_lock(&held).await.unwrap();
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/platform/v1/skills/{}/calls:stream",
+            registered.1["id"].as_str().unwrap()
+        ))
+        .header("authorization", format!("Bearer {}", f.token))
+        .header("content-type", "application/json")
+        .header("idempotency-key", "abandon-before-stream-admission")
+        .body(Body::from(
+            serde_json::to_vec(
+                &json!({"input":{"message":"must never dispatch"},"timeout_ms":10000}),
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+    req.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:50000".parse::<SocketAddr>().unwrap(),
+    ));
+    let router = f.router.clone();
+    let handling = tokio::spawn(async move { router.oneshot(req).await.unwrap() });
+    let observer = f.db.connect().await.unwrap();
+    let waiting_backend = waiting_advisory_backend(&observer).await;
+    assert!(!handling.is_finished());
+    handling.abort();
+    assert!(handling.await.unwrap_err().is_cancelled());
+    // Dropping a query future does not by itself stop tokio-postgres's detached
+    // connection driver. Prove the server backend is gone before releasing the
+    // lock; merely observing zero admitted Calls would miss that resource leak.
+    assert_backend_terminated(&observer, waiting_backend).await;
+    held.rollback().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Synchronize with any actor that resumed after lock release before reading
+    // counters, so scheduler delays cannot produce a false zero-count pass.
+    let finished = c.transaction().await.unwrap();
+    xelab_kernel::db::call_lock(&finished).await.unwrap();
+    assert_eq!(
+        finished
+            .query_one("SELECT count(*) FROM calls", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    assert_eq!(
+        finished
+            .query_one("SELECT count(*) FROM reservations WHERE kind='call'", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    let quota = finished
+        .query_one(
+            "SELECT concurrent_calls_used,daily_calls_used FROM quotas WHERE account_id=$1",
+            &[&f.owner],
+        )
+        .await
+        .unwrap();
+    assert_eq!(quota.get::<_, i64>(0), 0);
+    assert_eq!(quota.get::<_, i64>(1), 0);
+    finished.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancel_call_is_authorized_intent_and_never_releases_an_unfenced_slot() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let own_call = Uuid::new_v4();
+    let child=f.call("createChildAccount",&[("account_id",f.owner.to_string())],&f.token,json!({"display_name":"Scoped cancel caller","inheritance":{"mode":"selected","rules":[{"action":"capability.call.cancel","resource":{"kind":"call","match":"ids","ids":[own_call]}}]}}),None).await;
+    assert_eq!(child.0, 201, "{}", child.1);
+    let child_id = contracts::id(&child.1["account"], "id").unwrap();
+    let activated = request(
+        &f.router,
+        "activateAccount",
+        &[],
+        None,
+        json!({"activation_token":child.1["activation_token"],"password":PASSWORD}),
+        None,
+        "activate-cancel-child",
+    )
+    .await;
+    assert_eq!(activated.0, 200, "{}", activated.1);
+    let session = request(
+        &f.router,
+        "login",
+        &[],
+        None,
+        json!({"account_id":child_id,"password":PASSWORD}),
+        None,
+        "login-cancel-child",
+    )
+    .await;
+    assert_eq!(session.0, 200, "{}", session.1);
+    let child_token = session.1["access_token"].as_str().unwrap();
+    let owner_call = Uuid::new_v4();
+    let delegation = Uuid::new_v4();
+    let c = f.db.connect().await.unwrap();
+    c.execute("INSERT INTO execution_delegations(id,subject_id,maximum_rules,run_as,expires_at,status,created_at) VALUES($1,$2,'[]','user',now()+interval '1 minute','active',now())",&[&delegation,&f.owner]).await.unwrap();
+    let contract = &f.manifest["capabilities"][0]["contract"];
+    for (call, owner, execution) in [
+        (owner_call, f.owner, Some(delegation)),
+        (own_call, child_id, None),
+    ] {
+        c.execute("INSERT INTO calls(id,owner_id,delegation_id,contract,input_digest,state,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,'running',now()+interval '1 minute',now())",&[&call,&owner,&execution,&contract,&contracts::digest(b"fixture")]).await.unwrap();
+        c.execute("INSERT INTO reservations(id,account_id,kind,status,created_at) VALUES($1,$2,'call','active',now())",&[&call,&owner]).await.unwrap();
+    }
+    let refused = f
+        .call(
+            "cancelCall",
+            &[("call_id", owner_call.to_string())],
+            child_token,
+            Value::Null,
+            None,
+        )
+        .await;
+    assert_eq!(
+        refused.0, 403,
+        "child cannot cancel another account's call: {}",
+        refused.1
+    );
+    assert_eq!(
+        c.query_one("SELECT state FROM calls WHERE id=$1", &[&owner_call])
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        "running"
+    );
+    let own = f
+        .call(
+            "cancelCall",
+            &[("call_id", own_call.to_string())],
+            child_token,
+            Value::Null,
+            None,
+        )
+        .await;
+    assert_eq!(own.0, 204, "{}", own.1);
+    for _ in 0..2 {
+        let canceled = request(
+            &f.router,
+            "cancelCall",
+            &[("call_id", owner_call.to_string())],
+            Some(&f.token),
+            Value::Null,
+            None,
+            "cancel-owner-call",
+        )
+        .await;
+        assert_eq!(canceled.0, 204, "{}", canceled.1);
+    }
+    let row=c.query_one("SELECT c.state,c.error,r.status,e.status AS delegation_status FROM calls c JOIN reservations r ON r.id=c.id JOIN execution_delegations e ON e.id=c.delegation_id WHERE c.id=$1",&[&owner_call]).await.unwrap();
+    assert_eq!(row.get::<_, String>("state"), "unknown");
+    assert_eq!(row.get::<_, Value>("error")["code"], "CANCELED");
+    assert_eq!(
+        row.get::<_, String>("status"),
+        "active",
+        "API cancellation cannot assert physical termination"
+    );
+    assert_eq!(row.get::<_, String>("delegation_status"), "revoked");
+    let audits = c
+        .query(
+            "SELECT resource,outcome FROM audit_events WHERE action='cancelCall'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(audits
+        .iter()
+        .any(|row| row.get::<_, String>("outcome") == "denied"));
+    assert!(audits
+        .iter()
+        .any(|row| row.get::<_, String>("outcome") == "succeeded"));
+    for audit in audits {
+        let resource: Value = audit.get("resource");
+        assert_eq!(resource["kind"], "call");
+        assert!(
+            resource["ids"][0] == owner_call.to_string()
+                || resource["ids"][0] == own_call.to_string()
+        );
+    }
+}
+
+#[tokio::test]
 async fn omitted_timeout_uses_fixed_skill_maximum_before_waiting_on_call_lock() {
     let Some(mut f) = Fixture::new().await else {
         return;
@@ -687,27 +1043,25 @@ async fn omitted_timeout_uses_fixed_skill_maximum_before_waiting_on_call_lock() 
     let params = [("skill_id", created.1["id"].as_str().unwrap().to_owned())];
     let lock = c.transaction().await.unwrap();
     xelab_kernel::db::call_lock(&lock).await.unwrap();
-    let refused = tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        f.call(
-            "invokeSkill",
-            &params,
-            &f.token,
-            json!({"input":{"message":"use the fixed default deadline"}}),
-            None,
-        ),
-    )
-    .await
-    .expect("omitted timeout must not inherit the outer 120s wait");
+    let observer = f.db.connect().await.unwrap();
+    let (refused, waiting_backend) =
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            tokio::join!(
+                f.call(
+                    "invokeSkill",
+                    &params,
+                    &f.token,
+                    json!({"input":{"message":"use the fixed default deadline"}}),
+                    None,
+                ),
+                waiting_advisory_backend(&observer)
+            )
+        })
+        .await
+        .expect("omitted timeout must not inherit the outer 120s wait");
     assert_eq!(refused.0, 504, "{}", refused.1);
     assert_eq!(refused.1["error"]["code"], "DEADLINE_EXCEEDED");
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            let waiting: bool = lock.query_one("SELECT EXISTS(SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid WHERE a.datname=current_database() AND l.locktype='advisory' AND NOT l.granted)", &[]).await.unwrap().get(0);
-            if !waiting { break; }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    }).await.expect("deadline must cancel the PostgreSQL waiter before its lock is released");
+    assert_backend_terminated(&observer, waiting_backend).await;
     lock.rollback().await.unwrap();
     assert_eq!(
         c.query_one("SELECT count(*) FROM calls", &[])

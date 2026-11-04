@@ -15,7 +15,7 @@
 | `setSkillEnabled` | If-Match 乐观锁启停；重新启用复核候选和来源，归档后不能恢复 |
 | `archiveSkill` | 逻辑归档、禁止新路由、保留历史定义，返回 204 |
 | `invokeSkill` | 普通 capability 目标的非流式调用，通过 Broker 发送至固定安装的真实 OCI 实例 |
-| `streamSkill` | 尚未实现，不把非流式响应包装为伪流；保留现行契约 |
+| `streamSkill` | 后续切片已实现普通 OCI 纯流；准确边界与待验收证据见[流式调用](m3-skill-streams.md) |
 
 HTTP、micro、extension 目标、排队、非可重复副作用和 HostService 的 Skill 方法仍未交付。
 `HostService.ListSkillCandidates/ResolveSkill/CheckSkillAccess/InvokeSkill/InvokeSkillStream`
@@ -94,8 +94,10 @@ PostgreSQL 测试需显式设置隔离的 `XELAB_TEST_DATABASE_URL`。
 并使用非 BMP 属性名及浮点格式检查摘要规范化。
 独立 API 测试和现有 OCI 组件测试须另行运行并保存真实结果；参考制品构建器将候选纳入签名清单。
 
-[PR #39](https://github.com/jyxxe/XeLab/pull/39) 是首个非流式实现切片。开发中已执行真实 PostgreSQL 注册/摘要 5 项、
-API 4 项、Blob mTLS 和 unknown 实例槽回归；最后安全修正后的重测与完整 OCI CI 仍待确认。
+[PR #39](https://github.com/jyxxe/XeLab/pull/39) 已作为首个非流式实现切片合并至 main
+`136cb02b503be9e7e2e5c49007dc609199cddc15`。精确提交 `7ab2f0e…` 的
+[完整 Kernel M1 CI](https://github.com/jyxxe/XeLab/actions/runs/41804075279) 已成功，
+包含 PostgreSQL、真实 OCI、离线恢复及适用回归；合并后的 main CI 仍须独立确认。
 本地 `/tmp` 的 xattr 列表不一致使部分既有归档测试按 fail-closed 拒绝；不放松验证来掩盖环境错误。
 最终通过结论以对应 PR 的精确提交、CI 日志及实际组件结果为准，不能将测试入口存在算作通过。
 AWS 与独立宿主正式验收继续按[持续目标](m3-progress.md)标为 DEFERRED；

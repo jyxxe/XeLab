@@ -86,6 +86,7 @@ pub fn audit_resource(
     }
     for (parameter, kind) in [
         ("skill_id", "skill"),
+        ("call_id", "call"),
         ("credential_id", "credential"),
         ("session_id", "credential"),
         ("group_id", "group"),

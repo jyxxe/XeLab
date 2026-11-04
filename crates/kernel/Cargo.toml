@@ -52,5 +52,6 @@ protoc-bin-vendored = "3"
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
 
