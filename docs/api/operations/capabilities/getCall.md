@@ -6,7 +6,7 @@
 
 `GET /api/platform/v1/calls/{call_id}`
 
-查询调用结果和结果未知状态。读取含结果的 Skill/声明式 HTTP Call 还要求原调用主体及凭证、固定 Skill/安装/目标动作和原始已计费来源继续有效，并复核冻结输入 Blob 的读取权限；新授权不能复活已撤回的旧来源。没有业务结果的状态查询仍按 capability.call.read 作用域执行。
+查询调用结果和结果未知状态。读取含结果的 Skill/声明式 HTTP Call 或普通副作用能力的终态，要求原调用主体及凭证、固定目标动作和原始已计费来源继续有效，并复核固定 Skill/安装及冻结输入 Blob 的读取权限；新授权不能复活已撤回的旧来源。queryable 的 unknown Call 在原凭证、Origin 和来源仍有效时，以原 Call ID/业务键向原实例及代次执行 QueryResult，期限取原调用剩余与 2 秒的更小值。核实成功才结算原预约，不调用 Invoke、不重建业务流或切换提供者；记录缺失、超时、实例换代或无法核实继续保持 unknown。其他无业务结果的状态查询仍按 capability.call.read 作用域执行。
 
 | 项目 | 定义 |
 |---|---|

@@ -7,6 +7,7 @@ pub mod backup_repository;
 pub mod backups;
 pub mod blobs;
 pub mod broker;
+pub(crate) mod broker_query;
 pub mod config;
 pub mod contracts;
 pub mod controller;
