@@ -423,6 +423,64 @@ async fn wait_ready(app: &App, deployment: &str) {
     panic!("Actual OCI deployment did not become ready");
 }
 
+/// Independently check the kernel files for the actual admitted Ready instance,
+/// including pids.max (in addition to Runtime's CPU/memory startup checks).
+/// The returned evidence contains finite limit numbers, never host paths.
+async fn instance_cgroup_limits(app: &App, deployment: &str, approved: &Value) -> Value {
+    let c = app.db.connect().await.unwrap();
+    let deployment = Uuid::parse_str(deployment).unwrap();
+    let instances=c.query("SELECT i.id,i.limits FROM deployments d JOIN instances i ON i.deployment_id=d.id WHERE d.id=$1 AND d.spec->'enabled'='true'::jsonb AND d.approval<>'{}'::jsonb AND d.phase='ready' AND i.phase='ready' AND i.health='alive' AND i.generation=d.observed_generation",&[&deployment]).await.unwrap();
+    assert_eq!(
+        instances.len(),
+        1,
+        "One approved Ready instance is required"
+    );
+    assert_eq!(
+        instances[0].get::<_, Value>("limits"),
+        *approved,
+        "The actual instance must retain the approved deployment limits"
+    );
+    let instance: Uuid = instances[0].get("id");
+    let cgroup = Path::new("/sys/fs/cgroup/xelab/plugins").join(instance.to_string());
+    let cpu = fs::read_to_string(cgroup.join("cpu.max")).expect("Read actual cgroup CPU limit");
+    let cpu: Vec<u64> = cpu
+        .split_whitespace()
+        .map(|value| {
+            value
+                .parse()
+                .expect("Actual cgroup CPU limit must be finite")
+        })
+        .collect();
+    assert_eq!(cpu.len(), 2, "Actual cgroup CPU quota and period required");
+    let quota = approved["cpu_millis"]
+        .as_u64()
+        .unwrap()
+        .checked_mul(100)
+        .unwrap();
+    assert_eq!(cpu, [quota, 100000], "Actual approved cgroup CPU limit");
+    let memory: u64 = fs::read_to_string(cgroup.join("memory.max"))
+        .expect("Read actual cgroup memory limit")
+        .trim()
+        .parse()
+        .expect("Actual cgroup memory limit must be finite");
+    assert_eq!(
+        memory,
+        approved["memory_bytes"].as_u64().unwrap(),
+        "Actual approved cgroup memory limit"
+    );
+    let pids: u64 = fs::read_to_string(cgroup.join("pids.max"))
+        .expect("Read actual cgroup process limit")
+        .trim()
+        .parse()
+        .expect("Actual cgroup process limit must be finite");
+    assert_eq!(
+        pids,
+        approved["pids"].as_u64().unwrap(),
+        "Actual approved cgroup process limit"
+    );
+    json!({"cpu_quota_us":cpu[0],"cpu_period_us":cpu[1],"memory_bytes":memory,"pids":pids})
+}
+
 async fn installed(
     router: &Router,
     host: &str,
@@ -811,6 +869,10 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
         approve(&router,&host,&token,&web_deployment,"approve-webui").await;approve(&router,&host,&token,&reference_deployment,"approve-reference").await;
         enabled(&router,&host,&token,&web_deployment,true,"enable-webui").await;enabled(&router,&host,&token,&reference_deployment,true,"enable-reference").await;
         wait_ready(app,&web_deployment).await;wait_ready(app,&reference_deployment).await;
+        let approved_web=read_deployment(&router,&host,&token,&web_deployment).await;
+        let approved_reference=read_deployment(&router,&host,&token,&reference_deployment).await;
+        report["cgroup_limits"]=json!({"official_webui":instance_cgroup_limits(app,&web_deployment,&approved_web["spec"]["limits"]).await,"ui_reference":instance_cgroup_limits(app,&reference_deployment,&approved_reference["spec"]["limits"]).await});
+        report["checks"]["both_oci_images_enforce_approved_cpu_memory_and_pids_cgroups"]=json!(true);
         let skill=status(api(&router,&host,"registerSkill",&[],Some(&token),json!({"installation_id":reference_installation["installation_id"],"definition":reference_manifest["skills"][0],"enabled":false}),"register-fixed-skill",None).await,201,"registerSkill");
         let skill_id=skill["id"].as_str().unwrap().to_owned();
         status(api(&router,&host,"setSkillEnabled",&[("skill_id",skill_id.clone())],Some(&token),json!({"enabled":true}),"enable-fixed-skill",skill["revision"].as_i64()).await,200,"setSkillEnabled");
@@ -898,6 +960,10 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
         running=Some(Running::start(config.clone(),db.clone(),hmac.clone(),public_tls.clone(),listener(address)).await);
         let app=&running.as_ref().unwrap().app;wait_ready(app,&reference_deployment).await;
         let router=api::router(app.clone());let host=public_host(app);
+        let approved_reference=read_deployment(&router,&host,&token,&reference_deployment).await;
+        let reference_limits=instance_cgroup_limits(app,&reference_deployment,&approved_reference["spec"]["limits"]).await;
+        assert_eq!(reference_limits,report["cgroup_limits"]["ui_reference"]);
+        report["checks"]["reference_cgroup_limits_persist_across_kernel_restart"]=json!(true);
         let after=status(api(&router,&host,"getNode",&[],Some(&token),Value::Null,"after-restart",None).await,200,"getNode");
         assert_eq!(before["reserved_cpu_millis"],after["reserved_cpu_millis"]);assert_eq!(before["reserved_memory_bytes"],after["reserved_memory_bytes"]);
         let fixed=json!({"input":{"message":"actual Skill after kernel component restart"},"provider_deployment_id":reference_deployment,"idempotency_key":"post-restart-intent","timeout_ms":10000});
