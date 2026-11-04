@@ -380,7 +380,7 @@ impl OpenedEvents {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires root, containerd, nftables, cgroups v2 and signed HTTP fixture images"]
 async fn signed_http_and_static_gateway_use_real_oci_and_shared_broker() {
     assert_eq!(std::env::var("XELAB_HTTP_OCI_TEST").as_deref(), Ok("1"));

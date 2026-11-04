@@ -526,7 +526,6 @@ async fn execute_inner(
         if streaming {
             let output =
                 output.ok_or_else(|| Error::invalid("HTTP Skill cannot bind an event stream"))?;
-            output.begin(status, safe_headers, true)?;
             let terminal = read_events(
                 app,
                 token,
@@ -536,6 +535,7 @@ async fn execute_inner(
                 &target,
                 response,
                 output,
+                (status, safe_headers),
                 wall_deadline,
                 input.browser_origin.as_deref(),
             )
@@ -1061,9 +1061,11 @@ async fn read_events(
     target: &Provider,
     response: reqwest::Response,
     output: &Output,
+    head: (StatusCode, HeaderMap),
     deadline: chrono::DateTime<chrono::Utc>,
     browser_origin: Option<&str>,
 ) -> Result<Value> {
+    let mut pending_head = Some(head);
     let mut source = response.bytes_stream();
     let mut buffer = Vec::new();
     let mut sequence = 0;
@@ -1162,6 +1164,12 @@ async fn read_events(
                 browser_origin,
             )
             .await?;
+            // Do not commit SSE headers until a signed, authorized first
+            // accepted frame is actually available. Earlier EOF/malformed
+            // frames remain ordinary HTTP errors, never failed sequence1.
+            if let Some((status, headers)) = pending_head.take() {
+                output.begin(status, headers, true)?;
+            }
             if value["terminal"] == true {
                 if value["kind"] != "completed" {
                     return Err(Error::unavailable("HTTP plugin stream did not complete"));
