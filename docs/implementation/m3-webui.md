@@ -167,7 +167,7 @@ m3_env=$(mktemp)
 m3_browser=$(mktemp -d)
 trap 'rm -f -- "$m3_env"; rm -rf -- "$m3_browser"' EXIT
 python3 -m venv "$m3_browser"
-"$m3_browser/bin/pip" install 'playwright==1.62.0'
+"$m3_browser/bin/pip" install 'playwright==1.62.0' 'jsonschema==4.26.0'
 "$m3_browser/bin/python" -m playwright install --with-deps chromium
 "$m3_browser/bin/python" - "$m3_env" <<'PY'
 import sys
