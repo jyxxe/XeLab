@@ -82,10 +82,23 @@ pub(super) async fn data_path(f: &Fixture, volume: Uuid) -> std::path::PathBuf {
         .await
         .unwrap()
         .get(0);
-    ProjectStore::open(&f.app.config.root().join("volumes"))
-        .unwrap()
-        .data_path(volume, project as u32)
-        .unwrap()
+    // Observers can race the real allocator's exclusive backend lease. Wait
+    // only for that exact contention; never bypass path/quota validation or
+    // hide other storage failures behind a retry.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match ProjectStore::open(&f.app.config.root().join("volumes")) {
+            Ok(store) => return store.data_path(volume, project as u32).unwrap(),
+            Err(error)
+                if error.code == "STATE_CONFLICT"
+                    && error.message == "Storage backend is already in use"
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(error) => panic!("validated test data path unavailable: {error}"),
+        }
+    }
 }
 pub(super) async fn create_deployment(
     f: &Fixture,

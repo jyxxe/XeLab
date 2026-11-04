@@ -73,9 +73,9 @@ pub async fn exercise() {
         let deployment =
             schema_bootstrap::create_deployment(&f, installation, business, "crash-deployment")
                 .await;
+        let path = schema_bootstrap::data_path(&f, business).await;
         let (operation, _) =
             schema_bootstrap::enable(&f, deployment, "crash-original-enable").await;
-        let path = schema_bootstrap::data_path(&f, business).await;
         for _ in 0..600 {
             let job = journal(&f, operation).await;
             assert_ne!(job["state"], "failed", "{job}");
