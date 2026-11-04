@@ -6,6 +6,9 @@
 `dbb35cbc7c2c110c88de7ba16dc2d4569fad3ad2`，内部 Schema 14。
 这是开发与证据清单；未勾选项尚未完成，规范存在不代表运行代码已经交付。
 后续阶段须更新实际提交、PR、测试命令及结果，不能用本页代替运行证据。
+当前已合并基线为 `136cb02b503be9e7e2e5c49007dc609199cddc15`：
+[PR #39](https://github.com/jyxxe/XeLab/pull/39) 已交付注册管理及普通 OCI 非流式调用。
+流式实现仍在独立分支验收；HTTP、OAuth、官方 WebUI 与 UI 桥尚未交付。
 
 ## 范围与协作
 
@@ -43,9 +46,10 @@
 - [x] Phase 0：重新读取 main、提交、开放 PR 和现行规范；#1 规划 PR 保持开放。
 - [x] Phase 0：审查并合并 [PR #31](https://github.com/jyxxe/XeLab/pull/31)，建立 Issue 入口。
 - [x] Phase 0：建立 [M3 目标 Issue #38](https://github.com/jyxxe/XeLab/issues/38)，搜索时无已有 Issue。
-- [ ] Phase 0：完成本环境可运行的 M1/M2 基线回归，修复实际阻断问题。
-- [ ] M3-A：registerSkill、getSkill、listSkills、setSkillEnabled、archiveSkill。
-- [ ] M3-A：invokeSkill、streamSkill，经 SkillRouter → Broker → 真实固定 OCI 实例。
+- [x] Phase 0：完成适用 M1/M2 基线及真实组件 CI 回归，修复阻断开发的问题；本地宿主差异和正式验收边界见证据。
+- [x] M3-A：registerSkill、getSkill、listSkills、setSkillEnabled、archiveSkill；已随 #39 合并。
+- [x] M3-A：invokeSkill 经 SkillRouter → Broker → 真实固定 OCI 实例；已随 #39 合并。
+- [ ] M3-A：streamSkill 经相同 Broker 与固定真实 OCI 实例；功能及负向场景已有执行证据，完整 CI/正式合并尚待完成。
 - [ ] M3-A：签名/安装/Schema/版本冲突、skill.invoke 与目标动作同时授权、撤权取消及共享并发。
 - [ ] M3-A：独立插件注册→启用→授权→调用→禁用拒绝→恢复，覆盖重复请求、资源不足与实例重启。
 - [ ] M3-B：精确签名 HTTP 路由及 OpenAPI 摘要、Schema、required_action 验证。
@@ -74,8 +78,14 @@
 | #31 与 #37 的本地合并树 | 配置校验 5 表单/22 标签；10 单元测试；strict docs 812 页；diff 检查均通过 |
 | main `dbb35cbc…` 标签同步 | [Sync issue labels](https://github.com/jyxxe/XeLab/actions/runs/41796871248) 成功；已读取并核对 22 个受管标签 |
 | main `dbb35cbc…` Issue 配置 | [Issue checks](https://github.com/jyxxe/XeLab/actions/runs/41796871110) 成功 |
-| main `dbb35cbc…` 内核回归 | [Kernel M1](https://github.com/jyxxe/XeLab/actions/runs/41796871078) 记录时运行中，尚不能计为通过 |
-| M3-A 首个实现 | [PR #39](https://github.com/jyxxe/XeLab/pull/39) 已提交；注册管理与非流式调用已编码，最终 CI/合并仍待完成；[范围和命令](m3-skills.md) |
+| main `dbb35cbc…` 内核回归 | [Kernel M1](https://github.com/jyxxe/XeLab/actions/runs/41796871078) 成功；正式生产/AWS 验收仍独立待执行 |
+| M3-A 非流式实现 `7ab2f0e…` | [PR #39](https://github.com/jyxxe/XeLab/pull/39) 已合并；精确提交的 [Kernel M1](https://github.com/jyxxe/XeLab/actions/runs/41804075279) 成功，包含真实 OCI、离线恢复与适用回归；[范围和命令](m3-skills.md) |
+| main `136cb02…` 合并后 CI | [Kernel M1](https://github.com/jyxxe/XeLab/actions/runs/41810812489) 记录时运行中；不能提前计为通过 |
+| 流式分支 `accc858…` 首次真实 OCI | [执行 41804847274](https://github.com/jyxxe/XeLab/actions/runs/41804847274) 失败：独立畸形流连续触发隔离，达到既有 5 次启动预算；测试已改为验证预算拒绝后通过公开停启恢复，不提高预算 |
+| 流式分支 `8c1c915…` 真实 OCI | [执行 41809262982](https://github.com/jyxxe/XeLab/actions/runs/41809262982) 中流式正常/畸形/取消/撤权/共享并发/断线及预算恢复场景通过；随后升级测试按单能力计数失败，整体 CI 仍失败，不能计为完整通过 |
+
+流式分支已正常合并上述 main，保留单调时钟 deadline、请求作用域数据库取消和
+实际后端退出断言；[流式实现说明](m3-skill-streams.md)记录范围及完整 CI 待验收项。
 
 本地检查命令为 `python3 tools/issues/validate.py`、
 `python3 -m unittest discover -s tools/issues -p 'test_*.py' -v`、

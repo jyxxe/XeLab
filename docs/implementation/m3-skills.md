@@ -58,6 +58,8 @@ Call 持久保存 Skill UUID/摘要，RPC 委托仍固定实例、generation、�
 冻结的业务来源只保留已进入该 Call 计费记录的凭证证明；未计费的耗尽来源不能维持在途工作。
 输入和输出复用固定业务 Schema 校验。请求整体超时覆盖数据库锁等待；
 准入事务取消即回滚，派发后取消保留 Call/reservation，交由控制器确认进程终止后回收。
+请求使用独立的有界数据库连接；取消会先取消该后端查询再关闭协议驱动，服务端 statement timeout 作为后备，
+不能仅丢弃 Rust future 而留下锁等待。准入提交后释放空闲连接，不跨插件 RPC 持有数据库后端。
 
 禁用/归档和来源撤权会阻止新调用；在途 Skill 调用定期复核当前来源、双层授权及部署，
 结果提交前再次复核。失效时放弃响应并撤销委托，保留结果未知的调用记录。
@@ -92,8 +94,10 @@ PostgreSQL 测试需显式设置隔离的 `XELAB_TEST_DATABASE_URL`。
 并使用非 BMP 属性名及浮点格式检查摘要规范化。
 独立 API 测试和现有 OCI 组件测试须另行运行并保存真实结果；参考制品构建器将候选纳入签名清单。
 
-[PR #39](https://github.com/jyxxe/XeLab/pull/39) 是首个非流式实现切片。开发中已执行真实 PostgreSQL 注册/摘要 5 项、
-API 4 项、Blob mTLS 和 unknown 实例槽回归；最后安全修正后的重测与完整 OCI CI 仍待确认。
+[PR #39](https://github.com/jyxxe/XeLab/pull/39) 已作为首个非流式实现切片合并至 main
+`136cb02b503be9e7e2e5c49007dc609199cddc15`。精确提交 `7ab2f0e…` 的
+[完整 Kernel M1 CI](https://github.com/jyxxe/XeLab/actions/runs/41804075279) 已成功，
+包含 PostgreSQL、真实 OCI、离线恢复及适用回归；合并后的 main CI 仍须独立确认。
 本地 `/tmp` 的 xattr 列表不一致使部分既有归档测试按 fail-closed 拒绝；不放松验证来掩盖环境错误。
 最终通过结论以对应 PR 的精确提交、CI 日志及实际组件结果为准，不能将测试入口存在算作通过。
 AWS 与独立宿主正式验收继续按[持续目标](m3-progress.md)标为 DEFERRED；
