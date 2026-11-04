@@ -368,7 +368,10 @@ async fn grant_call_inner(
     let skill = context.get::<_, Option<Uuid>>("skill_id");
     let http = context.get::<_, Option<Value>>("http_binding");
     let has_blobs = requested(manifest, "blob.read") || requested(manifest, "blob.create");
-    if !has_blobs && skill.is_none() && http.is_none() {
+    let effectful = definition["side_effect"]
+        .as_str()
+        .is_some_and(|effect| effect != "none");
+    if !has_blobs && skill.is_none() && http.is_none() && !effectful {
         return Ok(Vec::new());
     }
     if has_blobs {
@@ -380,7 +383,7 @@ async fn grant_call_inner(
     }
     let (action, resource) = crate::broker::business_target(c, call).await?;
     let mut bounds = vec![json!({"action":action,"resource":resource.json()})];
-    let pinned = skill.is_some() || http.is_some();
+    let pinned = skill.is_some() || http.is_some() || effectful;
     if let Some(skill) = skill {
         bounds.push(json!({"action":"skill.invoke","resource":{"kind":"skill","match":"ids","ids":[skill]}}));
     }
@@ -508,7 +511,12 @@ pub(crate) async fn check_call_sources(
     ).await?.ok_or_else(Error::denied)?;
     let skill = row.get::<_, Option<Uuid>>("skill_id");
     if skill.is_none() && row.get::<_, Option<Value>>("http_binding").is_none() {
-        return Ok(());
+        // Legacy pure RPC reads keep their existing semantics. Effectful
+        // ordinary RPC calls freeze the same charged proof as Skill calls.
+        let effectful: bool = c.query_one("SELECT EXISTS(SELECT 1 FROM calls c JOIN capability_contracts p ON p.name=c.contract->>'name' AND p.version=c.contract->>'version' AND p.schema_digest=c.contract->>'schema_digest' WHERE c.id=$1 AND p.spec->>'side_effect' IN ('idempotent','queryable','non_repeatable'))", &[&call]).await?.get(0);
+        if !effectful {
+            return Ok(());
+        }
     }
     if row.get::<_, Uuid>("owner_id") != ctx.subject
         || row.get::<_, Option<Uuid>>("credential_id") != Some(ctx.credential)
