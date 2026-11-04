@@ -1,5 +1,5 @@
-//! Durable schema bootstrap admission. Artifact's non-none profile remains
-//! closed until the owning runtime/verification supervisor is complete.
+//! Durable bootstrap and parent-owned format transitions. Public versioned
+//! artifact admission remains closed pending complete runtime acceptance.
 use crate::{
     api::App,
     auth::{self, Context, Resource},
@@ -16,6 +16,7 @@ use uuid::Uuid;
 #[path = "schema_jobs_worker.rs"]
 mod worker;
 pub use worker::run;
+pub(crate) use worker::{commit_upgrade, run_upgrade, UpgradeReady};
 
 pub(crate) struct Admission {
     original: Value,
@@ -46,8 +47,8 @@ pub(crate) async fn preflight(
             "Schema bootstrap waits for startup runtime fencing",
         ));
     }
-    // Reuses trusted immutable header/profile validation. Non-none is still
-    // intentionally rejected here until the complete supervisor is enabled.
+    // Reuses the trusted immutable internal execution profile. This does not
+    // open public Artifact::inspect admission for versioned manifests.
     let installation = upgrades::installation(c, row.get("installation_id")).await?;
     volumes::validate_selection(c, ctx, &original, &manifest).await?;
     let selected = original["volume_ids"]
@@ -311,9 +312,13 @@ async fn authorize_saved(c: &(impl GenericClient + Sync), ctx: &Context, row: &R
             .and_then(|v| v.parse::<Uuid>().ok())
             .filter(|id| !id.is_nil() && ids.insert(*id))
             .ok_or_else(|| Error::conflict("Invalid schema volume identity"))?;
-        let current = c.query_opt("SELECT v.owner_id,a.owner_id AS allocation_owner FROM volumes v JOIN volume_allocations a ON a.volume_id=v.id WHERE v.id=$1", &[&volume]).await?.ok_or_else(Error::not_found)?;
+        let current = c.query_opt("SELECT a.owner_id,v.owner_id AS public_owner FROM volume_allocations a LEFT JOIN volumes v ON v.id=a.volume_id WHERE a.volume_id=$1", &[&volume]).await?.ok_or_else(Error::not_found)?;
         if current.get::<_, Uuid>("owner_id") != owner
-            || current.get::<_, Uuid>("allocation_owner") != owner
+            || current
+                .get::<_, Option<Uuid>>("public_owner")
+                .is_some_and(|public| public != owner)
+            || (kind == "bootstrap"
+                && current.get::<_, Option<Uuid>>("public_owner") != Some(owner))
             || !auth::rules_allow(
                 &rules,
                 "volume.read",
@@ -357,7 +362,20 @@ async fn authorize_saved(c: &(impl GenericClient + Sync), ctx: &Context, row: &R
             return Err(Error::denied());
         }
     }
+    if kind != "bootstrap" {
+        upgrades::schema_registration(row)?
+            .authorize_replay(c, ctx, &saved)
+            .await?;
+    }
     Ok(())
+}
+
+pub(crate) async fn authorize_child(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    row: &Row,
+) -> Result<()> {
+    authorize_saved(c, ctx, row).await
 }
 
 /// Execution/publication caller must also own the deployment runtime fence.
@@ -368,9 +386,7 @@ pub(crate) async fn revalidate(
     row: &Row,
 ) -> Result<Context> {
     if row.get::<_, String>("kind") != "bootstrap" {
-        return Err(Error::conflict(
-            "Format upgrade requires its parent upgrade intent",
-        ));
+        return upgrades::revalidate_schema_child(c, app, row).await;
     }
     if app.leader.is_closed()
         || row.get::<_, chrono::DateTime<chrono::Utc>>("expires_at") <= chrono::Utc::now()
