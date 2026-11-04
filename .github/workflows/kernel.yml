@@ -19,6 +19,7 @@ jobs:
           POSTGRES_DB: xelab_test
         ports: ["5432:5432"]
         options: >-
+          --shm-size=512m
           --health-cmd "pg_isready -U xelab -d xelab_test"
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
@@ -37,6 +38,25 @@ jobs:
         run: cargo test --workspace --all-targets --no-run --locked
       - name: Build reference plugin
         run: cargo build --workspace --bins --locked
+      - name: Prepare trusted OAuth browser
+        run: |
+          oauth_browser_venv="${RUNNER_TEMP}/xelab-oauth-browser"
+          python3 -m venv "$oauth_browser_venv"
+          "$oauth_browser_venv/bin/pip" install 'playwright==1.62.0'
+          "$oauth_browser_venv/bin/python" -m playwright install --with-deps chromium
+          "$oauth_browser_venv/bin/python" - <<'PY'
+          import os, sys
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as browser:
+              chromium = browser.chromium.executable_path
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write(f"XELAB_OAUTH_BROWSER_PYTHON={sys.executable}\n")
+              output.write(f"XELAB_OAUTH_BROWSER_CHROMIUM={chromium}\n")
+          PY
+      - name: Real trusted OAuth main-router browser
+        env:
+          XELAB_OAUTH_BROWSER_RESULT: ${{ runner.temp }}/xelab-oauth-main-router.json
+        run: cargo test --lib actual_main_router_chromium_trusted_login_native_consent_pkce_cors_and_refresh_reuse --locked -- --ignored --nocapture
       - name: Prepare real OCI test
         run: |
           sudo apt-get update -qq
