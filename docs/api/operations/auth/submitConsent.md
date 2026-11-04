@@ -6,7 +6,7 @@
 
 `POST /api/platform/v1/auth/consents`
 
-必须使用绑定请求的内核 Cookie 和 CSRF；批准仅签发预览固定范围；拒绝回调 error=access_denied/state；非法回调始终不跳转。
+仅当前 Cookie 会话可决定绑定该会话的固定 pending 授权请求。JSON 使用 X-CSRF-Token 与 Idempotency-Key 请求头；可信页面也可原生提交 URL 编码表单，将这两个同名字段作为传输元数据，验证后移除再按 ConsentDecision 校验。重复或冲突来源拒绝。一次性 code/Location 不缓存，重复批准不能重取明文。
 
 | 项目 | 定义 |
 |---|---|
@@ -23,7 +23,8 @@
 
 | 名称 | 位置 | 必填 | 类型与约束 | 含义 |
 |---|---|---|---|---|
-| `Idempotency-Key` | header | 是 | string; minLength=`1`; maxLength=`128` | 同一主体/凭证/方法/规范路径内 24h 去重；一次性密钥只在第一次返回 |
+| `Idempotency-Key` | header | 否 | string; minLength=`1`; maxLength=`128` | JSON 必须提供；原生表单必须在请求头或同名表单字段二选一提供。24h 去重；一次性授权码与 Location 不保存为可重放明文。 |
+| `X-CSRF-Token` | header | 否 | string; minLength=`43`; maxLength=`128` | Cookie 敏感操作必须提供会话绑定的 CSRF 证明；JSON 使用此头，原生表单可用同名传输字段，重复或冲突来源拒绝。 |
 
 ## 请求体
 
@@ -43,6 +44,15 @@ Content-Type：`application/json`；请求体必需。
 }
 ```
 
+也接受 Content-Type：`application/x-www-form-urlencoded`；传输元数据与互斥来源规则见接口说明。
+
+| 字段 | 类型 | 必填 | 约束 / 默认值 | 含义 |
+|---|---|---|---|---|
+| `authorization_request_id` | string | 是 | format=`"uuid"`; minLength=`1`; maxLength=`36` | 资源唯一标识 |
+| `approved` | string | 是 | enum=`["true", "false"]` | 明确允许或拒绝固定范围，不接受其他 truthy 表示 |
+| `X-CSRF-Token` | string | 否 | minLength=`43`; maxLength=`128` | 与请求头二选一的会话 CSRF 证明 |
+| `Idempotency-Key` | string | 否 | minLength=`1`; maxLength=`128` | 与请求头二选一的 24h 去重键 |
+
 ## 响应
 
 | HTTP | 内容 | 语义 |
@@ -59,6 +69,8 @@ Content-Type：`application/json`；请求体必需。
 | 500 | `application/json` → [ErrorEnvelope](../../models/ErrorEnvelope.md) | 内部错误，不泄露敏感信息 |
 | 503 | `application/json` → [ErrorEnvelope](../../models/ErrorEnvelope.md) | 内核未就绪或后端不可用 |
 | 504 | `application/json` → [ErrorEnvelope](../../models/ErrorEnvelope.md) | 调用整体期限已到 |
+
+一次性响应：签发成功后不存储可重放明文；同键重试返回 `409 ONE_TIME_RESPONSE_UNAVAILABLE` 并可带资源标识。客户端应查询元数据，无法恢复明文时撤销并重新签发。
 
 ## 并发、重试与副作用
 

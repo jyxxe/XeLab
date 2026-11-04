@@ -14,7 +14,7 @@
 | `token_type` | string | 是 | enum=`["Bearer"]` | 类型 |
 | `expires_in` | integer | 是 | minimum=`900`; maximum=`900` | 秒，固定 900 |
 | `refresh_token` | string | 否 | minLength=`1`; maxLength=`512` | 可选轮换凭证，最长 24h |
-| `scope` | string | 是 | minLength=`1`; maxLength=`512` | 平台授权范围句柄；实际规则保存在内核 |
+| `scope` | string | 是 | minLength=`1`; maxLength=`512` | 空格分隔且排序去重的预注册句柄：client:<public_client_id> 表示该 Client 注册的 maximum_rules 上限；rule:sha256:<RFC8785规则摘要> 表示该 Client 上限中的单条规则。绑定当前 Client revision，并与当前会话权限交集后冻结原始来源；不得解析任意规则或动态最新版。 |
 
 ## 对象及跨字段约束
 

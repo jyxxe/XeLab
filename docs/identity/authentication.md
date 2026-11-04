@@ -26,4 +26,10 @@ authorize 只接受精确注册 redirect_uri，PKCE 仅 S256。可信登录后�
 
 token 的 code 与 refresh 分支字段定义见 [OAuthTokenRequest](../api/models/OAuthTokenRequest.md)。刷新凭证每次轮换并记录族 ID，重用即吊销同族。敏感 Cookie 操作校验 CSRF token 和 Origin；CLI 无 Origin 时必须显式提供 Bearer 或密码凭证，不依据 localhost 自动放行。
 
+未登录的 authorize 请求先校验 Client、精确回调、PKCE 与已注册 scope，再保存短期服务端续接状态；浏览器只持有内核来源的 Secure/HttpOnly、`__Host-` 不透明 Cookie。可信登录完成后，固定登录入口将该请求绑定到新会话，再跳转固定同意页。禁止任意 `next`/`return` URL，也不把密码、会话令牌或 PKCE verifier 放入续接 URL。authorize 的中间 302 只能指向内核登录/同意页，最终 302 才指向已核验回调。
+
+scope 是排序去重的空格分隔预注册句柄：`client:<public_client_id>` 请求该 Client 的 `maximum_rules` 上限，`rule:sha256:<RFC8785规则摘要>` 请求其中一条规则。请求绑定 Client revision；实际同意范围取注册上限与当前会话有效权限的交集，并冻结原始来源。Client 注册范围不是用户权限，Guest/子账户无需持有整个 Client 上限；后续新增授权不能扩张已签发 token。
+
+可信同意页原生提交 URL 编码表单，以便浏览器跟随一次性 302 回调。其 `authorization_request_id`、`approved` 语义与 JSON 一致，`approved` 仅接受 `true`/`false`。JSON 使用 `X-CSRF-Token`、`Idempotency-Key` 头；原生表单可使用同名传输字段，各字段与对应头必须二选一。核心先核验精确 Origin、当前 Cookie 会话、CSRF 与幂等元数据，再移除元数据并校验原有 ConsentDecision，不新增该 JSON 的字段。重复或冲突来源拒绝；一次性授权码及 Location 不持久化为可重放明文，同键重试不能重新取回 code。接口与表单 Schema 见 [submitConsent](../api/operations/auth/submitConsent.md)。
+
 登录按账户与来源分别限制为每分钟 5 次失败，超限 429/Retry-After；成功不抹去审计。MFA/外部 IdP 联邦属于后续认证适配扩展，当前接口未宣称实现。

@@ -4060,7 +4060,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 512,
-              "description": "申请的权限组/规则句柄，必须提前注册"
+              "description": "空格分隔且排序去重的预注册句柄：client:<public_client_id> 表示该 Client 注册的 maximum_rules 上限；rule:sha256:<RFC8785规则摘要> 表示该 Client 上限中的单条规则。绑定当前 Client revision，并与当前会话权限交集后冻结原始来源；不得解析任意规则或动态最新版。"
             }
           }
         ],
@@ -4074,7 +4074,7 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 4096,
-                  "description": "已验证的精确回调 URI 加 code/state 或 error/state"
+                  "description": "未登录或待同意时仅跳转固定内核登录/同意页；最终跳转已验证的精确注册回调 URI，加 code/state 或 error/state"
                 }
               },
               "X-Request-ID": {
@@ -4239,7 +4239,7 @@
       "get": {
         "operationId": "getTrustedLoginPage",
         "summary": "内核最小可信登录页",
-        "description": "内核保留来源，不由插件覆盖；只加载内核自有静态资源，禁止第三方脚本和 frame 嵌入，表单提交到 /api/platform/v1/auth/login。",
+        "description": "内核最小可信登录页面。未登录时显示密码表单；已有可信会话及有效的不透明登录续接 Cookie 时，绑定该会话后跳转固定同意页。续接状态由内核保存，不接受任意 next/return URL。",
         "tags": [
           "auth"
         ],
@@ -4386,6 +4386,34 @@
               }
             },
             "headers": {
+              "X-Request-ID": {
+                "description": "服务端生成的追踪标识",
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "Cache-Control": {
+                "description": "不缓存私有和认证内容",
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
+          },
+          "302": {
+            "description": "可信登录后，继续该浏览器短期绑定的 OAuth 请求，跳转到固定内核同意页",
+            "headers": {
+              "Location": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096,
+                  "description": "固定内核授权页 /auth/ui/consent?authorization_request_id=UUID；不接受任意 next URL"
+                }
+              },
               "X-Request-ID": {
                 "description": "服务端生成的追踪标识",
                 "schema": {
@@ -4771,7 +4799,7 @@
       "post": {
         "operationId": "submitConsent",
         "summary": "批准或拒绝浏览器委托",
-        "description": "必须使用绑定请求的内核 Cookie 和 CSRF；批准仅签发预览固定范围；拒绝回调 error=access_denied/state；非法回调始终不跳转。",
+        "description": "仅当前 Cookie 会话可决定绑定该会话的固定 pending 授权请求。JSON 使用 X-CSRF-Token 与 Idempotency-Key 请求头；可信页面也可原生提交 URL 编码表单，将这两个同名字段作为传输元数据，验证后移除再按 ConsentDecision 校验。重复或冲突来源拒绝。一次性 code/Location 不缓存，重复批准不能重取明文。",
         "tags": [
           "auth"
         ],
@@ -4784,13 +4812,24 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "required": true,
-            "description": "同一主体/凭证/方法/规范路径内 24h 去重；一次性密钥只在第一次返回",
+            "required": false,
+            "description": "JSON 必须提供；原生表单必须在请求头或同名表单字段二选一提供。24h 去重；一次性授权码与 Location 不保存为可重放明文。",
             "schema": {
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
               "description": "去重键，建议 UUID"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": false,
+            "description": "Cookie 敏感操作必须提供会话绑定的 CSRF 证明；JSON 使用此头，原生表单可用同名传输字段，重复或冲突来源拒绝。",
+            "schema": {
+              "type": "string",
+              "minLength": 43,
+              "maxLength": 128
             }
           }
         ],
@@ -5113,13 +5152,18 @@
         "x-permission": "self",
         "x-document": "operations/auth/submitConsent.md",
         "x-asynchronous": false,
-        "x-sensitive-response": false,
+        "x-sensitive-response": true,
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ConsentDecision"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsentForm"
               }
             }
           }
@@ -73844,7 +73888,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 512,
-            "description": "平台授权范围句柄；实际规则保存在内核"
+            "description": "空格分隔且排序去重的预注册句柄：client:<public_client_id> 表示该 Client 注册的 maximum_rules 上限；rule:sha256:<RFC8785规则摘要> 表示该 Client 上限中的单条规则。绑定当前 Client revision，并与当前会话权限交集后冻结原始来源；不得解析任意规则或动态最新版。"
           }
         },
         "required": [
@@ -74582,10 +74626,18 @@
             "description": "非互信 UI 必须独立源或 sandbox"
           },
           "origin": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 512,
-            "description": "独立源或宿主沙箱页面的来源；必须注册"
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "description": "显式来源仍必须与平台为该固定部署分配的 HTTPS origin 完全相同，不能指定内核或其他插件域"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "null 请求平台按固定 deployment_id 分配独立 HTTPS origin；非空只能精确匹配该分配值。签名制品不预知新部署 UUID，也不得指定可信内核域或其他插件域。"
           }
         },
         "required": [
@@ -84437,6 +84489,45 @@
           "host_chain_digest"
         ],
         "additionalProperties": false
+      },
+      "ConsentForm": {
+        "type": "object",
+        "description": "可信同意页原生 URL 编码表单；approved 只接受字符串 true/false。两个同名头字段为传输元数据，验证后移除，不扩展 ConsentDecision JSON。",
+        "additionalProperties": false,
+        "properties": {
+          "authorization_request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 36,
+            "description": "资源唯一标识",
+            "format": "uuid",
+            "example": "00000000-0000-4000-8000-000000000001"
+          },
+          "approved": {
+            "type": "string",
+            "enum": [
+              "true",
+              "false"
+            ],
+            "description": "明确允许或拒绝固定范围，不接受其他 truthy 表示"
+          },
+          "X-CSRF-Token": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 128,
+            "description": "与请求头二选一的会话 CSRF 证明"
+          },
+          "Idempotency-Key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "与请求头二选一的 24h 去重键"
+          }
+        },
+        "required": [
+          "authorization_request_id",
+          "approved"
+        ]
       }
     }
   }

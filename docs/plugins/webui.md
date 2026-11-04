@@ -10,6 +10,8 @@ WebUI 为独立 OCI 部署，资源计入插件池，可安装、禁用、升级
 
 清单声明 WebUiSpec，转发在 `/ui/{plugin_id}/` 内。该路径只定义路由，不构成浏览器隔离。不同不可信 UI 使用独立 origin 或不授同源权限的 sandbox；禁止与可信登录来源共享可读令牌存储。
 
+`WebUiSpec.origin=null` 表示由平台按固定部署 UUID 和 ui_gateway 配置分配独立 HTTPS 来源。签名镜像在部署创建前无法预知该 UUID，因此不要求发布者预填一个不可实现的域名；非空 origin 仍必须与该固定部署的分配值完全相同。内核域、其他插件域或任意 URL 均不能作为覆盖值。Client 的 origin/redirect 注册和默认 UI 跳转随后核验该实际分配值，不能按插件名称或 latest 动态换源。
+
 `/api/platform/v1/`、`/oauth/`、`/auth/ui/`、`/health/` 为内核保留，插件路由不能覆盖。平台 `/` GET 仅 302 到 DefaultUi 的入口；未配置或 UI 不可用返回 503/明确错误，不影响管理 API。
 
 ## 公共客户端

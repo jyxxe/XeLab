@@ -111,6 +111,64 @@ pub fn strict_json(bytes: &[u8], maximum: usize) -> Result<Value> {
     Ok(value.0)
 }
 
+/// Strict UTF-8 URL encoding shared by OAuth queries and forms. A lossy URL
+/// decoder must not silently replace malformed security parameters or accept
+/// two differently encoded spellings of the same parameter name.
+pub(crate) fn strict_urlencoded(
+    bytes: &[u8],
+    maximum_bytes: usize,
+    maximum_fields: usize,
+) -> Result<Map<String, Value>> {
+    if bytes.is_empty() || bytes.len() > maximum_bytes {
+        return Err(Error::invalid("URL encoded input size is invalid"));
+    }
+    fn hex(value: u8) -> Option<u8> {
+        match value {
+            b'0'..=b'9' => Some(value - b'0'),
+            b'a'..=b'f' => Some(value - b'a' + 10),
+            b'A'..=b'F' => Some(value - b'A' + 10),
+            _ => None,
+        }
+    }
+    fn decode(input: &[u8]) -> Result<String> {
+        let mut output = Vec::with_capacity(input.len());
+        let mut offset = 0;
+        while offset < input.len() {
+            match input[offset] {
+                b'+' => output.push(b' '),
+                b'%' => {
+                    let high = input.get(offset + 1).copied().and_then(hex);
+                    let low = input.get(offset + 2).copied().and_then(hex);
+                    let (Some(high), Some(low)) = (high, low) else {
+                        return Err(Error::invalid("Malformed URL percent encoding"));
+                    };
+                    output.push((high << 4) | low);
+                    offset += 2;
+                }
+                byte => output.push(byte),
+            }
+            offset += 1;
+        }
+        String::from_utf8(output).map_err(|_| Error::invalid("URL encoded input must be UTF-8"))
+    }
+    let mut fields = Map::new();
+    for pair in bytes.split(|byte| *byte == b'&') {
+        if fields.len() >= maximum_fields {
+            return Err(Error::invalid("Too many URL encoded fields"));
+        }
+        let equal = pair
+            .iter()
+            .position(|byte| *byte == b'=')
+            .ok_or_else(|| Error::invalid("URL encoded field requires a value"))?;
+        let name = decode(&pair[..equal])?;
+        let value = decode(&pair[equal + 1..])?;
+        if name.is_empty() || fields.insert(name, Value::String(value)).is_some() {
+            return Err(Error::invalid("Ambiguous URL encoded parameter"));
+        }
+    }
+    Ok(fields)
+}
+
 struct StrictValue(Value);
 impl<'de> Deserialize<'de> for StrictValue {
     fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {

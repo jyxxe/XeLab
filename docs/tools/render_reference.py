@@ -116,6 +116,10 @@ def operation_doc(path, method, op):
             portable_schema=json.loads(json.dumps(entry['schema']).replace('"#/components/schemas/','"../openapi.json#/components/schemas/'))
             EXAMPLES[op['operationId']]={'schema':portable_schema,'value':value}
             lines += ['结构示例（标识和业务数据需替换为当前部署实际获准对象）：','','```json',json.dumps(value,ensure_ascii=False,indent=2),'```','']
+        # Keep the canonical request example stable while documenting every
+        # additionally declared transport (e.g. a native trusted consent form).
+        for alternate_media, alternate_entry in list(body['content'].items())[1:]:
+            lines += [f'也接受 Content-Type：`{alternate_media}`；传输元数据与互斥来源规则见接口说明。', '', fields(alternate_entry['schema'],prefix)]
     else:
         lines += ['请求体：无。发送非空请求体返回 `400 INVALID_ARGUMENT`。','']
     lines += ['## 响应','','| HTTP | 内容 | 语义 |','|---|---|---|']

@@ -32,10 +32,18 @@
       "description": "非互信 UI 必须独立源或 sandbox"
     },
     "origin": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 512,
-      "description": "独立源或宿主沙箱页面的来源；必须注册"
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "description": "显式来源仍必须与平台为该固定部署分配的 HTTPS origin 完全相同，不能指定内核或其他插件域"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "null 请求平台按固定 deployment_id 分配独立 HTTPS origin；非空只能精确匹配该分配值。签名制品不预知新部署 UUID，也不得指定可信内核域或其他插件域。"
     }
   },
   "required": [

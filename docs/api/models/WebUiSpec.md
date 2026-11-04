@@ -14,7 +14,7 @@
 | `entry_path` | string | 是 | minLength=`1`; maxLength=`256` | 容器内 HTTP 页面路径 |
 | `management_api_major` | integer | 是 | minimum=`1`; maximum=`1` | 兼容管理 API 主版本，当前为 1 |
 | `isolation` | string | 是 | enum=`["dedicated_origin", "sandbox"]` | 非互信 UI 必须独立源或 sandbox |
-| `origin` | string | 是 | minLength=`1`; maxLength=`512` | 独立源或宿主沙箱页面的来源；必须注册 |
+| `origin` | string / null | 是 | 见类型定义 | null 请求平台按固定 deployment_id 分配独立 HTTPS origin；非空只能精确匹配该分配值。签名制品不预知新部署 UUID，也不得指定可信内核域或其他插件域。 |
 
 ## 对象及跨字段约束
 
