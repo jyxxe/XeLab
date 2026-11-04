@@ -2,7 +2,8 @@
 
 [实施索引](README.md) · [持续目标与验收清单](m3-progress.md) · [Skill 契约](../skills/README.md)
 
-本页记录 M3-A 的首个实现子集，不能据此声明 M3-A 或整个 M3 已完成。
+本页记录 M3-A 的已合并注册/纯调用切片与开发分支中的普通副作用扩展。
+普通四类副作用及 QueryResult 的新真实 OCI 门禁仍待执行，不能据此声明 M3 已完成。
 实现复用现有 PostgreSQL、Identity/Authorizer、Broker、Controller、Runtime 和 mTLS；
 该子集首次交付使用 Schema 14；后续 [HTTP 集成](m3-http-provenance.md)追加至 Schema 15，
 不修改已发布 SQL 或迁移校验和。
@@ -16,14 +17,17 @@
 | `setSkillEnabled` | If-Match 乐观锁启停；重新启用复核候选和来源，归档后不能恢复 |
 | `archiveSkill` | 逻辑归档、禁止新路由、保留历史定义，返回 204 |
 | `invokeSkill` | 普通 capability 目标的非流式调用，通过 Broker 发送至固定安装的真实 OCI 实例 |
-| `streamSkill` | 后续切片已实现普通 OCI 纯流；准确边界与待验收证据见[流式调用](m3-skill-streams.md) |
+| `streamSkill` | 后续切片实现普通 OCI 声明流；准确边界与待验收证据见[流式调用](m3-skill-streams.md) |
 
-HTTP、micro、extension 目标、排队、非可重复副作用和 HostService 的 Skill 方法仍未交付。
+HTTP 目标见独立 HTTP 实现；micro、extension、异步任务排队和 HostService 的 Skill 方法仍未交付。
 `HostService.ListSkillCandidates/ResolveSkill/CheckSkillAccess/InvokeSkill/InvokeSkillStream`
 继续返回 UNIMPLEMENTED，不能通过插件声称已经取得内部 Skill 路由上下文。
 本次不新增 BatchEngine、Workflow、MPR 或 Extension 执行系统。
-非流式 capability 原有 `none` 和内部已验证格式的 `idempotent` 约束继续生效；
-公开版本化数据制品安装仍关闭。
+普通无版本数据格式的 capability 支持 `none`、`idempotent`、`queryable` 和 `non_repeatable`，
+声明了匹配流 Schema 时同样可使用流。副作用分类控制重试/核实，不能用来拒绝首次执行。
+同步 Broker 不自动重发任何业务请求，不能因制品声明 idempotent 就推定未验证持久写入可重试；
+内部格式化数据 profile 仍只允许原已验证的 none/idempotent，
+公开版本化数据制品安装门禁继续关闭。
 
 ## 注册与不可变来源
 
@@ -70,6 +74,20 @@ Call 持久保存 Skill UUID/摘要，RPC 委托仍固定实例、generation、�
 请求体的稳定业务 `idempotency_key` 独立于 HTTP 重放键，原样传入 RPC 并记录在 Call；省略时取 HTTP 键。
 停止、重启后的新实例可以继续提供同一固定安装，不能修改历史 Skill 或把未知副作用当作成功。
 
+## 已提交结果的核实
+
+对于 `queryable` 的 unknown Call，`getCall` 在有权限时调用原物理实例/generation 的真实
+`CapabilityService.QueryResult`，携带持久原 Call ID/业务幂等键，不调用 Invoke、不选择新提供者。
+核实要求 capability.call.read、原业务/Skill 权限、原主体/凭证/Origin 和已计费冻结来源仍成立。
+RPC 上限为原 deadline 剩余与 2 秒的更小值；无锁网络阶段前后分别校验授权及固定绑定。
+查询使用无 HostService 权限的短期委托，不覆盖原调用委托，不新增业务 Call 或日额度。
+
+SUCCEEDED 必须带匹配 call ID、摘要及固定 capability/Skill output Schema 的 completed；
+FAILED 必须带合法 failed；其余未确定状态不得带伪造结果。记录缺失、RPC 中断、错误配对、
+实例 generation 已更换或原 deadline 已到均保持 unknown，绝不推断“尚未执行”或重发副作用。
+只有确认结果可结算原预约；仍未知的 non_repeatable 工作保留物理槽，等 Controller 实际围栏。
+getCall 不重建或拼接断开的业务流，M5 的自动任务恢复不在本切片内。
+
 ## 离线备份与恢复
 
 普通 capability Skill 不再触发旧的“任何 Skill 均拒绝快照”门禁；源冻结及元数据导入均核对
@@ -103,3 +121,20 @@ PostgreSQL 测试需显式设置隔离的 `XELAB_TEST_DATABASE_URL`。
 最终通过结论以对应 PR 的精确提交、CI 日志及实际组件结果为准，不能将测试入口存在算作通过。
 AWS 与独立宿主正式验收继续按[持续目标](m3-progress.md)标为 DEFERRED；
 它们不阻断本功能开发，也不被计入当前已执行证据。
+
+普通副作用开发分支的入口为 `actual_postgres_stateless_effects_never_replay_uncertain_dispatch`、
+QueryResult 的真实 mTLS/原来源专项，以及 `tests/support/ordinary_effects.rs` 的签名 OCI 场景。
+后者检查三类非纯 unary/stream 成功、核心缓存重放、已提交但丢响应后的原提供者核实、
+非可重复 unknown、原进程围栏和重启后账本；代码/编译存在不表示真实 OCI 已通过。
+
+本地普通副作用专项已实际执行：6 项 Artifact（含四类流与公开版本数据门禁）、
+3 项 PostgreSQL Broker 测试（其中 stateless 测试逐一覆盖三类非纯效果），
+以及 4 项 QueryResult 检查（含真实 PostgreSQL/Tonic mTLS、查询中撤权及原来源拒绝）通过。
+QueryResult 首次组件运行因测试误用生产 workload chown 在非 root 环境失败；
+修正为与已有 mTLS 测试相同的短期精确 DNS/SPIFFE 证书后重测通过，生产 TLS 未改。
+独立宿主 OCI 场景仍须在最终精确提交实际运行，不把这些局部通过当作完整验收。
+
+新增 raw queryable 的真实 PostgreSQL COPY 回归也已通过：调用由实际 Broker 准入为 unknown，
+skill_id/http_binding 为空的原来源/Origin 与单独空权限查询委托经过导出、约束验证、导入和追加
+迁移重复检查；原 Call/委托 UUID 与 JCS 来源摘要保持一致，恢复后旧凭证/旧来源不能复活，
+目标仍受 rebuilding 物理恢复门禁限制。这是元数据组件，不是宿主外备份认证。

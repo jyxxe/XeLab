@@ -102,6 +102,36 @@ def build(root, publisher, platform="linux/amd64", implementation="rust", reques
             "mapping": "identity", "maximum_timeout_ms": 120000,
             "input_blobs": False, "tags": ["echo", "stream"],
         })
+        # Conservative ordinary side-effect classes use distinct immutable
+        # contracts. They share the same bounded unary/stream transport shape,
+        # with a real per-generation mutation counter for queryable and
+        # non-repeatable execution. No public versioned data profile is opened.
+        for effect in ["idempotent", "queryable", "non_repeatable"]:
+            effect_name = "org.xelab.echo." + effect
+            effect_input = json.loads(json.dumps(stream_input))
+            effect_input["properties"]["fault"]["enum"].append("after-commit")
+            effect_output = json.loads(json.dumps(stream_output))
+            if effect != "idempotent":
+                effect_output["properties"]["execution_count"] = {"type": "integer", "minimum": 1}
+                effect_output["required"].append("execution_count")
+            effect_directory = root / "xelab" / "contracts" / effect_name / version
+            effect_directory.mkdir(parents=True, exist_ok=True)
+            effect_checks = []
+            for file, value in [("input.schema.json", effect_input), ("output.schema.json", effect_output), ("stream.schema.json", stream_item), ("semantics.json", {"side_effect": effect})]:
+                raw = encoded(value)
+                (effect_directory / file).write_bytes(raw)
+                effect_checks.append(f"{file} {hashlib.sha256(raw).hexdigest()}\n")
+            effect_contract = {"name": effect_name, "version": version, "schema_digest": "sha256:" + hashlib.sha256("".join(effect_checks).encode()).hexdigest()}
+            manifest["capabilities"].append({"contract": effect_contract, "input_schema": effect_input, "output_schema": effect_output, "stream_item_schema": stream_item, "side_effect": effect, "maximum_input_bytes": 65536, "maximum_output_bytes": 65536})
+            manifest["skills"].append({
+                "name": effect_name, "version": plugin_version,
+                "description": "Execute the fixed ordinary " + effect + " reference contract without automatic retries",
+                "input_schema": effect_input, "output_schema": effect_output,
+                "stream_item_schema": stream_item,
+                "target": {"kind": "capability", "plugin_id": manifest["plugin_id"], "contract": effect_contract},
+                "mapping": "identity", "maximum_timeout_ms": 10000,
+                "input_blobs": False, "tags": ["echo", "ordinary-effects"],
+            })
     if volume_access:
         manifest["volumes"] = [{"name": "data", "mount_path": "/data", "access": volume_access, "scope": "deployment", "minimum_bytes": 1048576}]
     if failed_startup:

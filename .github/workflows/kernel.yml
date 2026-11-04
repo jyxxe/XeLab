@@ -49,7 +49,7 @@ jobs:
         run: |
           oauth_browser_venv="${RUNNER_TEMP}/xelab-oauth-browser"
           python3 -m venv "$oauth_browser_venv"
-          "$oauth_browser_venv/bin/pip" install 'playwright==1.62.0'
+          "$oauth_browser_venv/bin/pip" install 'playwright==1.62.0' 'jsonschema==4.26.0'
           "$oauth_browser_venv/bin/python" -m playwright install --with-deps chromium
           "$oauth_browser_venv/bin/python" - <<'PY'
           import os, sys

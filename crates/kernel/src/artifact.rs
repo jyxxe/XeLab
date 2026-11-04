@@ -226,11 +226,17 @@ fn validate_profile_inner(manifest: &Value, allow_versioned: bool) -> Result<()>
     }
     crate::contracts::compile_business(&manifest["config_schema"])?;
     for cap in manifest["capabilities"].as_array().unwrap() {
-        if !(cap["side_effect"] == "none" || (versioned && cap["side_effect"] == "idempotent"))
-            || (!cap["stream_item_schema"].is_null() && cap["side_effect"] != "none")
+        // Side effects control retries, not whether a signed ordinary plugin
+        // can execute its first call. The Broker never regenerates a stream or
+        // retries an uncertain invocation. The internal versioned-data profile
+        // remains limited to its independently verified write semantics.
+        if !matches!(
+            cap["side_effect"].as_str(),
+            Some("none" | "idempotent" | "queryable" | "non_repeatable")
+        ) || (versioned && !matches!(cap["side_effect"].as_str(), Some("none" | "idempotent")))
         {
             return Err(Error::invalid(
-                "This profile requires supported side effects; streaming is limited to pure capabilities",
+                "Unsupported ordinary capability or versioned-data side effects",
             ));
         }
         for key in ["input_schema", "output_schema", "stream_item_schema"] {
@@ -364,19 +370,25 @@ impl Artifact {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn streaming_profile_rejects_side_effects_and_external_item_schemas() {
+    fn ordinary_streaming_profiles_keep_side_effects_and_local_schemas() {
         let mut manifest: Value =
             serde_json::from_str(include_str!("../tests/fixtures/secret-manifest.json")).unwrap();
         manifest["requested_rules"] = json!([]);
         manifest["capabilities"][0]["stream_item_schema"] = json!({"type":"string"});
-        validate_profile(&manifest).unwrap();
+        for side_effect in ["none", "idempotent", "queryable", "non_repeatable"] {
+            manifest["capabilities"][0]["side_effect"] = json!(side_effect);
+            validate_profile(&manifest).unwrap();
+        }
         let mut referenced = manifest.clone();
         referenced["capabilities"][0]["stream_item_schema"] =
             json!({"$ref":"https://example.invalid/item.json"});
         assert!(validate_profile(&referenced).is_err());
         manifest["data_schema_version"] = json!("1");
         manifest["volumes"] = json!([{"name":"data","mount_path":"/data","access":"rw","scope":"deployment","minimum_bytes":1048576}]);
-        for side_effect in ["idempotent", "non_idempotent"] {
+        manifest["capabilities"][0]["side_effect"] = json!("idempotent");
+        validate_runtime_profile(&manifest).unwrap();
+        assert!(validate_profile(&manifest).is_err());
+        for side_effect in ["queryable", "non_repeatable", "non_idempotent"] {
             manifest["capabilities"][0]["side_effect"] = json!(side_effect);
             assert!(validate_runtime_profile(&manifest).is_err());
         }
@@ -392,7 +404,6 @@ mod tests {
         validate_runtime_profile(&manifest).unwrap();
         assert!(validate_profile(&manifest).is_err());
         for variant in [
-            "none_idempotent",
             "no_volumes",
             "read_only",
             "scratch",
@@ -403,7 +414,6 @@ mod tests {
         ] {
             let mut wrong = manifest.clone();
             match variant {
-                "none_idempotent" => wrong["data_schema_version"] = json!("none"),
                 "no_volumes" => wrong["volumes"] = json!([]),
                 "read_only" => wrong["volumes"][0]["access"] = json!("ro"),
                 "scratch" => wrong["volumes"][0]["mount_path"] = json!("/xelab-migration/nested"),

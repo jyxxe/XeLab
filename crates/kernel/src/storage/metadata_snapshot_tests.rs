@@ -605,3 +605,173 @@ async fn actual_postgres_import_validates_target_foreign_keys_before_commit() {
         before
     );
 }
+
+/// Real COPY of the existing host_rpc_contexts shape with a raw effectful Call
+/// (skill_id/http_binding NULL), including its empty-authority query lease.
+/// Runtime dispatch deliberately fails here; this is not OCI/off-host evidence.
+#[tokio::test]
+async fn actual_postgres_raw_effect_proof_and_query_lease_copy_preserves_history_not_authority() {
+    use serde_json::{json, Value};
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let mut source = f.app.db.connect().await.unwrap();
+    let mut ctx = f
+        .app
+        .auth
+        .authenticate(
+            &source,
+            &f.token,
+            "127.0.0.1".parse().unwrap(),
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    let origin = f.app.config.text("server", "public_origin").to_owned();
+    ctx.browser_origin = Some(origin.clone());
+    let publisher: Uuid = source
+        .query_one("SELECT id FROM publishers LIMIT 1", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let installation = Uuid::new_v4();
+    let deployment = Uuid::new_v4();
+    let instance = Uuid::new_v4();
+    let mut manifest: Value =
+        serde_json::from_str(include_str!("../../tests/fixtures/secret-manifest.json")).unwrap();
+    manifest["publisher_id"] = json!(publisher);
+    manifest["requested_rules"] = json!([]);
+    manifest["capabilities"][0]["side_effect"] = json!("queryable");
+    crate::artifact::validate_profile(&manifest).unwrap();
+    let cap = &manifest["capabilities"][0];
+    let hash = crate::contracts::digest(&serde_json::to_vec(&manifest).unwrap());
+    source.execute("INSERT INTO installations(id,plugin_id,version,publisher_id,image_digest,manifest_digest,manifest,state,created_at,updated_at) VALUES($1,$2,'1.0.0',$3,$4,$4,$5,'installed',now(),now())", &[&installation,&manifest["plugin_id"].as_str().unwrap(),&publisher,&hash,&manifest]).await.unwrap();
+    let spec = json!({"installation_id":installation,"display_name":"Raw effects COPY metadata","enabled":true,"replicas":1,"limits":manifest["minimum_resources"],"config":{},"volume_ids":[]});
+    source.execute("INSERT INTO deployments(id,owner_id,installation_id,spec,phase,created_at,updated_at) VALUES($1,$2,$3,$4,'ready',now(),now())", &[&deployment,&ctx.subject,&installation,&spec]).await.unwrap();
+    source.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,created_at,updated_at) VALUES($1,$2,1,0,'ready','alive',$3,now(),now())", &[&instance,&deployment,&spec["limits"]]).await.unwrap();
+    source
+        .execute(
+            "INSERT INTO capability_contracts(name,version,schema_digest,spec) VALUES($1,$2,$3,$4)",
+            &[
+                &cap["contract"]["name"].as_str().unwrap(),
+                &cap["contract"]["version"].as_str().unwrap(),
+                &cap["contract"]["schema_digest"].as_str().unwrap(),
+                cap,
+            ],
+        )
+        .await
+        .unwrap();
+    source.execute("INSERT INTO provider_records(instance_id,name,version,availability,features,observed_generation,observed_at) VALUES($1,$2,$3,'ready','[]',1,now())", &[&instance,&cap["contract"]["name"].as_str().unwrap(),&cap["contract"]["version"].as_str().unwrap()]).await.unwrap();
+    let request = json!({"contract":cap["contract"],"input":{"message":"frozen raw effect"},"provider_deployment_id":deployment,"timeout_ms":10000});
+    let failed = crate::broker::invoke_from_http(
+        &f.app,
+        &f.token,
+        ctx.peer,
+        Uuid::new_v4(),
+        &request,
+        "raw-effect-copy",
+        None,
+        Some(&origin),
+    )
+    .await
+    .unwrap_err();
+    let call: Uuid = failed
+        .resource_id
+        .as_ref()
+        .expect("Actual Broker admission required")
+        .parse()
+        .unwrap();
+    let original = source.query_one("SELECT c.skill_id,c.http_binding,c.delegation_id,x.source_paths,x.read_blob_ids,x.browser_origin FROM calls c JOIN host_rpc_contexts x ON x.call_id=c.id WHERE c.id=$1", &[&call]).await.unwrap();
+    assert!(original.get::<_, Option<Uuid>>("skill_id").is_none());
+    assert!(original.get::<_, Option<Value>>("http_binding").is_none());
+    let proof: Value = original.get("source_paths");
+    assert!(!proof.as_array().unwrap().is_empty());
+    assert_eq!(original.get::<_, Value>("read_blob_ids"), json!([]));
+    assert_eq!(
+        original.get::<_, Option<String>>("browser_origin"),
+        Some(origin.clone())
+    );
+    let proof_digest = crate::contracts::digest(&serde_jcs::to_vec(&proof).unwrap());
+    let delegation: Uuid = original.get::<_, Option<Uuid>>("delegation_id").unwrap();
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "authorization",
+        format!("Bearer {}", f.token).parse().unwrap(),
+    );
+    headers.insert("origin", origin.parse().unwrap());
+    let queried = crate::broker_query::get_call(
+        &f.app,
+        &headers,
+        "127.0.0.1:50000".parse().unwrap(),
+        Uuid::new_v4(),
+        call,
+    )
+    .await
+    .unwrap();
+    assert_eq!(queried["state"], "unknown");
+    let query_leases:i64=source.query_one("SELECT count(*) FROM rpc_delegations r JOIN execution_delegations e ON e.id=r.execution_delegation_id WHERE r.call_id=$1 AND r.execution_delegation_id<>$2 AND e.maximum_rules='[]'::jsonb AND r.status='revoked' AND e.status='revoked'", &[&call,&delegation]).await.unwrap().get(0);
+    assert_eq!(
+        query_leases, 1,
+        "The real query path must persist and retire its separate empty-authority lease"
+    );
+    let mut bytes = Vec::new();
+    let summary = export_inner(&mut source, &mut bytes).await.unwrap();
+    let (target_db, mut destination, recovery) = target(f.backup).await;
+    import_inner(
+        &mut destination,
+        &mut bytes.as_slice(),
+        &summary,
+        recovery,
+        ctx.subject,
+        PASSWORD,
+    )
+    .await
+    .unwrap();
+    let saved = destination.query_one("SELECT c.state,c.skill_id,c.http_binding,c.delegation_id,x.source_paths,x.read_blob_ids,x.browser_origin FROM calls c JOIN host_rpc_contexts x ON x.call_id=c.id WHERE c.id=$1", &[&call]).await.unwrap();
+    assert_eq!(saved.get::<_, String>("state"), "unknown");
+    assert!(saved.get::<_, Option<Uuid>>("skill_id").is_none());
+    assert!(saved.get::<_, Option<Value>>("http_binding").is_none());
+    assert_eq!(
+        saved.get::<_, Option<Uuid>>("delegation_id"),
+        Some(delegation)
+    );
+    let saved_proof: Value = saved.get("source_paths");
+    assert_eq!(saved_proof, proof);
+    assert_eq!(
+        crate::contracts::digest(&serde_jcs::to_vec(&saved_proof).unwrap()),
+        proof_digest
+    );
+    assert_eq!(saved.get::<_, Value>("read_blob_ids"), json!([]));
+    assert_eq!(
+        saved.get::<_, Option<String>>("browser_origin"),
+        ctx.browser_origin
+    );
+    assert_eq!(
+        destination
+            .query_one(
+                "SELECT count(*) FROM rpc_delegations WHERE call_id=$1 AND status='active'",
+                &[&call]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    assert!(f
+        .app
+        .auth
+        .authenticate(&destination, &f.token, ctx.peer, Uuid::new_v4())
+        .await
+        .is_err());
+    assert!(
+        crate::host_blobs::check_call_sources(&destination, &ctx, call)
+            .await
+            .is_err(),
+        "Historical proof cannot revive revoked original credentials after restore"
+    );
+    target_db.migrate().await.unwrap();
+    assert!(
+        target_db.check().await.is_err(),
+        "Metadata COPY is not physical recovery readiness"
+    );
+}

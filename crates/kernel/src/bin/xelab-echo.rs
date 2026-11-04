@@ -2,7 +2,7 @@
 use std::{
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
 };
@@ -24,8 +24,37 @@ struct Echo {
     generation: u64,
     initialized: Arc<AtomicBool>,
     draining: Arc<AtomicBool>,
-    results: Arc<RwLock<std::collections::HashMap<String, rpc::InvokeResponse>>>,
+    results: Arc<RwLock<std::collections::HashMap<String, SavedResult>>>,
+    effects: Arc<AtomicU64>,
+    cells: Arc<RwLock<std::collections::BTreeMap<String, String>>>,
     active_streams: Arc<RwLock<std::collections::HashMap<String, watch::Sender<bool>>>>,
+}
+#[derive(Clone)]
+struct SavedResult {
+    key: String,
+    input_digest: String,
+    response: rpc::InvokeResponse,
+}
+
+impl Echo {
+    fn execution_count(&self, effect: &str) -> Option<u64> {
+        match effect {
+            "queryable" | "non_repeatable" => Some(self.effects.fetch_add(1, Ordering::SeqCst) + 1),
+            _ => None,
+        }
+    }
+    async fn assign_cell(&self, message: &str) -> Result<(), Status> {
+        // Intrinsically idempotent assignment to the input's fixed cell. This
+        // process-local probe is not a persistent business-data profile. There
+        // is no increment or regenerated value on repetition or restart.
+        let cell = digest(message.as_bytes());
+        let mut cells = self.cells.write().await;
+        if cells.len() >= 1024 && !cells.contains_key(&cell) {
+            return Err(Status::resource_exhausted("Reference cells are full"));
+        }
+        cells.insert(cell, message.to_owned());
+        Ok(())
+    }
 }
 #[tonic::async_trait]
 impl PluginLifecycle for Echo {
@@ -124,15 +153,52 @@ impl CapabilityService for Echo {
         }
         let input = strict_json(&r.input_json, 65536)
             .map_err(|_| Status::invalid_argument("Invalid input"))?;
-        let value = if r
+        let context = r
+            .context
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("Context required"))?;
+        if context.deadline_unix_ms <= chrono::Utc::now().timestamp_millis()
+            || context.delegation_token.is_empty()
+            || context.idempotency_key.is_empty()
+        {
+            return Err(Status::invalid_argument("Invalid request context"));
+        }
+        let manifest = strict_json(&self.manifest, 1048576)
+            .map_err(|_| Status::internal("Invalid manifest"))?;
+        let contract = r
             .contract
             .as_ref()
-            .is_some_and(|contract| contract.name == "org.xelab.echo.stream")
-        {
+            .ok_or_else(|| Status::invalid_argument("Contract required"))?;
+        let cap = manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|cap| {
+                cap["contract"]["name"] == contract.name
+                    && cap["contract"]["version"] == contract.version
+                    && cap["contract"]["schema_digest"] == contract.schema_digest
+            })
+            .ok_or_else(|| Status::invalid_argument("No matching signed contract"))?;
+        validate_business(&cap["input_schema"], &input)
+            .map_err(|_| Status::invalid_argument("Input schema differs"))?;
+        let mut results = self.results.write().await;
+        if let Some(saved) = results.get(&r.call_id) {
+            if saved.key != context.idempotency_key || saved.input_digest != r.input_digest {
+                return Err(Status::failed_precondition("Call key or input differs"));
+            }
+            return Ok(Response::new(saved.response.clone()));
+        }
+        if cap["side_effect"] == "idempotent" {
+            self.assign_cell(input["message"].as_str().unwrap()).await?;
+        }
+        let mut value = if !cap["stream_item_schema"].is_null() {
             serde_json::json!({"message":input["message"]})
         } else {
-            input
+            input.clone()
         };
+        if let Some(count) = self.execution_count(cap["side_effect"].as_str().unwrap()) {
+            value["execution_count"] = count.into();
+        }
         let output =
             serde_json::to_vec(&value).map_err(|_| Status::internal("Serialization failed"))?;
         let response = rpc::InvokeResponse {
@@ -140,11 +206,22 @@ impl CapabilityService for Echo {
             output_digest: digest(&output),
             output_json: output,
         };
-        let mut results = self.results.write().await;
         if results.len() >= 1024 {
             results.clear();
         }
-        results.insert(r.call_id, response.clone());
+        results.insert(
+            r.call_id,
+            SavedResult {
+                key: context.idempotency_key.clone(),
+                input_digest: r.input_digest,
+                response: response.clone(),
+            },
+        );
+        if input["fault"] == "after-commit" {
+            return Err(Status::unavailable(
+                "Reference response lost after committed execution",
+            ));
+        }
         Ok(Response::new(response))
     }
     type InvokeStreamStream =
@@ -205,6 +282,8 @@ impl CapabilityService for Echo {
         let fault = input["fault"].as_str().unwrap_or("none").to_owned();
         let message = input["message"].as_str().unwrap().to_owned();
         let call = request.call_id;
+        let key = context.idempotency_key.clone();
+        let input_digest = request.input_digest;
         let deadline = context.deadline_unix_ms;
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
         let (cancellation, mut canceled) = watch::channel(false);
@@ -214,6 +293,13 @@ impl CapabilityService for Echo {
         }
         active.insert(call.clone(), cancellation);
         drop(active);
+        if cap["side_effect"] == "idempotent" {
+            if let Err(error) = self.assign_cell(&message).await {
+                self.active_streams.write().await.remove(&call);
+                return Err(error);
+            }
+        }
+        let execution_count = self.execution_count(cap["side_effect"].as_str().unwrap());
         let this = self.clone();
         tokio::spawn(async move {
             let produce = async {
@@ -253,11 +339,14 @@ impl CapabilityService for Echo {
                 if fault == "missing-terminal" {
                     return;
                 }
-                let value = if fault == "output" {
+                let mut value = if fault == "output" {
                     serde_json::json!({"message":false})
                 } else {
                     serde_json::json!({"message":message})
                 };
+                if let Some(count) = execution_count {
+                    value["execution_count"] = count.into();
+                }
                 let output = serde_json::to_vec(&value).unwrap();
                 let response = rpc::InvokeResponse {
                     call_id: call.clone(),
@@ -268,6 +357,28 @@ impl CapabilityService for Echo {
                     },
                     output_json: output,
                 };
+                if fault == "none" || fault == "after-commit" {
+                    let mut results = this.results.write().await;
+                    if results.len() >= 1024 {
+                        results.clear();
+                    }
+                    results.insert(
+                        call.clone(),
+                        SavedResult {
+                            key: key.clone(),
+                            input_digest: input_digest.clone(),
+                            response: response.clone(),
+                        },
+                    );
+                }
+                if fault == "after-commit" {
+                    let _ = sender
+                        .send(Err(Status::unavailable(
+                            "Reference stream ended after committed execution",
+                        )))
+                        .await;
+                    return;
+                }
                 let completed = rpc::InvokeChunk {
                     call_id: call.clone(),
                     sequence: count + 1,
@@ -289,13 +400,6 @@ impl CapabilityService for Echo {
                             )),
                         }))
                         .await;
-                }
-                if fault == "none" {
-                    let mut results = this.results.write().await;
-                    if results.len() >= 1024 {
-                        results.clear();
-                    }
-                    results.insert(call.clone(), response);
                 }
             };
             let remaining = std::time::Duration::from_millis(
@@ -325,8 +429,24 @@ impl CapabilityService for Echo {
         &self,
         r: Request<rpc::QueryResultRequest>,
     ) -> Result<Response<rpc::QueryResultResponse>, Status> {
+        let request = r.into_inner();
+        let context = request
+            .context
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("Context required"))?;
+        if context.deadline_unix_ms <= chrono::Utc::now().timestamp_millis()
+            || context.delegation_token.is_empty()
+            || request.idempotency_key.is_empty()
+            || context.idempotency_key != request.idempotency_key
+        {
+            return Err(Status::invalid_argument("Invalid query context or key"));
+        }
         let map = self.results.read().await;
-        let result = map.get(&r.into_inner().call_id).cloned();
+        let result = match map.get(&request.call_id) {
+            Some(saved) if saved.key == request.idempotency_key => Some(saved.response.clone()),
+            Some(_) => return Err(Status::failed_precondition("Call key differs")),
+            None => None,
+        };
         Ok(Response::new(rpc::QueryResultResponse {
             state: if result.is_some() {
                 rpc::ExecutionState::Succeeded as i32
@@ -347,6 +467,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         initialized: Arc::new(AtomicBool::new(false)),
         draining: Arc::new(AtomicBool::new(false)),
         results: Default::default(),
+        effects: Default::default(),
+        cells: Default::default(),
         active_streams: Default::default(),
     };
     loop {
@@ -370,5 +492,146 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tokio::time::sleep(std::time::Duration::from_secs(300)).await;
             })
             .await?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn fixture(effect: &str) -> (Echo, rpc::InvokeRequest) {
+        let contract = rpc::ContractRef {
+            name: format!("org.xelab.echo.{effect}"),
+            version: "1.0.0".into(),
+            schema_digest: digest(effect.as_bytes()),
+        };
+        let input = json!({"message":"committed once","fault":"after-commit"});
+        let input_json = serde_json::to_vec(&input).unwrap();
+        let manifest = json!({"capabilities":[{"contract":{"name":contract.name,"version":contract.version,"schema_digest":contract.schema_digest},"side_effect":effect,"input_schema":{"type":"object"},"stream_item_schema":{},"output_schema":{"type":"object"}}]});
+        let echo = Echo {
+            manifest: Arc::new(serde_json::to_vec(&manifest).unwrap()),
+            generation: 1,
+            initialized: Arc::new(AtomicBool::new(true)),
+            draining: Arc::new(AtomicBool::new(false)),
+            results: Default::default(),
+            effects: Default::default(),
+            cells: Default::default(),
+            active_streams: Default::default(),
+        };
+        let mut context = xelab_kernel::controller::context(None);
+        context.deadline_unix_ms = chrono::Utc::now().timestamp_millis() + 10_000;
+        context.delegation_token = "component-only-empty-authority".into();
+        context.idempotency_key = "stable-reference-intent".into();
+        let request = rpc::InvokeRequest {
+            context: Some(context),
+            call_id: uuid::Uuid::new_v4().to_string(),
+            contract: Some(contract),
+            input_digest: digest(&input_json),
+            input_json,
+            binding_id: String::new(),
+        };
+        (echo, request)
+    }
+
+    #[tokio::test]
+    async fn reference_committed_response_loss_queries_only_the_same_call_key() {
+        let (echo, request) = fixture("queryable");
+        assert_eq!(
+            echo.invoke(Request::new(request.clone()))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::Unavailable
+        );
+        assert_eq!(echo.effects.load(Ordering::SeqCst), 1);
+        let mut query = rpc::QueryResultRequest {
+            context: request.context.clone(),
+            call_id: request.call_id.clone(),
+            idempotency_key: request.context.as_ref().unwrap().idempotency_key.clone(),
+        };
+        let known = echo
+            .query_result(Request::new(query.clone()))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(known.state, rpc::ExecutionState::Succeeded as i32);
+        let Some(rpc::query_result_response::Outcome::Completed(saved)) = known.outcome else {
+            panic!("Actual committed reference result required")
+        };
+        assert_eq!(saved.call_id, request.call_id);
+        assert_eq!(
+            strict_json(&saved.output_json, 65536).unwrap()["execution_count"],
+            1
+        );
+        assert_eq!(
+            echo.invoke(Request::new(request.clone()))
+                .await
+                .unwrap()
+                .into_inner(),
+            saved
+        );
+        assert_eq!(
+            echo.effects.load(Ordering::SeqCst),
+            1,
+            "A repeated reference Call cannot repeat its mutation"
+        );
+        query.idempotency_key = "another-intent".into();
+        query
+            .context
+            .as_mut()
+            .unwrap()
+            .idempotency_key
+            .clone_from(&query.idempotency_key);
+        assert_eq!(
+            echo.query_result(Request::new(query.clone()))
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::FailedPrecondition
+        );
+        query.call_id = uuid::Uuid::new_v4().to_string();
+        let missing = echo
+            .query_result(Request::new(query))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(missing.state, rpc::ExecutionState::Unknown as i32);
+        assert!(
+            missing.outcome.is_none(),
+            "A missing record never establishes that an effect did not execute"
+        );
+    }
+    #[tokio::test]
+    async fn reference_fixed_assignment_has_same_value_across_fresh_instances() {
+        let mut previous = None;
+        for _ in 0..2 {
+            let (echo, mut request) = fixture("idempotent");
+            request.input_json =
+                serde_json::to_vec(&json!({"message":"fixed reference cell"})).unwrap();
+            request.input_digest = digest(&request.input_json);
+            let first = echo
+                .invoke(Request::new(request.clone()))
+                .await
+                .unwrap()
+                .into_inner();
+            request.call_id = uuid::Uuid::new_v4().to_string();
+            let repeated = echo
+                .invoke(Request::new(request))
+                .await
+                .unwrap()
+                .into_inner();
+            assert_eq!(first.output_json, repeated.output_json);
+            assert_eq!(echo.cells.read().await.len(), 1);
+            assert_eq!(
+                echo.effects.load(Ordering::SeqCst),
+                0,
+                "Intrinsic assignment never uses the non-idempotent counter"
+            );
+            if let Some(previous) = &previous {
+                assert_eq!(previous, &first.output_json);
+            }
+            previous = Some(first.output_json);
+        }
     }
 }

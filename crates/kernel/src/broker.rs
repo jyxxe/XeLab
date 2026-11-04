@@ -328,6 +328,26 @@ async fn invoke_inner(
         tx.commit().await?;
         return Err(e);
     }
+    let cap = tx
+        .query_opt(
+            "SELECT spec,schema_digest FROM capability_contracts WHERE name=$1 AND version=$2",
+            &[&name, &version],
+        )
+        .await?
+        .ok_or_else(Error::not_found)?;
+    if cap.get::<_, String>("schema_digest") != schema_digest {
+        return Err(Error::conflict("Capability digest differs"));
+    }
+    let definition: Value = cap.get("spec");
+    if !matches!(
+        definition["side_effect"].as_str(),
+        Some("none" | "idempotent" | "queryable" | "non_repeatable")
+    ) {
+        return Err(Error::invalid(
+            "Unsupported capability side-effect semantics",
+        ));
+    }
+    let protected = skill.is_some() || definition["side_effect"] != "none";
     let fingerprint = digest(&serde_json::to_vec(original)?);
     let path = skill_id.map_or_else(
         || "/api/platform/v1/calls".to_owned(),
@@ -349,27 +369,8 @@ async fn invoke_inner(
         let call_id=r.get::<_,Option<String>>("resource_id").and_then(|s|s.parse::<Uuid>().ok()).ok_or_else(||Error::conflict("Missing prior call"))?;
         if stream.is_some() { return Err(Error::conflict("Generation streams cannot be replayed; inspect the admitted Call").with_resource(call_id)); }
         let row=tx.query_one("SELECT state,result FROM calls WHERE id=$1",&[&call_id]).await?;
-        if row.get::<_,String>("state")=="succeeded"{if skill.is_some(){check_skill_authority(&tx,&ctx,call_id).await?;}let value = row.get::<_,Option<Value>>("result").ok_or_else(||Error::conflict("Call result is unavailable"))?; return skill_result(skill.as_ref(), value);}
+        if row.get::<_,String>("state")=="succeeded"{if protected{check_skill_authority(&tx,&ctx,call_id).await?;}let value = row.get::<_,Option<Value>>("result").ok_or_else(||Error::conflict("Call result is unavailable"))?; return skill_result(skill.as_ref(), value);}
         return Err(Error::new("OUTCOME_UNKNOWN","Prior call is not a confirmed success; query its call ID",axum::http::StatusCode::CONFLICT).with_resource(call_id));
-    }
-    let cap = tx
-        .query_opt(
-            "SELECT spec,schema_digest FROM capability_contracts WHERE name=$1 AND version=$2",
-            &[&name, &version],
-        )
-        .await?
-        .ok_or_else(Error::not_found)?;
-    if cap.get::<_, String>("schema_digest") != schema_digest {
-        return Err(Error::conflict("Capability digest differs"));
-    }
-    let definition: Value = cap.get("spec");
-    if !matches!(
-        definition["side_effect"].as_str(),
-        Some("none" | "idempotent")
-    ) {
-        return Err(Error::invalid(
-            "This call profile requires supported idempotent semantics",
-        ));
     }
     let bytes = serde_json::to_vec(&input["input"])?;
     if bytes.len() > unsigned(&definition["maximum_input_bytes"])? as usize {
@@ -388,23 +389,28 @@ async fn invoke_inner(
     let instance: Uuid = row.get("id");
     let generation: i64 = row.get("generation");
     let manifest: Value = row.get("manifest");
-    if definition["side_effect"] == "idempotent" {
+    if definition["side_effect"] != "none" {
         crate::artifact::validate_runtime_profile(&manifest)?;
-        if manifest["data_schema_version"] == "none"
-            || !manifest["capabilities"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|cap| {
-                    cap["contract"] == *contract
-                        && cap["side_effect"] == "idempotent"
-                        && ["input_schema", "output_schema", "stream_item_schema"]
-                            .iter()
-                            .all(|field| cap[*field] == definition[*field])
-                })
+        if !manifest["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|cap| {
+                cap["contract"] == *contract
+                    && cap["side_effect"] == definition["side_effect"]
+                    && [
+                        "input_schema",
+                        "output_schema",
+                        "stream_item_schema",
+                        "maximum_input_bytes",
+                        "maximum_output_bytes",
+                    ]
+                    .iter()
+                    .all(|field| cap[*field] == definition[*field])
+            })
         {
             return Err(Error::invalid(
-                "Idempotent data writes require the verified versioned plugin profile",
+                "Side-effecting execution requires its exact signed capability",
             ));
         }
     }
@@ -470,7 +476,7 @@ async fn invoke_inner(
             .is_none_or(|s| s.definition["input_blobs"] == true),
     )
     .await?;
-    if skill.is_some() {
+    if protected {
         crate::host_blobs::check_call_sources(&tx, &ctx, call).await?;
     }
     tx.execute("DELETE FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method='POST' AND path=$4 AND key=$3 AND expires_at<=now()",&[&ctx.subject,&ctx.credential,&key,&path]).await?;
@@ -512,7 +518,7 @@ async fn invoke_inner(
             input_json: bytes,
             binding_id: String::new(),
         });
-        if skill.is_some() {
+        if protected {
             check_live_call(
                 app,
                 token,
@@ -612,7 +618,7 @@ async fn invoke_inner(
         Ok(out)
     };
     let monitor = async {
-        if skill.is_none() {
+        if !protected {
             std::future::pending::<()>().await;
         }
         loop {
@@ -664,8 +670,10 @@ async fn invoke_inner(
     let check = async {
         let mut current = app.auth.authenticate(&tx, token, peer, request_id).await?;
         current.browser_origin = browser_origin.map(str::to_owned);
-        if let Some(skill) = &skill {
+        if protected {
             crate::host_blobs::check_call_sources(&tx, &current, call).await?;
+        }
+        if let Some(skill) = &skill {
             let resolved = crate::skills::resolve_for_invoke(&tx, &current, skill.id).await?;
             if resolved.definition_digest != skill.definition_digest
                 || resolved.installation_id != skill.installation_id
