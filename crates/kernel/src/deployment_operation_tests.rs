@@ -32,6 +32,10 @@ async fn actual_postgres_deployment_operations_return_complete_objects_and_respe
     .unwrap();
     let spec = json!({"installation_id":installation,"display_name":"operation result contract","enabled":false,"limits":manifest["minimum_resources"],"config":{},"volume_ids":[]});
     let request = Request::builder()
+        .header(
+            "host",
+            crate::plugin_http_gateway::core_authority(&f.app.config).unwrap(),
+        )
         .method("POST")
         .uri("/api/platform/v1/deployments")
         .header("authorization", format!("Bearer {}", f.token))

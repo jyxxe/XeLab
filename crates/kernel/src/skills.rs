@@ -89,9 +89,12 @@ fn conflict() -> Error {
 /// Equality with an actual manifest candidate is checked separately at registration.
 pub(crate) fn validate_candidate(manifest: &Value, definition: &Value) -> Result<()> {
     validate("SkillDefinition", definition)?;
-    if definition["target"]["kind"] != "capability" {
+    if !matches!(
+        definition["target"]["kind"].as_str(),
+        Some("capability" | "http")
+    ) {
         return Err(Error::invalid(
-            "Only ordinary OCI capability Skill targets are supported",
+            "Only ordinary OCI capability and signed HTTP Skill targets are supported",
         ));
     }
     let plugin = string(manifest, "plugin_id")?;
@@ -99,6 +102,16 @@ pub(crate) fn validate_candidate(manifest: &Value, definition: &Value) -> Result
         || !string(definition, "name")?.starts_with(&format!("{plugin}."))
     {
         return Err(conflict());
+    }
+    if definition["target"]["kind"] == "http" {
+        if definition["mapping"] != "identity" || !definition["stream_item_schema"].is_null() {
+            return Err(conflict());
+        }
+        for field in ["input_schema", "output_schema"] {
+            compile_business(&definition[field])?;
+        }
+        definition_digest(definition)?;
+        return Ok(());
     }
     let cap = manifest["capabilities"]
         .as_array()
@@ -148,11 +161,12 @@ async fn installed_candidate(
         &[&installation],
     ).await?.ok_or_else(|| Error::unavailable("Skill source installation is unavailable"))?;
     let manifest: Value = row.get(0);
-    candidate_binding(c, &manifest, definition).await
+    candidate_binding(c, installation, &manifest, definition).await
 }
 
 async fn candidate_binding(
     c: &(impl GenericClient + Sync),
+    installation: Uuid,
     manifest: &Value,
     definition: &Value,
 ) -> Result<()> {
@@ -162,6 +176,12 @@ async fn candidate_binding(
         .is_some_and(|skills| skills.iter().any(|candidate| candidate == definition))
     {
         return Err(conflict());
+    }
+    if definition["target"]["kind"] == "http" {
+        crate::http_contracts::load(c, installation)
+            .await?
+            .bind_skill(definition)?;
+        return Ok(());
     }
     let contract = &definition["target"]["contract"];
     let row = c
@@ -249,14 +269,14 @@ pub(crate) async fn validate_snapshot_bindings(c: &(impl GenericClient + Sync)) 
             {
                 return Err(conflict());
             }
-            candidate_binding(c, &manifest, &definition).await?;
+            candidate_binding(c, row.get("installation_id"), &manifest, &definition).await?;
         }
     }
     // Deployments can change installation after a historical call. Their
     // current installation is not evidence of that call's original provider.
     // The immutable Skill/call binding and the normal provider FKs survive.
     if c.query_one(
-        "SELECT EXISTS(SELECT 1 FROM calls c LEFT JOIN skills s ON s.id=c.skill_id WHERE (c.skill_id IS NULL AND c.skill_definition_digest IS NOT NULL) OR (c.skill_id IS NOT NULL AND (s.id IS NULL OR c.skill_definition_digest IS DISTINCT FROM s.definition_digest OR c.contract IS DISTINCT FROM s.definition->'target'->'contract')))",
+        "SELECT EXISTS(SELECT 1 FROM calls c LEFT JOIN skills s ON s.id=c.skill_id WHERE (c.skill_id IS NULL AND c.skill_definition_digest IS NOT NULL) OR (c.skill_id IS NOT NULL AND (s.id IS NULL OR c.skill_definition_digest IS DISTINCT FROM s.definition_digest OR c.contract IS DISTINCT FROM CASE WHEN s.definition->'target'->>'kind'='http' THEN jsonb_build_object('name',s.name,'version',s.version,'schema_digest',s.definition_digest) ELSE s.definition->'target'->'contract' END)))",
         &[],
     ).await?.get::<_,bool>(0) {
         return Err(Error::conflict("Snapshot Call does not match its immutable Skill"));
@@ -355,18 +375,37 @@ pub(crate) async fn resolve_for_invoke(
     ctx: &Context,
     skill: Uuid,
 ) -> Result<ResolvedSkill> {
+    resolve_for_invoke_inner(c, ctx, skill, None).await
+}
+
+pub(crate) async fn resolve_http_for_invoke(
+    c: &tokio_postgres::Transaction<'_>,
+    ctx: &Context,
+    skill: Uuid,
+    authority: &auth::CurrentAuthority<'_, '_>,
+) -> Result<ResolvedSkill> {
+    authority.verify(c, ctx)?;
+    resolve_for_invoke_inner(c, ctx, skill, Some(authority)).await
+}
+
+async fn resolve_for_invoke_inner(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    skill: Uuid,
+    authority: Option<&auth::CurrentAuthority<'_, '_>>,
+) -> Result<ResolvedSkill> {
     let row = c
         .query_opt("SELECT * FROM skills WHERE id=$1 FOR SHARE", &[&skill])
         .await?
         .ok_or_else(Error::not_found)?;
     let owner = row.get("created_by");
-    auth::authorize(
-        c,
-        ctx,
-        "skill.invoke",
-        &Resource::new("skill", skill, Some(owner)),
-    )
-    .await?;
+    let resource = Resource::new("skill", skill, Some(owner));
+    if let Some(authority) = authority {
+        // The concrete transaction was verified by resolve_http_for_invoke.
+        authority.require_context(ctx, "skill.invoke", &resource)?;
+    } else {
+        auth::authorize(c, ctx, "skill.invoke", &resource).await?;
+    }
     if !row.get::<_, bool>("enabled")
         || row.get::<_, Option<DateTime<Utc>>>("archived_at").is_some()
     {
@@ -388,6 +427,32 @@ pub(crate) async fn resolve_for_invoke(
     })
 }
 
+/// Data-only check for an already admitted HTTP Call. Its caller must separately
+/// revalidate the original frozen Skill and business permission paths; this does
+/// not grant authority or substitute a new permission alternative.
+pub(crate) async fn check_admitted_http_binding(
+    c: &(impl GenericClient + Sync),
+    skill: Uuid,
+    expected_digest: &str,
+    installation: Uuid,
+) -> Result<()> {
+    let row=c.query_opt("SELECT definition,definition_digest,installation_id,enabled,archived_at FROM skills WHERE id=$1 FOR SHARE",&[&skill]).await?.ok_or_else(Error::not_found)?;
+    let definition: Value = row.get("definition");
+    if !row.get::<_, bool>("enabled")
+        || row.get::<_, Option<DateTime<Utc>>>("archived_at").is_some()
+    {
+        return Err(Error::unavailable("HTTP Skill is disabled or archived"));
+    }
+    if row.get::<_, Uuid>("installation_id") != installation
+        || row.get::<_, String>("definition_digest") != expected_digest
+        || definition_digest(&definition)? != expected_digest
+        || definition["target"]["kind"] != "http"
+    {
+        return Err(conflict());
+    }
+    installed_candidate(c, installation, &definition).await
+}
+
 async fn row_value(c: &(impl GenericClient + Sync), row: &Row) -> Result<Value> {
     let mut value = db::stamp(row);
     let definition: Value = row.get("definition");
@@ -404,7 +469,9 @@ async fn row_value(c: &(impl GenericClient + Sync), row: &Row) -> Result<Value> 
     } else {
         false
     };
-    let ready = if source_valid {
+    let ready = if source_valid && definition["target"]["kind"] == "http" {
+        c.query_one("SELECT EXISTS(SELECT 1 FROM instances i JOIN deployments d ON d.id=i.deployment_id JOIN installations n ON n.id=d.installation_id WHERE n.id=$1 AND i.phase='ready' AND i.health='alive' AND i.last_heartbeat_at>now()-interval '1 millisecond'*((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint+(n.manifest->'health'->>'timeout_ms')::bigint) AND d.spec->>'enabled'='true' AND d.archived_at IS NULL AND d.approval ? 'rules')",&[&installation]).await?.get(0)
+    } else if source_valid {
         c.query_one(
             "SELECT EXISTS(SELECT 1 FROM provider_records p JOIN instances i ON i.id=p.instance_id JOIN deployments d ON d.id=i.deployment_id JOIN installations n ON n.id=d.installation_id WHERE n.id=$1 AND p.name=$2 AND p.version=$3 AND p.availability='ready' AND p.observed_at>now()-interval '1 millisecond'*((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint+(n.manifest->'health'->>'timeout_ms')::bigint) AND i.phase='ready' AND d.spec->>'enabled'='true' AND d.archived_at IS NULL)",
             &[&installation, &string(&definition["target"]["contract"], "name")?, &string(&definition["target"]["contract"], "version")?],

@@ -6,13 +6,17 @@ import json
 import os
 import pathlib
 import threading
+import time
+import uuid
 
 import grpc
 from xelab.v1 import common_pb2 as common
 from xelab.v1 import lifecycle_pb2 as life
 from xelab.v1 import lifecycle_pb2_grpc as lifecycle
+from xelab.v1 import capability_pb2 as cap
+from xelab.v1 import capability_pb2_grpc as capability
 
-from http_server import KernelHTTPServer, State
+from http_server import KernelHTTPServer, State, encoded, unique_object, invalid_constant, bounded_integer
 
 
 def digest(raw):
@@ -29,6 +33,7 @@ class Lifecycle(lifecycle.PluginLifecycleServicer):
     def __init__(self, state, manifest_path="/xelab/plugin.json"):
         self.state = state
         self.raw = pathlib.Path(manifest_path).read_bytes()
+        self.manifest = json.loads(self.raw)
         self.generation = int(os.environ["XELAB_GENERATION"])
 
     def Describe(self, request, context):
@@ -48,7 +53,9 @@ class Lifecycle(lifecycle.PluginLifecycleServicer):
 
     def GetHealth(self, request, context):
         require_kernel(context)
-        return life.HealthResponse(alive=True, observed_generation=self.generation, capabilities=[])
+        return life.HealthResponse(alive=True, observed_generation=self.generation,
+            capabilities=[life.CapabilityHealth(contract=common.ContractRef(**spec["contract"]), ready=self.state.ready())
+                          for spec in self.manifest["capabilities"]])
 
     def Drain(self, request, context):
         require_kernel(context)
@@ -59,6 +66,66 @@ class Lifecycle(lifecycle.PluginLifecycleServicer):
         require_kernel(context)
         self.state.drain()
         return common.Ack(request_id=request.context.request_id, accepted=True)
+
+
+class EchoCapability(capability.CapabilityServiceServicer):
+    """Optional real RPC adapter sharing HTTP's physical application slots."""
+    def __init__(self, state, spec):
+        self.state = state
+        self.contract = common.ContractRef(**spec["contract"])
+        self.results = {}
+        self.canceled = set()
+
+    def Invoke(self, request, context):
+        require_kernel(context)
+        try:
+            if (request.contract != self.contract or digest(request.input_json) != request.input_digest
+                    or len(request.input_json) > 8192 or not request.context.delegation_token
+                    or request.context.deadline_unix_ms <= int(time.time() * 1000)
+                    or str(uuid.UUID(request.call_id)) != request.call_id):
+                raise ValueError("Invalid admitted call")
+            value = json.loads(request.input_json.decode(), object_pairs_hook=unique_object, parse_constant=invalid_constant)
+            if (not isinstance(value, dict) or set(value) != {"message", "delay_ms"}
+                    or not isinstance(value["message"], str) or len(value["message"]) > 1024):
+                raise ValueError("Input differs from signed contract")
+            value["delay_ms"] = bounded_integer(value["delay_ms"], 0, 5000)
+        except (ValueError, UnicodeError):
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Invalid RPC request")
+        with self.state.business() as acquired:
+            if not acquired:
+                context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "Shared physical instance slots exhausted")
+            end = time.monotonic() + value["delay_ms"] / 1000
+            while time.monotonic() < end:
+                if (not context.is_active() or request.call_id in self.canceled or not self.state.ready()
+                        or request.context.deadline_unix_ms <= int(time.time() * 1000)):
+                    context.abort(grpc.StatusCode.CANCELLED, "Call stopped")
+                time.sleep(min(0.02, max(0, end - time.monotonic())))
+            output = encoded({"message": value["message"]})
+            response = cap.InvokeResponse(call_id=request.call_id, output_json=output, output_digest=digest(output))
+            with self.state.lock:
+                if len(self.results) >= 1024:
+                    self.results.clear()
+                self.results[request.call_id] = response
+            return response
+
+    def InvokeStream(self, request, context):
+        require_kernel(context)
+        context.abort(grpc.StatusCode.UNIMPLEMENTED, "This capability declares no streaming schema")
+
+    def Cancel(self, request, context):
+        require_kernel(context)
+        with self.state.lock:
+            if len(self.canceled) >= 1024:
+                self.canceled.clear()
+            self.canceled.add(request.call_id)
+        return common.Ack(request_id=request.context.request_id, accepted=True)
+
+    def QueryResult(self, request, context):
+        require_kernel(context)
+        with self.state.lock:
+            result = self.results.get(request.call_id)
+        return (cap.QueryResultResponse(state=common.EXECUTION_STATE_SUCCEEDED, completed=result) if result
+                else cap.QueryResultResponse(state=common.EXECUTION_STATE_UNKNOWN))
 
 
 def main():
@@ -89,7 +156,10 @@ def main():
                                                       require_client_authentication=True)
     rpc = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=4),
                       options=[("grpc.max_receive_message_length", 1048576)])
-    lifecycle.add_PluginLifecycleServicer_to_server(Lifecycle(state), rpc)
+    service = Lifecycle(state)
+    lifecycle.add_PluginLifecycleServicer_to_server(service, rpc)
+    if service.manifest["capabilities"]:
+        capability.add_CapabilityServiceServicer_to_server(EchoCapability(state, service.manifest["capabilities"][0]), rpc)
     if not rpc.add_secure_port("0.0.0.0:7000", credentials):
         raise RuntimeError("Cannot bind plugin lifecycle listener")
     rpc.start()

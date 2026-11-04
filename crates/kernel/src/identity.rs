@@ -1059,6 +1059,16 @@ pub(crate) async fn call_sources_for(
     let paths = Policy::new(c, ctx.peer)
         .credential(ctx.credential, 0)
         .await?;
+    call_sources_from_paths(c, ctx, action, resource, paths).await
+}
+
+pub(crate) async fn call_sources_from_paths(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    action: &str,
+    resource: &Resource,
+    paths: Vec<crate::policy::Path>,
+) -> Result<BTreeSet<Uuid>> {
     let mut alternatives = Vec::new();
     for path in paths {
         if !auth::rules_allow(&json!([path.rule]), action, resource, ctx.peer) {

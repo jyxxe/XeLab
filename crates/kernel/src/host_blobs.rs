@@ -273,15 +273,102 @@ pub(crate) async fn grant_skill_call(
     input: &Value,
     allow_input_resources: bool,
 ) -> Result<()> {
-    let skill = c
+    grant_call_inner(
+        c,
+        app,
+        ctx,
+        call,
+        deployment,
+        manifest,
+        definition,
+        input,
+        allow_input_resources,
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn grant_http_call(
+    c: &tokio_postgres::Transaction<'_>,
+    app: &App,
+    ctx: &Context,
+    call: Uuid,
+    deployment: Uuid,
+    manifest: &Value,
+    definition: &Value,
+    input: &Value,
+    allow_input_resources: bool,
+    authority: &auth::CurrentAuthority<'_, '_>,
+) -> Result<()> {
+    let (action, resource) = crate::broker::business_target(c, call).await?;
+    let paths = grant_call_inner(
+        c,
+        app,
+        ctx,
+        call,
+        deployment,
+        manifest,
+        definition,
+        input,
+        allow_input_resources,
+        Some(authority.paths(c, ctx, &resource)?),
+    )
+    .await?;
+    // These paths were just intersected from the transaction-local current
+    // proof and restricted to charged issuers under this same auth fence.
+    let rules = policy::rules(&paths);
+    if !auth::rules_allow(&rules, &action, &resource, ctx.peer) {
+        return Err(Error::denied());
+    }
+    if let Some(row) = c
         .query_opt(
-            "SELECT skill_id FROM calls WHERE id=$1 AND skill_id IS NOT NULL",
+            "SELECT s.id,s.created_by FROM calls c JOIN skills s ON s.id=c.skill_id WHERE c.id=$1",
+            &[&call],
+        )
+        .await?
+    {
+        if !auth::rules_allow(
+            &rules,
+            "skill.invoke",
+            &Resource::new(
+                "skill",
+                row.get::<_, Uuid>("id"),
+                Some(row.get("created_by")),
+            ),
+            ctx.peer,
+        ) {
+            return Err(Error::denied());
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn grant_call_inner(
+    c: &(impl GenericClient + Sync),
+    app: &App,
+    ctx: &Context,
+    call: Uuid,
+    deployment: Uuid,
+    manifest: &Value,
+    definition: &Value,
+    input: &Value,
+    allow_input_resources: bool,
+    current_paths: Option<&[Path]>,
+) -> Result<Vec<Path>> {
+    let context = c
+        .query_one(
+            "SELECT skill_id,http_binding FROM calls WHERE id=$1",
             &[&call],
         )
         .await?;
+    let skill = context.get::<_, Option<Uuid>>("skill_id");
+    let http = context.get::<_, Option<Value>>("http_binding");
     let has_blobs = requested(manifest, "blob.read") || requested(manifest, "blob.create");
-    if !has_blobs && skill.is_none() {
-        return Ok(());
+    if !has_blobs && skill.is_none() && http.is_none() {
+        return Ok(Vec::new());
     }
     if has_blobs {
         check_approval(c, app, deployment, manifest).await?;
@@ -290,14 +377,11 @@ pub(crate) async fn grant_skill_call(
     if has_blobs && allow_input_resources {
         resources(&definition["input_schema"], input, &mut ids)?;
     }
-    let mut bounds = vec![
-        json!({"action":"capability.invoke","resource":{"kind":"capability","match":"ids","ids":[format!("{}@{}",definition["contract"]["name"].as_str().unwrap(),definition["contract"]["version"].as_str().unwrap())]}}),
-    ];
-    // Preserve the original Skill permission proof alongside the underlying
-    // capability proof, so later grants cannot revive a revoked source path.
-    let is_skill = skill.is_some();
+    let (action, resource) = crate::broker::business_target(c, call).await?;
+    let mut bounds = vec![json!({"action":action,"resource":resource.json()})];
+    let pinned = skill.is_some() || http.is_some();
     if let Some(skill) = skill {
-        bounds.push(json!({"action":"skill.invoke","resource":{"kind":"skill","match":"ids","ids":[skill.get::<_,Uuid>("skill_id")]}}));
+        bounds.push(json!({"action":"skill.invoke","resource":{"kind":"skill","match":"ids","ids":[skill]}}));
     }
     for id in &ids {
         let row = c
@@ -345,16 +429,20 @@ pub(crate) async fn grant_skill_call(
         .await;
         match result {Ok(())=>bounds.push(json!({"action":"blob.create","resource":{"kind":"blob","match":"owned_by","owner_id":ctx.subject}})),Err(e) if matches!(e.code,"PERMISSION_DENIED"|"RESOURCE_NOT_FOUND")=>(),Err(e)=>return Err(e)}
     }
-    let mut p = Policy::new(c, ctx.peer);
-    let current = p.credential(ctx.credential, 0).await?;
+    let mut p = Policy::new(c, ctx.peer).with_resource_owner(&resource);
+    let current = if let Some(paths) = current_paths {
+        paths.to_vec()
+    } else {
+        p.credential(ctx.credential, 0).await?
+    };
     let mut paths = p.intersection(&current, &caps(&json!(bounds))?).await?;
-    if is_skill {
+    if pinned {
         paths = charged_business_paths(c, ctx, call, paths).await?;
     }
     let peer = ctx.peer.to_string();
     c.execute("INSERT INTO host_rpc_contexts(call_id,peer,source_paths,read_blob_ids) VALUES($1,$2::text::inet,$3,$4)",&[&call,&peer,&json!(paths),&json!(ids)]).await?;
     c.execute("UPDATE execution_delegations SET maximum_rules=$2 WHERE id=(SELECT delegation_id FROM calls WHERE id=$1)",&[&call,&policy::rules(&paths)]).await?;
-    Ok(())
+    Ok(paths)
 }
 // Lifetime limits are checked when Broker chooses/charges each business proof.
 // Freezing every currently visible alternative would preserve even an exhausted,
@@ -375,11 +463,9 @@ async fn charged_business_paths(
         .map(|row| row.get(0))
         .collect();
     let mut filtered = Vec::new();
+    let (target_action, _) = crate::broker::business_target(c, call).await?;
     for path in paths {
-        if !matches!(
-            path.rule["action"].as_str(),
-            Some("capability.invoke" | "skill.invoke")
-        ) {
+        if path.rule["action"] != target_action && path.rule["action"] != "skill.invoke" {
             filtered.push(path);
             continue;
         }
@@ -414,12 +500,13 @@ pub(crate) async fn check_call_sources(
     call: Uuid,
 ) -> Result<()> {
     let row = c.query_opt(
-        "SELECT c.owner_id,c.credential_id,c.contract,c.skill_id,s.created_by,x.source_paths FROM calls c LEFT JOIN skills s ON s.id=c.skill_id LEFT JOIN host_rpc_contexts x ON x.call_id=c.id WHERE c.id=$1",
+        "SELECT c.owner_id,c.credential_id,c.http_binding,c.skill_id,s.created_by,x.source_paths FROM calls c LEFT JOIN skills s ON s.id=c.skill_id LEFT JOIN host_rpc_contexts x ON x.call_id=c.id WHERE c.id=$1",
         &[&call],
     ).await?.ok_or_else(Error::denied)?;
-    let Some(skill) = row.get::<_, Option<Uuid>>("skill_id") else {
+    let skill = row.get::<_, Option<Uuid>>("skill_id");
+    if skill.is_none() && row.get::<_, Option<Value>>("http_binding").is_none() {
         return Ok(());
-    };
+    }
     if row.get::<_, Uuid>("owner_id") != ctx.subject
         || row.get::<_, Option<Uuid>>("credential_id") != Some(ctx.credential)
     {
@@ -428,25 +515,24 @@ pub(crate) async fn check_call_sources(
     let frozen: Value = row
         .get::<_, Option<Value>>("source_paths")
         .ok_or_else(Error::denied)?;
+    let (action, resource) = crate::broker::business_target(c, call).await?;
     let paths = Policy::new(c, ctx.peer)
+        .with_resource_owner(&resource)
         .revalidate(&saved(frozen)?, ctx.credential)
         .await?;
     let rules = policy::rules(&paths);
-    let contract: Value = row.get("contract");
-    let capability = Resource::new(
-        "capability",
-        format!(
-            "{}@{}",
-            contracts::string(&contract, "name")?,
-            contracts::string(&contract, "version")?
-        ),
-        None,
-    );
-    let resource = Resource::new("skill", skill, row.get("created_by"));
-    if !auth::rules_allow(&rules, "capability.invoke", &capability, ctx.peer)
-        || !auth::rules_allow(&rules, "skill.invoke", &resource, ctx.peer)
-    {
+    if !auth::rules_allow(&rules, &action, &resource, ctx.peer) {
         return Err(Error::denied());
+    }
+    if let Some(skill) = skill {
+        if !auth::rules_allow(
+            &rules,
+            "skill.invoke",
+            &Resource::new("skill", skill, row.get("created_by")),
+            ctx.peer,
+        ) {
+            return Err(Error::denied());
+        }
     }
     Ok(())
 }
@@ -527,7 +613,9 @@ async fn authority(
     {
         return Err(Error::denied());
     }
+    let (target_action, target) = crate::broker::business_target(c, row.get("call_id")).await?;
     let live = Policy::new(c, peer)
+        .with_resource_owner(&target)
         .revalidate(&saved(row.get("source_paths"))?, ctx.credential)
         .await?;
     let rules = policy::rules(&live);
@@ -551,19 +639,12 @@ async fn authority(
             return Err(Error::denied());
         }
     }
-    let contract: Value = row.get("contract");
-    let capability = Resource::new(
-        "capability",
-        format!(
-            "{}@{}",
-            contract["name"].as_str().unwrap(),
-            contract["version"].as_str().unwrap()
-        ),
-        None,
-    );
-    if !auth::rules_allow(&rules, "capability.invoke", &capability, peer) {
+    if !auth::rules_allow(&rules, &target_action, &target, peer)
+        || !auth::rules_allow(&maximum, &target_action, &target, peer)
+    {
         return Err(Error::denied());
     }
+    crate::broker::check_http_approval(c, app, row.get("call_id")).await?;
     let resource = if let Some(blob) = blob {
         let allowed: Vec<Uuid> =
             serde_json::from_value(row.get("read_blob_ids")).map_err(|_| Error::denied())?;

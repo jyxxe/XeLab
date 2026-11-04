@@ -143,6 +143,10 @@ impl Fixture {
             path = path.replace(&format!("{{{k}}}"), &v.to_string());
         }
         let mut builder = Request::builder()
+            .header(
+                "host",
+                crate::plugin_http_gateway::core_authority(&self.app.config).unwrap(),
+            )
             .method(method.to_uppercase().as_str())
             .uri(path)
             .header(
@@ -268,6 +272,10 @@ impl Fixture {
 impl Fixture {
     async fn source(&self, data: Vec<u8>) -> Uuid {
         let mut request = Request::builder()
+            .header(
+                "host",
+                crate::plugin_http_gateway::core_authority(&self.app.config).unwrap(),
+            )
             .method("POST")
             .uri("/api/platform/v1/blobs?content_type=application%2Foctet-stream")
             .header("authorization", format!("Bearer {}", self.token))

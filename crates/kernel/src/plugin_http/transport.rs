@@ -2,6 +2,7 @@
 //! reserve quota or retry: the existing Broker must do those before dispatch.
 use super::*;
 use crate::{config::Config, runtime::Runtime};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures_util::StreamExt;
 use std::{
     fs,
@@ -14,6 +15,9 @@ use uuid::Uuid;
 pub struct InstanceHttp {
     client: reqwest::Client,
     origin: url::Url,
+    tls: Arc<rustls::ClientConfig>,
+    address: SocketAddr,
+    server_name: String,
 }
 
 #[derive(Debug)]
@@ -76,6 +80,9 @@ pub struct Response {
 pub struct Delegation<'a> {
     pub token: &'a str,
     pub subject: Uuid,
+    pub call: Uuid,
+    pub deadline_unix_ms: i64,
+    pub idempotency_key: &'a str,
 }
 
 /// Origin allocation is trusted platform configuration, never a plugin field.
@@ -109,11 +116,29 @@ impl StaticOrigin {
         } else {
             format!(":{port}")
         };
-        Self::new(
+        let mut policy = Self::new(
             &format!("https://d-{}.{base}{suffix}", deployment.simple()),
             config.origin()?.as_str().trim_end_matches('/'),
             shell_origin,
-        )
+        )?;
+        if shell_origin.is_none() {
+            let origins = gateway["shell_origins"]
+                .as_array()
+                .ok_or_else(|| Error::invalid("UI shell origins are missing"))?
+                .iter()
+                .map(|value| {
+                    exact_origin(
+                        value
+                            .as_str()
+                            .ok_or_else(|| Error::invalid("Invalid UI shell origin"))?,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if !origins.is_empty() {
+                policy.frame_ancestor = origins.join(" ");
+            }
+        }
+        Ok(policy)
     }
     pub fn origin(&self) -> &str {
         &self.origin
@@ -235,18 +260,44 @@ impl InstanceHttp {
             }))
             .with_client_auth_cert(certificates, private_key)
             .map_err(|_| Error::invalid("Invalid kernel HTTP identity"))?;
+        let tls = Arc::new(tls);
         let client = reqwest::Client::builder()
             .no_proxy()
             .https_only(true)
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
-            .use_preconfigured_tls(tls)
+            .use_preconfigured_tls((*tls).clone())
             .resolve(&host, address)
             .connect_timeout(Duration::from_secs(2))
             .pool_max_idle_per_host(0)
             .build()
             .map_err(|_| Error::unavailable("Cannot build workload HTTP transport"))?;
-        Ok(Self { client, origin })
+        Ok(Self {
+            client,
+            origin,
+            tls,
+            address,
+            server_name: host,
+        })
+    }
+
+    /// Verify the declared HTTP listener without inventing an undeclared probe
+    /// operation or executing any business work during lifecycle readiness.
+    pub async fn probe(&self) -> Result<()> {
+        let work = async {
+            let socket = tokio::net::TcpStream::connect(self.address).await?;
+            let name = rustls::pki_types::ServerName::try_from(self.server_name.clone())
+                .map_err(|_| Error::invalid("Invalid HTTP workload name"))?;
+            let connection = tokio_rustls::TlsConnector::from(self.tls.clone())
+                .connect(name, socket)
+                .await
+                .map_err(|_| Error::unavailable("HTTP workload TLS listener is unavailable"))?;
+            drop(connection);
+            Ok(())
+        };
+        tokio::time::timeout(Duration::from_secs(2), work)
+            .await
+            .map_err(|_| timeout())?
     }
 
     pub async fn invoke(
@@ -333,6 +384,61 @@ impl InstanceHttp {
         bytes: &[u8],
         deadline: tokio::time::Instant,
     ) -> Result<Response> {
+        let response = self
+            .open_request(method, path, headers, bytes, deadline)
+            .await?;
+        if response
+            .content_length()
+            .is_some_and(|l| l > MAXIMUM_RESPONSE_BYTES as u64)
+        {
+            return Err(too_large());
+        }
+        let status = response.status();
+        let headers = response.headers().clone();
+        let mut stream = response.bytes_stream();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| {
+                if error.is_timeout() {
+                    timeout()
+                } else {
+                    Error::unavailable("Plugin HTTP response ended before completion")
+                }
+            })?;
+            if chunk.len() > MAXIMUM_RESPONSE_BYTES.saturating_sub(bytes.len()) {
+                return Err(too_large());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(Response {
+            status,
+            headers,
+            bytes,
+        })
+    }
+    pub(crate) async fn open(
+        &self,
+        op: &Operation,
+        headers: &HeaderMap,
+        bytes: &[u8],
+        context: Delegation<'_>,
+        deadline: tokio::time::Instant,
+    ) -> Result<reqwest::Response> {
+        check_deadline(deadline)?;
+        let mut headers = op.request(headers, bytes)?;
+        inject(&mut headers, Some(context))?;
+        check_deadline(deadline)?;
+        self.open_request(&op.method, &op.path, headers, bytes, deadline)
+            .await
+    }
+    async fn open_request(
+        &self,
+        method: &Method,
+        path: &str,
+        headers: HeaderMap,
+        bytes: &[u8],
+        deadline: tokio::time::Instant,
+    ) -> Result<reqwest::Response> {
         canonical_path(path)?;
         check_deadline(deadline)?;
         let mut url = self.origin.clone();
@@ -350,32 +456,17 @@ impl InstanceHttp {
             .timeout(deadline.saturating_duration_since(tokio::time::Instant::now()))
             .send()
             .await
-            .map_err(|_| {
-                Error::unavailable("Plugin HTTP request failed; dispatch outcome may be unknown")
+            .map_err(|error| {
+                if error.is_timeout() {
+                    timeout()
+                } else {
+                    Error::unavailable(
+                        "Plugin HTTP request failed; dispatch outcome may be unknown",
+                    )
+                }
             })?;
-        if response
-            .content_length()
-            .is_some_and(|l| l > MAXIMUM_RESPONSE_BYTES as u64)
-        {
-            return Err(too_large());
-        }
-        let status = response.status();
-        let headers = response.headers().clone();
-        let mut stream = response.bytes_stream();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk
-                .map_err(|_| Error::unavailable("Plugin HTTP response ended before completion"))?;
-            if chunk.len() > MAXIMUM_RESPONSE_BYTES.saturating_sub(bytes.len()) {
-                return Err(too_large());
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        Ok(Response {
-            status,
-            headers,
-            bytes,
-        })
+        check_deadline(deadline)?;
+        Ok(response)
     }
 }
 
@@ -478,6 +569,26 @@ fn inject(headers: &mut HeaderMap, delegation: Option<Delegation<'_>>) -> Result
         headers.insert(
             "x-xelab-subject",
             HeaderValue::from_str(&d.subject.to_string()).unwrap(),
+        );
+        if d.deadline_unix_ms <= chrono::Utc::now().timestamp_millis()
+            || d.idempotency_key.is_empty()
+            || d.idempotency_key.chars().count() > 128
+        {
+            return Err(Error::invalid(
+                "Admitted HTTP context deadline or business key is invalid",
+            ));
+        }
+        headers.insert(
+            "x-xelab-call-id",
+            HeaderValue::from_str(&d.call.to_string()).unwrap(),
+        );
+        headers.insert(
+            "x-xelab-deadline-unix-ms",
+            HeaderValue::from_str(&d.deadline_unix_ms.to_string()).unwrap(),
+        );
+        headers.insert(
+            "x-xelab-idempotency-key",
+            HeaderValue::from_str(&URL_SAFE_NO_PAD.encode(d.idempotency_key.as_bytes())).unwrap(),
         );
     }
     Ok(())

@@ -212,12 +212,19 @@ async fn tick(app: &App, first: bool, state: &mut ControllerState) -> Result<()>
                 .into_iter()
                 .map(|r| r.get::<_, Uuid>(0)),
         );
+        old.extend(
+            c.query("SELECT DISTINCT instance_id FROM plugin_http_requests", &[])
+                .await?
+                .into_iter()
+                .map(|row| row.get::<_, Uuid>(0)),
+        );
         for id in old {
             app.runtime.stop(id).await?;
         }
         let tx = c.transaction().await?;
         db::call_lock(&tx).await?;
         crate::volumes::release_stopped(&tx, None).await?;
+        tx.execute("DELETE FROM plugin_http_requests", &[]).await?;
         tx.execute(
             "UPDATE calls SET state='unknown',error=$1 WHERE state IN ('accepted','running')",
             &[&Error::new(
@@ -313,7 +320,7 @@ const FENCE_EXPIRED_CALLS: &str = "UPDATE calls SET state='unknown',error=CASE W
 
 async fn recover_expired_calls(app: &App) -> Result<()> {
     let mut c = app.db.connect().await?;
-    let rows=c.query("SELECT DISTINCT provider_instance_id FROM calls c JOIN reservations r ON r.id=c.id AND r.kind='call' AND r.status<>'released' WHERE (c.state='unknown' OR (c.state IN ('accepted','running') AND deadline_at<now()-interval '1 second')) AND provider_instance_id IS NOT NULL", &[]).await?;
+    let rows=c.query("SELECT DISTINCT provider_instance_id FROM calls c JOIN reservations r ON r.id=c.id AND r.kind='call' AND r.status<>'released' WHERE (c.state='unknown' OR (c.state IN ('accepted','running') AND deadline_at<now()-interval '1 second')) AND provider_instance_id IS NOT NULL UNION SELECT instance_id FROM plugin_http_requests WHERE state='unknown' OR expires_at<now()-interval '1 second'", &[]).await?;
     for row in rows {
         let instance: Uuid = row.get(0);
         let tx = c.transaction().await?;
@@ -324,11 +331,19 @@ async fn recover_expired_calls(app: &App) -> Result<()> {
             &[&instance],
         )
         .await?;
+        let needed:bool=tx.query_one("SELECT EXISTS(SELECT 1 FROM calls c JOIN reservations r ON r.id=c.id AND r.kind='call' AND r.status<>'released' WHERE c.provider_instance_id=$1 AND (c.state='unknown' OR (c.state IN ('accepted','running') AND c.deadline_at<now()-interval '1 second'))) OR EXISTS(SELECT 1 FROM plugin_http_requests WHERE instance_id=$1 AND (state='unknown' OR expires_at<now()-interval '1 second'))",&[&instance]).await?.get(0);
+        if !needed {
+            tx.rollback().await?;
+            continue;
+        }
         tx.execute(
             "UPDATE provider_records SET availability='unavailable' WHERE instance_id=$1",
             &[&instance],
         )
         .await?;
+        // HTTP and static admission uses the instance observation directly;
+        // revoke it before the process fence, alongside capability providers.
+        tx.execute("UPDATE instances SET phase='draining',health='unhealthy',revision=revision+1,updated_at=now() WHERE id=$1 AND phase<>'stopped'",&[&instance]).await?;
         tx.commit().await?;
         app.runtime.stop(instance).await?;
         // Only confirmed process termination permits slot reuse. Concurrent late
@@ -369,8 +384,34 @@ async fn recover_expired_calls(app: &App) -> Result<()> {
             )
             .await?;
         }
+        tx.execute(
+            "DELETE FROM plugin_http_requests WHERE instance_id=$1",
+            &[&instance],
+        )
+        .await?;
         tx.commit().await?;
     }
+    Ok(())
+}
+
+async fn mark_stopping(app: &App, instance: Uuid) -> Result<()> {
+    let mut connection = app.db.connect().await?;
+    let transaction = connection.transaction().await?;
+    db::call_lock(&transaction).await?;
+    transaction
+        .query_one(
+            "SELECT id FROM instances WHERE id=$1 FOR UPDATE",
+            &[&instance],
+        )
+        .await?;
+    transaction.execute("UPDATE instances SET phase='draining',health='unhealthy',revision=revision+1,updated_at=now() WHERE id=$1 AND phase<>'stopped'",&[&instance]).await?;
+    transaction
+        .execute(
+            "UPDATE provider_records SET availability='unavailable' WHERE instance_id=$1",
+            &[&instance],
+        )
+        .await?;
+    transaction.commit().await?;
     Ok(())
 }
 
@@ -467,6 +508,13 @@ async fn install(app: &App, request: &Value, operation: Uuid, payload: &Value) -
         }
         id
     };
+    crate::http_contracts::store(
+        &tx,
+        id,
+        &artifact.manifest,
+        artifact.http_contract.as_deref(),
+    )
+    .await?;
     // The immutable full reference is retained in the operation result and a private, root-owned image index.
     tls::atomic_file(
         &app.config
@@ -541,6 +589,11 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
             tx.query_one("SELECT id FROM node_budget FOR UPDATE", &[])
                 .await?;
             tx.execute("UPDATE instances SET phase='stopped',health='unknown',updated_at=now(),revision=revision+1 WHERE id=$1",&[&id]).await?;
+            tx.execute(
+                "DELETE FROM plugin_http_requests WHERE instance_id=$1",
+                &[&id],
+            )
+            .await?;
             crate::volumes::release_stopped(&tx, Some(id)).await?;
             admission::release_stopped(&tx, id).await?;
             tx.commit().await?;
@@ -558,6 +611,7 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
         return Ok(());
     }
     crate::host_blobs::check_approval(&c, app, deployment, &manifest).await?;
+    crate::plugin_http_gateway::check_approval(&c, app, deployment, &manifest).await?;
     let Some(i) = instances.last() else {
         probes.remove(&deployment);
         return Err(Error::conflict(
@@ -573,10 +627,16 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
     let mounts = match crate::volumes::mounts(app, deployment, id, generation, &manifest).await {
         Ok(mounts) => mounts,
         Err(error) => {
+            mark_stopping(app, id).await?;
             app.runtime.stop(id).await?;
             let mut dbc = app.db.connect().await?;
             let tx = dbc.transaction().await?;
             crate::volumes::release_stopped(&tx, Some(id)).await?;
+            tx.execute(
+                "DELETE FROM plugin_http_requests WHERE instance_id=$1",
+                &[&id],
+            )
+            .await?;
             tx.execute(
                 "UPDATE provider_records SET availability='unavailable' WHERE instance_id=$1",
                 &[&id],
@@ -680,6 +740,23 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
         if !health.alive || health.observed_generation != generation as u64 {
             return Err(Error::unavailable("Plugin health generation differs"));
         }
+        if manifest["routes"]
+            .as_array()
+            .is_some_and(|routes| !routes.is_empty())
+        {
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                crate::plugin_http::transport::InstanceHttp::from_runtime(
+                    &app.config,
+                    &app.runtime,
+                    id,
+                    generation,
+                )?
+                .probe(),
+            )
+            .await
+            .map_err(|_| Error::unavailable("Plugin HTTP TLS readiness probe timed out"))??;
+        }
         Ok(health)
     }
     .await;
@@ -702,7 +779,13 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
                 })
             };
             if failed {
+                mark_stopping(app, id).await?;
                 app.runtime.stop(id).await?;
+                c.execute(
+                    "DELETE FROM plugin_http_requests WHERE instance_id=$1",
+                    &[&id],
+                )
+                .await?;
                 probe.failures = 0;
             }
             return Err(error);
@@ -713,6 +796,7 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
     db::auth_lock(&tx, false).await?;
     crate::volumes::check_approval(&tx, app, deployment, generation, &spec, &manifest).await?;
     crate::host_blobs::check_approval(&tx, app, deployment, &manifest).await?;
+    crate::plugin_http_gateway::check_approval(&tx, app, deployment, &manifest).await?;
     let current = tx
         .query_one(
             "SELECT spec,approval,archived_at FROM deployments WHERE id=$1 FOR UPDATE",
@@ -1026,6 +1110,10 @@ mod pagination_tests {
                 .get(0);
             let mut request = axum::http::Request::builder()
                 .uri(&path)
+                .header(
+                    "host",
+                    crate::plugin_http_gateway::core_authority(&app.config).unwrap(),
+                )
                 .body(axum::body::Body::empty())
                 .unwrap();
             request.extensions_mut().insert(axum::extract::ConnectInfo(

@@ -1,5 +1,7 @@
 //! A restored format is data history, not revived authority. Explicitly log in,
 //! re-trust the publisher and approve the disabled deployment before starting.
+#[path = "../tests/support/http_host.rs"]
+mod http_host;
 use super::*;
 use axum::{
     body::{to_bytes, Body},
@@ -41,6 +43,7 @@ async fn request(
         }
     }
     let mut req = Request::builder()
+        .header("host", http_host::authority(None))
         .method(method.as_str())
         .uri(path)
         .header("idempotency-key", Uuid::new_v4().to_string());

@@ -6,6 +6,8 @@ the image, plus identity/tls.*, ca.crt, kernel.crt/key and foreign.crt/key files
 This is a component probe; it does not exercise the kernel or its OCI runtime.
 """
 import argparse
+import base64
+import concurrent.futures
 import hashlib
 import http.client
 import json
@@ -15,12 +17,16 @@ import ssl
 import subprocess
 import sys
 import time
+import uuid
 
 import grpc
 from xelab.v1 import lifecycle_pb2 as life
 from xelab.v1 import lifecycle_pb2_grpc as lifecycle
+from xelab.v1 import common_pb2 as common
+from xelab.v1 import capability_pb2 as cap
+from xelab.v1 import capability_pb2_grpc as capability
 
-from http_server import BUSINESS_PATH, STATIC_PATH
+from http_server import BUSINESS_PATH, EVENTS_PATH, HOLD_PATH, STATIC_PATH
 
 
 def main():
@@ -44,7 +50,9 @@ def main():
         connection = http.client.HTTPSConnection("localhost", 8080, context=context, timeout=2)
         try:
             connection.request(method, path, body=body, headers={"Content-Type": "application/json",
-                "X-Xelab-Delegation": "component-probe-opaque-handle", "X-Xelab-Subject": instance})
+                "X-Xelab-Delegation": "component-probe-opaque-handle", "X-Xelab-Subject": instance,
+                "X-Xelab-Call-ID": str(uuid.uuid4()), "X-Xelab-Deadline-Unix-Ms": str(int(time.time() * 1000) + 10000),
+                "X-Xelab-Idempotency-Key": base64.urlsafe_b64encode("component-probe-business-key".encode()).rstrip(b"=").decode()})
             response = connection.getresponse()
             return response.status, response.read()
         finally:
@@ -56,7 +64,8 @@ def main():
             client = lifecycle.PluginLifecycleStub(channel)
             described = client.Describe(life.DescribeRequest(), timeout=2)
             assert described.manifest_digest == "sha256:" + hashlib.sha256(described.manifest_json).hexdigest()
-            assert json.loads(described.manifest_json)["plugin_id"] == "org.xelab.http-echo"
+            manifest = json.loads(described.manifest_json)
+            assert manifest["plugin_id"] == "org.xelab.http-echo"
             for _ in range(50):
                 try:
                     assert request("POST", BUSINESS_PATH, b'{"message":"before"}')[0] == 503
@@ -72,6 +81,44 @@ def main():
             status, body = request("POST", BUSINESS_PATH, b'{"message":"real plugin"}')
             assert status == 200 and json.loads(body) == {"message": "real plugin"}
             assert request("GET", STATIC_PATH)[0] == 200
+            status, body = request("POST", EVENTS_PATH, b'{"message":"events","items":2,"interval_ms":10}')
+            assert status == 200 and b'"kind":"completed"' in body
+            if manifest["capabilities"]:
+                rpc_client = capability.CapabilityServiceStub(channel)
+
+                def rpc_request(delay=1000.0):
+                    raw = json.dumps({"message":"real RPC","delay_ms":delay},separators=(",",":")).encode()
+                    return cap.InvokeRequest(call_id=str(uuid.uuid4()),
+                        contract=common.ContractRef(**manifest["capabilities"][0]["contract"]),
+                        input_json=raw, input_digest="sha256:" + hashlib.sha256(raw).hexdigest(),
+                        context=common.RpcContext(request_id=str(uuid.uuid4()),
+                            delegation_token="component-probe-opaque-handle", subject_id=instance,
+                            deadline_unix_ms=int(time.time() * 1000) + 10000))
+
+                for invalid in [True, 1.5]:
+                    try:
+                        rpc_client.Invoke(rpc_request(invalid), timeout=2)
+                        raise AssertionError("RPC truncated a non-integer JSON value")
+                    except grpc.RpcError as error:
+                        assert error.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    held_http = pool.submit(request, "POST", HOLD_PATH, b'{"message":"held HTTP","delay_ms":1000}')
+                    held_rpc = [rpc_client.Invoke.future(rpc_request(), timeout=5) for _ in range(3)]
+                    for _ in range(30):
+                        if request("POST", BUSINESS_PATH, b'{"message":"probe"}')[0] == 429:
+                            break
+                        time.sleep(0.02)
+                    else:
+                        raise AssertionError("HTTP and RPC did not share the four physical instance slots")
+                    try:
+                        rpc_client.Invoke(rpc_request(), timeout=2)
+                        raise AssertionError("RPC bypassed HTTP's shared application slots")
+                    except grpc.RpcError as error:
+                        assert error.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
+                    assert held_http.result(timeout=5)[0] == 200
+                    for pending in held_rpc:
+                        assert json.loads(pending.result(timeout=5).output_json) == {"message": "real RPC"}
             drained = client.Drain(life.DrainRequest(grace_ms=1000), timeout=2)
             assert drained.drained and not drained.accepting_requests and drained.active_calls == 0
             assert request("POST", BUSINESS_PATH, b'{"message":"after drain"}')[0] == 503
@@ -84,7 +131,9 @@ def main():
                 raise AssertionError("Foreign workload reached lifecycle")
             except grpc.RpcError as error:
                 assert error.code() == grpc.StatusCode.PERMISSION_DENIED
-        print(json.dumps({"component": "http-reference", "lifecycle": "passed", "https": "passed", "kernel_oci_integration": "not_executed"}))
+        print(json.dumps({"component": "http-reference", "lifecycle": "passed", "https": "passed",
+            "sse": "passed", "mixed_rpc_http_slots": "passed" if manifest["capabilities"] else "not_applicable",
+            "kernel_oci_integration": "not_executed"}))
     finally:
         process.terminate()
         process.wait(timeout=5)

@@ -637,6 +637,10 @@ mod tests {
         for (allowed, expected) in [(false, 400), (true, 409)] {
             let body = json!({"backup_id":f.backup,"target_deployment_id":target,"allow_downtime":allowed});
             let mut request = Request::builder()
+                .header(
+                    "host",
+                    crate::plugin_http_gateway::core_authority(&f.app.config).unwrap(),
+                )
                 .method("POST")
                 .uri("/api/platform/v1/restores")
                 .header("authorization", format!("Bearer {}", f.token))

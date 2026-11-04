@@ -43,7 +43,7 @@ impl Schema {
     pub fn value(&self) -> &Value {
         &self.value
     }
-    fn check(&self, value: &Value) -> Result<()> {
+    pub(crate) fn check(&self, value: &Value) -> Result<()> {
         if self.validator.is_valid(value) {
             Ok(())
         } else {
@@ -329,7 +329,12 @@ impl Registry {
                     && definition["target"]["http_contract_digest"] == op.contract_digest
             })
             .ok_or_else(|| Error::invalid("HTTP Skill operation binding is unavailable"))?;
-        if op.method != Method::POST
+        if op
+            .responses
+            .get(&200)
+            .and_then(|response| response.media_type.as_deref())
+            != Some("application/json")
+            || op.method != Method::POST
             || op
                 .input
                 .as_ref()
@@ -457,7 +462,22 @@ impl Operation {
                 }
                 (None, None)
             } else {
-                (Some("application/json".into()), Some(json_media(response)?))
+                let content = response["content"]
+                    .as_object()
+                    .filter(|c| c.len() == 1)
+                    .ok_or_else(|| {
+                        Error::invalid("HTTP response requires one explicit media type")
+                    })?;
+                let media = content.keys().next().unwrap();
+                if media != "application/json" && !(status == 200 && media == "text/event-stream") {
+                    return Err(Error::invalid(
+                        "Unsupported declared HTTP response media type",
+                    ));
+                }
+                let schema = content[media]
+                    .get("schema")
+                    .ok_or_else(|| Error::invalid("HTTP response schema is missing"))?;
+                (Some(media.clone()), Some(Schema::new(schema)?))
             };
             let mut headers = HashMap::new();
             if let Some(h) = response.get("headers") {
@@ -533,15 +553,35 @@ impl Operation {
         headers: &HeaderMap,
         bytes: &[u8],
     ) -> Result<HeaderMap> {
-        reject_upgrade(headers)?;
         if bytes.len() > MAXIMUM_RESPONSE_BYTES {
             return Err(too_large());
         }
-        // Redirects, cookies and authentication challenges cannot establish a
-        // second identity boundary through a business contract.
-        if headers.contains_key("set-cookie") || headers.contains_key("location") {
+        let (spec, result) = self.response_head(status, headers)?;
+        if spec.media_type.as_deref() == Some("text/event-stream") {
             return Err(Error::invalid(
-                "Business HTTP cannot set cookies or redirect",
+                "Event streams require incremental validation",
+            ));
+        }
+        if let Some(schema) = &spec.schema {
+            schema.check(&strict_json(bytes, MAXIMUM_RESPONSE_BYTES)?)?;
+        } else if !bytes.is_empty() {
+            return Err(Error::invalid("Body on a bodyless response"));
+        }
+        Ok(result)
+    }
+
+    pub fn response_head(
+        &self,
+        status: StatusCode,
+        headers: &HeaderMap,
+    ) -> Result<(&ResponseSpec, HeaderMap)> {
+        reject_upgrade(headers)?;
+        if headers.contains_key("set-cookie")
+            || headers.contains_key("location")
+            || headers.contains_key("content-encoding")
+        {
+            return Err(Error::invalid(
+                "Business HTTP cannot set cookies, redirect or change encoding",
             ));
         }
         let spec = self
@@ -549,12 +589,16 @@ impl Operation {
             .get(&status.as_u16())
             .ok_or_else(|| Error::invalid("Undeclared plugin response status"))?;
         let mut result = HeaderMap::new();
-        if let Some(schema) = &spec.schema {
-            require_json(headers)?;
-            schema.check(&strict_json(bytes, MAXIMUM_RESPONSE_BYTES)?)?;
-            result.insert("content-type", HeaderValue::from_static("application/json"));
-        } else if !bytes.is_empty() {
-            return Err(Error::invalid("Body on a bodyless response"));
+        if let Some(media) = &spec.media_type {
+            let actual = unique(headers, "content-type")?
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| Error::invalid("HTTP response content type is missing"))?;
+            if actual != media && actual != format!("{media}; charset=utf-8") {
+                return Err(Error::invalid(
+                    "HTTP response media type differs from contract",
+                ));
+            }
+            result.insert("content-type", HeaderValue::from_str(media).unwrap());
         }
         for (name, schema) in &spec.headers {
             if let Some(value) = unique(headers, name.as_str())? {
@@ -568,7 +612,7 @@ impl Operation {
             }
         }
         result.insert("cache-control", HeaderValue::from_static("no-store"));
-        Ok(result)
+        Ok((spec, result))
     }
 }
 

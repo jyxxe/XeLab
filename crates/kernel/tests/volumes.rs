@@ -1,5 +1,7 @@
 //! Real metadata/HTTP tests. The ignored acceptance also needs a newly created,
 //! dedicated XFS mount; tools/test-xfs.sh owns its complete disposable lifecycle.
+#[path = "support/http_host.rs"]
+mod http_host;
 use axum::{
     body::{to_bytes, Body},
     extract::ConnectInfo,
@@ -188,6 +190,10 @@ impl Fixture {
             path.push_str(q);
         }
         let mut req = Request::builder()
+            .header(
+                "host",
+                http_host::authority(Some(self.app.config.text("server", "public_origin"))),
+            )
             .method(method.as_str())
             .uri(path)
             .header("authorization", format!("Bearer {}", self.token))

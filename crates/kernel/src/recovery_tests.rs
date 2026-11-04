@@ -231,6 +231,10 @@ async fn actual_postgres_reset_rejects_old_authority_and_anchors_only_fresh_owne
         (issued["access_token"].as_str().unwrap(), 200),
     ] {
         let mut request = Request::builder()
+            .header(
+                "host",
+                crate::plugin_http_gateway::core_authority(&f.app.config).unwrap(),
+            )
             .method("POST")
             .uri("/api/platform/v1/publishers")
             .header("authorization", format!("Bearer {token}"))

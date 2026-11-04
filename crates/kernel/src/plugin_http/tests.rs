@@ -170,7 +170,7 @@ fn signed_artifact_loader_preserves_exact_file_and_refuses_symlinks() {
             .unwrap()
             .operations
             .len(),
-        1
+        3
     );
     let path = directory.path().join("xelab/http/openapi.json");
     let original = std::fs::read(&path).unwrap();
@@ -404,6 +404,10 @@ async fn real_reference_server_uses_pinned_mtls_and_sanitized_transport() {
             Delegation {
                 token: "01234567890123456789012345678901",
                 subject: uuid::Uuid::new_v4(),
+                call: uuid::Uuid::new_v4(),
+                deadline_unix_ms: (chrono::Utc::now() + chrono::Duration::seconds(30))
+                    .timestamp_millis(),
+                idempotency_key: "business-key",
             },
             Duration::from_secs(5),
         )
@@ -430,7 +434,11 @@ async fn real_reference_server_uses_pinned_mtls_and_sanitized_transport() {
             br#"{"message":"hello"}"#,
             Delegation {
                 token: "01234567890123456789012345678901",
-                subject: uuid::Uuid::new_v4()
+                subject: uuid::Uuid::new_v4(),
+                call: uuid::Uuid::new_v4(),
+                deadline_unix_ms: (chrono::Utc::now() + chrono::Duration::seconds(30))
+                    .timestamp_millis(),
+                idempotency_key: "business-key",
             },
             Duration::from_secs(5)
         )
@@ -533,7 +541,11 @@ async fn real_reference_server_uses_pinned_mtls_and_sanitized_transport() {
             br#"{"message":"hello"}"#,
             Delegation {
                 token: "01234567890123456789012345678901",
-                subject: uuid::Uuid::new_v4()
+                subject: uuid::Uuid::new_v4(),
+                call: uuid::Uuid::new_v4(),
+                deadline_unix_ms: (chrono::Utc::now() + chrono::Duration::seconds(30))
+                    .timestamp_millis(),
+                idempotency_key: "business-key",
             },
             Duration::from_secs(5)
         )
@@ -571,7 +583,11 @@ async fn real_reference_server_uses_pinned_mtls_and_sanitized_transport() {
                 br#"{"message":"hello"}"#,
                 Delegation {
                     token: "01234567890123456789012345678901",
-                    subject: uuid::Uuid::new_v4()
+                    subject: uuid::Uuid::new_v4(),
+                    call: uuid::Uuid::new_v4(),
+                    deadline_unix_ms: (chrono::Utc::now() + chrono::Duration::seconds(30))
+                        .timestamp_millis(),
+                    idempotency_key: "business-key",
                 },
                 Duration::from_secs(5)
             )

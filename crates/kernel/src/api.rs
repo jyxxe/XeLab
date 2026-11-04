@@ -143,6 +143,11 @@ pub(crate) fn response(value: Value, code: u16, request: Uuid) -> Response {
     }
     r
 }
+fn trusted_session_token<'a>(operation: Option<&str>, value: &'a Value) -> Option<&'a str> {
+    matches!(operation, Some("login" | "activateAccount"))
+        .then(|| value.get("access_token").and_then(Value::as_str))
+        .flatten()
+}
 
 async fn handle(
     State(app): State<Arc<App>>,
@@ -150,6 +155,58 @@ async fn handle(
     request: Request<Body>,
 ) -> Response {
     let request_id = Uuid::new_v4();
+    let response_operation = operation(request.method().as_str(), request.uri().path())
+        .and_then(|(operation, _)| operation["operationId"].as_str());
+    let host = match crate::plugin_http_gateway::host(&app.config, &request) {
+        Ok(host) => host,
+        Err(error) => {
+            return response(
+                json!({"error":error.detail(),"request_id":request_id}),
+                error.status.as_u16(),
+                request_id,
+            )
+        }
+    };
+    if host != crate::plugin_http_gateway::Host::Core
+        || request.uri().path().starts_with("/plugins/")
+        || request.uri().path().starts_with("/ui/")
+    {
+        return match crate::plugin_http_gateway::handle(app, peer, request_id, host, request).await
+        {
+            Ok(response) => response,
+            Err(error) => response(
+                json!({"error":error.detail(),"request_id":request_id}),
+                error.status.as_u16(),
+                request_id,
+            ),
+        };
+    }
+    if !operation(request.method().as_str(), request.uri().path()).is_some_and(|(op, _)| {
+        matches!(
+            op["operationId"].as_str(),
+            Some("getLiveness" | "getReadiness")
+        )
+    }) {
+        let security = if matches!(response_operation, Some("login" | "activateAccount")) {
+            crate::plugin_http_gateway::fresh_credential_security(&app, request.headers())
+        } else {
+            crate::plugin_http_gateway::request_security(
+                &app,
+                peer.ip(),
+                request_id,
+                request.method(),
+                request.headers(),
+            )
+            .await
+        };
+        if let Err(error) = security {
+            return response(
+                json!({"error":error.detail(),"request_id":request_id}),
+                error.status.as_u16(),
+                request_id,
+            );
+        }
+    }
     if operation(request.method().as_str(), request.uri().path())
         .is_some_and(|(operation, _)| operation["operationId"] == "streamSkill")
     {
@@ -178,11 +235,17 @@ async fn handle(
     }
     match dispatch(&app, peer, request_id, request).await {
         Ok((v, s)) => {
-            let cookie=v.get("access_token").and_then(Value::as_str).map(|token|format!("__Host-xelab_auth={token}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=3600"));
+            let token = trusted_session_token(response_operation, &v);
+            let csrf = token.map(|token| app.auth.csrf_token(token));
+            let cookie=token.map(|token|format!("__Host-xelab_auth={token}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=3600"));
             let mut r = response(v, s, request_id);
             if let Some(cookie) = cookie {
                 r.headers_mut()
                     .insert("set-cookie", cookie.parse().unwrap());
+            }
+            if let Some(csrf) = csrf {
+                r.headers_mut()
+                    .insert("x-csrf-token", csrf.parse().unwrap());
             }
             r
         }
@@ -539,8 +602,10 @@ async fn dispatch(
                 raw: Vec::new(),
                 image_digest: r.get("image_digest"),
                 manifest_digest: r.get("manifest_digest"),
+                http_contract: None,
             };
             artifact.validate_deployment(&body)?;
+            crate::http_contracts::validate_actions(&tx,&artifact.manifest).await?;
             crate::volumes::validate_selection(&tx,&ctx,&body,&artifact.manifest).await?;
             let mut spec = body.clone();
             spec["enabled"] = json!(false);
@@ -570,7 +635,9 @@ async fn dispatch(
                 ));
             }
             let manifest:Value=tx.query_one("SELECT manifest FROM installations WHERE id=$1",&[&r.get::<_,Uuid>("installation_id")]).await?.get(0);
+            crate::http_contracts::validate_actions(&tx,&manifest).await?;
             crate::host_blobs::approve(&tx,&ctx,id,&manifest,&body,r.get("owner_id")).await?;
+            crate::plugin_http_gateway::approve(&tx,&ctx,id,&manifest,&body,r.get("owner_id")).await?;
             tx.execute("UPDATE deployments SET approval=$2,revision=revision+1,updated_at=now() WHERE id=$1",&[&id,&body]).await?;
             (body.clone(), 200)
         }
@@ -591,7 +658,9 @@ async fn dispatch(
             let mut spec: Value = row.get("spec");
             if enabled {
                 let manifest:Value=tx.query_one("SELECT manifest FROM installations WHERE id=$1",&[&row.get::<_,Uuid>("installation_id")]).await?.get(0);
+                crate::http_contracts::validate_actions(&tx,&manifest).await?;
                 crate::host_blobs::check_approval(&tx,app,id,&manifest).await?;
+                crate::plugin_http_gateway::check_approval(&tx,app,id,&manifest).await?;
             }
             if bootstrap.is_some() && (!enabled || spec["enabled"] == true) {
                 return Err(Error::conflict("Schema bootstrap intent changed during preflight"));
@@ -991,6 +1060,29 @@ pub(crate) fn object_value(raw: &Value, model: &str) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_trusted_session_operations_can_issue_login_cookie() {
+        let value = json!({"access_token":"plugin-or-oauth-output"});
+        assert_eq!(
+            trusted_session_token(Some("login"), &value),
+            Some("plugin-or-oauth-output")
+        );
+        for operation in [
+            None,
+            Some("invokeCapability"),
+            Some("invokeSkill"),
+            Some("exchangeOAuthToken"),
+            Some("getCall"),
+            Some("createClient"),
+        ] {
+            assert!(trusted_session_token(operation, &value).is_none());
+        }
+        assert!(trusted_session_token(
+            Some("login"),
+            &json!({"output":{"access_token":"nested-plugin-output"}})
+        )
+        .is_none());
+    }
     #[test]
     fn paths_match_only_existing_operations() {
         assert_eq!(

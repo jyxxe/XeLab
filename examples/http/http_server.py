@@ -4,18 +4,25 @@ It does not authenticate users or interpret opaque delegation handles. The
 kernel's authenticated workload identity is the only accepted HTTP peer.
 """
 import contextlib
+import base64
+import datetime
 import hashlib
 import http.server
 import json
+import math
+import os
 import pathlib
 import socket
 import ssl
 import threading
+import time
 import uuid
 
 
 PLUGIN_ID = "org.xelab.http-echo"
 BUSINESS_PATH = "/plugins/" + PLUGIN_ID + "/echo"
+HOLD_PATH = "/plugins/" + PLUGIN_ID + "/hold"
+EVENTS_PATH = "/plugins/" + PLUGIN_ID + "/events"
 STATIC_PATH = "/ui/" + PLUGIN_ID + "/index.html"
 KERNEL_IDENTITY = "spiffe://xelab.local/kernel"
 MAXIMUM_BODY_BYTES = 8192
@@ -36,6 +43,16 @@ def unique_object(pairs):
 
 def invalid_constant(_):
     raise ValueError("Non-finite number")
+
+
+def bounded_integer(value, minimum, maximum):
+    # JSON Schema integer includes finite integral JSON numbers such as1.0.
+    # bool is a distinct JSON type despite being an int subclass in Python.
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or (isinstance(value, float) and (not math.isfinite(value) or not value.is_integer()))
+            or not minimum <= value <= maximum):
+        raise ValueError("Input integer differs from schema")
+    return int(value)
 
 
 class State:
@@ -88,6 +105,13 @@ class KernelHTTPServer(http.server.ThreadingHTTPServer):
         self.identity = pathlib.Path(identity)
         self.static = pathlib.Path(static_path or pathlib.Path(__file__).with_name("index.html")).read_bytes()
         self.etag = '"sha256:' + hashlib.sha256(self.static).hexdigest() + '"'
+        manifest = pathlib.Path("/xelab/plugin.json")
+        self.plugin_version = json.loads(manifest.read_bytes())["version"] if manifest.exists() else "1.0.0"
+        contract = pathlib.Path("/xelab/http/openapi.json")
+        if not contract.exists():
+            contract = pathlib.Path(__file__).with_name("openapi.json")
+        self.http_contract_digest = "sha256:" + hashlib.sha256(contract.read_bytes()).hexdigest()
+        self.instance = os.environ.get("XELAB_INSTANCE_ID", "00000000-0000-4000-8000-000000000001")
         super().__init__(address, Handler)
 
     def get_request(self):
@@ -145,11 +169,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # the request line so that normalization cannot turn an undeclared
         # external spelling into a declared route.
         target = self.requestline.split(" ", 2)[1]
-        if target != self.path or self.path not in (BUSINESS_PATH, STATIC_PATH):
+        if target != self.path or self.path not in (BUSINESS_PATH, HOLD_PATH, EVENTS_PATH, STATIC_PATH):
             self.error(404, "NOT_FOUND")
             return False
         if (self.headers.get("Upgrade") or self.headers.get("Transfer-Encoding")
                 or self.headers.get("Authorization") or self.headers.get("Cookie")
+                or any(self.headers.get(name) is not None for name in
+                       ("X-User-ID", "X-Plugin-ID", "X-Account-ID", "Forwarded", "X-Forwarded-For",
+                        "X-Forwarded-Host", "Last-Event-ID", "Sec-WebSocket-Key", "Sec-WebSocket-Version"))
                 or len(self.headers.get_all("Content-Length", [])) > 1
                 or len(self.headers.get_all("Content-Type", [])) > 1):
             self.error(400, "INVALID_REQUEST")
@@ -159,7 +186,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.safe_request():
             return
-        if self.path != BUSINESS_PATH:
+        if self.path not in (BUSINESS_PATH, HOLD_PATH, EVENTS_PATH):
             self.error(405, "METHOD_NOT_ALLOWED")
             return
         if not self.server.state.ready():
@@ -167,11 +194,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         delegates = self.headers.get_all("X-Xelab-Delegation", [])
         subjects = self.headers.get_all("X-Xelab-Subject", [])
+        call_ids = self.headers.get_all("X-Xelab-Call-ID", [])
+        deadlines = self.headers.get_all("X-Xelab-Deadline-Unix-Ms", [])
+        keys = self.headers.get_all("X-Xelab-Idempotency-Key", [])
         try:
             if len(delegates) != 1 or not 1 <= len(delegates[0]) <= 4096 or len(subjects) != 1:
                 raise ValueError("Missing fixed delegation")
             if str(uuid.UUID(subjects[0])) != subjects[0]:
                 raise ValueError("Invalid subject")
+            if (len(call_ids) != 1 or str(uuid.UUID(call_ids[0])) != call_ids[0]
+                    or len(deadlines) != 1 or not deadlines[0].isdigit()
+                    or int(deadlines[0]) <= int(time.time() * 1000)
+                    or len(keys) != 1 or len(keys[0]) > 684):
+                raise ValueError("Invalid admitted call context")
+            business_key = base64.b64decode(keys[0] + "=" * (-len(keys[0]) % 4), altchars=b"-_", validate=True)
+            if (base64.urlsafe_b64encode(business_key).rstrip(b"=").decode() != keys[0]
+                    or len(business_key.decode("utf-8")) > 128):
+                raise ValueError("Invalid encoded business key")
         except (ValueError, AttributeError):
             self.error(403, "DELEGATION_REQUIRED")
             return
@@ -199,16 +238,75 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     raise ValueError("Truncated request")
                 value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object,
                                    parse_constant=invalid_constant)
-                if (not isinstance(value, dict) or set(value) != {"message"}
-                        or not isinstance(value["message"], str) or len(value["message"]) > 1024):
+                required = {"message"} if self.path == BUSINESS_PATH else ({"message", "delay_ms"} if self.path == HOLD_PATH else {"message", "items", "interval_ms"})
+                if (not isinstance(value, dict) or set(value) != required
+                        or not isinstance(value.get("message"), str) or len(value["message"]) > 1024):
                     raise ValueError("Input differs from schema")
+                bounds = {"delay_ms": (0, 5000)} if self.path == HOLD_PATH else ({"items": (0, 64), "interval_ms": (0, 1000)} if self.path == EVENTS_PATH else {})
+                for name, (minimum, maximum) in bounds.items():
+                    value[name] = bounded_integer(value[name], minimum, maximum)
                 result = encoded({"message": value["message"]})
             except (ValueError, UnicodeError, socket.timeout):
                 self.error(400, "INVALID_REQUEST")
                 return
             # Actual business work: parse and return exactly the submitted text.
             # Delegation and subject are never reflected in the response body.
-            self.reply(200, result)
+            if self.path == EVENTS_PATH:
+                self.events(value, call_ids[0], int(deadlines[0]))
+            elif self.wait(value.get("delay_ms", 0), int(deadlines[0])):
+                self.reply(200, result)
+
+    def wait(self, milliseconds, deadline):
+        end = time.monotonic() + milliseconds / 1000
+        while time.monotonic() < end:
+            if not self.server.state.ready() or int(time.time() * 1000) >= deadline:
+                self.error(503, "UNAVAILABLE")
+                return False
+            time.sleep(min(0.02, max(0, end - time.monotonic())))
+        return True
+
+    def events(self, value, call_id, deadline):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+        def send(sequence, kind, payload, terminal=False):
+            event = {"call_id": call_id, "sequence": sequence, "kind": kind,
+                     "payload": payload, "terminal": terminal}
+            raw = b"event: " + kind.encode() + b"\nid: " + call_id.encode() + b":" + str(sequence).encode() + b"\ndata: " + encoded(event) + b"\n\n"
+            # Explicit HTTP framing proves complete EOF independently of TLS
+            # close_notify. A socket close cannot stand in for a terminal frame
+            # and the final chunk, especially under rustls truncation checks.
+            self.wfile.write(f"{len(raw):x}\r\n".encode() + raw + b"\r\n")
+            if terminal:
+                self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+
+        try:
+            send(1, "accepted", {})
+            for index in range(value["items"]):
+                # SSE has already committed its status; cancellation is a
+                # terminal frame, never a second HTTP error response.
+                end = time.monotonic() + value["interval_ms"] / 1000
+                while time.monotonic() < end:
+                    if int(time.time() * 1000) >= deadline or not self.server.state.ready():
+                        send(index + 2, "canceled", {"reason": "deadline" if int(time.time() * 1000) >= deadline else "requested"}, True)
+                        return
+                    time.sleep(min(0.02, max(0, end - time.monotonic())))
+                send(index + 2, "item", {"message": value["message"], "index": index})
+            completed = {"call_id": call_id, "contract": {"name": PLUGIN_ID + ".http",
+                "version": self.server.plugin_version, "schema_digest": self.server.http_contract_digest},
+                "provider_instance_id": self.server.instance, "output": {"message": value["message"]},
+                "completed_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")}
+            send(value["items"] + 2, "completed", completed, True)
+        except (BrokenPipeError, ConnectionResetError, socket.timeout):
+            # Disconnect ends physical work and the shared application slot;
+            # the kernel still owns durable outcome/fencing decisions.
+            return
 
     def do_GET(self):
         if not self.safe_request():

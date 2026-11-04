@@ -242,6 +242,7 @@ pub async fn create(
     let mut next = original.clone();
     next["installation_id"] = json!(target_id);
     Artifact {
+        http_contract: None,
         image: String::new(),
         manifest: target["manifest"].clone(),
         raw: Vec::new(),
