@@ -3,6 +3,7 @@
 [文档总目录](../README.md)
 
 - [验收矩阵与故障注入](acceptance.md)
+- [M3 实现目标与分阶段验收进度](m3-progress.md)
 - [M1 实现与验收记录](m1-acceptance.md)
 - [M2 Secret 托管与工作负载租约](m2-secrets.md)
 - [M2 不可变 Blob 与可恢复清理](m2-blobs.md)
@@ -33,3 +34,5 @@
 - [M2 部署重建升级与同格式卷回退](m2-deployment-upgrades.md)
 - [外部规范与实现依据](references.md)
 - [实施里程碑与接口落地](roadmap.md)
+
+- [M3 Skill 注册与普通 OCI 调用](m3-skills.md)

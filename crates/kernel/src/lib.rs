@@ -23,6 +23,7 @@ pub mod restores;
 pub mod runtime;
 pub mod schema_jobs;
 pub mod secrets;
+pub mod skills;
 pub mod storage;
 pub mod tls;
 pub mod upgrades;

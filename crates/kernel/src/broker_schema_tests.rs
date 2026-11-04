@@ -31,6 +31,7 @@ async fn actual_postgres_idempotent_schema_call_never_replays_unknown_dispatch()
     manifest["data_schema_version"] = json!("1");
     manifest["volumes"] = json!([{"name":"data","mount_path":"/data","access":"rw","scope":"deployment","minimum_bytes":1048576}]);
     manifest["capabilities"][0]["side_effect"] = json!("idempotent");
+    manifest["concurrency"]["max_active_requests"] = json!(1);
     crate::artifact::validate_runtime_profile(&manifest).unwrap();
     assert!(
         crate::artifact::validate_profile(&manifest).is_err(),
@@ -121,6 +122,32 @@ async fn actual_postgres_idempotent_schema_call_never_replays_unknown_dispatch()
     assert_eq!(
         charged, 1,
         "an unknown provider outcome must retain its slot until fenced cleanup"
+    );
+    // A failed transport does not prove the provider stopped. Its unknown
+    // physical attempt still owns the shared instance slot until process fencing.
+    assert_eq!(
+        invoke(
+            app,
+            &f.token,
+            peer,
+            Uuid::new_v4(),
+            &request,
+            "new-key-before-fencing"
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "RESOURCE_EXHAUSTED"
+    );
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM calls WHERE provider_instance_id=$1",
+            &[&instance]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        1
     );
     let replay = invoke(app, &f.token, peer, Uuid::new_v4(), &request, key)
         .await

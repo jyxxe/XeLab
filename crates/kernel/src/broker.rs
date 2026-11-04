@@ -19,15 +19,96 @@ pub async fn invoke(
     input: &Value,
     key: &str,
 ) -> Result<Value> {
-    validate("InvokeRequest", input)?;
-    let contract = &input["contract"];
-    let name = string(contract, "name")?;
-    let version = string(contract, "version")?;
-    let schema_digest = string(contract, "schema_digest")?;
+    invoke_inner(app, token, peer, request_id, input, key, None).await
+}
+
+/// Skill identity comes from the path, never from caller-supplied route context.
+#[allow(clippy::too_many_arguments)]
+pub async fn invoke_skill(
+    app: &App,
+    token: &str,
+    peer: IpAddr,
+    request_id: Uuid,
+    skill: Uuid,
+    input: &Value,
+    key: &str,
+) -> Result<Value> {
+    invoke_inner(app, token, peer, request_id, input, key, Some(skill)).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn invoke_inner(
+    app: &App,
+    token: &str,
+    peer: IpAddr,
+    request_id: Uuid,
+    input: &Value,
+    key: &str,
+    skill_id: Option<Uuid>,
+) -> Result<Value> {
+    let started = chrono::Utc::now();
+    validate(
+        if skill_id.is_some() {
+            "SkillInvokeRequest"
+        } else {
+            "InvokeRequest"
+        },
+        input,
+    )?;
+    if input
+        .get("idempotency_key")
+        .is_some_and(|value| value != key)
+    {
+        return Err(Error::invalid(
+            "Body and header idempotency keys must agree",
+        ));
+    }
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
     db::call_lock(&tx).await?;
     let ctx = app.auth.authenticate(&tx, token, peer, request_id).await?;
+    let skill = if let Some(id) = skill_id {
+        match crate::skills::resolve_for_invoke(&tx, &ctx, id).await {
+            Ok(skill) => Some(skill),
+            Err(error) => {
+                db::audit(
+                    &tx,
+                    ctx.subject,
+                    Some(ctx.credential),
+                    request_id,
+                    "skill.invoke",
+                    &Resource::new("skill", id, None).json(),
+                    "denied",
+                    error.code,
+                )
+                .await?;
+                tx.commit().await?;
+                return Err(error);
+            }
+        }
+    } else {
+        None
+    };
+    let adapted;
+    let original = input;
+    let input = if let Some(skill) = &skill {
+        let maximum = skill.definition["maximum_timeout_ms"].as_u64().unwrap();
+        let timeout = input["timeout_ms"].as_u64().unwrap_or(120000.min(maximum));
+        if timeout > maximum {
+            return Err(Error::invalid(
+                "Requested deadline exceeds the fixed Skill maximum",
+            ));
+        }
+        validate_business(&skill.definition["input_schema"], &input["input"])?;
+        adapted = json!({"contract":skill.definition["target"]["contract"],"input":input["input"],"timeout_ms":timeout});
+        &adapted
+    } else {
+        input
+    };
+    let contract = &input["contract"];
+    let name = string(contract, "name")?;
+    let version = string(contract, "version")?;
+    let schema_digest = string(contract, "schema_digest")?;
     let authorization = authorize(
         &tx,
         &ctx,
@@ -50,18 +131,22 @@ pub async fn invoke(
         tx.commit().await?;
         return Err(e);
     }
-    let fingerprint = digest(&serde_json::to_vec(input)?);
-    let lock = format!("call:{}:{}:{key}", ctx.subject, ctx.credential);
+    let fingerprint = digest(&serde_json::to_vec(original)?);
+    let path = skill_id.map_or_else(
+        || "/api/platform/v1/calls".to_owned(),
+        |id| format!("/api/platform/v1/skills/{id}/calls"),
+    );
+    let lock = format!("call:{}:{}:{path}:{key}", ctx.subject, ctx.credential);
     tx.query_one(
         "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
         &[&lock],
     )
     .await?;
-    if let Some(r)=tx.query_opt("SELECT * FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method='POST' AND path='/api/platform/v1/calls' AND key=$3 AND expires_at>now() FOR UPDATE",&[&ctx.subject,&ctx.credential,&key]).await?{
+    if let Some(r)=tx.query_opt("SELECT * FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method='POST' AND path=$4 AND key=$3 AND expires_at>now() FOR UPDATE",&[&ctx.subject,&ctx.credential,&key,&path]).await?{
         if r.get::<_,String>("fingerprint")!=fingerprint{return Err(Error::new("IDEMPOTENCY_CONFLICT","The key was already used for different input",axum::http::StatusCode::CONFLICT));}
         let call_id=r.get::<_,Option<String>>("resource_id").and_then(|s|s.parse::<Uuid>().ok()).ok_or_else(||Error::conflict("Missing prior call"))?;
         let row=tx.query_one("SELECT state,result FROM calls WHERE id=$1",&[&call_id]).await?;
-        if row.get::<_,String>("state")=="succeeded"{return row.get::<_,Option<Value>>("result").ok_or_else(||Error::conflict("Call result is unavailable"));}
+        if row.get::<_,String>("state")=="succeeded"{let value = row.get::<_,Option<Value>>("result").ok_or_else(||Error::conflict("Call result is unavailable"))?; return skill_result(skill.as_ref(), value);}
         return Err(Error::new("OUTCOME_UNKNOWN","Prior call is not a confirmed success; query its call ID",axum::http::StatusCode::CONFLICT).with_resource(call_id));
     }
     let cap = tx
@@ -92,7 +177,8 @@ pub async fn invoke(
         .get("provider_deployment_id")
         .map(|_| id(input, "provider_deployment_id"))
         .transpose()?;
-    let providers=tx.query("SELECT i.id,i.generation,d.id AS deployment_id,d.owner_id,n.manifest FROM provider_records p JOIN instances i ON i.id=p.instance_id JOIN deployments d ON d.id=i.deployment_id JOIN installations n ON n.id=d.installation_id WHERE p.name=$1 AND p.version=$2 AND p.availability='ready' AND p.observed_at>now()-interval '1 millisecond'*((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint+(n.manifest->'health'->>'timeout_ms')::bigint) AND i.phase='ready' AND d.spec->>'enabled'='true' AND d.archived_at IS NULL AND ($3::uuid IS NULL OR d.id=$3) ORDER BY i.id FOR UPDATE OF i",&[&name,&version,&fixed]).await?;
+    let installation = skill.as_ref().map(|s| s.installation_id);
+    let providers=tx.query("SELECT i.id,i.generation,d.id AS deployment_id,d.owner_id,n.manifest FROM provider_records p JOIN instances i ON i.id=p.instance_id JOIN deployments d ON d.id=i.deployment_id JOIN installations n ON n.id=d.installation_id WHERE p.name=$1 AND p.version=$2 AND p.availability='ready' AND p.observed_at>now()-interval '1 millisecond'*((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint+(n.manifest->'health'->>'timeout_ms')::bigint) AND i.phase='ready' AND d.spec->>'enabled'='true' AND d.archived_at IS NULL AND ($3::uuid IS NULL OR d.id=$3) AND ($4::uuid IS NULL OR n.id=$4) ORDER BY i.id FOR UPDATE OF i",&[&name,&version,&fixed,&installation]).await?;
     let row = providers
         .first()
         .ok_or_else(|| Error::unavailable("No healthy fixed provider is available"))?;
@@ -119,10 +205,10 @@ pub async fn invoke(
             ));
         }
     }
-    if manifest["business_entry"] == "skill_required" {
+    if manifest["business_entry"] == "skill_required" && skill.is_none() {
         return Err(Error::denied());
     }
-    let active:i64=tx.query_one("SELECT count(*) FROM calls WHERE provider_instance_id=$1 AND state IN ('accepted','running')",&[&instance]).await?.get(0);
+    let active:i64=tx.query_one("SELECT count(*) FROM calls c WHERE provider_instance_id=$1 AND (state IN ('accepted','running') OR EXISTS(SELECT 1 FROM reservations r WHERE r.id=c.id AND r.kind='call' AND r.status<>'released'))",&[&instance]).await?.get(0);
     let max = manifest["concurrency"]["max_active_requests"]
         .as_i64()
         .unwrap_or(1);
@@ -152,16 +238,41 @@ pub async fn invoke(
         }
         tx.execute("UPDATE quotas SET concurrent_calls_used=concurrent_calls_used+1,daily_calls_used=$2::bigint+1,daily_bucket=$3 WHERE account_id=$1", &[account,&daily,&today]).await?;
     }
-    let charged = crate::identity::call_sources(
+    let mut charged = crate::identity::call_sources(
         &tx,
         &ctx,
         &Resource::new("capability", format!("{name}@{version}"), None),
     )
     .await?;
+    if let Some(skill) = &skill {
+        charged.extend(
+            crate::identity::call_sources_for(
+                &tx,
+                &ctx,
+                "skill.invoke",
+                &Resource::new("skill", skill.id, Some(skill.owner)),
+            )
+            .await?,
+        );
+    }
     let call = Uuid::new_v4();
     let timeout = input["timeout_ms"].as_u64().unwrap_or(30000);
-    let deadline = chrono::Utc::now() + chrono::Duration::milliseconds(timeout as i64);
+    let deadline = started + chrono::Duration::milliseconds(timeout as i64);
+    if deadline <= chrono::Utc::now() {
+        return Err(Error::new(
+            "DEADLINE_EXCEEDED",
+            "Call admission exceeded its deadline",
+            axum::http::StatusCode::GATEWAY_TIMEOUT,
+        ));
+    }
     tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,idempotency_key,state,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,'running',$8,now())",&[&call,&ctx.subject,&ctx.credential,&instance,&contract,&digest(&bytes),&key,&deadline]).await?;
+    if let Some(skill) = &skill {
+        tx.execute(
+            "UPDATE calls SET skill_id=$2,skill_definition_digest=$3 WHERE id=$1",
+            &[&call, &skill.id, &skill.definition_digest],
+        )
+        .await?;
+    }
     for credential in charged {
         tx.execute(
             "INSERT INTO call_credential_charges(call_id,credential_id) VALUES($1,$2)",
@@ -174,7 +285,7 @@ pub async fn invoke(
         .auth
         .issue_rpc(&tx, &ctx, call, instance, generation, deadline)
         .await?;
-    crate::host_blobs::grant_call(
+    crate::host_blobs::grant_skill_call(
         &tx,
         app,
         &ctx,
@@ -183,11 +294,16 @@ pub async fn invoke(
         &manifest,
         &definition,
         &input["input"],
+        skill
+            .as_ref()
+            .is_none_or(|s| s.definition["input_blobs"] == true),
     )
     .await?;
-    tx.execute("DELETE FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method='POST' AND path='/api/platform/v1/calls' AND key=$3 AND expires_at<=now()",&[&ctx.subject,&ctx.credential,&key]).await?;
-    tx.execute("INSERT INTO idempotency_records(subject_id,credential_id,method,path,key,fingerprint,resource_id,expires_at,created_at) VALUES($1,$2,'POST','/api/platform/v1/calls',$3,$4,$5,now()+interval '24 hours',now())",&[&ctx.subject,&ctx.credential,&key,&fingerprint,&call.to_string()]).await?;
+    tx.execute("DELETE FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method='POST' AND path=$4 AND key=$3 AND expires_at<=now()",&[&ctx.subject,&ctx.credential,&key,&path]).await?;
+    tx.execute("INSERT INTO idempotency_records(subject_id,credential_id,method,path,key,fingerprint,resource_id,expires_at,created_at) VALUES($1,$2,'POST',$6,$3,$4,$5,now()+interval '24 hours',now())",&[&ctx.subject,&ctx.credential,&key,&fingerprint,&call.to_string(),&path]).await?;
     tx.commit().await?;
+    let remaining =
+        || Duration::from_millis((deadline - chrono::Utc::now()).num_milliseconds().max(0) as u64);
     let result = async {
         let address = app.runtime.address(instance)?;
         let channel = tls::channel(&app.config, instance, generation, &address).await?;
@@ -209,7 +325,7 @@ pub async fn invoke(
             input_json: bytes,
             binding_id: String::new(),
         });
-        request.set_timeout(Duration::from_millis(timeout));
+        request.set_timeout(remaining());
         let response = client.invoke(request).await?.into_inner();
         if response.call_id != call.to_string()
             || digest(&response.output_json) != response.output_digest
@@ -223,11 +339,34 @@ pub async fn invoke(
             definition["maximum_output_bytes"].as_u64().unwrap() as usize,
         )?;
         validate_business(&definition["output_schema"], &output)?;
+        if let Some(skill) = &skill {
+            validate_business(&skill.definition["output_schema"], &output)?;
+        }
         let out = json!({"call_id":call,"contract":contract,"provider_instance_id":instance,"output":output,"completed_at":chrono::Utc::now()});
         validate("CallResult", &out)?;
         Ok(out)
     };
-    let mut result = tokio::time::timeout(Duration::from_millis(timeout), result)
+    let monitored = async {
+        tokio::pin!(result);
+        loop {
+            tokio::select! {
+                result = &mut result => return result,
+                _ = tokio::time::sleep(Duration::from_millis(100)), if skill.is_some() => {
+                    // Revoke in-flight work promptly. Retain its physical slot until
+                    // the controller confirms process fencing, as for RPC timeouts.
+                    let mut connection = app.db.connect().await?;
+                    let check = connection.transaction().await?;
+                    let current = app.auth.authenticate(&check, token, peer, request_id).await?;
+                    crate::skills::resolve_for_invoke(&check, &current, skill_id.unwrap()).await?;
+                    crate::host_blobs::check_call_sources(&check, &current, call).await?;
+                    authorize(&check, &current, "capability.invoke", &Resource::new("capability", format!("{name}@{version}"), None)).await?;
+                    let live: bool = check.query_one("SELECT EXISTS(SELECT 1 FROM instances i JOIN deployments d ON d.id=i.deployment_id WHERE i.id=$1 AND i.generation=$2 AND i.phase='ready' AND d.archived_at IS NULL AND d.spec->>'enabled'='true')", &[&instance,&generation]).await?.get(0);
+                    if !live { return Err(Error::unavailable("Fixed Skill deployment is unavailable")); }
+                }
+            }
+        }
+    };
+    let mut result = tokio::time::timeout(remaining(), monitored)
         .await
         .unwrap_or_else(|_| {
             Err(Error::new(
@@ -244,6 +383,15 @@ pub async fn invoke(
     db::call_lock(&tx).await?;
     let check = async {
         let current = app.auth.authenticate(&tx, token, peer, request_id).await?;
+        if let Some(skill) = &skill {
+            crate::host_blobs::check_call_sources(&tx, &current, call).await?;
+            let resolved = crate::skills::resolve_for_invoke(&tx, &current, skill.id).await?;
+            if resolved.definition_digest != skill.definition_digest
+                || resolved.installation_id != skill.installation_id
+            {
+                return Err(Error::conflict("Fixed Skill binding changed"));
+            }
+        }
         authorize(
             &tx,
             &current,
@@ -291,7 +439,11 @@ pub async fn invoke(
         ctx.subject,
         Some(ctx.credential),
         request_id,
-        "capability.invoke",
+        if skill.is_some() {
+            "skill.invoke"
+        } else {
+            "capability.invoke"
+        },
         &Resource::new("call", call, Some(ctx.subject)).json(),
         if result.is_ok() {
             "succeeded"
@@ -306,7 +458,39 @@ pub async fn invoke(
     )
     .await?;
     tx.commit().await?;
-    result.map_err(|e| e.with_resource(call))
+    skill_result(skill.as_ref(), result.map_err(|e| e.with_resource(call))?)
+}
+
+/// HostService reads authority from the admitted Call, not plugin JSON/headers.
+pub(crate) async fn check_skill_authority(
+    c: &(impl tokio_postgres::GenericClient + Sync),
+    ctx: &crate::auth::Context,
+    call: Uuid,
+) -> Result<()> {
+    let row = c.query_opt(
+        "SELECT c.skill_id,c.skill_definition_digest,d.installation_id FROM calls c LEFT JOIN instances i ON i.id=c.provider_instance_id LEFT JOIN deployments d ON d.id=i.deployment_id WHERE c.id=$1",
+        &[&call],
+    ).await?.ok_or_else(Error::denied)?;
+    if let Some(skill) = row.get::<_, Option<Uuid>>("skill_id") {
+        let resolved = crate::skills::resolve_for_invoke(c, ctx, skill).await?;
+        if Some(resolved.definition_digest)
+            != row.get::<_, Option<String>>("skill_definition_digest")
+            || Some(resolved.installation_id) != row.get::<_, Option<Uuid>>("installation_id")
+        {
+            return Err(Error::denied());
+        }
+    }
+    Ok(())
+}
+
+fn skill_result(skill: Option<&crate::skills::ResolvedSkill>, call: Value) -> Result<Value> {
+    if let Some(skill) = skill {
+        let value = json!({"skill_id":skill.id,"skill_version":skill.definition["version"],"definition_digest":skill.definition_digest,"call":call});
+        validate("SkillCallResult", &value)?;
+        Ok(value)
+    } else {
+        Ok(call)
+    }
 }
 
 #[cfg(test)]

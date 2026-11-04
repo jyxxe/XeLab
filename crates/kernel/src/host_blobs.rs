@@ -253,15 +253,51 @@ pub async fn grant_call(
     definition: &Value,
     input: &Value,
 ) -> Result<()> {
-    if !requested(manifest, "blob.read") && !requested(manifest, "blob.create") {
+    grant_skill_call(
+        c, app, ctx, call, deployment, manifest, definition, input, true,
+    )
+    .await
+}
+
+/// Skill resource declarations narrow the capability's Blob input delegation.
+/// Blob creation remains gated independently by caller and deployment approval.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn grant_skill_call(
+    c: &(impl GenericClient + Sync),
+    app: &App,
+    ctx: &Context,
+    call: Uuid,
+    deployment: Uuid,
+    manifest: &Value,
+    definition: &Value,
+    input: &Value,
+    allow_input_resources: bool,
+) -> Result<()> {
+    let skill = c
+        .query_opt(
+            "SELECT skill_id FROM calls WHERE id=$1 AND skill_id IS NOT NULL",
+            &[&call],
+        )
+        .await?;
+    let has_blobs = requested(manifest, "blob.read") || requested(manifest, "blob.create");
+    if !has_blobs && skill.is_none() {
         return Ok(());
     }
-    check_approval(c, app, deployment, manifest).await?;
+    if has_blobs {
+        check_approval(c, app, deployment, manifest).await?;
+    }
     let mut ids = BTreeSet::new();
-    resources(&definition["input_schema"], input, &mut ids)?;
+    if has_blobs && allow_input_resources {
+        resources(&definition["input_schema"], input, &mut ids)?;
+    }
     let mut bounds = vec![
         json!({"action":"capability.invoke","resource":{"kind":"capability","match":"ids","ids":[format!("{}@{}",definition["contract"]["name"].as_str().unwrap(),definition["contract"]["version"].as_str().unwrap())]}}),
     ];
+    // Preserve the original Skill permission proof alongside the underlying
+    // capability proof, so later grants cannot revive a revoked source path.
+    if let Some(skill) = skill {
+        bounds.push(json!({"action":"skill.invoke","resource":{"kind":"skill","match":"ids","ids":[skill.get::<_,Uuid>("skill_id")]}}));
+    }
     for id in &ids {
         let row = c
             .query_opt(
@@ -316,6 +352,51 @@ pub async fn grant_call(
     c.execute("UPDATE execution_delegations SET maximum_rules=$2 WHERE id=(SELECT delegation_id FROM calls WHERE id=$1)",&[&call,&policy::rules(&paths)]).await?;
     Ok(())
 }
+/// Recheck the admitted Skill call's frozen authorization alternatives. Current
+/// unrelated grants do not replace a withdrawn original capability/Skill source.
+pub(crate) async fn check_call_sources(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    call: Uuid,
+) -> Result<()> {
+    let row = c.query_opt(
+        "SELECT c.owner_id,c.credential_id,c.contract,c.skill_id,s.created_by,x.source_paths FROM calls c LEFT JOIN skills s ON s.id=c.skill_id LEFT JOIN host_rpc_contexts x ON x.call_id=c.id WHERE c.id=$1",
+        &[&call],
+    ).await?.ok_or_else(Error::denied)?;
+    let Some(skill) = row.get::<_, Option<Uuid>>("skill_id") else {
+        return Ok(());
+    };
+    if row.get::<_, Uuid>("owner_id") != ctx.subject
+        || row.get::<_, Option<Uuid>>("credential_id") != Some(ctx.credential)
+    {
+        return Err(Error::denied());
+    }
+    let frozen: Value = row
+        .get::<_, Option<Value>>("source_paths")
+        .ok_or_else(Error::denied)?;
+    let paths = Policy::new(c, ctx.peer)
+        .revalidate(&saved(frozen)?, ctx.credential)
+        .await?;
+    let rules = policy::rules(&paths);
+    let contract: Value = row.get("contract");
+    let capability = Resource::new(
+        "capability",
+        format!(
+            "{}@{}",
+            contracts::string(&contract, "name")?,
+            contracts::string(&contract, "version")?
+        ),
+        None,
+    );
+    let resource = Resource::new("skill", skill, row.get("created_by"));
+    if !auth::rules_allow(&rules, "capability.invoke", &capability, ctx.peer)
+        || !auth::rules_allow(&rules, "skill.invoke", &resource, ctx.peer)
+    {
+        return Err(Error::denied());
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Workload {
     pub instance: Uuid,
@@ -397,6 +478,25 @@ async fn authority(
         .await?;
     let rules = policy::rules(&live);
     let maximum: Value = row.get("maximum_rules");
+    crate::broker::check_skill_authority(c, &ctx, row.get("call_id")).await?;
+    if let Some(skill) = c
+        .query_opt(
+            "SELECT s.id,s.created_by FROM calls c JOIN skills s ON s.id=c.skill_id WHERE c.id=$1",
+            &[&row.get::<_, Uuid>("call_id")],
+        )
+        .await?
+    {
+        let resource = Resource::new(
+            "skill",
+            skill.get::<_, Uuid>("id"),
+            Some(skill.get("created_by")),
+        );
+        if !auth::rules_allow(&rules, "skill.invoke", &resource, peer)
+            || !auth::rules_allow(&maximum, "skill.invoke", &resource, peer)
+        {
+            return Err(Error::denied());
+        }
+    }
     let contract: Value = row.get("contract");
     let capability = Resource::new(
         "capability",

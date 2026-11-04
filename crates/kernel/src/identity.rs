@@ -1040,12 +1040,22 @@ pub async fn call_sources(
     ctx: &Context,
     resource: &Resource,
 ) -> Result<BTreeSet<Uuid>> {
+    call_sources_for(c, ctx, "capability.invoke", resource).await
+}
+
+/// Keep proof-source charging identical for Skill and its underlying action.
+pub(crate) async fn call_sources_for(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    action: &str,
+    resource: &Resource,
+) -> Result<BTreeSet<Uuid>> {
     let paths = Policy::new(c, ctx.peer)
         .credential(ctx.credential, 0)
         .await?;
     let mut alternatives = Vec::new();
     for path in paths {
-        if !auth::rules_allow(&json!([path.rule]), "capability.invoke", resource, ctx.peer) {
+        if !auth::rules_allow(&json!([path.rule]), action, resource, ctx.peer) {
             continue;
         }
         let mut keys: BTreeSet<_> = ctx.chain.iter().copied().collect();

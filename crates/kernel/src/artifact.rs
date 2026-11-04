@@ -129,13 +129,7 @@ pub(crate) fn validate_runtime_profile(manifest: &Value) -> Result<()> {
 fn validate_profile_inner(manifest: &Value, allow_versioned: bool) -> Result<()> {
     validate("Manifest", manifest)?;
     let versioned = manifest["data_schema_version"] != "none";
-    for field in [
-        "dependencies",
-        "routes",
-        "event_topics",
-        "skills",
-        "extension_points",
-    ] {
+    for field in ["dependencies", "routes", "event_topics", "extension_points"] {
         if manifest
             .get(field)
             .is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))
@@ -170,7 +164,7 @@ fn validate_profile_inner(manifest: &Value, allow_versioned: bool) -> Result<()>
     if (versioned && !allow_versioned)
         || manifest
             .get("business_entry")
-            .is_some_and(|v| v != "direct")
+            .is_some_and(|v| v != "direct" && v != "skill_required")
         || manifest.get("webui").is_some()
         || manifest.get("ui").is_some()
         || manifest.get("micro_runtime").is_some()
@@ -239,6 +233,7 @@ fn validate_profile_inner(manifest: &Value, allow_versioned: bool) -> Result<()>
             crate::contracts::compile_business(&cap[key])?;
         }
     }
+    crate::skills::validate_candidates(manifest)?;
     Ok(())
 }
 

@@ -58,6 +58,17 @@ def build(root, publisher, platform="linux/amd64", implementation="rust", reques
     if request_blob:
         manifest["plugin_id"] = "org.xelab.echo-blobs"
         manifest["requested_rules"].extend({"rule": {"action": action, "resource": {"kind": "blob", "match": "all"}}, "required": False} for action in ["blob.read", "blob.create"])
+    # A signed ordinary Skill candidate; registration remains an explicit core
+    # operation and does not grant users either layer of execution authority.
+    manifest["skills"] = [{
+        "name": manifest["plugin_id"] + ".echo", "version": plugin_version,
+        "description": "Echo a message through the fixed signed OCI artifact",
+        "input_schema": input_schema, "output_schema": output_schema,
+        "stream_item_schema": None,
+        "target": {"kind": "capability", "plugin_id": manifest["plugin_id"], "contract": contract},
+        "mapping": "identity", "maximum_timeout_ms": 10000,
+        "input_blobs": request_blob, "tags": ["echo"],
+    }]
     if volume_access:
         manifest["volumes"] = [{"name": "data", "mount_path": "/data", "access": volume_access, "scope": "deployment", "minimum_bytes": 1048576}]
     if failed_startup:

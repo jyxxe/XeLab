@@ -327,12 +327,29 @@ async fn dispatch(
         .await
         .map(|v| (v, 200));
     }
+    if name == "invokeSkill" {
+        if !app.ready.load(Ordering::SeqCst) {
+            return Err(Error::unavailable("Kernel is not ready"));
+        }
+        return broker::invoke_skill(
+            app,
+            token,
+            peer.ip(),
+            request_id,
+            path_id(&params, "skill_id")?,
+            &body,
+            header(&headers, "idempotency-key")?,
+        )
+        .await
+        .map(|value| (value, 200));
+    }
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
     let mutating = matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
     db::auth_lock(
         &tx,
-        (mutating && (identity::handles(name) || secrets::handles(name)))
+        (mutating
+            && (identity::handles(name) || secrets::handles(name) || crate::skills::handles(name)))
             || matches!(name, "getQuota" | "trustPublisher" | "revokePublisher"),
     )
     .await?;
@@ -409,6 +426,8 @@ async fn dispatch(
     let execution=async {
     let result = if identity::handles(name) {
         identity::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
+    } else if crate::skills::handles(name) {
+        crate::skills::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
     } else if crate::volumes::handles(name) {
         crate::volumes::execute(&tx,app,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("" )).await?
     } else if crate::backups::handles(name) {
@@ -739,6 +758,9 @@ async fn authorize_operation(
 ) -> Result<()> {
     if identity::handles(name) {
         return identity::authorize(c, ctx, name, params, body).await;
+    }
+    if crate::skills::handles(name) {
+        return crate::skills::authorize(c, ctx, name, params, body).await;
     }
     if secrets::handles(name) {
         return secrets::authorize(c, ctx, name, params, body).await;
