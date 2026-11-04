@@ -1,24 +1,24 @@
-# XeLab Kernel：M1 单节点内核与身份闭环
+# XeLab Kernel：M1 内核与 M2 存储/恢复组件
 
-这是基于现有 **2.8.0 契约**的 Rust 实现增量，crate 版本为 `0.1.0`。交付范围对应实施路线图的 **M1**：普通插件运行、身份继承、授权与管理闭环。现有 OpenAPI、Proto、Schema、SQL 基线保持原样。本轮补充 [M2 Secret 托管与租约](../../docs/implementation/m2-secrets.md)、[Blob](../../docs/implementation/m2-blobs.md) 和 [持久卷](../../docs/implementation/m2-volumes.md)，其余 M2–M6 能力仍独立交付；合规容量宿主的生产发布验收仍须单独完成，见 [M1 验收记录](../../docs/implementation/m1-acceptance.md)。
+这是基于现有 **2.8.0 契约**的 Rust 实现，crate 版本为 0.1.0。已交付 M1 普通插件、身份与管理闭环，以及 M2 卷、Blob、Secret、部署备份/恢复、整体离线恢复和内部格式监督器。OpenAPI、Proto、Schema 和原 SQL 基线保持不变，内部元数据以追加迁移升级到 **14**。逐项实现与证据见[实施目录](../../docs/implementation/README.md)；生产容量、正式 AWS/独立宿主恢复和完整格式迁移验收仍须单独完成，见 [M1 验收记录](../../docs/implementation/m1-acceptance.md)及各 M2 专题。公开版本化制品安装入口仍关闭。
 
 ## 已实现与边界
 
-| 模块 | 本次实现 | 尚未实现 |
+| 模块 | 当前实现 | 后续能力与验收边界 |
 |---|---|---|
-| 元数据 | PostgreSQL 显式基线迁移及校验和、单控制器锁、事务内操作/审计/outbox | 在线升级迁移、多个控制器、自动备份恢复 |
-| 身份与授权 | Owner 引导、五种内置角色、Guest 自助、固定父级子账户与激活、三种继承模式、不可变权限组版本/授权、API Key 签发/轮换/源链撤销、会话/密码管理、树配额、审计与签名分页 | OAuth、Skill/Workflow 执行委托与缓存式授权优化；OAuth 凭证拒绝认证 |
-| 制品 | 预导入的固定 OCI manifest digest；Ed25519 信封；原始清单摘要；契约文件摘要及内容一致性；严格 JSON/Schema 校验 | 在线拉取、image index 自动选平台、仓库登录、依赖安装、卸载及升级 |
-| 控制器 | 安装 → 创建停用部署 → 显式批准 → 启用 → Describe/Initialize/Health → Ready → 排空停止；持久意图和有限重启 | 多副本、滚动升级、有状态数据迁移、动态配置更新 |
-| 执行 | containerd/runc 真容器；cgroups v2 CPU/内存/PID；只读根目录、受限 tmpfs、无 Linux capabilities、隔离网络、工作负载 mTLS | 外网/代理、HostService 其他方法、GPU、微插件/MPR、Extension Plugin |
-| 调用 | 普通插件直接、非流式、`side_effect=none` 调用；固定契约/可选固定部署；有界并发；树配额及密钥链累计调用上限；幂等记录；未知结果查询；异常调用停止确认后回收 | 等待队列、流、非纯调用、调用取消、Skill、Workflow、Batch、Schedule、Event |
-| 持久卷 | 独立 XFS 硬配额、容量预留、恢复 worker、实际计数、单写者 fence、OCI 挂载 | 多副本应用行为、数据 Schema 迁移、全平台恢复 |
-| Blob | 不可变二进制上传/下载、摘要/长度校验、pin/TTL、可恢复清理、HTTPS CLI | 全平台备份恢复 |
-| Secret | AES-256-GCM 托管、元数据 API、轮换/撤销、部署绑定、工作负载 mTLS 租约 | 主密钥轮换、备份恢复 |
-| 备份/恢复 | 部署级备份任务、验证后新卷切换；离线元数据数据流、空库导入与权限重置组件 | 全平台离线协调入口、Blob/镜像/卷整体重建、DataMigration、正式异机演练 |
-| 运维 | HTTPS 管理 API、通用 CLI、探针、结构化错误日志、数据库审计、故障恢复测试 | WebUI、UDS 控制通道、指标/Tracing 导出、自动备份、数据与 AI 平台 |
+| 元数据 | PostgreSQL 显式追加迁移及校验和、单控制器锁、事务内操作/审计/outbox、原生离线快照及门禁 | 在线升级迁移、多个控制器、自动备份调度；原生快照要求精确版本/布局 |
+| 身份与授权 | Owner 引导、五种角色、Guest 自助、固定父级子账户与激活、三种继承模式、不可变权限组/授权、API Key 与会话/密码管理、实时源链撤销、树配额、审计；恢复后历史用户显式重新激活 | OAuth、Skill/Workflow 执行委托与缓存式授权优化；恢复不复活旧权限 |
+| 制品 | 预导入固定 OCI manifest digest、Ed25519 信封、原始清单/契约摘要及实际内容校验、严格 JSON/Schema 校验、OCI 归档及冷内容库导入 | 在线拉取、image index 自动选平台、仓库登录、依赖安装、卸载；公开非 none 格式安装关闭 |
+| 控制器 | 安装/批准/启用/健康/排空停止、有界对账与重启、部署重建与同格式卷切换、内部初始化/格式迁移监督器 | 多副本、滚动升级、动态配置更新；完整格式升级/不兼容回退仍待正式备份验收 |
+| 执行 | containerd/runc 真容器、cgroups v2 CPU/内存/PID、只读根目录、受限 tmpfs、无 Linux capabilities、隔离网络、工作负载 mTLS | 外网/代理、尚未实现的 HostService 方法、GPU、微插件/MPR、Extension Plugin；组件预算不代替生产 RUN-03 |
+| 调用 | 直接非流式 Broker、固定契约/部署、有界并发、树配额/源链计费、幂等账本与 unknown 查询、异常调用停止后回收；内部已登记格式的幂等业务调用 | 等待队列、流、通用非纯调用/取消、Skill、Workflow、Batch、Schedule、Event |
+| 持久卷 | 独立 XFS 硬配额、预留/扩容/回收、实际计数、单写者 fence、OCI 挂载、新私有卷恢复、同格式克隆/回退、内部格式证明 | 多副本应用行为、公开格式安装/迁移、正式独立宿主恢复验收 |
+| Blob | 不可变上传/下载、摘要/长度校验、pin/TTL、可恢复清理、HTTPS CLI、受限工作负载 RPC、整体离线备份/恢复 | 自动备份调度、正式 AWS/独立宿主演练 |
+| Secret | AES-256-GCM 托管、元数据 API、轮换/撤销、部署绑定、工作负载 mTLS 租约；恢复后旧 Secret/绑定撤销 | 主密钥轮换；恢复后需显式重建所需秘密及授权 |
+| 备份/恢复 | 部署一致性备份、新卷恢复/切换、整体离线源冻结、元数据/Blob/镜像/卷重建、权限重置、持久检查点与中断续作、格式备份登记 | 自动备份调度、正式 AWS/独立宿主恢复、不同格式升级/不兼容回退的完整正式演练；兼容对象存储始终 off_host=false |
+| 运维 | HTTPS 管理 API、通用 CLI、离线备份/恢复与账户维护命令、探针、结构化错误日志、数据库审计、故障恢复测试 | WebUI、UDS 控制通道、指标/Tracing 导出、自动备份、数据与 AI 平台 |
 
-只接受单副本、无依赖、无宿主权限申请、无 UI/路由、无扩展点的普通插件；允许受控持久卷，但 data_schema_version 仍须为 none，数据迁移单独交付。业务 Schema 必须自包含；本版拒绝 `$ref/$id` 等引用，避免联网或读取宿主文件。并发池满时立即拒绝，不静默排队。未实现的管理操作返回明确错误，不返回模拟成功。
+公开安装只接受单副本、无依赖、无宿主权限申请、无 UI/路由、无扩展点且 data_schema_version 为 none 的普通插件，允许受控持久卷。内部版本化格式的初始化、同格式切换和 Plan/Apply/Verify 见[格式监督器](../../docs/implementation/m2-format-transitions.md)；内部组件实现不等于公开准入或正式验收。业务 Schema 必须自包含；本版拒绝 $ref/$id 等引用，避免联网或读取宿主文件。并发池满时立即拒绝，未实现的管理操作返回明确错误。
 
 配置仍使用现有 `kernel.toml`；`unix_socket` 和 UI Gateway 在此子集中不提供对应服务。备份 URI 的标准 AWS 后端还需独立凭证、主密钥及仓库注册，见 [备份任务](../../docs/implementation/m2-backup-jobs.md)。不要仅因配置被接受而认为相关能力已经启用。
 
