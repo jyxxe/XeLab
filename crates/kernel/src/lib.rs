@@ -11,6 +11,7 @@ pub mod config;
 pub mod contracts;
 pub mod controller;
 pub mod db;
+pub mod deployments;
 pub mod error;
 pub mod host;
 pub mod host_blobs;
@@ -31,8 +32,10 @@ pub(crate) mod skill_streams;
 pub mod skills;
 pub mod storage;
 pub mod tls;
+pub mod ui;
 pub mod upgrades;
 pub mod volumes;
+pub mod webui;
 
 #[allow(clippy::result_large_err)] // Generated Tonic service signatures use tonic::Status.
 pub mod rpc {

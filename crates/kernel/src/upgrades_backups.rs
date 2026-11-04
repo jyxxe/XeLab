@@ -172,7 +172,7 @@ impl Registration {
         }
         let rules = match saved {
             Some(paths) => Some(policy::rules(
-                &Policy::new(c, ctx.peer)
+                &Policy::for_context(c, ctx)
                     .revalidate(paths, ctx.credential)
                     .await?,
             )),

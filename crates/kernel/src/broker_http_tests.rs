@@ -29,7 +29,7 @@ use std::{
     process::Stdio,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
     time::Duration,
 };
@@ -41,6 +41,10 @@ const ECHO: &str = "/plugins/org.xelab.http-echo/echo";
 const HOLD: &str = "/plugins/org.xelab.http-echo/hold";
 const EVENTS: &str = "/plugins/org.xelab.http-echo/events";
 const PAGE: &str = "/ui/org.xelab.http-echo/index.html";
+static COMPONENT_PROCESS: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+
+#[path = "oauth_http_selector_tests.rs"]
+mod selectors;
 
 async fn raw(
     router: &Router,
@@ -133,6 +137,7 @@ struct Component {
     manifest: Value,
     server: tokio::process::Child,
     heartbeat: tokio::task::JoinHandle<()>,
+    _process_lock: tokio::sync::OwnedMutexGuard<()>,
 }
 impl Drop for Component {
     fn drop(&mut self) {
@@ -142,6 +147,11 @@ impl Drop for Component {
 }
 impl Component {
     async fn new() -> Option<Self> {
+        let process_lock = COMPONENT_PROCESS
+            .get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+            .lock_owned()
+            .await;
         let base = Fixture::new().await?;
         let root = base.app.config.root();
         let ca_key = KeyPair::generate().unwrap();
@@ -241,7 +251,37 @@ impl Component {
         fs::write(identity.join("tls.key"), key.serialize_pem()).unwrap();
         fs::write(identity.join("ca.crt"), ca.pem()).unwrap();
         let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/http");
-        let script="import sys\nsys.path.insert(0,sys.argv[1])\nfrom http_server import State,KernelHTTPServer,Handler,encoded\noriginal=Handler.reply\ndef reply(self,status,body=b'',content_type='application/json',extra=()):\n if body==encoded({'message':'fault:bad-output'}):body=encoded({'message':42})\n return original(self,status,body,content_type,extra)\nHandler.reply=reply\ns=State();s.initialize()\nh=KernelHTTPServer(('127.21.0.2',8080),s,sys.argv[2])\nprint('READY',flush=True)\nh.serve_forever()\n";
+        let script = r#"import sys
+sys.path.insert(0,sys.argv[1])
+from http_server import State,KernelHTTPServer,Handler,encoded
+original=Handler.reply
+def reply(self,status,body=b'',content_type='application/json',extra=()):
+ if body==encoded({'message':'fault:bad-output'}):body=encoded({'message':42})
+ return original(self,status,body,content_type,extra)
+Handler.reply=reply
+original_events=Handler.events
+def events(self,value,call_id,deadline):
+ if value['message'] not in ('fault:empty-sse','fault:first-item'):
+  return original_events(self,value,call_id,deadline)
+ self.send_response(200)
+ self.send_header('Content-Type','text/event-stream')
+ self.send_header('Cache-Control','no-store')
+ self.send_header('Transfer-Encoding','chunked')
+ self.send_header('Connection','close')
+ self.end_headers()
+ self.close_connection=True
+ if value['message']=='fault:first-item':
+  event={'call_id':call_id,'sequence':1,'kind':'item','payload':{'message':value['message'],'index':0},'terminal':False}
+  raw=b'event: item\nid: '+call_id.encode()+b':1\ndata: '+encoded(event)+b'\n\n'
+  self.wfile.write(f'{len(raw):x}\r\n'.encode()+raw+b'\r\n')
+ self.wfile.write(b'0\r\n\r\n')
+ self.wfile.flush()
+Handler.events=events
+s=State();s.initialize()
+h=KernelHTTPServer(('127.21.0.2',8080),s,sys.argv[2])
+print('READY',flush=True)
+h.serve_forever()
+"#;
         let mut server = tokio::process::Command::new("python3")
             .arg("-c")
             .arg(script)
@@ -287,7 +327,17 @@ impl Component {
             manifest,
             server,
             heartbeat,
+            _process_lock: process_lock,
         })
+    }
+    async fn stop(&mut self) {
+        self.heartbeat.abort();
+        self.server.kill().await.unwrap();
+        let status = self.server.wait().await.unwrap();
+        assert!(
+            !status.success(),
+            "The explicitly stopped component unexpectedly exited normally"
+        );
     }
     fn host(&self) -> String {
         format!(
@@ -598,9 +648,178 @@ async fn missing_no_blob_context_cannot_be_replaced_on_replay(f: &Component) {
     );
 }
 
+async fn integral_float_call_cap_is_enforced_and_cannot_be_rotated_away(f: &Component) {
+    // Preserve the JSON number representation on the actual API wire. JSON
+    // Schema integer includes 1.0; serde_json::Value::as_i64 does not.
+    let mut request: Value = serde_json::from_str(
+        r#"{"name":"one integral-float HTTP call","inheritance":{"mode":"selected","rules":[{"action":"plugin.http.invoke","resource":{"kind":"plugin","match":"ids","ids":["org.xelab.http-echo"]}}]},"conditions":{"max_calls":1.0}}"#,
+    )
+    .unwrap();
+    assert!(request["conditions"]["max_calls"].is_f64());
+    let expiry = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(
+        chrono::Utc::now().timestamp_millis() + 86_400_000,
+    )
+    .unwrap();
+    request["conditions"]["expires_at"] = json!(expiry);
+    let created = management(
+        &f.router,
+        "createApiKey",
+        &[("account_id", f.owner.to_string())],
+        &f.token,
+        request.clone(),
+        "component-integral-float-key",
+        None,
+    )
+    .await;
+    assert_eq!(created.0, 201, "{}", created.1);
+    let credential = contracts::id(&created.1["credential"], "id").unwrap();
+    let revision = created.1["credential"]["revision"].as_i64().unwrap();
+    let token = created.1["secret"].as_str().unwrap();
+    // Use the kernel-returned timestamp/conditions for exact non-action bounds.
+    request["conditions"] = created.1["credential"]["conditions"].clone();
+    let params = [("credential_id", credential.to_string())];
+    for (suffix, cap) in [
+        ("remove", None),
+        (
+            "increase",
+            Some(serde_json::from_str::<Value>("2.0").unwrap()),
+        ),
+    ] {
+        let mut rotation = request.clone();
+        rotation["conditions"]
+            .as_object_mut()
+            .unwrap()
+            .remove("max_calls");
+        if let Some(cap) = cap {
+            rotation["conditions"]["max_calls"] = cap;
+        }
+        let denied = management(
+            &f.router,
+            "rotateApiKey",
+            &params,
+            &f.token,
+            rotation,
+            &format!("component-integral-float-{suffix}-rotation"),
+            Some(revision),
+        )
+        .await;
+        assert_eq!(denied.0, 403, "A rotation widened max_calls: {}", denied.1);
+        assert_eq!(denied.1["error"]["code"], "PERMISSION_DENIED");
+    }
+    let c = f.app.db.connect().await.unwrap();
+    let persisted: Value = c
+        .query_one(
+            "SELECT conditions FROM credentials WHERE id=$1",
+            &[&credential],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(
+        persisted["max_calls"].as_i64().is_none(),
+        "The regression lost its integral-float JSONB representation"
+    );
+    assert_eq!(persisted["max_calls"].as_f64(), Some(1.0));
+    let before = c.query_one("SELECT (SELECT count(*) FROM calls),(SELECT count(*) FROM call_credential_charges),daily_calls_used FROM quotas WHERE account_id=$1", &[&f.owner]).await.unwrap();
+    let calls_before: i64 = before.get(0);
+    let charges_before: i64 = before.get(1);
+    let daily_before: i64 = before.get(2);
+    let first = json_response(
+        raw(
+            &f.router,
+            "POST",
+            &f.host(),
+            ECHO,
+            Some(token),
+            br#"{"message":"one permitted real HTTP call"}"#.to_vec(),
+            &[
+                ("content-type", "application/json".into()),
+                ("idempotency-key", "component-integral-float-first".into()),
+            ],
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        first,
+        (200, json!({"message":"one permitted real HTTP call"}))
+    );
+    assert_eq!(f.active().await, 0);
+    let exhausted = json_response(
+        raw(
+            &f.router,
+            "POST",
+            &f.host(),
+            ECHO,
+            Some(token),
+            br#"{"message":"a distinct call must be refused"}"#.to_vec(),
+            &[
+                ("content-type", "application/json".into()),
+                ("idempotency-key", "component-integral-float-second".into()),
+            ],
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(exhausted.0, 409, "{}", exhausted.1);
+    assert_eq!(exhausted.1["error"]["code"], "QUOTA_EXCEEDED");
+    request["conditions"]["max_calls"] = serde_json::from_str("1.0").unwrap();
+    let spent_rotation = management(
+        &f.router,
+        "rotateApiKey",
+        &params,
+        &f.token,
+        request,
+        "component-integral-float-spent-rotation",
+        Some(revision),
+    )
+    .await;
+    assert_eq!(
+        spent_rotation.0, 403,
+        "A spent cap was reset by rotation: {}",
+        spent_rotation.1
+    );
+    assert_eq!(spent_rotation.1["error"]["code"], "PERMISSION_DENIED");
+    let after = c.query_one("SELECT (SELECT count(*) FROM calls),(SELECT count(*) FROM call_credential_charges),concurrent_calls_used,daily_calls_used FROM quotas WHERE account_id=$1", &[&f.owner]).await.unwrap();
+    assert_eq!(after.get::<_, i64>(0), calls_before + 1);
+    assert_eq!(after.get::<_, i64>(1), charges_before + 1);
+    assert_eq!(after.get::<_, i64>(2), 0);
+    assert_eq!(after.get::<_, i64>(3), daily_before + 1);
+    let original = c
+        .query_one(
+            "SELECT status,revision FROM credentials WHERE id=$1",
+            &[&credential],
+        )
+        .await
+        .unwrap();
+    assert_eq!(original.get::<_, String>(0), "active");
+    assert_eq!(original.get::<_, i64>(1), revision);
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM calls WHERE credential_id=$1 AND state='succeeded'",
+            &[&credential]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM call_credential_charges WHERE credential_id=$1",
+            &[&credential]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(f.active().await, 0);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn real_gateway_postgres_and_independent_mtls_plugin_close_the_http_component_loop() {
-    let Some(f) = Component::new().await else {
+    let Some(mut f) = Component::new().await else {
         return;
     };
     abandoned_before_admission(&f).await;
@@ -678,6 +897,7 @@ async fn real_gateway_postgres_and_independent_mtls_plugin_close_the_http_compon
         .0,
         200
     );
+    selectors::fixed_http_skill_deployment_selector(&f, &skill).await;
     let input =
         json!({"input":{"message":"real HTTP Skill"},"timeout_ms":5000,"idempotency_key":"业务🔑"});
     let skill_rule =
@@ -881,6 +1101,7 @@ async fn real_gateway_postgres_and_independent_mtls_plugin_close_the_http_compon
     assert_eq!(f.active().await, 0);
     owner_scoped_deployments_cannot_reuse_frozen_authority(&f).await;
     missing_no_blob_context_cannot_be_replaced_on_replay(&f).await;
+    integral_float_call_cap_is_enforced_and_cannot_be_rotated_away(&f).await;
     // Fault injection is in this independent server process only. The core must
     // validate actual mTLS response bytes against the signed output schema.
     let bad = f
@@ -955,4 +1176,88 @@ async fn real_gateway_postgres_and_independent_mtls_plugin_close_the_http_compon
     // no runtime and deliberately does not clear those durable reservations.
     assert!(f.active().await >= 1);
     f.app.shutdown.store(true, Ordering::SeqCst);
+    f.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn real_mtls_sse_without_an_accepted_first_frame_returns_an_http_error() {
+    let Some(mut f) = Component::new().await else {
+        return;
+    };
+    for (index, message) in ["fault:empty-sse", "fault:first-item"]
+        .into_iter()
+        .enumerate()
+    {
+        let response = raw(
+            &f.router,
+            "POST",
+            &f.host(),
+            EVENTS,
+            Some(&f.token),
+            serde_json::to_vec(&json!({"message":message,"items":1,"interval_ms":0})).unwrap(),
+            &[
+                ("content-type", "application/json".into()),
+                ("idempotency-key", format!("component-first-frame-{index}")),
+            ],
+        )
+        .await;
+        assert!(
+            response.status().is_client_error() || response.status().is_server_error(),
+            "An invalid first SSE frame committed success: {}",
+            response.status()
+        );
+        assert!(!response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.starts_with("text/event-stream")));
+        let bytes = to_bytes(response.into_body(), 1048576).await.unwrap();
+        let text = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            !text.contains("event: failed"),
+            "An invalid first frame fabricated an SSE failure: {text}"
+        );
+        assert!(
+            !text.contains("\"sequence\":1"),
+            "An invalid first frame fabricated a sequence: {text}"
+        );
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            body["error"]["code"].is_string(),
+            "Expected a normal HTTP error: {body}"
+        );
+        assert_eq!(
+            f.active().await,
+            index as i64 + 1,
+            "Unknown dispatched SSE work released physical capacity without fencing"
+        );
+    }
+    let c = f.app.db.connect().await.unwrap();
+    assert_eq!(
+        c.query_one("SELECT count(*) FROM calls WHERE state='unknown'", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        2
+    );
+    assert_eq!(
+        c.query_one("SELECT count(*) FROM call_credential_charges", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        2
+    );
+    let quota = c
+        .query_one(
+            "SELECT concurrent_calls_used,daily_calls_used FROM quotas WHERE account_id=$1",
+            &[&f.owner],
+        )
+        .await
+        .unwrap();
+    assert_eq!(quota.get::<_, i64>(0), 2);
+    assert_eq!(quota.get::<_, i64>(1), 2);
+    // Explicitly reap this independent TLS process before the serial guard is
+    // released. Durable unknown reservations are left intact for real fencing.
+    f.app.shutdown.store(true, Ordering::SeqCst);
+    f.stop().await;
 }

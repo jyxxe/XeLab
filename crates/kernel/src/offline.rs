@@ -459,6 +459,9 @@ async fn source_preflight(c: &(impl GenericClient + Sync)) -> Result<()> {
     }
     crate::http_contracts::validate_snapshot_bindings(c).await?;
     crate::skills::validate_snapshot_bindings(c).await?;
+    crate::oauth::snapshot::validate_snapshot(c).await?;
+    crate::ui::validate_snapshot(c).await?;
+    crate::webui::validate_snapshot(c).await?;
     for name in [
         "workflows",
         "tasks",

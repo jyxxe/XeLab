@@ -63,7 +63,7 @@ pub(super) async fn plan(
     };
     let registration =
         Registration::capture(c, app, ctx, backup, deployment.get("id"), wanted).await?;
-    let paths = Policy::new(c, ctx.peer)
+    let paths = Policy::for_context(c, ctx)
         .credential(ctx.credential, 0)
         .await?;
     let point = registration.read(c, app, ctx, &paths).await?;

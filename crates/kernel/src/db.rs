@@ -24,7 +24,8 @@ const SCHEMA_BACKUP_REGISTRATION: &str =
 const RECOVERED_ACCOUNT_ACTIVATIONS: &str =
     include_str!("../migrations/0014_recovered_account_activations.sql");
 const PLUGIN_HTTP_CONTRACTS: &str = include_str!("../migrations/0015_plugin_http_contracts.sql");
-const MIGRATIONS: [&str; 15] = [
+const OAUTH_STATE: &str = include_str!("../migrations/0016_oauth_state.sql");
+const MIGRATIONS: [&str; 16] = [
     BASELINE,
     CALL_CHARGES,
     SECRET_AUTHORITY,
@@ -40,9 +41,14 @@ const MIGRATIONS: [&str; 15] = [
     SCHEMA_BACKUP_REGISTRATION,
     RECOVERED_ACCOUNT_ACTIVATIONS,
     PLUGIN_HTTP_CONTRACTS,
+    OAUTH_STATE,
 ];
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 pub const LEADER_LOCK: i64 = 0x58454c41424d3101;
+
+#[cfg(test)]
+#[path = "db_oauth_tests.rs"]
+mod oauth_migration_tests;
 
 /// Only code-owned base tables can enter an offline metadata snapshot. Views,
 /// migration history and the target's recovery gate are never imported.

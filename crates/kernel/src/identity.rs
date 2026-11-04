@@ -2,7 +2,7 @@
 use crate::{
     api::{etag, path_id, read_object},
     auth::{self, Auth, Context, Resource},
-    contracts::{id, openapi, string, validate},
+    contracts::{id, openapi, string, unsigned, validate},
     db,
     error::{Error, Result},
     policy::{self, Policy},
@@ -73,6 +73,7 @@ pub fn audit_resource(
         "createBackup" => Some(("backup", &response["resource_id"])),
         "createSecret" => Some(("secret", &response["id"])),
         "registerSkill" => Some(("skill", &response["id"])),
+        "createClient" => Some(("client", &response["id"])),
         "bindSecret" => Some(("secret", &response["spec"]["secret_id"])),
         _ => None,
     };
@@ -84,8 +85,15 @@ pub fn audit_resource(
     if name == "registerSkill" {
         return Resource::new("skill", "new", None).json();
     }
+    if name == "createClient" {
+        return Resource::new("client", "new", Some(subject)).json();
+    }
+    if matches!(name, "getDefaultUi" | "setDefaultUi") {
+        return Resource::new("platform", "node", None).json();
+    }
     for (parameter, kind) in [
         ("skill_id", "skill"),
+        ("client_id", "client"),
         ("call_id", "call"),
         ("credential_id", "credential"),
         ("session_id", "credential"),
@@ -1123,8 +1131,12 @@ pub(crate) async fn call_sources_from_paths(
                     .query_one("SELECT conditions FROM credentials WHERE id=$1", &[key])
                     .await?
                     .get(0);
-                let remaining = match conditions["max_calls"].as_i64() {
-                    Some(max) => key_calls(c, *key).await? < max,
+                let remaining = match conditions.get("max_calls") {
+                    Some(max) => {
+                        let used = u64::try_from(key_calls(c, *key).await?)
+                            .map_err(|_| Error::denied())?;
+                        used < unsigned(max)?
+                    }
                     None => true,
                 };
                 available.insert(*key, remaining);
@@ -1207,12 +1219,14 @@ async fn issue_key(
         if combined != proposed {
             return Err(Error::denied());
         }
-        if let Some(max) = old_conditions["max_calls"].as_i64() {
-            let remaining = max - key_calls(c, old).await?;
-            if body["conditions"]["max_calls"]
-                .as_i64()
-                .is_none_or(|max| max > remaining)
-            {
+        if let Some(max) = old_conditions.get("max_calls") {
+            let used = u64::try_from(key_calls(c, old).await?).map_err(|_| Error::denied())?;
+            let remaining = unsigned(max)?.saturating_sub(used);
+            let requested = body["conditions"]
+                .get("max_calls")
+                .map(unsigned)
+                .transpose()?;
+            if requested.is_none_or(|max| max > remaining) {
                 return Err(Error::denied());
             }
         }

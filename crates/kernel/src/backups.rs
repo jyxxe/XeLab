@@ -433,7 +433,7 @@ async fn create(
         .iter()
         .map(|i| json!({"id":i.get::<_,Uuid>("id"),"generation":i.get::<_,i64>("generation")}))
         .collect();
-    let paths = Policy::new(c, ctx.peer)
+    let paths = Policy::for_context(c, ctx)
         .credential(ctx.credential, 0)
         .await?;
     let authority = serde_json::to_value(paths)?;

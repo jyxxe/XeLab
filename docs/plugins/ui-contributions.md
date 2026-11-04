@@ -18,11 +18,11 @@ PluginUiSpec.protocol_version固定"1"，base_path必须为/ui/{plugin_id}/，co
 
 部署获得平台分配的独立HTTPS origin，与可信认证端、WebUI壳及其他不互信插件不同；publisher不能指定内核域或其他插件域。源映射由[ui_gateway配置](../operations/configuration.md)确定，数据面只访问内部端点；未配置隔离origin时贡献unavailable，业务接口仍可用。
 
-[listUiContributions](../api/operations/ui/listUiContributions.md)返回当前用户plugin.ui.open范围内已批准项，包含固定安装、manifest/contribution摘要、frame_url/origin及当前获准的bindings。getUiContribution在每次加载/重新握手核对当前版本。没有独立的“插件自报UI已获权”入口。
+[listUiContributions](../api/operations/ui/listUiContributions.md)返回当前用户plugin.ui.open范围内已批准项，包含固定安装、manifest/contribution摘要、frame_url/origin及当前获准的bindings。getUiContribution在每次加载/重新握手核对当前版本。没有独立的“插件自报UI已获权”入口。contribution_digest 是该精确 UiContributionSpec 的 RFC8785/JCS SHA-256，部署、安装和 manifest_digest 另行固定比较；同一安装的不同部署不能互换。
 
 skill_bindings仅可引用本插件清单skills内精确name/version；alias唯一，modes明确call/batch。外部依赖由该插件经HostService正规调用，不让前端随意声明其他插件管理Skill。未注册/未启用/无调用权的绑定不出现在bindings中；spec保留原签名声明供说明，不把spec当实际授权白名单。
 
-用户可获准打开静态界面而暂不拥有其中业务调用权，页面需显示授权/依赖状态。plugin.ui.open不隐含plugin.read、plugin.configure、skill.invoke或batch.create；Guest也只能打开明确共享的贡献。
+用户可获准打开静态界面而暂不拥有其中业务调用权，页面需显示授权/依赖状态。按当前用户权限过滤而省略绑定不会单独使静态贡献 unavailable；全局目标候选或版本缺失、路由未批准、源隔离或实例失效仍须拒绝挂载。plugin.ui.open不隐含plugin.read、plugin.configure、skill.invoke或batch.create；Guest也只能打开明确共享的贡献。
 
 ## 不可信页面边界
 

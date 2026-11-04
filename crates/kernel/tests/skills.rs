@@ -450,14 +450,11 @@ async fn both_authorization_layers_precede_admission_and_no_failure_leaks_quota(
         "a metadata fixture has no running provider: {}",
         admitted.1
     );
-    let mut forged = request_body.clone();
-    forged["provider_deployment_id"] = json!(Uuid::new_v4());
-    assert_eq!(
-        f.call("invokeSkill", &params, &f.token, forged, None)
-            .await
-            .0,
-        400
-    );
+    let mut fixed = request_body.clone();
+    fixed["provider_deployment_id"] = json!(Uuid::new_v4());
+    let unavailable = f.call("invokeSkill", &params, &f.token, fixed, None).await;
+    assert_eq!(unavailable.0, 503, "{}", unavailable.1);
+    assert_eq!(unavailable.1["error"]["code"], "NOT_READY");
     let mut oversize = request_body;
     oversize["timeout_ms"] = json!(20000);
     assert_eq!(
@@ -483,6 +480,156 @@ async fn both_authorization_layers_precede_admission_and_no_failure_leaks_quota(
         .unwrap();
     assert_eq!(q.get::<_, i64>(0), 0);
     assert_eq!(q.get::<_, i64>(1), 0);
+}
+
+#[tokio::test]
+async fn fixed_skill_deployment_never_falls_back_or_changes_on_http_replay() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let mut registration = f.registration();
+    registration["enabled"] = json!(true);
+    let created = f
+        .call("registerSkill", &[], &f.token, registration, None)
+        .await;
+    assert_eq!(created.0, 201, "{}", created.1);
+    let skill = created.1["id"].as_str().unwrap();
+    let params = [("skill_id", skill.to_owned())];
+    let c = f.db.connect().await.unwrap();
+    let other_installation = Uuid::new_v4();
+    c.execute("INSERT INTO installations(id,plugin_id,version,publisher_id,image_digest,manifest_digest,manifest,state,created_at,updated_at) SELECT $1,plugin_id,'2.0.0',publisher_id,$2,manifest_digest,manifest,'installed',now(),now() FROM installations WHERE id=$3", &[&other_installation,&contracts::digest(b"another fixed Skill installation"),&f.installation]).await.unwrap();
+    let unavailable = Uuid::new_v4();
+    let available = Uuid::new_v4();
+    let wrong_installation = Uuid::new_v4();
+    let available_instance = Uuid::new_v4();
+    let contract = &f.manifest["capabilities"][0]["contract"];
+    for (deployment, instance, installation, enabled) in [
+        (unavailable, Uuid::new_v4(), f.installation, false),
+        (available, available_instance, f.installation, true),
+        (wrong_installation, Uuid::new_v4(), other_installation, true),
+    ] {
+        let spec = json!({"installation_id":installation,"display_name":"metadata-only fixed selector","enabled":enabled,"replicas":1,"limits":f.manifest["minimum_resources"],"config":{},"volume_ids":[]});
+        let phase = if enabled { "ready" } else { "disabled" };
+        c.execute("INSERT INTO deployments(id,owner_id,installation_id,spec,phase,created_at,updated_at) VALUES($1,$2,$3,$4,$5,now(),now())",&[&deployment,&f.owner,&installation,&spec,&phase]).await.unwrap();
+        // A stale ready observation cannot make a disabled deployment eligible.
+        // None of these metadata targets has a physical plugin process.
+        c.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,created_at,updated_at) VALUES($1,$2,1,0,'ready','alive',$3,now(),now())",&[&instance,&deployment,&spec["limits"]]).await.unwrap();
+        c.execute("INSERT INTO provider_records(instance_id,name,version,availability,features,observed_generation,observed_at) VALUES($1,$2,$3,'ready','[]',1,now())",&[&instance,&contract["name"].as_str().unwrap(),&contract["version"].as_str().unwrap()]).await.unwrap();
+    }
+    let input = json!({"input":{"message":"fixed deployment admission"},"timeout_ms":10000,"idempotency_key":"fixed-selector-business-key"});
+    for deployment in [unavailable, wrong_installation] {
+        let mut selected = input.clone();
+        selected["provider_deployment_id"] = json!(deployment);
+        let refused = f
+            .call("invokeSkill", &params, &f.token, selected, None)
+            .await;
+        assert_eq!(refused.0, 503, "{}", refused.1);
+        assert_eq!(refused.1["error"]["code"], "NOT_READY");
+    }
+    assert_eq!(
+        c.query_one("SELECT count(*) FROM calls", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0,
+        "fixed unavailable/other-installation selectors cannot fall back to B"
+    );
+    let before = c
+        .query_one(
+            "SELECT concurrent_calls_used,daily_calls_used FROM quotas WHERE account_id=$1",
+            &[&f.owner],
+        )
+        .await
+        .unwrap();
+    assert_eq!(before.get::<_, i64>(0), 0);
+    assert_eq!(before.get::<_, i64>(1), 0);
+    // Selecting B must reach that exact provider. Its missing runtime yields an
+    // honest unknown Call; this is admission evidence, not OCI execution proof.
+    c.execute("UPDATE provider_records SET observed_at=now()", &[])
+        .await
+        .unwrap();
+    let mut selected = input.clone();
+    selected["provider_deployment_id"] = json!(available);
+    let failed = request(
+        &f.router,
+        "invokeSkill",
+        &params,
+        Some(&f.token),
+        selected.clone(),
+        None,
+        "fixed-selector-replay",
+    )
+    .await;
+    assert_ne!(failed.0, 200, "metadata target has no OCI process");
+    let admitted = c
+        .query_one(
+            "SELECT id,provider_instance_id,state,idempotency_key FROM calls",
+            &[],
+        )
+        .await
+        .unwrap_or_else(|error| panic!("fixed B must reach admission: {failed:?}: {error}"));
+    let call: Uuid = admitted.get("id");
+    assert_eq!(
+        admitted.get::<_, Uuid>("provider_instance_id"),
+        available_instance
+    );
+    assert_eq!(admitted.get::<_, String>("state"), "unknown");
+    assert_eq!(
+        admitted.get::<_, String>("idempotency_key"),
+        "fixed-selector-business-key"
+    );
+    let replay = request(
+        &f.router,
+        "invokeSkill",
+        &params,
+        Some(&f.token),
+        selected,
+        None,
+        "fixed-selector-replay",
+    )
+    .await;
+    assert_eq!(replay.0, 409, "{}", replay.1);
+    assert_eq!(replay.1["error"]["code"], "OUTCOME_UNKNOWN");
+    assert_eq!(replay.1["error"]["resource_id"], call.to_string());
+    for deployment in [Some(unavailable), Some(wrong_installation), None] {
+        let mut changed = input.clone();
+        if let Some(deployment) = deployment {
+            changed["provider_deployment_id"] = json!(deployment);
+        }
+        let conflict = request(
+            &f.router,
+            "invokeSkill",
+            &params,
+            Some(&f.token),
+            changed,
+            None,
+            "fixed-selector-replay",
+        )
+        .await;
+        assert_eq!(conflict.0, 409, "{}", conflict.1);
+        assert_eq!(conflict.1["error"]["code"], "IDEMPOTENCY_CONFLICT");
+    }
+    assert_eq!(
+        c.query_one("SELECT count(*) FROM calls", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        1,
+        "replay and selector changes cannot regenerate an uncertain call"
+    );
+    let after = c
+        .query_one(
+            "SELECT concurrent_calls_used,daily_calls_used FROM quotas WHERE account_id=$1",
+            &[&f.owner],
+        )
+        .await
+        .unwrap();
+    assert_eq!(after.get::<_, i64>(0), 1, "unfenced slot remains reserved");
+    assert_eq!(
+        after.get::<_, i64>(1),
+        1,
+        "rejected selectors do not charge again"
+    );
 }
 
 #[tokio::test]

@@ -574,7 +574,13 @@ impl Workspace {
         Ok(())
     }
     pub fn reserve_file(&self, images: bool, bytes: u64, headroom: u64) -> Result<File> {
+        let kind = if images { "images" } else { "metadata" };
         if bytes > 64 * 1024 * 1024 * 1024 {
+            tracing::error!(
+                kind,
+                requested_bytes = bytes,
+                "Offline staging object exceeds its bound"
+            );
             return Err(Error::exhausted());
         }
         let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
@@ -584,7 +590,21 @@ impl Workspace {
         let free = (stat.f_bavail as u64)
             .checked_mul(stat.f_frsize as u64)
             .ok_or_else(Error::exhausted)?;
+        tracing::info!(
+            kind,
+            requested_bytes = bytes,
+            headroom_bytes = headroom,
+            available_bytes = free,
+            "Offline staging physical-space admission"
+        );
         if bytes.checked_add(headroom).is_none_or(|n| n > free) {
+            tracing::error!(
+                kind,
+                requested_bytes = bytes,
+                headroom_bytes = headroom,
+                available_bytes = free,
+                "Offline staging physical-space admission refused"
+            );
             return Err(Error::exhausted());
         }
         let file = self.stage_file(images)?;
@@ -593,7 +613,9 @@ impl Workspace {
                 libc::fallocate(file.as_raw_fd(), libc::FALLOC_FL_KEEP_SIZE, 0, bytes as i64)
             } < 0
         {
-            return Err(std::io::Error::last_os_error().into());
+            let error = std::io::Error::last_os_error();
+            tracing::error!(kind, requested_bytes = bytes, io_kind = ?error.kind(), os_error = error.raw_os_error(), "Offline staging physical allocation failed");
+            return Err(error.into());
         }
         file.sync_all()?;
         Ok(file)

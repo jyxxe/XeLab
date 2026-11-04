@@ -1,5 +1,6 @@
-//! Real PG HTTP components. Main Host/router and sequential schema16 wiring
-//! remain separate integration gates; no OCI or production acceptance claim.
+//! Real PostgreSQL HTTP regressions on the registered sequential schema.
+//! The browser fixture also serves the actual main Router; OCI/production
+//! acceptance remains a separate gate.
 use super::*;
 use crate::{auth, identity, oauth::clients};
 use axum::extract::ConnectInfo;
@@ -22,11 +23,6 @@ impl Fixture {
     async fn new(core: &str, ui: &str) -> Option<Self> {
         let base = crate::backups::tests::Fixture::new().await?;
         let mut c = base.app.db.connect().await.unwrap();
-        if !oauth::schema_available(&c).await.unwrap() {
-            c.batch_execute(include_str!("../migrations/0016_oauth_state.sql"))
-                .await
-                .unwrap();
-        }
         let tx = c.transaction().await.unwrap();
         db::auth_lock(&tx, true).await.unwrap();
         let ctx = base
@@ -107,14 +103,14 @@ impl Fixture {
             &u[url::Position::BeforeHost..url::Position::AfterPort],
         )
     }
-    async fn call(&self, request: Request<Body>) -> Response {
-        handle(
-            self.app.clone(),
-            "127.0.0.1:9876".parse().unwrap(),
-            Uuid::new_v4(),
-            request,
-        )
-        .await
+    async fn call(&self, mut request: Request<Body>) -> Response {
+        request
+            .extensions_mut()
+            .insert(ConnectInfo("127.0.0.1:9876".parse::<SocketAddr>().unwrap()));
+        crate::api::router(self.app.clone())
+            .oneshot(request)
+            .await
+            .unwrap()
     }
     async fn authorize(&self) -> (String, String, String) {
         let response = self
@@ -408,7 +404,7 @@ async fn real_http_cors_requires_direct_client_bound_access_and_rechecks_refresh
     };
     let preflight = f
         .call(
-            f.request("OPTIONS", "/api/platform/v1/accounts/me")
+            f.request("OPTIONS", &format!("/api/platform/v1/accounts/{}", f.owner))
                 .header("origin", &f.ui)
                 .header("access-control-request-method", "GET")
                 .header(
@@ -1018,3 +1014,25 @@ async fn real_origin_provenance_filters_grant_alternatives_and_all_derived_autho
 
 #[path = "oauth_browser_tests.rs"]
 mod browser;
+
+#[path = "oauth_api_tests.rs"]
+mod management_api;
+
+#[tokio::test]
+async fn main_root_redirect_rejects_unregistered_query_and_body() {
+    let Some(f) = Fixture::new("https://kernel.example.org:8443", "https://ui.example.org").await
+    else {
+        return;
+    };
+    for (method, path, body) in [
+        ("GET", "/?next=https://evil.example/", ""),
+        ("GET", "/", "not-empty"),
+        ("HEAD", "/", "not-empty"),
+    ] {
+        let response = f
+            .call(f.request(method, path).body(Body::from(body)).unwrap())
+            .await;
+        assert_eq!(response.status(), 400);
+        assert!(!response.headers().contains_key("location"));
+    }
+}

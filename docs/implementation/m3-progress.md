@@ -6,13 +6,15 @@
 `dbb35cbc7c2c110c88de7ba16dc2d4569fad3ad2`，内部 Schema 14。
 这是开发与证据清单；未勾选项尚未完成，规范存在不代表运行代码已经交付。
 后续阶段须更新实际提交、PR、测试命令及结果，不能用本页代替运行证据。
-当前 main 为 `dca7c8d581131906d97d13ea54ccd23bd4c8c0fa`：
-[PR #39](https://github.com/jyxxe/XeLab/pull/39) 与
-[PR #40](https://github.com/jyxxe/XeLab/pull/40) 已合并，交付普通 OCI capability
-Skill 的七项公开操作，包括纯流 SSE。main 最新完整 CI 失败，修复仍在 Draft
-[PR #41](https://github.com/jyxxe/XeLab/pull/41) 验证，不能计为最终绿灯。
+当前 main 为 `41e495bf91e898986791f436720fdac9cbea9fda`：
+[PR #39](https://github.com/jyxxe/XeLab/pull/39)、
+[PR #40](https://github.com/jyxxe/XeLab/pull/40) 与
+[PR #41](https://github.com/jyxxe/XeLab/pull/41) 已合并，交付普通 OCI capability
+Skill 的七项公开操作，包括纯流 SSE，以及并发授权复核的撤权活性修复。
+#41 精确提交 CI 成功；新 main 自身 CI 在离线捕获阶段再次失败，
+P0 容量来源与生成输入清理修正独立处理中，不能以 PR 绿灯代替最终 main 验证。
 HTTP 已在开发分支接入源码并进行本地验证，尚未交付 main；
-OAuth、官方 WebUI 与 UI 桥尚未实现。开发分支 Schema 15 不等于 main 已迁移。
+OAuth、官方 WebUI 与 UI 桥尚未交付 main。开发分支 Schema 15 不等于 main 已迁移。
 
 ## 范围与协作
 
@@ -88,10 +90,14 @@ OAuth、官方 WebUI 与 UI 桥尚未实现。开发分支 Schema 15 不等于 m
 | 流式分支 `accc858…` 首次真实 OCI | [执行 41804847274](https://github.com/jyxxe/XeLab/actions/runs/41804847274) 失败：独立畸形流连续触发隔离，达到既有 5 次启动预算；测试已改为验证预算拒绝后通过公开停启恢复，不提高预算 |
 | 流式分支 `8c1c915…` 真实 OCI | [执行 41809262982](https://github.com/jyxxe/XeLab/actions/runs/41809262982) 中流式正常/畸形/取消/撤权/共享并发/断线及预算恢复场景通过；随后升级测试按单能力计数失败，整体 CI 仍失败，不能计为完整通过 |
 | M3-A 流式实现 `e95e584…` | [PR #40](https://github.com/jyxxe/XeLab/pull/40) 已合并；精确提交的 [Kernel M1](https://github.com/jyxxe/XeLab/actions/runs/41813120114) 成功，包含实际 OCI、恢复和适用回归 |
-| main `dca7c8d…` 合并后 CI | [执行 41816557404](https://github.com/jyxxe/XeLab/actions/runs/41816557404) 失败：live-revoke 场景暴露 Broker 定时复核与执行未来之间的授权锁活性问题；90 秒夹具亦复现，不能作为单纯测试超时处理；修复见 #41，尚未合并 |
+| main `dca7c8d…` 合并后 CI | [执行 41816557404](https://github.com/jyxxe/XeLab/actions/runs/41816557404) 失败：live-revoke 场景暴露 Broker 定时复核与执行未来之间的授权锁活性问题；90 秒夹具亦复现，不能作为单纯测试超时处理；已由 #41 修复并合并，失败历史仍保留 |
 | Draft #41 `1399b619…` | [执行 41819988198](https://github.com/jyxxe/XeLab/actions/runs/41819988198) 在 image_archive 的宿主 I/O 阶段失败，尚未执行到 OCI/撤权回归；追加诊断不改变验证/限制，不能记为修复通过 |
 | Draft #41 `3ed37c67…` | [执行 41823170948](https://github.com/jyxxe/XeLab/actions/runs/41823170948) 实际 OCI 再现撤权等待到 deadline：执行未来持有共享授权事务时，监视分支等待排在独占撤权写入者后的新共享事务，却暂停轮询执行未来；并发 guard 修复及真实 PostgreSQL 屏障回归尚在验证 |
-| Draft #41 `20e09827…` | 独立并发 guard 修复、真实 PostgreSQL 排队屏障回归已在开发分支验证，并由 HTTP 分支正常合并；[执行 41827862054](https://github.com/jyxxe/XeLab/actions/runs/41827862054) 结果仍待确认，未计为 main 已修复 |
+| #41 `20e09827…` | 独立并发 guard 修复及实际 PostgreSQL/OCI 撤权回归通过；[执行 41827862054](https://github.com/jyxxe/XeLab/actions/runs/41827862054) 全步骤成功，PR 已合并；OCI 撤权约 739 ms，仍余 89261 ms，精确双事件 failed/INVALID_CREDENTIAL 和物理 fencing/配额均保留 |
+| main `41e495bf…` | [执行 41832456991](https://github.com/jyxxe/XeLab/actions/runs/41832456991) 失败：实际归档恢复通过，OCI 离线捕获返回 RESOURCE_EXHAUSTED；已修撤权仍及时完成，容量来源及已消费构建 tar 清理修正独立处理，不盲目重跑或放松门槛 |
+| Draft #42 `534d0a1b…` | [P0 捕获容量修正](https://github.com/jyxxe/XeLab/pull/42) 已正常合入 HTTP 开发分支；保留容量诊断与门槛，全部 immutable refs 核实后只删除已消费的精确 docker-save 传输 tar，HTTP 分支增加两份 HTTP 制品且逐层拒绝符号链接。[执行 41837147021](https://github.com/jyxxe/XeLab/actions/runs/41837147021) 尚待最终结果，不能计为已合并 main 或修复验收成功 |
+| HTTP 分支本地完整 workspace 尝试 | 库 150 通过/5 失败/3 显式忽略；1 项空 ContractRef 旧夹具按契约修正后通过；4 项归档/克隆因 overlay 目录属性列表长度/读取不一致拒绝，相同源码和检查在真实 tmpfs 隔离组件归档 2 项、克隆 3 项全部通过。保留原宿主失败，不冒充整轮 workspace 通过 |
+| HTTP 后续安全/兼容回归 | API→JSONB 1.0 额度/轮换、首帧 SSE 拒绝的实际 mTLS 组件 2 项通过；结果读取/重放的原始计费与 Blob ACL PostgreSQL 3 项、Identity 15/Skill 8/PostgreSQL 2 项通过；精确分支完整 CI 尚待执行 |
 | HTTP 开发分支 | [实现及命令](m3-http.md)、[持久化](m3-http-provenance.md)与[参考制品](../../examples/http/README.md)已存在；5 项契约 PostgreSQL、12 项 Python 及两个实际打包探针通过；核心/PG/独立 mTLS 两槽组件与 13 项安全场景、6 项契约、16 项网关/HTTP、4 项快照、Broker/API 回归和全-target Clippy 通过；真实内核 OCI、完整 workspace 执行与最终 CI 待确认 |
 
 流式实现保留单调时钟 deadline、请求作用域数据库取消和实际后端退出断言；

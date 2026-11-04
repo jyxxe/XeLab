@@ -137,7 +137,7 @@ pub async fn authorize_replay(
     let saved: Vec<policy::Path> =
         serde_json::from_value(row.get("authority")).map_err(|_| Error::denied())?;
     let available = policy::rules(
-        &Policy::new(c, ctx.peer)
+        &Policy::for_context(c, ctx)
             .revalidate(&saved, ctx.credential)
             .await?,
     );
@@ -327,7 +327,7 @@ pub async fn create(
         return Err(Error::exhausted());
     }
     let authority = serde_json::to_value(
-        Policy::new(c, ctx.peer)
+        Policy::for_context(c, ctx)
             .credential(ctx.credential, 0)
             .await?,
     )?;

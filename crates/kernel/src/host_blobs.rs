@@ -82,7 +82,7 @@ pub async fn approve(
         .await?;
         return Ok(());
     }
-    let mut p = Policy::new(c, ctx.peer);
+    let mut p = Policy::for_context(c, ctx);
     p.require_subset(ctx, approval["rules"].as_array().unwrap())
         .await?;
     let mut bounds = approval["rules"].as_array().unwrap().clone();
@@ -98,7 +98,7 @@ pub async fn approve(
     let source_paths = p.intersection(&current, &caps(&json!(bounds))?).await?;
     let peer = ctx.peer.to_string();
     let digest = contracts::digest(&serde_json::to_vec(approval)?);
-    c.execute("INSERT INTO host_proxy_approvals(deployment_id,credential_id,peer,approval_digest,source_paths) VALUES($1,$2,$3::text::inet,$4,$5) ON CONFLICT(deployment_id) DO UPDATE SET credential_id=$2,peer=$3::text::inet,approval_digest=$4,source_paths=$5,created_at=now()",&[&deployment,&ctx.credential,&peer,&digest,&json!(source_paths)]).await?;
+    c.execute("INSERT INTO host_proxy_approvals(deployment_id,credential_id,peer,approval_digest,source_paths,browser_origin) VALUES($1,$2,$3::text::inet,$4,$5,$6) ON CONFLICT(deployment_id) DO UPDATE SET credential_id=$2,peer=$3::text::inet,approval_digest=$4,source_paths=$5,browser_origin=$6,created_at=now()",&[&deployment,&ctx.credential,&peer,&digest,&json!(source_paths),&ctx.browser_origin]).await?;
     Ok(())
 }
 async fn approval_sources(
@@ -107,7 +107,7 @@ async fn approval_sources(
     deployment: Uuid,
     manifest: &Value,
 ) -> Result<(Value, Value, IpAddr)> {
-    let row=c.query_opt("SELECT d.approval,d.owner_id,a.credential_id,host(a.peer) AS peer,a.approval_digest,a.source_paths FROM deployments d JOIN host_proxy_approvals a ON a.deployment_id=d.id WHERE d.id=$1",&[&deployment]).await?.ok_or_else(Error::denied)?;
+    let row=c.query_opt("SELECT d.approval,d.owner_id,a.credential_id,host(a.peer) AS peer,a.approval_digest,a.source_paths,a.browser_origin FROM deployments d JOIN host_proxy_approvals a ON a.deployment_id=d.id WHERE d.id=$1",&[&deployment]).await?.ok_or_else(Error::denied)?;
     let approval: Value = row.get("approval");
     if !supported(&approval)
         || contracts::digest(&serde_json::to_vec(&approval)?)
@@ -124,11 +124,12 @@ async fn approval_sources(
         .get::<_, String>("peer")
         .parse()
         .map_err(|_| Error::denied())?;
-    let ctx = app
+    let mut ctx = app
         .auth
         .resume(c, row.get("credential_id"), peer, Uuid::new_v4())
         .await?;
-    let paths = Policy::new(c, peer)
+    ctx.browser_origin = row.get("browser_origin");
+    let paths = Policy::for_context(c, &ctx)
         .revalidate(&saved(row.get("source_paths"))?, ctx.credential)
         .await?;
     let live = policy::rules(&paths);
@@ -429,7 +430,7 @@ async fn grant_call_inner(
         .await;
         match result {Ok(())=>bounds.push(json!({"action":"blob.create","resource":{"kind":"blob","match":"owned_by","owner_id":ctx.subject}})),Err(e) if matches!(e.code,"PERMISSION_DENIED"|"RESOURCE_NOT_FOUND")=>(),Err(e)=>return Err(e)}
     }
-    let mut p = Policy::new(c, ctx.peer).with_resource_owner(&resource);
+    let mut p = Policy::for_context(c, ctx).with_resource_owner(&resource);
     let current = if let Some(paths) = current_paths {
         paths.to_vec()
     } else {
@@ -440,7 +441,7 @@ async fn grant_call_inner(
         paths = charged_business_paths(c, ctx, call, paths).await?;
     }
     let peer = ctx.peer.to_string();
-    c.execute("INSERT INTO host_rpc_contexts(call_id,peer,source_paths,read_blob_ids) VALUES($1,$2::text::inet,$3,$4)",&[&call,&peer,&json!(paths),&json!(ids)]).await?;
+    c.execute("INSERT INTO host_rpc_contexts(call_id,peer,source_paths,read_blob_ids,browser_origin) VALUES($1,$2::text::inet,$3,$4,$5)",&[&call,&peer,&json!(paths),&json!(ids),&ctx.browser_origin]).await?;
     c.execute("UPDATE execution_delegations SET maximum_rules=$2 WHERE id=(SELECT delegation_id FROM calls WHERE id=$1)",&[&call,&policy::rules(&paths)]).await?;
     Ok(paths)
 }
@@ -502,7 +503,7 @@ pub(crate) async fn check_call_sources(
     call: Uuid,
 ) -> Result<()> {
     let row = c.query_opt(
-        "SELECT c.owner_id,c.credential_id,c.http_binding,c.skill_id,s.created_by,x.source_paths FROM calls c LEFT JOIN skills s ON s.id=c.skill_id LEFT JOIN host_rpc_contexts x ON x.call_id=c.id WHERE c.id=$1",
+        "SELECT c.owner_id,c.credential_id,c.http_binding,c.skill_id,s.created_by,x.source_paths,x.read_blob_ids FROM calls c LEFT JOIN skills s ON s.id=c.skill_id LEFT JOIN host_rpc_contexts x ON x.call_id=c.id WHERE c.id=$1",
         &[&call],
     ).await?.ok_or_else(Error::denied)?;
     let skill = row.get::<_, Option<Uuid>>("skill_id");
@@ -518,11 +519,40 @@ pub(crate) async fn check_call_sources(
         .get::<_, Option<Value>>("source_paths")
         .ok_or_else(Error::denied)?;
     let (action, resource) = crate::broker::business_target(c, call).await?;
-    let paths = Policy::new(c, ctx.peer)
+    let paths = Policy::for_context(c, ctx)
         .with_resource_owner(&resource)
         .revalidate(&saved(frozen)?, ctx.credential)
         .await?;
     let rules = policy::rules(&paths);
+    let ids: Value = row
+        .get::<_, Option<Value>>("read_blob_ids")
+        .ok_or_else(Error::denied)?;
+    let ids = ids.as_array().ok_or_else(Error::denied)?;
+    if ids.len() > 256 {
+        return Err(Error::denied());
+    }
+    for id in ids {
+        let id = id
+            .as_str()
+            .and_then(|id| id.parse::<Uuid>().ok())
+            .ok_or_else(Error::denied)?;
+        let blob = c
+            .query_opt(
+                &format!(
+                    "SELECT owner_id FROM blobs WHERE id=$1 AND {}",
+                    crate::blobs::LIVE
+                ),
+                &[&id],
+            )
+            .await?
+            .ok_or_else(Error::denied)?;
+        let resource = Resource::new("blob", id, Some(blob.get("owner_id")));
+        // `paths` is the intersection of current rights and the original
+        // frozen Blob proof. A newly acquired grant cannot unlock old results.
+        if !auth::rules_allow(&rules, "blob.read", &resource, ctx.peer) {
+            return Err(Error::denied());
+        }
+    }
     if !auth::rules_allow(&rules, &action, &resource, ctx.peer) {
         return Err(Error::denied());
     }
@@ -601,22 +631,23 @@ async fn authority(
         &[&workload.instance],
     )
     .await?;
-    let row=c.query_opt("SELECT LEAST(r.expires_at,e.expires_at,c.deadline_at) AS until,r.call_id,r.subject_id,r.issuer_credential_id,e.maximum_rules,c.contract,i.deployment_id,t.manifest,x.source_paths,x.read_blob_ids,host(x.peer) AS peer FROM rpc_delegations r JOIN execution_delegations e ON e.id=r.execution_delegation_id JOIN calls c ON c.id=r.call_id JOIN host_rpc_contexts x ON x.call_id=c.id JOIN instances i ON i.id=r.instance_id JOIN deployments d ON d.id=i.deployment_id JOIN installations t ON t.id=d.installation_id JOIN publishers p ON p.id=t.publisher_id WHERE r.hmac_key_id=$1 AND r.verification_digest=$2 AND r.instance_id=$3 AND r.generation=$4 AND r.status='active' AND r.expires_at>now() AND e.status='active' AND e.expires_at>now() AND e.subject_id=r.subject_id AND e.issuer_credential_id=r.issuer_credential_id AND c.state='running' AND c.deadline_at>now() AND c.provider_instance_id=i.id AND c.owner_id=r.subject_id AND c.credential_id=r.issuer_credential_id AND c.delegation_id=e.id AND i.generation=r.generation AND i.runtime_id=i.id::text AND i.phase IN ('ready','degraded') AND d.spec->>'enabled'='true' AND d.archived_at IS NULL AND t.state='installed' AND p.status='trusted' FOR SHARE OF r,e,t,p",&[&app.auth.key_id.as_str(),&hash,&workload.instance,&workload.generation]).await?.ok_or_else(Error::denied)?;
+    let row=c.query_opt("SELECT LEAST(r.expires_at,e.expires_at,c.deadline_at) AS until,r.call_id,r.subject_id,r.issuer_credential_id,e.maximum_rules,c.contract,i.deployment_id,t.manifest,x.source_paths,x.read_blob_ids,x.browser_origin,host(x.peer) AS peer FROM rpc_delegations r JOIN execution_delegations e ON e.id=r.execution_delegation_id JOIN calls c ON c.id=r.call_id JOIN host_rpc_contexts x ON x.call_id=c.id JOIN instances i ON i.id=r.instance_id JOIN deployments d ON d.id=i.deployment_id JOIN installations t ON t.id=d.installation_id JOIN publishers p ON p.id=t.publisher_id WHERE r.hmac_key_id=$1 AND r.verification_digest=$2 AND r.instance_id=$3 AND r.generation=$4 AND r.status='active' AND r.expires_at>now() AND e.status='active' AND e.expires_at>now() AND e.subject_id=r.subject_id AND e.issuer_credential_id=r.issuer_credential_id AND c.state='running' AND c.deadline_at>now() AND c.provider_instance_id=i.id AND c.owner_id=r.subject_id AND c.credential_id=r.issuer_credential_id AND c.delegation_id=e.id AND i.generation=r.generation AND i.runtime_id=i.id::text AND i.phase IN ('ready','degraded') AND d.spec->>'enabled'='true' AND d.archived_at IS NULL AND t.state='installed' AND p.status='trusted' FOR SHARE OF r,e,t,p",&[&app.auth.key_id.as_str(),&hash,&workload.instance,&workload.generation]).await?.ok_or_else(Error::denied)?;
     let peer: IpAddr = row
         .get::<_, String>("peer")
         .parse()
         .map_err(|_| Error::denied())?;
-    let ctx = app
+    let mut ctx = app
         .auth
         .resume(c, row.get("issuer_credential_id"), peer, request)
         .await?;
+    ctx.browser_origin = row.get("browser_origin");
     if ctx.subject != row.get::<_, Uuid>("subject_id")
         || (!context.subject_id.is_empty() && context.subject_id != ctx.subject.to_string())
     {
         return Err(Error::denied());
     }
     let (target_action, target) = crate::broker::business_target(c, row.get("call_id")).await?;
-    let live = Policy::new(c, peer)
+    let live = Policy::for_context(c, &ctx)
         .with_resource_owner(&target)
         .revalidate(&saved(row.get("source_paths"))?, ctx.credential)
         .await?;

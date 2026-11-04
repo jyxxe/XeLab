@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Drive real XeLab OAuth HTTPS pages and CORS with an isolated Chromium context.
 
-The Rust fixture supplies a private JSON configuration. No response is mocked,
-no Cookie is installed, and no code, password or credential enters the report.
+The Rust acceptance fixture serves the production api::router directly over TLS
+and supplies a private JSON configuration. The separate UI is a real callback
+document. No response is mocked, no Cookie is installed, and no code, password
+or credential enters the report.
 """
 from __future__ import annotations
 

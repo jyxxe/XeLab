@@ -131,14 +131,8 @@ pub(crate) fn validate_runtime_profile(manifest: &Value) -> Result<()> {
 fn validate_profile_inner(manifest: &Value, allow_versioned: bool) -> Result<()> {
     validate("Manifest", manifest)?;
     let versioned = manifest["data_schema_version"] != "none";
-    if manifest["routes"]
-        .as_array()
-        .is_some_and(|routes| routes.iter().any(|route| route["kind"] == "webui"))
-    {
-        return Err(Error::invalid(
-            "WebUI route admission requires the future client profile",
-        ));
-    }
+    crate::webui::validate_manifest(manifest)?;
+    crate::ui::validate_manifest(manifest)?;
     for field in ["dependencies", "event_topics", "extension_points"] {
         if manifest
             .get(field)
@@ -177,8 +171,6 @@ fn validate_profile_inner(manifest: &Value, allow_versioned: bool) -> Result<()>
         || manifest
             .get("business_entry")
             .is_some_and(|v| v != "direct" && v != "skill_required")
-        || manifest.get("webui").is_some()
-        || manifest.get("ui").is_some()
         || manifest.get("micro_runtime").is_some()
         || manifest.get("extension_host").is_some()
     {
