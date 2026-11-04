@@ -1,0 +1,78 @@
+name: Security / 公开加固或私密渠道请求
+description: 仅公开安全加固、已披露跟进或私密联系请求；禁止漏洞细节。
+title: '[security] '
+labels:
+- type:security
+- status:needs-triage
+body:
+- type: markdown
+  attributes:
+    value: 此 Issue 完全公开。未公开漏洞、利用细节、受影响实例和凭证不得写入标题、正文或附件。先阅读 [安全报告政策](https://github.com/jyxxe/XeLab/blob/main/SECURITY.md)。请求私密渠道时，除公开范围与提交检查外，必填项均可填“私密渠道补充”。
+- type: dropdown
+  id: disclosure
+  attributes:
+    label: 公开范围 / Disclosure
+    options:
+    - 公开防御性加固（无未公开漏洞细节）
+    - 已协调披露的跟进
+    - 请求私密报告渠道（不公开细节）
+  validations:
+    required: true
+- type: textarea
+  id: provenance
+  attributes:
+    label: 提交来源 / Provenance
+    description: 人类、AI 辅助或 Agent；实际模型名称/版本（可写未知）及负责 GitHub 账号。无需提供私密会话。
+  validations:
+    required: true
+- type: textarea
+  id: baseline
+  attributes:
+    label: 基线与范围 / Baseline
+    description: 精确 commit SHA、目标阶段（如 M2）、模块和环境；未核实项写未知并说明。
+  validations:
+    required: true
+- type: textarea
+  id: summary
+  attributes:
+    label: 问题摘要 / Summary
+    description: 描述具体问题、影响与期望价值；安全事项只提供允许公开的内容。
+  validations:
+    required: true
+- type: textarea
+  id: details
+  attributes:
+    label: 分类详情 / Details
+    description: 公开加固写明防御目标与不含敏感细节的边界；已披露事项给公开公告链接；私密渠道请求只写“请求私密安全联系渠道”。
+  validations:
+    required: true
+- type: textarea
+  id: evidence
+  attributes:
+    label: 证据与不确定性 / Evidence
+    description: 文件路径/行号、已脱敏的复现或日志/CI 链接；区分已执行、未执行、推测及证据缺口。
+  validations:
+    required: true
+- type: textarea
+  id: acceptance
+  attributes:
+    label: 验收条件 / Acceptance
+    description: 列出可核对的完成条件；区分静态、组件、真实宿主验收；研究须有可接受或否定结论的条件。
+  validations:
+    required: true
+- type: textarea
+  id: dependencies
+  attributes:
+    label: 关联与依赖 / Dependencies
+    description: 重复搜索结果、相关 Issue/PR、阻塞方向；无已知依赖则明确写出。
+  validations:
+    required: true
+- type: checkboxes
+  id: checks
+  attributes:
+    label: 提交检查 / Checks
+    options:
+    - label: 已搜索重复项，区分事实与推测，已脱敏；提案不授予执行权限。
+      required: true
+    - label: 确认标题、正文和附件不含未公开漏洞细节，必要时仅请求私密渠道。
+      required: true

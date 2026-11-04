@@ -1,0 +1,112 @@
+[
+  {
+    "name": "type:bug",
+    "color": "d73a4a",
+    "description": "报告已实现行为的错误，提供复现与实际证据。"
+  },
+  {
+    "name": "type:feature",
+    "color": "a2eeef",
+    "description": "提出用户问题与最小功能范围，不把设想当作已实现。"
+  },
+  {
+    "name": "type:architecture",
+    "color": "7057ff",
+    "description": "讨论跨模块设计、契约演进和兼容性取舍。"
+  },
+  {
+    "name": "type:security",
+    "color": "b60205",
+    "description": "仅公开安全加固、已披露跟进或私密联系请求；禁止漏洞细节。"
+  },
+  {
+    "name": "type:research",
+    "color": "d4c5f9",
+    "description": "提出可证伪假设与有界实验，不默认转为开发任务。"
+  },
+  {
+    "name": "status:needs-triage",
+    "color": "c2e0c6",
+    "description": "待核对事实、重复、安全与范围；不代表已批准"
+  },
+  {
+    "name": "status:needs-info",
+    "color": "fbca04",
+    "description": "等待补充明确列出的证据或复现信息"
+  },
+  {
+    "name": "status:ready",
+    "color": "c2e0c6",
+    "description": "范围与验收已审查，可申请认领；不是执行授权"
+  },
+  {
+    "name": "status:in-progress",
+    "color": "c2e0c6",
+    "description": "已确认唯一负责人，正在实施"
+  },
+  {
+    "name": "status:in-review",
+    "color": "c2e0c6",
+    "description": "已有 PR 或研究结论，等待审查与验收"
+  },
+  {
+    "name": "status:blocked",
+    "color": "fbca04",
+    "description": "被依赖、环境或权限阻塞；需明确解除条件"
+  },
+  {
+    "name": "priority:p0",
+    "color": "b60205",
+    "description": "维护者确认的紧急事件；标签不绕过权限/验收"
+  },
+  {
+    "name": "priority:p1",
+    "color": "d93f0b",
+    "description": "当前阶段或可靠性阻塞，优先处理"
+  },
+  {
+    "name": "priority:p2",
+    "color": "fbca04",
+    "description": "常规改进，按依赖与资源安排"
+  },
+  {
+    "name": "priority:p3",
+    "color": "c5def5",
+    "description": "后续候选，暂不承诺排期"
+  },
+  {
+    "name": "area:kernel",
+    "color": "ededed",
+    "description": "内核、运行时、身份和控制循环"
+  },
+  {
+    "name": "area:storage",
+    "color": "ededed",
+    "description": "卷、Blob、Secret、备份、恢复与迁移"
+  },
+  {
+    "name": "area:api",
+    "color": "ededed",
+    "description": "HTTP、RPC、机器契约与 CLI"
+  },
+  {
+    "name": "area:sdk",
+    "color": "ededed",
+    "description": "插件 SDK 与开发者接入"
+  },
+  {
+    "name": "area:webui",
+    "color": "ededed",
+    "description": "WebUI、页面与交互"
+  },
+  {
+    "name": "area:tooling",
+    "color": "ededed",
+    "description": "CI、仓库协作及开发工具"
+  },
+  {
+    "name": "area:docs",
+    "color": "ededed",
+    "description": "规格、使用文档与验收说明"
+  }
+]

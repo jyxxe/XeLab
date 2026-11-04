@@ -20,6 +20,8 @@
 - [M2-A XFS 硬配额后端](m2-storage.md)
 - [RUN-03 独占宿主测试工具与执行手册](run03-host.md)（真实验收待执行）
 - [契约优先级、变更与文档维护](change-policy.md)
+- [Issue 提案、审查与任务认领](issue-workflow.md)
+- [Issue 标签、API 提交与自动化边界](issue-automation.md)
 - [原计划迁移映射](migration-map.md)
 - [M2 迁移 RPC 传输组件](m2-migration-rpc.md)
 - [M2 格式迁移备份登记组件（开发中）](m2-format-backups.md)

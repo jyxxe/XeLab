@@ -6,3 +6,5 @@
 
 从 [docs/README.md](docs/README.md) 阅读规格。接口机器契约位于 [docs/contracts](docs/contracts/README.md)，实施与验收位于 [docs/implementation](docs/implementation/README.md)。
 
+参与开发见 [贡献指南](CONTRIBUTING.md) 与 [Issue 提案流程](docs/implementation/issue-workflow.md)；安全漏洞请按 [安全报告政策](SECURITY.md)处理。
+

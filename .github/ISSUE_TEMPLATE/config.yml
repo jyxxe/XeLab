@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 私密安全报告 / Private security reporting
+    url: https://github.com/jyxxe/XeLab/blob/main/SECURITY.md
+    about: 未公开漏洞先阅读安全报告政策；不要在公开 Issue 中提交利用细节。

@@ -1,0 +1,33 @@
+name: Sync issue labels
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/labels.json'
+      - '.github/workflows/issue-labels.yml'
+      - 'tools/issues/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: issue-label-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          # Always use trusted current main, including a retry of an older run.
+          ref: main
+          persist-credentials: false
+      - name: Apply reviewed label manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LABEL_REPOSITORY: ${{ github.repository }}
+        run: python3 tools/issues/sync_labels.py --repo "$LABEL_REPOSITORY" --apply

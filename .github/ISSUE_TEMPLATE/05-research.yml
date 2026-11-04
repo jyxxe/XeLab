@@ -1,0 +1,66 @@
+name: Research / 待验证研究
+description: 提出可证伪假设与有界实验，不默认转为开发任务。
+title: '[research] '
+labels:
+- type:research
+- status:needs-triage
+body:
+- type: markdown
+  attributes:
+    value: 人类和 AI 使用同一表单；先搜索 Issue 与开放 PR。模型输出不是已验证事实，提交不授予执行权限。
+- type: textarea
+  id: provenance
+  attributes:
+    label: 提交来源 / Provenance
+    description: 人类、AI 辅助或 Agent；实际模型名称/版本（可写未知）及负责 GitHub 账号。无需提供私密会话。
+  validations:
+    required: true
+- type: textarea
+  id: baseline
+  attributes:
+    label: 基线与范围 / Baseline
+    description: 精确 commit SHA、目标阶段（如 M2）、模块和环境；未核实项写未知并说明。
+  validations:
+    required: true
+- type: textarea
+  id: summary
+  attributes:
+    label: 问题摘要 / Summary
+    description: 描述具体问题、影响与期望价值；安全事项只提供允许公开的内容。
+  validations:
+    required: true
+- type: textarea
+  id: details
+  attributes:
+    label: 分类详情 / Details
+    description: 写明假设和反例、实验步骤、时间/资源预算、成功/否定/停止条件；明确推测及未运行部分。
+  validations:
+    required: true
+- type: textarea
+  id: evidence
+  attributes:
+    label: 证据与不确定性 / Evidence
+    description: 文件路径/行号、已脱敏的复现或日志/CI 链接；区分已执行、未执行、推测及证据缺口。
+  validations:
+    required: true
+- type: textarea
+  id: acceptance
+  attributes:
+    label: 验收条件 / Acceptance
+    description: 列出可核对的完成条件；区分静态、组件、真实宿主验收；研究须有可接受或否定结论的条件。
+  validations:
+    required: true
+- type: textarea
+  id: dependencies
+  attributes:
+    label: 关联与依赖 / Dependencies
+    description: 重复搜索结果、相关 Issue/PR、阻塞方向；无已知依赖则明确写出。
+  validations:
+    required: true
+- type: checkboxes
+  id: checks
+  attributes:
+    label: 提交检查 / Checks
+    options:
+    - label: 已搜索重复项，区分事实与推测，已脱敏；提案不授予执行权限。
+      required: true
