@@ -1201,10 +1201,12 @@ async fn issue_key(
             return Err(Error::denied());
         }
         if let Some(max) = old_conditions.get("max_calls") {
-            let used = u64::try_from(key_calls(c, old).await?)
-                .map_err(|_| Error::denied())?;
+            let used = u64::try_from(key_calls(c, old).await?).map_err(|_| Error::denied())?;
             let remaining = unsigned(max)?.saturating_sub(used);
-            let requested = body["conditions"].get("max_calls").map(unsigned).transpose()?;
+            let requested = body["conditions"]
+                .get("max_calls")
+                .map(unsigned)
+                .transpose()?;
             if requested.is_none_or(|max| max > remaining) {
                 return Err(Error::denied());
             }
