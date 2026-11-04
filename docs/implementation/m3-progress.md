@@ -90,7 +90,7 @@
 |---|---|
 | [#43](https://github.com/jyxxe/XeLab/pull/43) `68522810…` | [41850322061](https://github.com/jyxxe/XeLab/actions/runs/41850322061) 成功；已合并为 `a285c4ba…` |
 | [#44](https://github.com/jyxxe/XeLab/pull/44) `f427b4c5…` | [41851424259](https://github.com/jyxxe/XeLab/actions/runs/41851424259) 成功；已合并为 main `e9ad62b8…` |
-| [Draft #45](https://github.com/jyxxe/XeLab/pull/45) `4dea9d9e…` | [41857107136](https://github.com/jyxxe/XeLab/actions/runs/41857107136) 作业仍运行，首次真实 M3 UI/iframe 整体步骤已失败，原因及修复另查；不能记为 F 通过 |
+| [Draft #45](https://github.com/jyxxe/XeLab/pull/45) `4dea9d9e…` | [41857107136](https://github.com/jyxxe/XeLab/actions/runs/41857107136) 首次真实 M3 UI/iframe 整体步骤已失败；已确认 listInstallations/listDeployments 尚未实现而返回 503，目录列表缺口正在补齐，不能记为 F 通过；快照时作业仍运行 |
 | [Draft #46](https://github.com/jyxxe/XeLab/pull/46) `f253fa9a…` | [41860628714](https://github.com/jyxxe/XeLab/actions/runs/41860628714) 在执行；普通副作用/QueryResult 新 OCI 尚无通过结论 |
 | [Draft #47](https://github.com/jyxxe/XeLab/pull/47) `00443323…`（本文档更新前） | [41861912197](https://github.com/jyxxe/XeLab/actions/runs/41861912197) 排队；HTTP Skill 六方法/SSE 新 OCI 未通过，文档/后续修复形成新 head 后须核对对应 CI，不能借旧队列代表新提交 |
 
