@@ -1,7 +1,7 @@
 use crate::{
     api::App,
     auth::{account_chain, authorize, Resource},
-    contracts::{digest, id, strict_json, string, validate, validate_business},
+    contracts::{digest, id, strict_json, string, unsigned, validate, validate_business},
     controller, db,
     error::{Error, Result},
     rpc::{self, capability_service_client::CapabilityServiceClient},
@@ -72,24 +72,63 @@ async fn invoke_bounded(
     skill: Option<Uuid>,
     stream: Option<&crate::skill_streams::Output>,
 ) -> Result<Value> {
-    let timeout = input["timeout_ms"]
-        .as_u64()
+    let started = tokio::time::Instant::now();
+    let wall_started = chrono::Utc::now();
+    let timeout = input
+        .get("timeout_ms")
+        .map(unsigned)
+        .transpose()?
         .unwrap_or(if skill.is_some() { 120000 } else { 30000 })
         .min(300000);
-    // Dropping admission rolls back its transaction; dropping execution leaves
-    // the durable Call reservation for the existing fenced recovery path.
-    tokio::time::timeout(
-        Duration::from_millis(timeout),
-        invoke_inner(app, token, peer, request_id, input, key, skill, stream),
-    )
-    .await
-    .unwrap_or_else(|_| {
-        Err(Error::new(
+    let expired = || {
+        Error::new(
             "DEADLINE_EXCEEDED",
             "Call deadline elapsed; inspect any admitted call before retrying",
             axum::http::StatusCode::GATEWAY_TIMEOUT,
-        ))
-    })
+        )
+    };
+    let invocation = async {
+        let mut effective = timeout;
+        if let Some(skill) = skill {
+            // This read can only narrow the time budget. It conveys no authority;
+            // full signed binding and current authorization are checked inside
+            // admission. Read before waiting for the shared business call lock.
+            let c = app.db.connect().await?;
+            if let Some(row) = c
+                .query_opt(
+                    "SELECT definition->'maximum_timeout_ms' AS maximum FROM skills WHERE id=$1",
+                    &[&skill],
+                )
+                .await?
+            {
+                let maximum: Option<Value> = row.get("maximum");
+                if let Some(maximum) = maximum.and_then(|v| unsigned(&v).ok()) {
+                    effective = effective.min(maximum);
+                }
+            }
+        }
+        tokio::time::timeout_at(
+            started + Duration::from_millis(effective),
+            invoke_inner(
+                app,
+                token,
+                peer,
+                request_id,
+                input,
+                key,
+                skill,
+                stream,
+                wall_started,
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| Err(expired()))
+    };
+    // Also bound metadata lookup itself by the caller/default outer budget.
+    // Dropping admission rolls back; admitted work retains its durable slot.
+    tokio::time::timeout_at(started + Duration::from_millis(timeout), invocation)
+        .await
+        .unwrap_or_else(|_| Err(expired()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -102,8 +141,8 @@ async fn invoke_inner(
     key: &str,
     skill_id: Option<Uuid>,
     stream: Option<&crate::skill_streams::Output>,
+    started: chrono::DateTime<chrono::Utc>,
 ) -> Result<Value> {
-    let started = chrono::Utc::now();
     validate(
         if skill_id.is_some() {
             "SkillInvokeRequest"
@@ -152,8 +191,12 @@ async fn invoke_inner(
     let adapted;
     let original = input;
     let input = if let Some(skill) = &skill {
-        let maximum = skill.definition["maximum_timeout_ms"].as_u64().unwrap();
-        let timeout = input["timeout_ms"].as_u64().unwrap_or(120000.min(maximum));
+        let maximum = unsigned(&skill.definition["maximum_timeout_ms"])?;
+        let timeout = input
+            .get("timeout_ms")
+            .map(unsigned)
+            .transpose()?
+            .unwrap_or(120000.min(maximum));
         if timeout > maximum {
             return Err(Error::invalid(
                 "Requested deadline exceeds the fixed Skill maximum",
@@ -235,7 +278,7 @@ async fn invoke_inner(
         ));
     }
     let bytes = serde_json::to_vec(&input["input"])?;
-    if bytes.len() > definition["maximum_input_bytes"].as_u64().unwrap() as usize {
+    if bytes.len() > unsigned(&definition["maximum_input_bytes"])? as usize {
         return Err(Error::invalid("Capability input exceeds its byte limit"));
     }
     validate_business(&definition["input_schema"], &input["input"])?;
@@ -322,7 +365,11 @@ async fn invoke_inner(
         );
     }
     let call = Uuid::new_v4();
-    let timeout = input["timeout_ms"].as_u64().unwrap_or(30000);
+    let timeout = input
+        .get("timeout_ms")
+        .map(unsigned)
+        .transpose()?
+        .unwrap_or(30000);
     let deadline = started + chrono::Duration::milliseconds(timeout as i64);
     if deadline <= chrono::Utc::now() {
         return Err(Error::new(
@@ -461,7 +508,7 @@ async fn invoke_inner(
         }
         let output = strict_json(
             &response.output_json,
-            definition["maximum_output_bytes"].as_u64().unwrap() as usize,
+            unsigned(&definition["maximum_output_bytes"])? as usize,
         )?;
         validate_business(&definition["output_schema"], &output)?;
         if let Some(skill) = &skill {
