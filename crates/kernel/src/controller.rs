@@ -326,12 +326,18 @@ async fn recover_expired_calls(app: &App) -> Result<()> {
         let tx = c.transaction().await?;
         db::call_lock(&tx).await?;
         // A running provider cannot receive another call after this fence commits.
-        tx.query_one(
-            "SELECT id FROM instances WHERE id=$1 FOR UPDATE",
-            &[&instance],
-        )
-        .await?;
-        let needed:bool=tx.query_one("SELECT EXISTS(SELECT 1 FROM calls c JOIN reservations r ON r.id=c.id AND r.kind='call' AND r.status<>'released' WHERE c.provider_instance_id=$1 AND (c.state='unknown' OR (c.state IN ('accepted','running') AND c.deadline_at<now()-interval '1 second'))) OR EXISTS(SELECT 1 FROM plugin_http_requests WHERE instance_id=$1 AND (state='unknown' OR expires_at<now()-interval '1 second'))",&[&instance]).await?.get(0);
+        let deployment: Uuid = tx
+            .query_one(
+                "SELECT deployment_id FROM instances WHERE id=$1 FOR UPDATE",
+                &[&instance],
+            )
+            .await?
+            .get(0);
+        // Preserve the exact recovery predicates and capture their fixed counts
+        // before a successful physical fence deletes the durable evidence.
+        let reasons = tx.query_one("SELECT EXISTS(SELECT 1 FROM calls c JOIN reservations r ON r.id=c.id AND r.kind='call' AND r.status<>'released' WHERE c.provider_instance_id=$1 AND (c.state='unknown' OR (c.state IN ('accepted','running') AND c.deadline_at<now()-interval '1 second'))) OR EXISTS(SELECT 1 FROM plugin_http_requests WHERE instance_id=$1 AND (state='unknown' OR expires_at<now()-interval '1 second')),(SELECT count(*) FROM calls c JOIN reservations r ON r.id=c.id AND r.kind='call' AND r.status<>'released' WHERE c.provider_instance_id=$1 AND c.state='unknown'),(SELECT count(*) FROM calls c JOIN reservations r ON r.id=c.id AND r.kind='call' AND r.status<>'released' WHERE c.provider_instance_id=$1 AND c.state IN ('accepted','running') AND c.deadline_at<now()-interval '1 second'),(SELECT count(*) FROM plugin_http_requests WHERE instance_id=$1 AND state='unknown'),(SELECT count(*) FROM plugin_http_requests WHERE instance_id=$1 AND expires_at<now()-interval '1 second')",&[&instance]).await?;
+        let needed: bool = reasons.get(0);
+        let counts: [i64; 4] = std::array::from_fn(|index| reasons.get(index + 1));
         if !needed {
             tx.rollback().await?;
             continue;
@@ -345,6 +351,7 @@ async fn recover_expired_calls(app: &App) -> Result<()> {
         // revoke it before the process fence, alongside capability providers.
         tx.execute("UPDATE instances SET phase='draining',health='unhealthy',revision=revision+1,updated_at=now() WHERE id=$1 AND phase<>'stopped'",&[&instance]).await?;
         tx.commit().await?;
+        tracing::info!(target: "xelab.controller_transition", code = "UNCERTAIN_WORK_FENCE", stage = "recovery", instance_id = %instance, deployment_id = %deployment, call_unknown = counts[0], call_expired = counts[1], static_unknown = counts[2], static_expired = counts[3]);
         app.runtime.stop(instance).await?;
         // Only confirmed process termination permits slot reuse. Concurrent late
         // responses are fenced by the same call-state conditional update.
@@ -696,10 +703,12 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
     if !obs.running {
         return Err(Error::unavailable("OCI task is not running"));
     }
+    let mut health_stage = "channel";
     let checked: Result<rpc::HealthResponse> = async {
         let channel = tls::channel(&app.config, id, generation, &obs.address).await?;
         let mut client = PluginLifecycleClient::new(channel);
         if !running || i.get::<_, String>("phase") != "ready" {
+            health_stage = "describe";
             let description = client
                 .describe(rpc::DescribeRequest {
                     context: Some(context(None)),
@@ -714,6 +723,7 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
                     "Describe does not match the signed installation",
                 ));
             }
+            health_stage = "initialize";
             let initialized = client
                 .initialize(rpc::InitializeRequest {
                     context: Some(context(None)),
@@ -736,6 +746,7 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
         health_request.set_timeout(Duration::from_millis(
             manifest["health"]["timeout_ms"].as_u64().unwrap(),
         ));
+        health_stage = "get_health";
         let health = client.get_health(health_request).await?.into_inner();
         if !health.alive || health.observed_generation != generation as u64 {
             return Err(Error::unavailable("Plugin health generation differs"));
@@ -744,6 +755,7 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
             .as_array()
             .is_some_and(|routes| !routes.is_empty())
         {
+            health_stage = "http_probe";
             tokio::time::timeout(
                 Duration::from_secs(2),
                 crate::plugin_http::transport::InstanceHttp::from_runtime(
@@ -767,9 +779,12 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
         }
         Err(error) => {
             probe.failures += 1;
+            let was_ready = i.get::<_, String>("phase") == "ready";
+            let threshold = manifest["health"]["failure_threshold"].as_u64().unwrap();
+            tracing::info!(target: "xelab.controller_transition", code = "HEALTH_REJECTED", stage = health_stage, instance_id = %id, deployment_id = %deployment, failures = probe.failures, threshold, was_ready);
             c.execute("UPDATE instances SET health='unhealthy',revision=revision+1,updated_at=now() WHERE id=$1 AND health<>'unhealthy'", &[&id]).await?;
-            let failed = if i.get::<_, String>("phase") == "ready" {
-                probe.failures >= manifest["health"]["failure_threshold"].as_u64().unwrap()
+            let failed = if was_ready {
+                probe.failures >= threshold
             } else {
                 probe.started.is_some_and(|at| {
                     at.elapsed()
@@ -779,6 +794,7 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
                 })
             };
             if failed {
+                tracing::info!(target: "xelab.controller_transition", code = "HEALTH_THRESHOLD_STOP", stage = health_stage, instance_id = %id, deployment_id = %deployment, failures = probe.failures, threshold, was_ready);
                 mark_stopping(app, id).await?;
                 app.runtime.stop(id).await?;
                 c.execute(
