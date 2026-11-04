@@ -36,3 +36,4 @@
 - [实施里程碑与接口落地](roadmap.md)
 
 - [M3 Skill 注册与普通 OCI 调用](m3-skills.md)
+- [M3 普通 OCI Skill 流式调用](m3-skill-streams.md)

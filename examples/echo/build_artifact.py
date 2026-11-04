@@ -76,7 +76,7 @@ def build(root, publisher, platform="linux/amd64", implementation="rust", reques
             "message": {"type": "string", "maxLength": 1024},
             "count": {"type": "integer", "minimum": 1, "maximum": 64},
             "delay_ms": {"type": "integer", "minimum": 0, "maximum": 1000},
-            "fault": {"enum": ["none", "sequence", "item", "digest", "missing-terminal"]},
+            "fault": {"enum": ["none", "call-id", "sequence", "item", "digest", "output", "missing-terminal", "after-terminal"]},
         }, "required": ["message"], "additionalProperties": False}
         stream_output = json.loads(json.dumps(schema))
         stream_item = {"type": "object", "properties": {

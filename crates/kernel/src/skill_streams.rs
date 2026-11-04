@@ -44,6 +44,7 @@ struct State {
 pub(crate) struct Frame {
     pub call: Uuid,
     pub sequence: u64,
+    deadline: chrono::DateTime<chrono::Utc>,
     kind: &'static str,
     data: String,
 }
@@ -64,10 +65,16 @@ impl Frame {
         value["event"]["kind"] = json!(kind);
         value["event"]["payload"] = payload;
         value["event"]["terminal"] = json!(true);
-        frame(&value, kind, self.call, self.sequence)
+        frame(&value, kind, self.call, self.sequence, self.deadline)
     }
 }
-fn frame(value: &Value, kind: &'static str, call: Uuid, sequence: u64) -> Result<Frame> {
+fn frame(
+    value: &Value,
+    kind: &'static str,
+    call: Uuid,
+    sequence: u64,
+    deadline: chrono::DateTime<chrono::Utc>,
+) -> Result<Frame> {
     validate("SkillStreamEvent", value)?;
     let data = serde_json::to_string(value)?;
     if data.len() > MAX_FRAME {
@@ -76,13 +83,14 @@ fn frame(value: &Value, kind: &'static str, call: Uuid, sequence: u64) -> Result
     Ok(Frame {
         call,
         sequence,
+        deadline,
         kind,
         data,
     })
 }
 
-/// One producer owns the sequence; terminal state is set before a send and can
-/// never be reset or followed by another item, including after a transport error.
+/// One serialized producer advances sequence and terminal state only after a
+/// successful send. A terminal frame can never be followed by another item.
 pub(crate) struct Output {
     sender: mpsc::Sender<Result<Frame>>,
     state: Mutex<State>,
@@ -134,7 +142,13 @@ impl Output {
             .ok_or_else(|| Error::conflict("Stream has no admitted call"))?;
         let value = json!({"skill_id":identity.skill,"skill_version":identity.version,"definition_digest":identity.digest,
             "event":{"call_id":identity.call,"sequence":state.sequence+1,"kind":"completed","payload":payload,"terminal":true}});
-        frame(&value, "completed", identity.call, state.sequence + 1)?;
+        frame(
+            &value,
+            "completed",
+            identity.call,
+            state.sequence + 1,
+            identity.deadline,
+        )?;
         Ok(())
     }
     pub(crate) async fn closed(&self) {
@@ -163,7 +177,7 @@ impl Output {
             let terminal = matches!(kind, "completed" | "failed" | "canceled");
             let value = json!({"skill_id":identity.skill,"skill_version":identity.version,"definition_digest":identity.digest,
                 "event":{"call_id":identity.call,"sequence":sequence,"kind":kind,"payload":payload,"terminal":terminal}});
-            let message = frame(&value, kind, identity.call, sequence)?;
+            let message = frame(&value, kind, identity.call, sequence, identity.deadline)?;
             (message, identity.deadline, sequence)
         };
         let remaining = (deadline - chrono::Utc::now()).num_milliseconds().max(0) as u64;
@@ -327,7 +341,7 @@ pub(crate) async fn handle(
         .recv()
         .await
         .ok_or_else(|| Error::unavailable("Skill stream admission ended"))??;
-    authorize_delivery(&app, &token, peer.ip(), request_id, first.call).await?;
+    authorize_delivery(&app, &token, peer.ip(), request_id, &first).await?;
     let stream = futures_util::stream::unfold(
         (Some(first), receiver, false),
         move |(first, mut receiver, ended)| {
@@ -349,7 +363,7 @@ pub(crate) async fn handle(
                 let checked = if frame.kind == "accepted" {
                     Ok(())
                 } else {
-                    authorize_delivery(&app, &token, peer.ip(), request_id, frame.call).await
+                    authorize_delivery(&app, &token, peer.ip(), request_id, &frame).await
                 };
                 let frame = match checked {
                     Ok(()) => frame,
@@ -380,6 +394,30 @@ pub(crate) async fn handle(
 }
 
 async fn authorize_delivery(
+    app: &App,
+    token: &str,
+    peer: IpAddr,
+    request: Uuid,
+    frame: &Frame,
+) -> Result<()> {
+    let remaining = (frame.deadline - chrono::Utc::now())
+        .to_std()
+        .unwrap_or(Duration::ZERO);
+    tokio::time::timeout(
+        remaining,
+        authorize_delivery_inner(app, token, peer, request, frame.call),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        Err(Error::new(
+            "DEADLINE_EXCEEDED",
+            "Skill stream deadline elapsed during delivery authorization",
+            StatusCode::GATEWAY_TIMEOUT,
+        ))
+    })
+}
+
+async fn authorize_delivery_inner(
     app: &App,
     token: &str,
     peer: IpAddr,
@@ -492,5 +530,30 @@ mod tests {
         assert_eq!(failed.kind, "failed");
         drop(receiver);
         output.closed().await;
+    }
+    #[tokio::test]
+    async fn deadline_stops_backpressure_and_preserves_the_terminal_sequence() {
+        let (sender, mut receiver) = mpsc::channel(BUFFER_FRAMES);
+        let output = Output::new(sender);
+        output
+            .bind(
+                &skill(),
+                Uuid::new_v4(),
+                chrono::Utc::now() + chrono::Duration::milliseconds(100),
+            )
+            .unwrap();
+        output.emit("accepted", json!({})).await.unwrap();
+        output.emit("item", json!({"value":1})).await.unwrap();
+        assert!(output.emit("item", json!({"value":2})).await.is_err());
+        assert_eq!(receiver.recv().await.unwrap().unwrap().sequence, 1);
+        assert_eq!(receiver.recv().await.unwrap().unwrap().sequence, 2);
+        output
+            .emit("canceled", json!({"reason":"deadline"}))
+            .await
+            .unwrap();
+        let terminal = receiver.recv().await.unwrap().unwrap();
+        assert_eq!(terminal.sequence, 3);
+        assert_eq!(terminal.kind, "canceled");
+        assert!(output.emit("item", json!({"value":3})).await.is_err());
     }
 }

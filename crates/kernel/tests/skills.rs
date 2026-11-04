@@ -342,8 +342,10 @@ async fn both_authorization_layers_precede_admission_and_no_failure_leaks_quota(
     let skill_rule =
         json!({"action":"skill.invoke","resource":{"kind":"skill","match":"ids","ids":[skill]}});
     let capability_rule = json!({"action":"capability.invoke","resource":{"kind":"capability","match":"ids","ids":[format!("{}@{}",contract["name"].as_str().unwrap(),contract["version"].as_str().unwrap())]}});
+    // Exercise permission precedence rather than racing the CI database against
+    // a short admission deadline while other regression targets run.
     let request_body =
-        json!({"input":{"message":"metadata-only admission probe"},"timeout_ms":1000});
+        json!({"input":{"message":"metadata-only admission probe"},"timeout_ms":10000});
     for rules in [json!([skill_rule]), json!([capability_rule])] {
         let key = f.key(rules).await;
         let refused = f
@@ -872,4 +874,25 @@ async fn cancel_call_is_authorized_intent_and_never_releases_an_unfenced_slot() 
         "API cancellation cannot assert physical termination"
     );
     assert_eq!(row.get::<_, String>("delegation_status"), "revoked");
+    let audits = c
+        .query(
+            "SELECT resource,outcome FROM audit_events WHERE action='cancelCall'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(audits
+        .iter()
+        .any(|row| row.get::<_, String>("outcome") == "denied"));
+    assert!(audits
+        .iter()
+        .any(|row| row.get::<_, String>("outcome") == "succeeded"));
+    for audit in audits {
+        let resource: Value = audit.get("resource");
+        assert_eq!(resource["kind"], "call");
+        assert!(
+            resource["ids"][0] == owner_call.to_string()
+                || resource["ids"][0] == own_call.to_string()
+        );
+    }
 }

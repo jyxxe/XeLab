@@ -225,7 +225,11 @@ impl CapabilityService for Echo {
                     };
                     let sequence = index + 1 + u64::from(fault == "sequence" && index > 0);
                     let chunk = rpc::InvokeChunk {
-                        call_id: call.clone(),
+                        call_id: if fault == "call-id" && index == 0 {
+                            uuid::Uuid::nil().to_string()
+                        } else {
+                            call.clone()
+                        },
                         sequence,
                         body: Some(rpc::invoke_chunk::Body::ItemJson(
                             serde_json::to_vec(&item).unwrap(),
@@ -239,7 +243,12 @@ impl CapabilityService for Echo {
                 if fault == "missing-terminal" {
                     return;
                 }
-                let output = serde_json::to_vec(&serde_json::json!({"message":message})).unwrap();
+                let value = if fault == "output" {
+                    serde_json::json!({"message":false})
+                } else {
+                    serde_json::json!({"message":message})
+                };
+                let output = serde_json::to_vec(&value).unwrap();
                 let response = rpc::InvokeResponse {
                     call_id: call.clone(),
                     output_digest: if fault == "digest" {
@@ -254,7 +263,24 @@ impl CapabilityService for Echo {
                     sequence: count + 1,
                     body: Some(rpc::invoke_chunk::Body::Completed(response.clone())),
                 };
-                if sender.send(Ok(completed)).await.is_ok() && fault == "none" {
+                if sender.send(Ok(completed)).await.is_err() {
+                    return;
+                }
+                if fault == "after-terminal" {
+                    let _ = sender
+                        .send(Ok(rpc::InvokeChunk {
+                            call_id: call.clone(),
+                            sequence: count + 2,
+                            body: Some(rpc::invoke_chunk::Body::ItemJson(
+                                serde_json::to_vec(
+                                    &serde_json::json!({"index":0,"message":message}),
+                                )
+                                .unwrap(),
+                            )),
+                        }))
+                        .await;
+                }
+                if fault == "none" {
                     let mut results = this.results.write().await;
                     if results.len() >= 1024 {
                         results.clear();

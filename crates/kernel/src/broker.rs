@@ -380,7 +380,12 @@ async fn invoke_inner(
         }
         let address = app.runtime.address(instance)?;
         let channel = tls::channel(&app.config, instance, generation, &address).await?;
-        let mut client = CapabilityServiceClient::new(channel).max_decoding_message_size(16778240);
+        let mut client =
+            CapabilityServiceClient::new(channel).max_decoding_message_size(if stream.is_some() {
+                1024 * 1024 + 1024 // One bounded JSON block plus protobuf metadata.
+            } else {
+                16778240
+            });
         let mut context = controller::context(Some(ctx.subject));
         context.request_id = ctx.request.to_string();
         context.delegation_token = delegation;
@@ -398,6 +403,9 @@ async fn invoke_inner(
             input_json: bytes,
             binding_id: String::new(),
         });
+        if skill.is_some() {
+            check_live_call(app, token, peer, request_id, call, instance, generation).await?;
+        }
         request.set_timeout(remaining());
         let response = if let Some(output) = stream {
             let mut response_stream = client.invoke_stream(request).await?.into_inner();

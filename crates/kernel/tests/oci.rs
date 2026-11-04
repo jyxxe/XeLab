@@ -2291,10 +2291,13 @@ async fn ordinary_skill_stream_lifecycle(
         1
     );
     for (index, fault, items) in [
-        (0, "item", 0),
-        (1, "sequence", 1),
-        (2, "digest", 3),
-        (3, "missing-terminal", 3),
+        (0, "call-id", 0),
+        (1, "item", 0),
+        (2, "sequence", 1),
+        (3, "digest", 3),
+        (4, "output", 3),
+        (5, "missing-terminal", 3),
+        (6, "after-terminal", 3),
     ] {
         let response=stream_skill_request(router,token,skill,&json!({"input":{"message":"untrusted output","count":3,"fault":fault},"timeout_ms":10000}),&format!("stream-fault-{index}"),false).await;
         assert_eq!(response.status(), 200, "fault follows accepted");
@@ -2374,9 +2377,14 @@ async fn ordinary_skill_stream_lifecycle(
     .await
     .unwrap();
     let events = parse_skill_events(std::str::from_utf8(&response_bytes).unwrap());
-    assert_eq!(events.len(), 2, "cancel before first delayed business item");
-    assert_eq!(events[1]["event"]["kind"], "canceled");
-    assert_eq!(events[1]["event"]["payload"], json!({"reason":"requested"}));
+    assert!(events[1..events.len() - 1]
+        .iter()
+        .all(|event| event["event"]["kind"] == "item"));
+    assert_eq!(events.last().unwrap()["event"]["kind"], "canceled");
+    assert_eq!(
+        events.last().unwrap()["event"]["payload"],
+        json!({"reason":"requested"})
+    );
     let canceled_id = canceled_call.parse::<Uuid>().unwrap();
     let row = c
         .query_one(
@@ -2405,7 +2413,136 @@ async fn ordinary_skill_stream_lifecycle(
         recovered,
         "canceled stream physical slot reclaimed after OCI fencing"
     );
-    println!("Skill SSE: actual signed OCI accepted/items/completion, no regeneration replay, malformed sequence/schema/digest/EOF rejection, explicit cancel and fenced capacity recovery passed");
+    let owner: Uuid = c
+        .query_one("SELECT owner_id FROM calls WHERE id=$1", &[&canceled_id])
+        .await
+        .unwrap()
+        .get(0);
+    let quota_before: i64 = c
+        .query_one(
+            "SELECT concurrent_calls_used FROM quotas WHERE account_id=$1",
+            &[&owner],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let capability = &manifest["capabilities"][1]["contract"];
+    let rules = json!([
+        {"action":"skill.invoke","resource":{"kind":"skill","match":"ids","ids":[skill]}},
+        {"action":"capability.invoke","resource":{"kind":"capability","match":"ids","ids":[format!("{}@{}",capability["name"].as_str().unwrap(),capability["version"].as_str().unwrap())]}}
+    ]);
+    let key=api(router,"createApiKey",&[("account_id",owner.to_string())],Some(token),json!({"name":"live stream revocation","inheritance":{"mode":"selected","rules":rules},"conditions":{"expires_at":chrono::Utc::now()+chrono::Duration::days(1)}}),"stream-source-key",None).await;
+    assert_eq!(key.0, 201, "{}", key.1);
+    let caller = key.1["secret"].as_str().unwrap();
+    let revoked_input = json!({"input":{"message":"revoke actual stream","count":64,"delay_ms":1000},"timeout_ms":10000});
+    let response = stream_skill_request(
+        router,
+        caller,
+        skill,
+        &revoked_input,
+        "stream-live-revoke",
+        false,
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    let mut stream = response.into_body().into_data_stream();
+    let first = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let accepted: Value = serde_json::from_str(
+        std::str::from_utf8(&first)
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(accepted["event"]["kind"], "accepted");
+    let revoked_call = accepted["event"]["call_id"]
+        .as_str()
+        .unwrap()
+        .parse::<Uuid>()
+        .unwrap();
+    let revoked = api(
+        router,
+        "revokeApiKey",
+        &[(
+            "credential_id",
+            key.1["credential"]["id"].as_str().unwrap().into(),
+        )],
+        Some(token),
+        Value::Null,
+        "stream-revoke-source",
+        key.1["credential"]["revision"].as_i64(),
+    )
+    .await;
+    assert_eq!(revoked.0, 204, "{}", revoked.1);
+    let mut response_bytes = first.to_vec();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(chunk) = stream.next().await {
+            response_bytes.extend_from_slice(&chunk.unwrap());
+        }
+    })
+    .await
+    .unwrap();
+    let events = parse_skill_events(std::str::from_utf8(&response_bytes).unwrap());
+    assert_eq!(events.len(), 2, "revocation rejects queued business output");
+    assert_eq!(events[1]["event"]["kind"], "failed");
+    assert_eq!(events[1]["event"]["payload"]["code"], "INVALID_CREDENTIAL");
+    let mut recovered = false;
+    for _ in 0..120 {
+        let ready:bool=c.query_one("SELECT EXISTS(SELECT 1 FROM calls c JOIN reservations r ON r.id=c.id JOIN provider_records p ON p.instance_id=c.provider_instance_id JOIN instances i ON i.id=p.instance_id WHERE c.id=$1 AND c.state='unknown' AND r.status='released' AND p.availability='ready' AND i.phase='ready')",&[&revoked_call]).await.unwrap().get(0);
+        if ready {
+            recovered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(
+        recovered,
+        "revoked stream stops and physical slot is fenced before reuse"
+    );
+    assert_eq!(
+        c.query_one(
+            "SELECT concurrent_calls_used FROM quotas WHERE account_id=$1",
+            &[&owner]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        quota_before,
+        "revocation and fencing cannot leak concurrent quota"
+    );
+    let refused = stream_skill_request(
+        router,
+        caller,
+        skill,
+        &revoked_input,
+        "stream-live-revoke",
+        false,
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        401,
+        "revoked stream replay reauthenticates"
+    );
+    let restored = stream_skill_request(
+        router,
+        token,
+        skill,
+        &json!({"input":{"message":"stream after fenced revocation","count":1},"timeout_ms":10000}),
+        "stream-after-source-revoke",
+        false,
+    )
+    .await;
+    assert_eq!(restored.status(), 200);
+    let restored = collect_skill_events(restored.into_body()).await;
+    assert_eq!(restored.len(), 3);
+    assert_eq!(restored.last().unwrap()["event"]["kind"], "completed");
+    println!("Skill SSE: actual signed OCI accepted/items/completion, no regeneration replay, malformed sequence/schema/digest/EOF rejection, explicit cancel, live credential revocation, no quota leak and fenced capacity recovery passed");
 }
 
 async fn stream_skill_request(

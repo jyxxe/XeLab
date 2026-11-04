@@ -15,7 +15,7 @@
 | `setSkillEnabled` | If-Match 乐观锁启停；重新启用复核候选和来源，归档后不能恢复 |
 | `archiveSkill` | 逻辑归档、禁止新路由、保留历史定义，返回 204 |
 | `invokeSkill` | 普通 capability 目标的非流式调用，通过 Broker 发送至固定安装的真实 OCI 实例 |
-| `streamSkill` | 尚未实现，不把非流式响应包装为伪流；保留现行契约 |
+| `streamSkill` | 后续切片已实现普通 OCI 纯流；准确边界与待验收证据见[流式调用](m3-skill-streams.md) |
 
 HTTP、micro、extension 目标、排队、非可重复副作用和 HostService 的 Skill 方法仍未交付。
 `HostService.ListSkillCandidates/ResolveSkill/CheckSkillAccess/InvokeSkill/InvokeSkillStream`
