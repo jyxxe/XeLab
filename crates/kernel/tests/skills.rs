@@ -652,3 +652,212 @@ async fn skill_required_provider_rejects_bare_and_forged_routes_and_preserves_un
         1
     );
 }
+
+#[tokio::test]
+async fn skill_stream_rejects_nonstream_resume_filters_and_missing_target_authority() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let created = f.call("registerSkill",&[],&f.token,json!({"installation_id":f.installation,"definition":f.manifest["skills"][0],"enabled":true}),None).await;
+    assert_eq!(created.0, 201, "{}", created.1);
+    let skill = created.1["id"].as_str().unwrap().to_owned();
+    let request =
+        json!({"input":{"message":"only a declared stream is admissible"},"timeout_ms":10000});
+    let refused = f
+        .call(
+            "streamSkill",
+            &[("skill_id", skill.clone())],
+            &f.token,
+            request.clone(),
+            None,
+        )
+        .await;
+    assert_eq!(refused.0, 400, "{}", refused.1);
+    for (suffix, last_event) in [("", true), ("?unknown=1", false)] {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(format!(
+                "/api/platform/v1/skills/{skill}/calls:stream{suffix}"
+            ))
+            .header("authorization", format!("Bearer {}", f.token))
+            .header("content-type", "application/json")
+            .header("idempotency-key", Uuid::new_v4().to_string());
+        if last_event {
+            req = req.header("last-event-id", "");
+        }
+        let mut req = req
+            .body(Body::from(serde_json::to_vec(&request).unwrap()))
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(
+            "127.0.0.1:50000".parse::<SocketAddr>().unwrap(),
+        ));
+        let response = f.router.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), 400);
+    }
+    let c = f.db.connect().await.unwrap();
+    assert_eq!(
+        c.query_one("SELECT count(*) FROM calls", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    // This is metadata-only admission evidence. A signed OCI provider is tested
+    // separately by the privileged oci target; no runtime success is fabricated.
+    let mut manifest = f.manifest.clone();
+    manifest["capabilities"][0]["stream_item_schema"] = json!({"type":"object","properties":{"message":{"type":"string"}},"required":["message"],"additionalProperties":false});
+    manifest["skills"][0]["stream_item_schema"] =
+        manifest["capabilities"][0]["stream_item_schema"].clone();
+    manifest["skills"][0]["name"] = json!(format!(
+        "{}.stream",
+        manifest["plugin_id"].as_str().unwrap()
+    ));
+    xelab_kernel::artifact::validate_profile(&manifest).unwrap();
+    c.execute(
+        "UPDATE installations SET manifest=$2 WHERE id=$1",
+        &[&f.installation, &manifest],
+    )
+    .await
+    .unwrap();
+    c.execute(
+        "UPDATE capability_contracts SET spec=$1",
+        &[&manifest["capabilities"][0]],
+    )
+    .await
+    .unwrap();
+    let stream=f.call("registerSkill",&[],&f.token,json!({"installation_id":f.installation,"definition":manifest["skills"][0],"enabled":true}),None).await;
+    assert_eq!(stream.0, 201, "{}", stream.1);
+    let stream_id = stream.1["id"].as_str().unwrap().to_owned();
+    let cap = &manifest["capabilities"][0]["contract"];
+    let skill_rule = json!({"action":"skill.invoke","resource":{"kind":"skill","match":"ids","ids":[stream_id]}});
+    let capability_rule = json!({"action":"capability.invoke","resource":{"kind":"capability","match":"ids","ids":[format!("{}@{}",cap["name"].as_str().unwrap(),cap["version"].as_str().unwrap())]}});
+    for rule in [skill_rule, capability_rule] {
+        let key = f.key(json!([rule])).await;
+        let refused = f
+            .call(
+                "streamSkill",
+                &[("skill_id", stream_id.clone())],
+                key["secret"].as_str().unwrap(),
+                request.clone(),
+                None,
+            )
+            .await;
+        assert_eq!(refused.0, 403, "{}", refused.1);
+    }
+    let unavailable = f
+        .call(
+            "streamSkill",
+            &[("skill_id", stream_id)],
+            &f.token,
+            request,
+            None,
+        )
+        .await;
+    assert_eq!(unavailable.0, 503, "{}", unavailable.1);
+    assert_eq!(
+        c.query_one("SELECT count(*) FROM calls", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+}
+
+#[tokio::test]
+async fn cancel_call_is_authorized_intent_and_never_releases_an_unfenced_slot() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let own_call = Uuid::new_v4();
+    let child=f.call("createChildAccount",&[("account_id",f.owner.to_string())],&f.token,json!({"display_name":"Scoped cancel caller","inheritance":{"mode":"selected","rules":[{"action":"capability.call.cancel","resource":{"kind":"call","match":"ids","ids":[own_call]}}]}}),None).await;
+    assert_eq!(child.0, 201, "{}", child.1);
+    let child_id = contracts::id(&child.1["account"], "id").unwrap();
+    let activated = request(
+        &f.router,
+        "activateAccount",
+        &[],
+        None,
+        json!({"activation_token":child.1["activation_token"],"password":PASSWORD}),
+        None,
+        "activate-cancel-child",
+    )
+    .await;
+    assert_eq!(activated.0, 200, "{}", activated.1);
+    let session = request(
+        &f.router,
+        "login",
+        &[],
+        None,
+        json!({"account_id":child_id,"password":PASSWORD}),
+        None,
+        "login-cancel-child",
+    )
+    .await;
+    assert_eq!(session.0, 200, "{}", session.1);
+    let child_token = session.1["access_token"].as_str().unwrap();
+    let owner_call = Uuid::new_v4();
+    let delegation = Uuid::new_v4();
+    let c = f.db.connect().await.unwrap();
+    c.execute("INSERT INTO execution_delegations(id,subject_id,maximum_rules,run_as,expires_at,status,created_at) VALUES($1,$2,'[]','user',now()+interval '1 minute','active',now())",&[&delegation,&f.owner]).await.unwrap();
+    let contract = &f.manifest["capabilities"][0]["contract"];
+    for (call, owner, execution) in [
+        (owner_call, f.owner, Some(delegation)),
+        (own_call, child_id, None),
+    ] {
+        c.execute("INSERT INTO calls(id,owner_id,delegation_id,contract,input_digest,state,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,'running',now()+interval '1 minute',now())",&[&call,&owner,&execution,&contract,&contracts::digest(b"fixture")]).await.unwrap();
+        c.execute("INSERT INTO reservations(id,account_id,kind,status,created_at) VALUES($1,$2,'call','active',now())",&[&call,&owner]).await.unwrap();
+    }
+    let refused = f
+        .call(
+            "cancelCall",
+            &[("call_id", owner_call.to_string())],
+            child_token,
+            Value::Null,
+            None,
+        )
+        .await;
+    assert_eq!(
+        refused.0, 403,
+        "child cannot cancel another account's call: {}",
+        refused.1
+    );
+    assert_eq!(
+        c.query_one("SELECT state FROM calls WHERE id=$1", &[&owner_call])
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        "running"
+    );
+    let own = f
+        .call(
+            "cancelCall",
+            &[("call_id", own_call.to_string())],
+            child_token,
+            Value::Null,
+            None,
+        )
+        .await;
+    assert_eq!(own.0, 204, "{}", own.1);
+    for _ in 0..2 {
+        let canceled = request(
+            &f.router,
+            "cancelCall",
+            &[("call_id", owner_call.to_string())],
+            Some(&f.token),
+            Value::Null,
+            None,
+            "cancel-owner-call",
+        )
+        .await;
+        assert_eq!(canceled.0, 204, "{}", canceled.1);
+    }
+    let row=c.query_one("SELECT c.state,c.error,r.status,e.status AS delegation_status FROM calls c JOIN reservations r ON r.id=c.id JOIN execution_delegations e ON e.id=c.delegation_id WHERE c.id=$1",&[&owner_call]).await.unwrap();
+    assert_eq!(row.get::<_, String>("state"), "unknown");
+    assert_eq!(row.get::<_, Value>("error")["code"], "CANCELED");
+    assert_eq!(
+        row.get::<_, String>("status"),
+        "active",
+        "API cancellation cannot assert physical termination"
+    );
+    assert_eq!(row.get::<_, String>("delegation_status"), "revoked");
+}

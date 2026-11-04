@@ -150,6 +150,18 @@ async fn handle(
     request: Request<Body>,
 ) -> Response {
     let request_id = Uuid::new_v4();
+    if operation(request.method().as_str(), request.uri().path())
+        .is_some_and(|(operation, _)| operation["operationId"] == "streamSkill")
+    {
+        return match crate::skill_streams::handle(app, peer, request_id, request).await {
+            Ok(response) => response,
+            Err(error) => response(
+                json!({"error":error.detail(),"request_id":request_id}),
+                error.status.as_u16(),
+                request_id,
+            ),
+        };
+    }
     let blob = operation(request.method().as_str(), request.uri().path())
         .is_some_and(|(op, _)| crate::blobs::handles(op["operationId"].as_str().unwrap_or("")));
     if blob {
@@ -438,6 +450,16 @@ async fn dispatch(
         "upgradeDeployment" | "rollbackDeployment" => {
             let action=if name=="upgradeDeployment"{"plugin.upgrade"}else{"plugin.rollback"};
             crate::upgrades::create(&tx,app,&ctx,path_id(&params,"deployment_id")?,action,&body,&headers).await?
+        }
+        "cancelCall" => {
+            let call = path_id(&params, "call_id")?;
+            // This is cancellation intent, not proof that an already dispatched
+            // physical operation was undone. The controller fences unknown work.
+            let error = Error::new("CANCELED", "Call cancellation was requested; physical outcome remains unknown", StatusCode::CONFLICT).detail();
+            tx.execute("UPDATE calls SET state='unknown',error=$2 WHERE id=$1 AND state IN ('accepted','running')", &[&call,&error]).await?;
+            tx.execute("UPDATE rpc_delegations SET status='revoked' WHERE call_id=$1 AND EXISTS(SELECT 1 FROM calls WHERE id=$1 AND state='unknown')", &[&call]).await?;
+            tx.execute("UPDATE execution_delegations SET status='revoked' WHERE id IN(SELECT delegation_id FROM calls WHERE id=$1 AND state='unknown')", &[&call]).await?;
+            (Value::Null, 204)
         }
         "getCall" => {
             let call = path_id(&params, "call_id")?;
@@ -798,14 +820,18 @@ async fn authorize_operation(
         return Err(Error::denied());
     }
     let (action, resource) = match name {
-        "getCall" => {
+        "getCall" | "cancelCall" => {
             let id = path_id(params, "call_id")?;
             let r = c
                 .query_opt("SELECT owner_id FROM calls WHERE id=$1", &[&id])
                 .await?
                 .ok_or_else(Error::not_found)?;
             (
-                "capability.call.read",
+                if name == "cancelCall" {
+                    "capability.call.cancel"
+                } else {
+                    "capability.call.read"
+                },
                 Resource::new("call", id, Some(r.get(0))),
             )
         }

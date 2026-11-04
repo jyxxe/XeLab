@@ -223,14 +223,16 @@ fn validate_profile_inner(manifest: &Value, allow_versioned: bool) -> Result<()>
     crate::contracts::compile_business(&manifest["config_schema"])?;
     for cap in manifest["capabilities"].as_array().unwrap() {
         if !(cap["side_effect"] == "none" || (versioned && cap["side_effect"] == "idempotent"))
-            || !cap["stream_item_schema"].is_null()
+            || (!cap["stream_item_schema"].is_null() && cap["side_effect"] != "none")
         {
             return Err(Error::invalid(
-                "This profile requires non-streaming capabilities with supported side effects",
+                "This profile requires supported side effects; streaming is limited to pure capabilities",
             ));
         }
-        for key in ["input_schema", "output_schema"] {
-            crate::contracts::compile_business(&cap[key])?;
+        for key in ["input_schema", "output_schema", "stream_item_schema"] {
+            if key != "stream_item_schema" || !cap[key].is_null() {
+                crate::contracts::compile_business(&cap[key])?;
+            }
         }
     }
     crate::skills::validate_candidates(manifest)?;

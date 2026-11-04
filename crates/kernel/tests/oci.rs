@@ -7,6 +7,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use ed25519_dalek::{pkcs8::EncodePublicKey, Signer, SigningKey};
+use futures_util::StreamExt;
 use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair};
 use serde_json::{json, Value};
 use std::{
@@ -419,6 +420,14 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         &deployment,
     )
     .await;
+    ordinary_skill_stream_lifecycle(
+        &router,
+        &db,
+        token,
+        &installed["installation_id"],
+        &manifest,
+    )
+    .await;
     let call_id = called.1["call_id"].as_str().unwrap();
     assert_eq!(
         api(
@@ -527,7 +536,12 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     // A second independently implemented language/runtime reuses the same contract.
     let python_raw = fs::read("examples/generated-python/xelab/plugin.json").unwrap();
     let python_manifest: Value = serde_json::from_slice(&python_raw).unwrap();
-    assert_eq!(manifest["capabilities"], python_manifest["capabilities"]);
+    assert_eq!(
+        manifest["capabilities"][0],
+        python_manifest["capabilities"][0]
+    );
+    assert_eq!(manifest["capabilities"].as_array().unwrap().len(), 2);
+    assert_eq!(python_manifest["capabilities"].as_array().unwrap().len(), 1);
     assert_ne!(manifest["plugin_id"], python_manifest["plugin_id"]);
     let python_image = std::env::var("XELAB_TEST_PYTHON_IMAGE").unwrap();
     let python_digest = artifact::image_ref(&python_image).unwrap();
@@ -706,7 +720,8 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         .await
         .unwrap()
         .get::<_, i64>(0),
-        2
+        (manifest["capabilities"].as_array().unwrap().len()
+            + python_manifest["capabilities"].as_array().unwrap().len()) as i64
     );
     let fixed_skill = api(
         &router, "invokeSkill", &[("skill_id",skill.clone())], Some(token),
@@ -2119,4 +2134,274 @@ async fn ordinary_skill_lifecycle(
     // restart, while all routes retain this exact installation binding.
     assert!(!deployment.is_empty());
     skill
+}
+
+// A real signed OCI stream crosses the public API, core Skill router and mTLS
+// CapabilityService; this helper does not synthesize plugin responses.
+async fn ordinary_skill_stream_lifecycle(
+    router: &Router,
+    db: &Db,
+    token: &str,
+    installation: &Value,
+    manifest: &Value,
+) {
+    let created = api(
+        router,
+        "registerSkill",
+        &[],
+        Some(token),
+        json!({"installation_id":installation,"definition":manifest["skills"][1],"enabled":true}),
+        "stream-skill-register",
+        None,
+    )
+    .await;
+    assert_eq!(created.0, 201, "{}", created.1);
+    let skill = created.1["id"].as_str().unwrap();
+    let request = json!({"input":{"message":"stream over real OCI","count":3},"timeout_ms":10000});
+    let response = stream_skill_request(router, token, skill, &request, "real-stream", false).await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let events = collect_skill_events(response.into_body()).await;
+    assert_eq!(events.len(), 5);
+    assert_eq!(events[0]["event"]["kind"], "accepted");
+    for index in 0..3 {
+        assert_eq!(events[index + 1]["event"]["kind"], "item");
+        assert_eq!(events[index + 1]["event"]["payload"]["index"], index);
+    }
+    assert_eq!(events[4]["event"]["kind"], "completed");
+    assert_eq!(
+        events[4]["event"]["payload"]["output"],
+        json!({"message":"stream over real OCI"})
+    );
+    let call = events[0]["event"]["call_id"].as_str().unwrap();
+    let replay = stream_skill_request(router, token, skill, &request, "real-stream", false).await;
+    assert_eq!(
+        replay.status(),
+        409,
+        "streams cannot regenerate items on HTTP replay"
+    );
+    let replay: Value =
+        serde_json::from_slice(&to_bytes(replay.into_body(), 1048576).await.unwrap()).unwrap();
+    assert_eq!(replay["error"]["resource_id"], call);
+    let resumed =
+        stream_skill_request(router, token, skill, &request, "last-event-refused", true).await;
+    assert_eq!(resumed.status(), 400);
+    let record = api(
+        router,
+        "getCall",
+        &[("call_id", call.into())],
+        Some(token),
+        Value::Null,
+        "stream-get-result",
+        None,
+    )
+    .await;
+    assert_eq!(record.0, 200);
+    assert_eq!(record.1["state"], "succeeded");
+    let c = db.connect().await.unwrap();
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM calls WHERE skill_id=$1",
+            &[&skill.parse::<Uuid>().unwrap()]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        1
+    );
+    for (index, fault, items) in [
+        (0, "item", 0),
+        (1, "sequence", 1),
+        (2, "digest", 3),
+        (3, "missing-terminal", 3),
+    ] {
+        let response=stream_skill_request(router,token,skill,&json!({"input":{"message":"untrusted output","count":3,"fault":fault},"timeout_ms":10000}),&format!("stream-fault-{index}"),false).await;
+        assert_eq!(response.status(), 200, "fault follows accepted");
+        let events = collect_skill_events(response.into_body()).await;
+        assert_eq!(events[0]["event"]["kind"], "accepted");
+        assert_eq!(events.last().unwrap()["event"]["kind"], "failed");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event"]["kind"] == "item")
+                .count(),
+            items
+        );
+        assert!(events
+            .iter()
+            .all(|event| event["event"]["kind"] != "completed"));
+        let call = events[0]["event"]["call_id"]
+            .as_str()
+            .unwrap()
+            .parse::<Uuid>()
+            .unwrap();
+        let row = c
+            .query_one(
+                "SELECT state,provider_instance_id FROM calls WHERE id=$1",
+                &[&call],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, String>(0), "unknown");
+        let instance: Uuid = row.get(1);
+        let mut recovered = false;
+        for _ in 0..120 {
+            let ready:bool=c.query_one("SELECT EXISTS(SELECT 1 FROM reservations r JOIN provider_records p ON p.instance_id=$2 JOIN instances i ON i.id=p.instance_id WHERE r.id=$1 AND r.status='released' AND p.availability='ready' AND i.phase='ready')",&[&call,&instance]).await.unwrap().get(0);
+            if ready {
+                recovered = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        assert!(recovered,"failed stream slot is only reclaimed after actual OCI process fencing/restart: {fault}");
+    }
+    let response=stream_skill_request(router,token,skill,&json!({"input":{"message":"cancel actual stream","count":64,"delay_ms":1000},"timeout_ms":10000}),"stream-explicit-cancel",false).await;
+    assert_eq!(response.status(), 200);
+    let mut stream = response.into_body().into_data_stream();
+    let first = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let text = std::str::from_utf8(&first).unwrap();
+    let accepted: Value = serde_json::from_str(
+        text.lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .unwrap(),
+    )
+    .unwrap();
+    contracts::validate("SkillStreamEvent", &accepted).unwrap();
+    assert_eq!(accepted["event"]["kind"], "accepted");
+    let canceled_call = accepted["event"]["call_id"].as_str().unwrap();
+    let cancel = api(
+        router,
+        "cancelCall",
+        &[("call_id", canceled_call.into())],
+        Some(token),
+        Value::Null,
+        "cancel-real-stream",
+        None,
+    )
+    .await;
+    assert_eq!(cancel.0, 204, "{}", cancel.1);
+    let mut response_bytes = first.to_vec();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(chunk) = stream.next().await {
+            response_bytes.extend_from_slice(&chunk.unwrap());
+        }
+    })
+    .await
+    .unwrap();
+    let events = parse_skill_events(std::str::from_utf8(&response_bytes).unwrap());
+    assert_eq!(events.len(), 2, "cancel before first delayed business item");
+    assert_eq!(events[1]["event"]["kind"], "canceled");
+    assert_eq!(events[1]["event"]["payload"], json!({"reason":"requested"}));
+    let canceled_id = canceled_call.parse::<Uuid>().unwrap();
+    let row = c
+        .query_one(
+            "SELECT state,error,provider_instance_id FROM calls WHERE id=$1",
+            &[&canceled_id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        row.get::<_, String>(0),
+        "unknown",
+        "cancel is intent, not rollback proof"
+    );
+    assert_eq!(row.get::<_, Value>(1)["code"], "CANCELED");
+    let instance: Uuid = row.get(2);
+    let mut recovered = false;
+    for _ in 0..120 {
+        let ready:bool=c.query_one("SELECT EXISTS(SELECT 1 FROM reservations r JOIN provider_records p ON p.instance_id=$2 JOIN instances i ON i.id=p.instance_id WHERE r.id=$1 AND r.status='released' AND p.availability='ready' AND i.phase='ready')",&[&canceled_id,&instance]).await.unwrap().get(0);
+        if ready {
+            recovered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(
+        recovered,
+        "canceled stream physical slot reclaimed after OCI fencing"
+    );
+    println!("Skill SSE: actual signed OCI accepted/items/completion, no regeneration replay, malformed sequence/schema/digest/EOF rejection, explicit cancel and fenced capacity recovery passed");
+}
+
+async fn stream_skill_request(
+    router: &Router,
+    token: &str,
+    skill: &str,
+    input: &Value,
+    key: &str,
+    last_event: bool,
+) -> axum::response::Response {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/platform/v1/skills/{skill}/calls:stream"))
+        .header("authorization", format!("Bearer {token}"))
+        .header("idempotency-key", key)
+        .header("content-type", "application/json");
+    if last_event {
+        request = request.header("last-event-id", "replay-forbidden:1");
+    }
+    let mut request = request
+        .body(Body::from(serde_json::to_vec(input).unwrap()))
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:50000".parse::<SocketAddr>().unwrap(),
+    ));
+    router.clone().oneshot(request).await.unwrap()
+}
+
+async fn collect_skill_events(body: Body) -> Vec<Value> {
+    let bytes = tokio::time::timeout(Duration::from_secs(20), to_bytes(body, 4194304))
+        .await
+        .unwrap()
+        .unwrap();
+    parse_skill_events(std::str::from_utf8(&bytes).unwrap())
+}
+
+fn parse_skill_events(text: &str) -> Vec<Value> {
+    let mut events = Vec::new();
+    for frame in text.split("\n\n") {
+        let data = frame.lines().find_map(|line| line.strip_prefix("data: "));
+        let Some(data) = data else {
+            continue;
+        };
+        let event: Value = serde_json::from_str(data).unwrap();
+        contracts::validate("SkillStreamEvent", &event).unwrap();
+        let inner = &event["event"];
+        assert_eq!(inner["sequence"].as_u64().unwrap(), events.len() as u64 + 1);
+        assert_eq!(
+            frame
+                .lines()
+                .find_map(|line| line.strip_prefix("event: "))
+                .unwrap(),
+            inner["kind"].as_str().unwrap()
+        );
+        assert_eq!(
+            frame
+                .lines()
+                .find_map(|line| line.strip_prefix("id: "))
+                .unwrap(),
+            format!(
+                "{}:{}",
+                inner["call_id"].as_str().unwrap(),
+                inner["sequence"].as_u64().unwrap()
+            )
+        );
+        if let Some(prior) = events.first() {
+            let prior: &Value = prior;
+            assert_eq!(event["skill_id"], prior["skill_id"]);
+            assert_eq!(inner["call_id"], prior["event"]["call_id"]);
+        }
+        assert!(events
+            .last()
+            .is_none_or(|prior: &Value| prior["event"]["terminal"] != true));
+        events.push(event);
+    }
+    assert!(!events.is_empty(), "empty SSE response: {text}");
+    assert_eq!(events.last().unwrap()["event"]["terminal"], true);
+    events
 }

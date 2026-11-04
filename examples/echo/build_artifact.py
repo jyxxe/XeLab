@@ -69,6 +69,39 @@ def build(root, publisher, platform="linux/amd64", implementation="rust", reques
         "mapping": "identity", "maximum_timeout_ms": 10000,
         "input_blobs": request_blob, "tags": ["echo"],
     }]
+    if implementation == "rust":
+        # A separate signed business contract exercises the actual streaming
+        # transport without changing the ordinary echo capability's schemas.
+        stream_input = {"type": "object", "properties": {
+            "message": {"type": "string", "maxLength": 1024},
+            "count": {"type": "integer", "minimum": 1, "maximum": 64},
+            "delay_ms": {"type": "integer", "minimum": 0, "maximum": 1000},
+            "fault": {"enum": ["none", "sequence", "item", "digest", "missing-terminal"]},
+        }, "required": ["message"], "additionalProperties": False}
+        stream_output = json.loads(json.dumps(schema))
+        stream_item = {"type": "object", "properties": {
+            "index": {"type": "integer", "minimum": 0, "maximum": 63},
+            "message": {"type": "string", "maxLength": 1024},
+        }, "required": ["index", "message"], "additionalProperties": False}
+        stream_name = "org.xelab.echo.stream"
+        stream_directory = root / "xelab" / "contracts" / stream_name / version
+        stream_directory.mkdir(parents=True, exist_ok=True)
+        stream_checks = []
+        for file, value in [("input.schema.json", stream_input), ("output.schema.json", stream_output), ("stream.schema.json", stream_item), ("semantics.json", {"side_effect": "none"})]:
+            raw = encoded(value)
+            (stream_directory / file).write_bytes(raw)
+            stream_checks.append(f"{file} {hashlib.sha256(raw).hexdigest()}\n")
+        stream_contract = {"name": stream_name, "version": version, "schema_digest": "sha256:" + hashlib.sha256("".join(stream_checks).encode()).hexdigest()}
+        manifest["capabilities"].append({"contract": stream_contract, "input_schema": stream_input, "output_schema": stream_output, "stream_item_schema": stream_item, "side_effect": "none", "maximum_input_bytes": 65536, "maximum_output_bytes": 65536})
+        manifest["skills"].append({
+            "name": manifest["plugin_id"] + ".stream", "version": plugin_version,
+            "description": "Stream bounded echo items from the fixed signed OCI artifact",
+            "input_schema": stream_input, "output_schema": stream_output,
+            "stream_item_schema": stream_item,
+            "target": {"kind": "capability", "plugin_id": manifest["plugin_id"], "contract": stream_contract},
+            "mapping": "identity", "maximum_timeout_ms": 120000,
+            "input_blobs": False, "tags": ["echo", "stream"],
+        })
     if volume_access:
         manifest["volumes"] = [{"name": "data", "mount_path": "/data", "access": volume_access, "scope": "deployment", "minimum_bytes": 1048576}]
     if failed_startup:
