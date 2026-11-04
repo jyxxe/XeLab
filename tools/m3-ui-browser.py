@@ -27,6 +27,13 @@ class CheckFailed(Exception):
     pass
 
 
+def future_features_unavailable(window):
+    state = window.locator('[data-kind="unavailable"]')
+    return (state.count() == 1
+            and state.get_by_role("heading", name="Batch / Workflow / 微插件 / 知识库尚不可用", exact=True).count() == 1
+            and state.get_by_text("未安装或实现的后续执行系统没有可展示的运行结果。", exact=True).count() == 1)
+
+
 def close_windows(page, report):
     report["step"] = "desktop_close_actual_windows"
     for _ in range(16):
@@ -321,7 +328,7 @@ def run(config, report):
         require(settings.get_by_role("combobox", name="主题模式", exact=True).input_value() == "dark" and settings.get_by_role("checkbox", name="减少动画", exact=True).is_checked(), "actual_theme_preferences_survive_reread")
         close_windows(page, report)
         unavailable = open_app(page, "tasks", "任务与知识库", dock=False)
-        require("未伪造" in unavailable.inner_text() and unavailable.locator('[data-kind="unavailable"]').count() == 1, "future_execution_features_remain_unavailable")
+        require(future_features_unavailable(unavailable), "future_execution_features_remain_unavailable")
         close_windows(page, report)
         window = contribution_frame(page)
         echo(window, "Actual OCI iframe <img src=x onerror=alert(1)>", "window_bridge_calls_real_http_skill")

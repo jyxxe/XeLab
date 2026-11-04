@@ -378,6 +378,7 @@ class DesktopBrowser(unittest.TestCase):
         self.page.get_by_role("button", name="打开应用启动器", exact=True).click()
         self.page.get_by_role("button", name="启动任务与知识库", exact=True).click()
         self.page.get_by_text("Batch / Workflow / 微插件 / 知识库尚不可用", exact=True).wait_for()
+        self.assertTrue(DRIVER.future_features_unavailable(self.page.locator(".window").last))
         self.page.set_viewport_size({"width": 390, "height": 760})
         self.page.get_by_role("button", name="打开设置", exact=True).click()
         window = self.page.locator(".window").last
