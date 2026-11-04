@@ -24,6 +24,11 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       XELAB_TEST_DATABASE_URL: "host=127.0.0.1 port=5432 user=xelab password=test-only-password dbname=xelab_test"
+      # Keep unoptimized builds and debug assertions; omit only large DWARF
+      # and incremental artifacts so browser + signed OCI transports fit.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Host acceptance tooling tests
@@ -57,6 +62,10 @@ jobs:
         env:
           XELAB_OAUTH_BROWSER_RESULT: ${{ runner.temp }}/xelab-oauth-main-router.json
         run: cargo test --lib actual_main_router_chromium_trusted_login_native_consent_pkce_cors_and_refresh_reuse --locked -- --ignored --nocapture
+      - name: Record physical CI build space
+        run: |
+          df -h . /mnt
+          du -sh target
       - name: Prepare real OCI test
         run: |
           sudo apt-get update -qq
