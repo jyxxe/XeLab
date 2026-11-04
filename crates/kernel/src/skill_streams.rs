@@ -827,4 +827,110 @@ mod tests {
         assert_eq!(failed.sequence, queued.sequence);
         assert!(!failed.data.contains("must not escape"));
     }
+
+    #[tokio::test]
+    async fn queued_item_rechecks_actual_api_key_revocation_well_before_deadline() {
+        let Some(f) = crate::backups::tests::Fixture::new().await else {
+            return;
+        };
+        let peer = "127.0.0.1".parse().unwrap();
+        let mut c = f.app.db.connect().await.unwrap();
+        let tx = c.transaction().await.unwrap();
+        crate::db::auth_lock(&tx, true).await.unwrap();
+        let owner = f
+            .app
+            .auth
+            .authenticate(&tx, &f.token, peer, Uuid::new_v4())
+            .await
+            .unwrap();
+        let account =
+            std::collections::HashMap::from([("account_id".to_owned(), owner.subject.to_string())]);
+        let body = json!({"name":"queued stream credential","inheritance":{"mode":"all_snapshot"},"conditions":{"expires_at":chrono::Utc::now()+chrono::Duration::hours(1)}});
+        crate::identity::authorize(&tx, &owner, "createApiKey", &account, &body)
+            .await
+            .unwrap();
+        let (key, status) = crate::identity::execute(
+            &tx,
+            &f.app.auth,
+            &owner,
+            "createApiKey",
+            &account,
+            &body,
+            &axum::http::HeaderMap::new(),
+            "",
+        )
+        .await
+        .unwrap();
+        assert_eq!(status, 201);
+        tx.commit().await.unwrap();
+        let token = key["secret"].as_str().unwrap();
+        let credential = crate::contracts::id(&key["credential"], "id").unwrap();
+        assert_eq!(
+            f.app
+                .auth
+                .authenticate(&c, token, peer, Uuid::new_v4())
+                .await
+                .unwrap()
+                .credential,
+            credential
+        );
+        let deadline = chrono::Utc::now() + chrono::Duration::seconds(90);
+        let (sender, mut receiver) = mpsc::channel(BUFFER_FRAMES);
+        let output = Output::new(sender);
+        output.bind(&skill(), Uuid::new_v4(), deadline).unwrap();
+        output.emit("accepted", json!({})).await.unwrap();
+        output
+            .emit(
+                "item",
+                json!({"private":"revoked queued payload must not escape"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            receiver.len(),
+            2,
+            "both frames remain unconsumed until revocation commits"
+        );
+        let tx = c.transaction().await.unwrap();
+        crate::db::auth_lock(&tx, true).await.unwrap();
+        let params =
+            std::collections::HashMap::from([("credential_id".to_owned(), credential.to_string())]);
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("if-match", "\"rev-1\"".parse().unwrap());
+        crate::identity::authorize(&tx, &owner, "revokeApiKey", &params, &Value::Null)
+            .await
+            .unwrap();
+        let (_, status) = crate::identity::execute(
+            &tx,
+            &f.app.auth,
+            &owner,
+            "revokeApiKey",
+            &params,
+            &Value::Null,
+            &headers,
+            "",
+        )
+        .await
+        .unwrap();
+        assert_eq!(status, 204);
+        tx.commit().await.unwrap();
+        assert!((deadline - chrono::Utc::now()).num_seconds() > 30);
+        assert_eq!(receiver.recv().await.unwrap().unwrap().kind, "accepted");
+        let queued = receiver.recv().await.unwrap().unwrap();
+        assert_eq!(queued.kind, "item");
+        // No provider is claimed by this transport fixture. A real revoked
+        // credential must stop delivery before any provider lookup or payload.
+        let error = authorize_delivery(&f.app, token, peer, Uuid::new_v4(), &queued)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "INVALID_CREDENTIAL");
+        let failed = queued.fail(error).unwrap();
+        assert_eq!(failed.kind, "failed");
+        assert_eq!(failed.sequence, 2);
+        let event: Value = serde_json::from_str(&failed.data).unwrap();
+        assert_eq!(event["event"]["terminal"], true);
+        assert_eq!(event["event"]["payload"]["code"], "INVALID_CREDENTIAL");
+        assert!(!failed.data.contains("revoked queued payload"));
+        assert!(receiver.try_recv().is_err());
+    }
 }

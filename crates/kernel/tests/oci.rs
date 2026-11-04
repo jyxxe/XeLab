@@ -2658,8 +2658,20 @@ async fn ordinary_skill_stream_lifecycle(
     let key=api(router,"createApiKey",&[("account_id",owner.to_string())],Some(token),json!({"name":"live stream revocation","inheritance":{"mode":"selected","rules":rules},"conditions":{"expires_at":chrono::Utc::now()+chrono::Duration::days(1)}}),"stream-source-key",None).await;
     assert_eq!(key.0, 201, "{}", key.1);
     let caller = key.1["secret"].as_str().unwrap();
-    let revoked_input = json!({"input":{"message":"revoke actual stream","count":64,"delay_ms":1000},"timeout_ms":10000});
+    // This scenario proves revocation, not deadline expiry. Keep the request
+    // inside the signed Skill maximum while leaving enough time for the
+    // actual management transaction and the unchanged 10s delivery bound.
+    let revocation_budget_ms = 90000_u64;
+    assert!(
+        revocation_budget_ms
+            <= manifest["skills"][1]["maximum_timeout_ms"]
+                .as_u64()
+                .unwrap(),
+        "the revocation fixture cannot exceed the signed Skill maximum"
+    );
+    let revoked_input = json!({"input":{"message":"revoke actual stream","count":64,"delay_ms":1000},"timeout_ms":revocation_budget_ms});
     let old_process = stream_process(app, live_instance).await;
+    let revocation_started = std::time::Instant::now();
     let response = stream_skill_request(
         router,
         caller,
@@ -2690,6 +2702,15 @@ async fn ordinary_skill_stream_lifecycle(
         .unwrap()
         .parse::<Uuid>()
         .unwrap();
+    let accepted_elapsed = revocation_started.elapsed();
+    let call_deadline: chrono::DateTime<chrono::Utc> = c
+        .query_one(
+            "SELECT deadline_at FROM calls WHERE id=$1",
+            &[&revoked_call],
+        )
+        .await
+        .unwrap()
+        .get(0);
     let revoked = api(
         router,
         "revokeApiKey",
@@ -2704,18 +2725,56 @@ async fn ordinary_skill_stream_lifecycle(
     )
     .await;
     assert_eq!(revoked.0, 204, "{}", revoked.1);
+    let revocation_committed_at = chrono::Utc::now();
+    let remaining_ms = (call_deadline - revocation_committed_at).num_milliseconds();
+    println!(
+        "Skill revocation timing: elapsed_ms={} accepted_ms={} revoke_committed_at={} call_deadline={} remaining_ms={}",
+        revocation_started.elapsed().as_millis(),
+        accepted_elapsed.as_millis(),
+        revocation_committed_at,
+        call_deadline,
+        remaining_ms
+    );
+    assert!(
+        remaining_ms > 30000,
+        "revocation must leave more than 30s before the Call deadline for the 10s delivery check; elapsed={:?}, deadline={call_deadline}, revoked_at={revocation_committed_at}",
+        revocation_started.elapsed()
+    );
     let mut response_bytes = first.to_vec();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    let delivery = tokio::time::timeout(Duration::from_secs(10), async {
         while let Some(chunk) = stream.next().await {
             response_bytes.extend_from_slice(&chunk.unwrap());
         }
     })
-    .await
-    .unwrap();
+    .await;
     let events = parse_skill_events(std::str::from_utf8(&response_bytes).unwrap());
-    assert_eq!(events.len(), 2, "revocation rejects queued business output");
-    assert_eq!(events[1]["event"]["kind"], "failed");
-    assert_eq!(events[1]["event"]["payload"]["code"], "INVALID_CREDENTIAL");
+    let observed = c
+        .query_one(
+            "SELECT state,error FROM calls WHERE id=$1",
+            &[&revoked_call],
+        )
+        .await
+        .unwrap();
+    let diagnostic = format!(
+        "events={events:?}; stored_state={}; stored_error={:?}; elapsed={:?}; deadline={call_deadline}; revoked_at={revocation_committed_at}",
+        observed.get::<_, String>("state"),
+        observed.get::<_, Option<Value>>("error"),
+        revocation_started.elapsed()
+    );
+    assert!(
+        delivery.is_ok(),
+        "revocation delivery exceeded 10s: {diagnostic}"
+    );
+    assert_eq!(
+        events.len(),
+        2,
+        "revocation rejects queued business output: {diagnostic}"
+    );
+    assert_eq!(events[1]["event"]["kind"], "failed", "{diagnostic}");
+    assert_eq!(
+        events[1]["event"]["payload"]["code"], "INVALID_CREDENTIAL",
+        "{diagnostic}"
+    );
     live_instance = recovery
         .fence_and_ready(
             &[revoked_call],
