@@ -156,6 +156,7 @@ async fn actual_main_router_chromium_trusted_login_native_consent_pkce_cors_and_
         "callback_state_and_code",
         "pkce_exchange_cors_http_200",
         "actual_account_cors_read",
+        "actual_account_query_cors_read",
         "wrong_pkce_rejected",
         "authorization_code_replay_rejected",
         "refresh_credentials_rotated",
