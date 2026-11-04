@@ -28,6 +28,8 @@ use xelab_kernel::{
     storage::xfs::{Limits, ProjectStore},
     volumes,
 };
+#[path = "support/kernel_process_death.rs"]
+mod kernel_process_death;
 #[path = "support/schema_bootstrap.rs"]
 mod schema_bootstrap;
 #[path = "support/schema_same_format.rs"]
@@ -266,6 +268,12 @@ async fn unsupported_storage_never_publishes_a_volume_or_allocation() {
         .await;
     assert_eq!(listed.0, 200, "{}", listed.1);
     assert_eq!(listed.1["items"], json!([]));
+}
+
+#[tokio::test]
+#[ignore = "requires actual kernel process abort/restart, root and dedicated XFS; tools/test-xfs.sh"]
+async fn actual_kernel_process_death_resumes_initializing_checkpoint() {
+    kernel_process_death::exercise().await;
 }
 
 #[tokio::test]
