@@ -150,6 +150,56 @@ jobs:
           test -n "$digest"
           sudo ctr -n xelab-ci images tag docker.io/xelab-ci/host-blob:test "docker.io/xelab-ci/host-blob@$digest"
           echo "XELAB_TEST_HOST_BLOB_IMAGE=docker.io/xelab-ci/host-blob@$digest" >> "$GITHUB_ENV"
+      - name: Release imported OCI transport archives
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re, stat, subprocess
+          # Each transport was consumed by a successful ctr import and immutable
+          # tag in the preceding step. All following tests read containerd CAS
+          # or their own newly exported archives, never these docker-save files.
+          transports = [
+              ("generated", "echo.tar", "XELAB_TEST_IMAGE"),
+              ("generated-upgrade", "image.tar", "XELAB_TEST_UPGRADE_IMAGE"),
+              ("generated-failed-upgrade", "image.tar", "XELAB_TEST_FAILED_UPGRADE_IMAGE"),
+              ("generated-python", "echo.tar", "XELAB_TEST_PYTHON_IMAGE"),
+              ("generated-volume", "volume.tar", "XELAB_TEST_VOLUME_IMAGE"),
+              ("generated-schema", "schema.tar", "XELAB_TEST_SCHEMA_IMAGE"),
+              ("generated-platform-schema-1", "image.tar", "XELAB_TEST_PLATFORM_SCHEMA_1_IMAGE"),
+              ("generated-platform-schema-2", "image.tar", "XELAB_TEST_PLATFORM_SCHEMA_2_IMAGE"),
+              ("generated-schema-crash", "image.tar", "XELAB_TEST_SCHEMA_CRASH_IMAGE"),
+              ("generated-schema-upgrade", "schema.tar", "XELAB_TEST_SCHEMA_UPGRADE_IMAGE"),
+              ("generated-schema-transition", "schema.tar", "XELAB_TEST_SCHEMA_TRANSITION_IMAGE"),
+              ("generated-volume-upgrade", "image.tar", "XELAB_TEST_VOLUME_UPGRADE_IMAGE"),
+              ("generated-volume-failed-upgrade", "image.tar", "XELAB_TEST_VOLUME_FAILED_UPGRADE_IMAGE"),
+              ("generated-host-blob", "host-blob.tar", "XELAB_TEST_HOST_BLOB_IMAGE"),
+          ]
+          imported = set(subprocess.check_output(["sudo", "ctr", "-n", "xelab-ci", "images", "list", "--quiet"], text=True).splitlines())
+          for _, _, variable in transports:
+              image = os.environ[variable]
+              assert re.fullmatch(r"docker\.io/xelab-ci/[a-z0-9-]+@sha256:[a-f0-9]{64}", image), variable
+              assert image in imported, f"immutable imported image missing: {variable}"
+          before = os.statvfs(".")
+          released = 0
+          root = os.open("examples", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+          try:
+              for directory, filename, variable in transports:
+                  parent = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+                  try:
+                      info = os.stat(filename, dir_fd=parent, follow_symlinks=False)
+                      assert stat.S_ISREG(info.st_mode) and info.st_nlink == 1, (directory, filename)
+                      os.unlink(filename, dir_fd=parent)
+                      os.fsync(parent)
+                      released += info.st_size
+                      print(f"Released consumed transport: {directory}/{filename}, bytes={info.st_size}")
+                  finally:
+                      os.close(parent)
+          finally:
+              os.close(root)
+          after = os.statvfs(".")
+          print(f"OCI transport bytes released={released}; available_before={before.f_bavail * before.f_frsize}; available_after={after.f_bavail * after.f_frsize}")
+          # No containerd content, RuntimeImageIndex, signed manifest/contract,
+          # runtime root, Docker image, or unrelated generated file is removed.
+          PY
       # Validate new archive/import behavior before the longer controller sweep.
       # The source daemon is read only; a second daemon owns a fresh content root.
       - name: Real OCI archive and cold content-store recovery
