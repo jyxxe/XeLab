@@ -16,9 +16,12 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     net::{SocketAddr, TcpListener},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    os::{
+        fd::AsRawFd,
+        unix::fs::{OpenOptionsExt, PermissionsExt},
+    },
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -41,6 +44,199 @@ use xelab_kernel::{
 
 const BASE_DOMAIN: &str = "plugins.m3.localhost";
 const NAMESPACE: &str = "xelab-m3-ui";
+const CORE_DOMAIN: &str = "core.m3.localhost";
+
+/// Chrome's resolver flags do not affect xelabctl. This disposable-host alias
+/// keeps the real CLI's URL/Host/SAN/CA checks intact and removes only its own
+/// unique line. Existing explicit mappings to another address are never edited.
+struct LoopbackHost {
+    path: PathBuf,
+    line: Option<String>,
+    original: Vec<u8>,
+    installed: Vec<u8>,
+}
+impl LoopbackHost {
+    fn locked_file(path: &Path) -> std::io::Result<fs::File> {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)?;
+        if !file.metadata()?.is_file() || file.metadata()?.len() > 262144 {
+            return Err(std::io::Error::other("Invalid disposable host alias file"));
+        }
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(file)
+    }
+    async fn install(port: u16) -> Self {
+        let resolved = tokio::time::timeout(
+            Duration::from_secs(3),
+            tokio::net::lookup_host((CORE_DOMAIN, port)),
+        )
+        .await;
+        if let Ok(Ok(addresses)) = resolved {
+            assert!(
+                addresses
+                    .into_iter()
+                    .all(|address| address.ip().is_loopback()),
+                "Preexisting core test DNS must not point to a remote host"
+            );
+        }
+        let guard = Self::install_file(Path::new("/etc/hosts"))
+            .expect("Disposable host must permit an isolated CLI alias");
+        let addresses = tokio::time::timeout(
+            Duration::from_secs(3),
+            tokio::net::lookup_host((CORE_DOMAIN, port)),
+        )
+        .await
+        .expect("CLI alias resolution deadline")
+        .expect("CLI alias must resolve")
+        .collect::<Vec<_>>();
+        assert!(
+            addresses
+                .iter()
+                .any(|address| address.ip() == std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+                && addresses.iter().all(|address| address.ip().is_loopback()),
+            "CLI alias must resolve only to loopback, including the actual IPv4 listener"
+        );
+        guard
+    }
+    fn install_file(path: &Path) -> std::io::Result<Self> {
+        let mut file = Self::locked_file(path)?;
+        let mut original = Vec::new();
+        file.read_to_end(&mut original)?;
+        let contents = std::str::from_utf8(&original)
+            .map_err(|_| std::io::Error::other("Host aliases must be UTF-8"))?;
+        let mut already = false;
+        for line in contents.lines() {
+            let fields = line
+                .split('#')
+                .next()
+                .unwrap_or("")
+                .split_whitespace()
+                .collect::<Vec<_>>();
+            if fields.get(1..).is_some_and(|names| {
+                names
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(CORE_DOMAIN))
+            }) {
+                if fields[0] != "127.0.0.1" {
+                    return Err(std::io::Error::other(
+                        "Preexisting core test hosts mapping differs; refusing to replace it",
+                    ));
+                }
+                already = true;
+            }
+        }
+        let (line, installed) = if already {
+            (None, original.clone())
+        } else {
+            let line = format!("127.0.0.1 {CORE_DOMAIN} # xelab-m3-ui-{}", Uuid::new_v4());
+            let mut installed = original.clone();
+            if !installed.is_empty() && !installed.ends_with(b"\n") {
+                installed.push(b'\n');
+            }
+            installed.extend_from_slice(line.as_bytes());
+            installed.push(b'\n');
+            // Append only our suffix, preserving all preexisting bytes even
+            // during a partial write. Roll back a failed append under the lock.
+            file.seek(SeekFrom::End(0))?;
+            if let Err(error) = file
+                .write_all(&installed[original.len()..])
+                .and_then(|()| file.sync_all())
+            {
+                file.set_len(original.len() as u64)?;
+                file.sync_all()?;
+                return Err(error);
+            }
+            (Some(line), installed)
+        };
+        drop(file); // Releases only this short exclusive file lock.
+        Ok(Self {
+            path: path.to_owned(),
+            line,
+            original,
+            installed,
+        })
+    }
+    fn remove(&mut self) -> std::io::Result<()> {
+        let Some(line) = self.line.as_ref() else {
+            return Ok(());
+        };
+        let mut file = Self::locked_file(&self.path)?;
+        let mut current = Vec::new();
+        file.read_to_end(&mut current)?;
+        let restored = if current == self.installed {
+            self.original.clone()
+        } else {
+            let contents = std::str::from_utf8(&current).map_err(|_| {
+                std::io::Error::other("Host aliases changed to unsupported encoding")
+            })?;
+            contents
+                .split_inclusive('\n')
+                .filter(|segment| segment.trim_end_matches(['\r', '\n']) != line)
+                .collect::<String>()
+                .into_bytes()
+        };
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(&restored)?;
+        file.set_len(restored.len() as u64)?;
+        file.sync_all()?;
+        self.line = None;
+        Ok(())
+    }
+}
+impl Drop for LoopbackHost {
+    fn drop(&mut self) {
+        let _ = self.remove();
+    }
+}
+
+#[test]
+fn cli_loopback_alias_preserves_preexisting_and_concurrent_hosts() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hosts");
+    let original = b"127.0.0.1 localhost\n::1 localhost";
+    fs::write(&path, original).unwrap();
+    let mut alias = LoopbackHost::install_file(&path).unwrap();
+    assert!(fs::read_to_string(&path)
+        .unwrap()
+        .contains("127.0.0.1 core.m3.localhost # xelab-m3-ui-"));
+    alias.remove().unwrap();
+    assert_eq!(fs::read(&path).unwrap(), original);
+    {
+        let _alias = LoopbackHost::install_file(&path).unwrap();
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"127.0.0.2 another-test.localhost # concurrent-owner\n")
+            .unwrap();
+    }
+    let remaining = fs::read_to_string(&path).unwrap();
+    assert!(remaining.starts_with(std::str::from_utf8(original).unwrap()));
+    assert!(remaining.contains("127.0.0.2 another-test.localhost # concurrent-owner\n"));
+    assert!(!remaining.contains("xelab-m3-ui-"));
+}
+
+#[test]
+fn cli_loopback_alias_rejects_conflicts_without_editing_them() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("hosts");
+    let conflicting = b"127.0.0.1 localhost\n192.0.2.5 core.m3.localhost # existing-owner\n";
+    fs::write(&path, conflicting).unwrap();
+    assert!(LoopbackHost::install_file(&path).is_err());
+    assert_eq!(fs::read(&path).unwrap(), conflicting);
+    let preexisting = b"127.0.0.1 localhost core.m3.localhost # existing-loopback-owner\n";
+    fs::write(&path, preexisting).unwrap();
+    {
+        let _alias = LoopbackHost::install_file(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), preexisting);
+    }
+    assert_eq!(fs::read(&path).unwrap(), preexisting);
+}
 
 fn private_write(path: &Path, bytes: &[u8]) {
     fs::OpenOptions::new()
@@ -402,6 +598,15 @@ impl Running {
     }
 }
 
+async fn business_usage(c: &tokio_postgres::Client, subject: Uuid) -> (i64, i64, i64) {
+    let row=c.query_one("SELECT (SELECT count(*) FROM calls WHERE owner_id=$1) AS calls,daily_calls_used,concurrent_calls_used FROM quotas WHERE account_id=$1",&[&subject]).await.unwrap();
+    (
+        row.get("calls"),
+        row.get("daily_calls_used"),
+        row.get("concurrent_calls_used"),
+    )
+}
+
 async fn set_inheritance(
     router: &Router,
     host: &str,
@@ -457,7 +662,8 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
     let root = directory.path();
     let public_socket = listener("127.0.0.1:0".parse().unwrap());
     let address = public_socket.local_addr().unwrap();
-    let core = format!("https://core.m3.localhost:{}", address.port());
+    let mut loopback_host = LoopbackHost::install(address.port()).await;
+    let core = format!("https://{CORE_DOMAIN}:{}", address.port());
     let public_key = KeyPair::generate().unwrap();
     let public_ca_key = KeyPair::generate().unwrap();
     let mut public_ca_params =
@@ -597,7 +803,11 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
         let client=status(api(&router,&host,"createClient",&[],Some(&token),json!({"name":"Actual OCI desktop","plugin_id":"org.xelab.webui","allowed_origins":[ui],"redirect_uris":[format!("{ui}/ui/org.xelab.webui/callback")],"maximum_rules":rules}),"create-client",None).await,201,"createClient");
         web_config["client_id"]=client["client_id"].clone();
         let web=read_deployment(&router,&host,&token,&web_deployment).await;let mut web_spec=web["spec"].clone();web_spec["config"]=web_config;
-        status(api(&router,&host,"updateDeployment",&[("deployment_id",web_deployment.clone())],Some(&token),json!({"spec":web_spec}),"configure-real-client",web["revision"].as_i64()).await,200,"updateDeployment");
+        let configured=status(api(&router,&host,"updateDeployment",&[("deployment_id",web_deployment.clone())],Some(&token),json!({"spec":web_spec}),"configure-real-client",web["revision"].as_i64()).await,202,"updateDeployment");
+        let configured=operation(&router,&host,configured["id"].as_str().unwrap(),&token).await;
+        contracts::validate("Deployment",&configured).unwrap();
+        assert_eq!(configured["id"],web_deployment);assert_eq!(configured["spec"],web_spec);assert_eq!(configured["spec"]["enabled"],false);
+        report["checks"]["registered_client_config_operation_completed"]=json!(true);
         approve(&router,&host,&token,&web_deployment,"approve-webui").await;approve(&router,&host,&token,&reference_deployment,"approve-reference").await;
         enabled(&router,&host,&token,&web_deployment,true,"enable-webui").await;enabled(&router,&host,&token,&reference_deployment,true,"enable-reference").await;
         wait_ready(app,&web_deployment).await;wait_ready(app,&reference_deployment).await;
@@ -630,6 +840,8 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
         command.arg(driver).arg("--fixture").arg(&fixture).arg("--output").arg(&evidence).kill_on_drop(true);
         let output=command.output();tokio::pin!(output);
         let mut revoked=false;
+        let mut attack_usage:Option<(i64,i64,i64)>=None;
+        let mut attack_checked=false;
         let mut withdrawn_usage:Option<(i64,i64)>=None;
         let output=tokio::time::timeout(Duration::from_secs(300),async {
             loop {
@@ -637,12 +849,23 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
                     result=&mut output=>break result.unwrap(),
                     _=tokio::time::sleep(Duration::from_millis(100))=>{
                         let state=fs::read(&progress).ok().and_then(|bytes|serde_json::from_slice::<Value>(&bytes).ok());
+                        if attack_usage.is_none() && state.as_ref().is_some_and(|state|state["phase"]=="await_attack_snapshot") {
+                            let usage=business_usage(&c,owner).await;assert_eq!(usage.2,0,"Attack snapshot requires no pending legitimate call");attack_usage=Some(usage);
+                            tls::atomic_file(&control,br#"{"phase":"attack_snapshot_ready"}"#,0o600).unwrap();
+                        }
+                        if !attack_checked && state.as_ref().is_some_and(|state|state["phase"]=="await_attack_verification") {
+                            let before=attack_usage.expect("The browser must synchronize before channel attacks");let after=business_usage(&c,owner).await;
+                            assert_eq!(after.0-before.0,1,"Channel attacks must not allocate extra Call rows");assert_eq!(after.1-before.1,1,"Channel attacks must not consume extra daily quota");assert_eq!(after.2,0,"Channel attacks must not leak concurrent quota");
+                            tls::atomic_file(&control,&serde_json::to_vec(&json!({"phase":"attack_verified","calls_delta":after.0-before.0,"daily_delta":after.1-before.1,"concurrent":after.2})).unwrap(),0o600).unwrap();attack_checked=true;
+                            report["checks"]["channel_attacks_allocate_only_the_legitimate_call_and_quota"]=json!(true);
+                        }
                         if !revoked && state.as_ref().is_some_and(|state|state["phase"]=="await_revoke") {
+                            assert!(attack_checked,"The owner channel attack evidence must be verified first");
                             let remaining=Value::Array(child_rules.as_array().unwrap().iter().filter(|rule|rule["action"]!="skill.invoke").cloned().collect());
                             let usage=c.query_one("SELECT (SELECT count(*) FROM calls WHERE owner_id=$1) AS calls,daily_calls_used FROM quotas WHERE account_id=$1",&[&Uuid::parse_str(&child_id).unwrap()]).await.unwrap();
                             withdrawn_usage=Some((usage.get("calls"),usage.get("daily_calls_used")));
                             set_inheritance(&router,&host,&token,&child_id,&remaining,"withdraw-child-skill-authority").await;
-                            private_write(&control,br#"{"revoked":true}"#);revoked=true;
+                            tls::atomic_file(&control,br#"{"phase":"revoked","revoked":true}"#,0o600).unwrap();revoked=true;
                         }
                     }
                 }
@@ -654,6 +877,7 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
         // or filled form data. Only the structured safe report enters evidence.
         assert!(output.status.success() && browser_report["status"]=="passed","M3 browser failed at safe step={}",browser_report["step"].as_str().unwrap_or("unknown"));
         assert!(revoked,"The actual inheritance withdrawal must have executed");
+        assert!(attack_checked,"Actual channel attack admission/accounting evidence is required");
         let usage=c.query_one("SELECT (SELECT count(*) FROM calls WHERE owner_id=$1) AS calls,daily_calls_used,concurrent_calls_used FROM quotas WHERE account_id=$1",&[&Uuid::parse_str(&child_id).unwrap()]).await.unwrap();
         assert_eq!(withdrawn_usage,Some((usage.get::<_,i64>("calls"),usage.get::<_,i64>("daily_calls_used"))));assert_eq!(usage.get::<_,i64>("concurrent_calls_used"),0);
         report["checks"]["withdrawn_calls_do_not_allocate_or_charge"]=json!(true);
@@ -695,6 +919,10 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
         cleanup.stop(row.get("id")).await.unwrap();
     }
     assert!(cleanup.inventory().await.unwrap().is_empty());
+    loopback_host
+        .remove()
+        .expect("The test must remove its own loopback alias line");
+    report["checks"]["isolated_cli_alias_restored"] = json!(true);
     eprintln!("M3_UI_EVIDENCE {}", serde_json::to_string(&report).unwrap());
     if let Err(panic) = outcome {
         std::panic::resume_unwind(panic);

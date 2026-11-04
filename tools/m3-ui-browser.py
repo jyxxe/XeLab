@@ -100,7 +100,7 @@ def run(config, report):
     hosts = [urllib.parse.urlsplit(value).hostname for value in (core, ui, reference)]
     resolver = ",".join(f"MAP {host} {config['connect_ip']}" for host in hosts)
     report["playwright_version"] = importlib.metadata.version("playwright")
-    report["http"] = {"oauth_token_successes": 0, "callback_successes": 0, "actual_skill_successes": 0, "node_reads": 0, "preference_writes": 0, "contribution_reads": 0}
+    report["http"] = {"oauth_token_successes": 0, "callback_successes": 0, "actual_skill_successes": 0, "skill_post_attempts": 0, "node_reads": 0, "preference_writes": 0, "contribution_reads": 0}
     observed = {"password_outside_core": False, "core_cookie_on_plugin": False, "observer_failure": False, "page_errors": 0}
     calls = []
 
@@ -108,6 +108,10 @@ def run(config, report):
         try:
             location = url_origin(request.url)
             headers = request.all_headers()
+            if location == core and urllib.parse.urlsplit(request.url).path == f"/api/platform/v1/skills/{config['skill_id']}/calls" and request.method == "POST":
+                # Count admission attempts even if they fail, remain pending,
+                # time out, or never receive a successful HTTP response.
+                report["http"]["skill_post_attempts"] += 1
             if location in (ui, reference) and "__Host-xelab_auth=" in headers.get("cookie", ""):
                 observed["core_cookie_on_plugin"] = True
             if request.post_data and "password" in request.post_data and location != core:
@@ -222,6 +226,22 @@ def run(config, report):
     def fetch(page, path, method="GET", body=None):
         return page.evaluate(FETCH, {"core": core, "client": config["client_id"], "path": path, "method": method, "body": body, "key": str(uuid.uuid4())})
 
+    def coordinator_barrier(page, phase, expected):
+        private_json(config["progress_file"], {"phase": phase})
+        report["step"] = phase
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            path = pathlib.Path(config["control_file"])
+            if path.exists():
+                metadata = path.lstat()
+                require(stat.S_ISREG(metadata.st_mode) and stat.S_IMODE(metadata.st_mode) == 0o600
+                        and metadata.st_uid == os.geteuid() and metadata.st_nlink == 1, "private_coordinator_control")
+                control = json.loads(path.read_text())
+                if control.get("phase") == expected:
+                    return control
+            page.wait_for_timeout(50)
+        raise CheckFailed("coordinator_barrier_not_completed")
+
     with sync_playwright() as playwright:
         report["step"] = "launch_actual_chromium"
         browser = playwright.chromium.launch(executable_path=config["chromium_path"], headless=True, args=["--no-sandbox", "--disable-dev-shm-usage", "--no-proxy-server", "--host-resolver-rules=" + resolver, "--ignore-certificate-errors-spki-list=" + config["tls_spki_sha256"]])
@@ -265,17 +285,31 @@ def run(config, report):
         window = contribution_frame(page)
         echo(window, "Actual OCI iframe <img src=x onerror=alert(1)>", "window_bridge_calls_real_http_skill")
         report["step"] = "real_channel_nonce_replay_and_source_rejection"
-        before = report["http"]["actual_skill_successes"]
+        coordinator_barrier(page, "await_attack_snapshot", "attack_snapshot_ready")
+        before = report["http"]["skill_post_attempts"]
         channel = window.evaluate("() => Object.fromEntries(new URLSearchParams(location.hash.slice(1)))")
         window.evaluate("""() => { const meta=Object.fromEntries(new URLSearchParams(location.hash.slice(1)));
           const envelope={protocol:meta.protocol,view_id:meta.view_id,channel_nonce:meta.channel_nonce,type:'request',request_id:2,method:'skill.call',params:{binding_alias:'echo',input:{message:'Must not execute channel replay'},idempotency_key:'forged-channel-intent',timeout_ms:10000}};
-          parent.postMessage({...envelope,seq:3,channel_nonce:'0'.repeat(64)},meta.parent_origin);
+          parent.postMessage({...envelope,seq:3,channel_nonce:(meta.channel_nonce[0]==='0'?'1':'0')+meta.channel_nonce.slice(1)},meta.parent_origin);
           parent.postMessage({...envelope,seq:2},meta.parent_origin);
+          parent.postMessage({...envelope,seq:3,protocol:'xelab.ui/2'},meta.parent_origin);
         }""")
         page.evaluate("""meta => window.postMessage({protocol:meta.protocol,view_id:meta.view_id,channel_nonce:meta.channel_nonce,seq:3,type:'request',request_id:2,method:'skill.call',params:{binding_alias:'echo',input:{message:'Wrong source must not execute'},idempotency_key:'forged-host-source',timeout_ms:10000}},location.origin)""", channel)
-        page.wait_for_timeout(300)
-        require(report["http"]["actual_skill_successes"] == before, "real_channel_bad_nonce_old_seq_and_wrong_source_do_not_execute")
+        # An actual sibling on the SAME plugin origin isolates event.source
+        # validation from the separate wrong-origin check above.
+        with page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith(reference_base + "widget.html")) as sibling_navigation:
+            page.evaluate("""({metadata,url}) => {const frame=document.createElement('iframe');frame.id='source-probe';frame.hidden=true;frame.setAttribute('sandbox','allow-scripts allow-same-origin');frame.src=url+'#'+new URLSearchParams(metadata);document.body.append(frame);}""", {"metadata": channel, "url": reference_base + "widget.html"})
+        sibling = sibling_navigation.value
+        sibling.locator("#state").wait_for(state="attached")
+        sibling.evaluate("""meta => parent.postMessage({protocol:meta.protocol,view_id:meta.view_id,channel_nonce:meta.channel_nonce,seq:3,type:'request',request_id:2,method:'skill.call',params:{binding_alias:'echo',input:{message:'Same origin wrong source must not execute'},idempotency_key:'forged-sibling-source',timeout_ms:10000}},meta.parent_origin)""", channel)
+        # A subsequent legitimate request/response is the event and network
+        # barrier; elapsed silence and successful-only counters are insufficient.
         echo(window, "Actual channel survives rejected messages", "valid_call_after_replay_rejection")
+        page.locator("#source-probe").evaluate("element => element.remove()")
+        require(report["http"]["skill_post_attempts"] == before + 1, "channel_attacks_create_no_skill_post_attempt")
+        proof = coordinator_barrier(page, "await_attack_verification", "attack_verified")
+        require(proof.get("calls_delta") == 1 and proof.get("daily_delta") == 1 and proof.get("concurrent") == 0,
+                "channel_attacks_create_no_call_or_quota_charge")
         require(window.evaluate("async core => { try { await fetch(core+'/api/platform/v1/node'); return false; } catch { return true; } }", core), "third_party_connect_src_none")
         close_windows(page)
         widget = contribution_frame(page, "echo_widget")
@@ -293,20 +327,7 @@ def run(config, report):
         require(fetch(page, "/api/platform/v1/calls/" + owner_call)["status"] in (403, 404), "child_cannot_read_owner_call_result")
         frame = contribution_frame(page)
         echo(frame, "Actual limited child Skill call", "limited_child_bridge_call_before_withdrawal")
-        private_json(config["progress_file"], {"phase": "await_revoke"})
-        report["step"] = "await_actual_inheritance_withdrawal"
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            path = pathlib.Path(config["control_file"])
-            if path.exists():
-                control_metadata = path.lstat()
-                require(stat.S_ISREG(control_metadata.st_mode) and stat.S_IMODE(control_metadata.st_mode) == 0o600
-                        and control_metadata.st_uid == os.geteuid() and control_metadata.st_nlink == 1, "private_revocation_control")
-                if json.loads(path.read_text()).get("revoked") is True:
-                    break
-            page.wait_for_timeout(100)
-        else:
-            raise CheckFailed("withdrawal_not_executed")
+        require(coordinator_barrier(page, "await_revoke", "revoked").get("revoked") is True, "actual_inheritance_withdrawal_acknowledged")
         report["step"] = "actual_revocation_closes_old_channel"
         page.wait_for_function("() => document.querySelectorAll('#windows iframe').length === 0", timeout=15000)
         require(page.get_by_text("页面通道已关闭", exact=True).count() >= 1, "withdrawal_invalidates_old_iframe_channel")
