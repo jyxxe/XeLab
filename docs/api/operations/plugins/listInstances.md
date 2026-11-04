@@ -15,7 +15,7 @@
 | 超时 | 管理同步调用 10s；业务由 timeout_ms / 模型约束决定；异步操作不占用长 HTTP 连接 |
 | 请求编码 | UTF-8；未声明字段拒绝；未声明参数拒绝；数字不得为 NaN / Infinity |
 
-授权对象类型：`plugin`。目标取值：collection：逐对象过滤；创建对象以已验证 subject 为 proposed owner。
+授权对象类型：`instance`。目标取值：collection：逐对象过滤；创建对象以已验证 subject 为 proposed owner。
 
 默认拒绝；校验对象归属、完整祖先/源凭证链、固定上限、当前授权版本和额度；特殊字段条件见接口说明。
 

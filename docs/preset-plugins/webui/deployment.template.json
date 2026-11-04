@@ -10,6 +10,8 @@
     "pids": 128
   },
   "config": {
+    "core_origin": "https://core.example.org",
+    "client_id": null,
     "management_api_major": 1,
     "default_page": "desktop",
     "default_theme": "system",

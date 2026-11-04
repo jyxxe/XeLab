@@ -332,11 +332,18 @@ async fn dispatch(
     if (method == "GET" || method == "OPTIONS") && !bytes.is_empty() {
         return Err(Error::invalid("Authentication GET requires an empty body"));
     }
+    if method == "OPTIONS" {
+        // Management/plugin preflights address the same queried URL as the
+        // eventual request. Their Origin, method, headers and declared route
+        // still pass preflight admission; actual query schemas are checked by
+        // that operation. Token exchange never accepts query parameters.
+        if path == "/oauth/token" && query.is_some() {
+            return Err(Error::invalid("Unexpected authentication query"));
+        }
+        return preflight(app, &headers, &path, request_id).await;
+    }
     if path != "/oauth/authorize" && path != "/auth/ui/consent" && query.is_some() {
         return Err(Error::invalid("Unexpected authentication query"));
-    }
-    if method == "OPTIONS" {
-        return preflight(app, &headers, &path, request_id).await;
     }
     if path == "/oauth/token" {
         return token_exchange(app, peer, request_id, &headers, &bytes).await;

@@ -1145,6 +1145,24 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
             platform_versioned::create(&app, &router, token, publisher, &signing, schema).await,
         );
     }
+    let source_deployments: std::collections::BTreeSet<Uuid> =
+        std::iter::once(deployment.parse().unwrap())
+            .chain(versioned_sources.iter().map(|source| source.deployment))
+            .collect();
+    let source_processes = offline_source_processes(&app, &source_deployments).await;
+    // Withdraw the approval credential only after reconciliation has completed
+    // its current mutation and stopped. Otherwise its live volume-approval
+    // check must stop these writers, which cannot attest a consistent drain.
+    // Do not abort a Controller between Runtime::stop and durable bookkeeping.
+    app.shutdown.store(true, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(180), worker)
+        .await
+        .expect("source Controller did not relinquish reconciliation")
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(30), versioned_worker)
+        .await
+        .expect("source schema supervisor did not stop")
+        .unwrap();
     let revoke = api(
         &router,
         "revokeSession",
@@ -1173,10 +1191,12 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         .0,
         401
     );
-    app.shutdown.store(true, Ordering::SeqCst);
-    versioned_worker.await.unwrap();
-    worker.abort();
-    let _ = worker.await;
+    assert_eq!(
+        offline_source_processes(&app, &source_deployments).await,
+        source_processes,
+        "offline handoff must retain the exact healthy source generations and processes"
+    );
+    eprintln!("Offline source handoff: Controller exited normally before approval credential revocation; all {} real ready source tasks retained exact instances, generations, PIDs and process start times after revoked-token rejection", source_processes.len());
     // The test's API App is deliberately still held by Router clones. Terminate
     // its old leader only after stopping the controller, then exercise normal
     // offline host/database lease acquisition with root-private credentials.
@@ -2267,6 +2287,61 @@ async fn stream_process(app: &App, instance: Uuid) -> (u32, String) {
         .to_owned();
     (pid, started)
 }
+
+// This is an observation of real tasks, never a provider/heartbeat fixture.
+// Include every live SQL identity so a stale draining historical instance
+// cannot be silently omitted from the offline source's consistency boundary.
+#[derive(Debug, PartialEq, Eq)]
+struct OfflineSourceProcess {
+    deployment: Uuid,
+    generation: i64,
+    process: (u32, String),
+}
+
+async fn offline_source_processes(
+    app: &App,
+    expected_deployments: &std::collections::BTreeSet<Uuid>,
+) -> std::collections::BTreeMap<Uuid, OfflineSourceProcess> {
+    let c = app.db.connect().await.unwrap();
+    let rows = c.query("SELECT id,deployment_id,generation,phase FROM instances i WHERE phase<>'stopped' OR EXISTS(SELECT 1 FROM volume_attachments a WHERE a.instance_id=i.id) ORDER BY id", &[]).await.unwrap();
+    let mut processes = std::collections::BTreeMap::new();
+    let mut deployments = std::collections::BTreeSet::new();
+    for row in rows {
+        let id: Uuid = row.get("id");
+        let deployment: Uuid = row.get("deployment_id");
+        let generation: i64 = row.get("generation");
+        let phase: String = row.get("phase");
+        assert_eq!(phase, "ready", "offline source instance {id} deployment {deployment} generation {generation} must be healthy");
+        if !app.runtime.running(id).await.unwrap() {
+            let tasks = app.runtime.ctr(&["tasks".into(), "list".into()]).await;
+            let summary = tasks.as_ref().map(|bytes| {
+                String::from_utf8_lossy(bytes)
+                    .chars()
+                    .take(4096)
+                    .collect::<String>()
+            });
+            panic!("offline source instance {id} deployment {deployment} generation {generation} exited before handoff; bounded task inventory: {summary:?}");
+        }
+        assert!(
+            deployments.insert(deployment),
+            "offline source has multiple current instances for deployment {deployment}"
+        );
+        processes.insert(
+            id,
+            OfflineSourceProcess {
+                deployment,
+                generation,
+                process: stream_process(app, id).await,
+            },
+        );
+    }
+    assert_eq!(&deployments, expected_deployments);
+    let actual: std::collections::BTreeSet<_> =
+        app.runtime.inventory().await.unwrap().into_iter().collect();
+    assert_eq!(actual, processes.keys().copied().collect());
+    processes
+}
+
 fn stream_process_exited(process: &(u32, String)) -> bool {
     match fs::read_to_string(format!("/proc/{}/stat", process.0)) {
         Ok(stat) => {

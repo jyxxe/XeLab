@@ -366,6 +366,17 @@ def run(config: dict, report: dict) -> None:
 
         report["step"] = "actual_authorized_account_read"
         read_account(tokens["access_token"], "actual_account_cors_read")
+        report["step"] = "actual_authorized_account_query_read"
+        # The Authorization header makes this a native browser preflight to
+        # the exact queried URL; a no-query resource read cannot cover it.
+        listed = fetch(token=tokens["access_token"], path="/api/platform/v1/accounts?limit=1", method="GET")
+        report["http"]["actual_account_query_cors_read"] = listed.get("status")
+        body = listed.get("body")
+        require(listed.get("type") == "cors" and listed.get("status") == 200
+                and isinstance(body, dict) and isinstance(body.get("items"), list)
+                and len(body["items"]) == 1 and isinstance(body["items"][0], dict)
+                and body["items"][0].get("id") == config["expected_account_id"],
+                "actual_account_query_cors_read")
         report["step"] = "refresh_rotation"
         refresh_fields = {"grant_type": "refresh_token", "client_id": config["client_id"],
                           "refresh_token": tokens["refresh_token"]}

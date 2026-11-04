@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Actual Chromium + official BridgeHost + separate-process mTLS echo component.
+
+Core responses are an explicit bounded component adapter, not a kernel router.
+The plugin's static and business responses come from its real HTTPS process.
+"""
+import argparse
+import base64
+import copy
+import datetime
+import hashlib
+import http.client
+import json
+import os
+import pathlib
+import ssl
+import subprocess
+import sys
+import time
+import unittest
+import uuid
+from urllib.parse import urlparse
+
+from playwright.sync_api import sync_playwright
+import build_artifact
+import test_http
+
+SHELL, CORE, PLUGIN = "https://shell.ui-reference.test", "https://core.ui-reference.test", "https://plugin.ui-reference.test"
+SUBJECT, DEPLOYMENT, INSTALLATION, SKILL, INSTANCE = [str(uuid.UUID(int=value)) for value in range(1, 6)]
+DIGEST = "sha256:" + "a" * 64
+HOST_PUBLIC = None
+TOKENS = {"accent":"#4F7CFF", "desktop":"#E9EEF7", "surface":"#FFFFFF", "text":"#18202C", "muted_text":"#526074", "border":"#CBD5E1", "danger":"#B42318", "radius_px":12, "blur_px":16, "panel_opacity":0.92, "font":"system"}
+
+
+class IndependentPage(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Disposable identities only. The helper also has a small unused local
+        # server; every browser request below targets the separate child port.
+        test_http.HTTPTests.setUpClass()
+        cls.port_file = test_http.HTTPTests.root / "browser-component-port.json"
+        cls.process = subprocess.Popen([sys.executable, str(pathlib.Path(__file__).with_name("component_server.py")), "--identity", str(test_http.HTTPTests.root), "--port-file", str(cls.port_file)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        deadline = time.monotonic() + 5
+        while not cls.port_file.exists() and cls.process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if not cls.port_file.exists():
+            cls.process.terminate()
+            cls.process.wait(timeout=5)
+            test_http.HTTPTests.tearDownClass()
+            raise RuntimeError("The independent mTLS component could not start")
+        cls.port = json.loads(cls.port_file.read_text())["port"]
+        cls.manifest = build_artifact.build(test_http.HTTPTests.root / "artifact", str(uuid.uuid4()))
+        cls.playwright = sync_playwright().start()
+        cls.browser = cls.playwright.chromium.launch(executable_path=os.environ.get("XELAB_OAUTH_BROWSER_CHROMIUM", "/usr/bin/chromium"), headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.browser.close()
+        cls.playwright.stop()
+        cls.process.terminate()
+        cls.process.wait(timeout=5)
+        cls.process.stderr.close()
+        test_http.HTTPTests.tearDownClass()
+
+    def setUp(self):
+        self.context = self.browser.new_context()
+        self.page = self.context.new_page()
+        self.current = self.contribution("echo_window")
+        self.calls, self.opened, self.errors, self.backend_messages = [], [], [], []
+        self.revoked = False
+        self.results = {}
+        self.page.on("pageerror", lambda error: self.errors.append(str(error)))
+        self.page.route("**/*", self.route)
+
+    def tearDown(self):
+        self.assertEqual(self.errors, [])
+        self.context.close()
+
+    def contribution(self, identifier):
+        spec = copy.deepcopy(next(value for value in self.manifest["ui"]["contributions"] if value["id"] == identifier))
+        digest = "sha256:" + hashlib.sha256(json.dumps(spec, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return {"deployment_id":DEPLOYMENT, "installation_id":INSTALLATION, "plugin_id":build_artifact.PLUGIN_ID, "manifest_digest":"sha256:"+"b"*64, "contribution_digest":digest, "spec":spec,
+                "frame_url":PLUGIN+"/ui/"+build_artifact.PLUGIN_ID+spec["entry_path"], "frame_origin":PLUGIN, "availability":"ready", "reason_codes":[],
+                "bindings":[{"alias":"echo", "skill_id":SKILL, "definition_digest":DIGEST, "modes":["call"]}]}
+
+    def backend(self, path, method="GET", value=None):
+        context = ssl.create_default_context(cafile=test_http.HTTPTests.root / "ca.crt")
+        context.load_cert_chain(test_http.HTTPTests.root / "kernel.crt", test_http.HTTPTests.root / "kernel.key")
+        connection = http.client.HTTPSConnection("localhost", self.port, context=context, timeout=5)
+        headers = {}
+        body = b""
+        if value is not None:
+            body = json.dumps(value).encode()
+            headers = {"Content-Type":"application/json", "X-Xelab-Delegation":"explicit-component-adapter-handle", "X-Xelab-Subject":SUBJECT, "X-Xelab-Call-ID":str(uuid.uuid4()), "X-Xelab-Deadline-Unix-Ms":str(int(time.time()*1000)+10000), "X-Xelab-Idempotency-Key":base64.urlsafe_b64encode(b"component-intent").rstrip(b"=").decode()}
+        try:
+            connection.request(method, path, body, headers)
+            response = connection.getresponse()
+            return response.status, {key.lower():value for key,value in response.getheaders()}, response.read()
+        finally:
+            connection.close()
+
+    def route(self, route):
+        request, parsed = route.request, urlparse(route.request.url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        if origin == SHELL:
+            if parsed.path in ("/bridge.js", "/api.js"):
+                route.fulfill(content_type="text/javascript", body=(HOST_PUBLIC / parsed.path[1:]).read_bytes())
+            else:
+                route.fulfill(content_type="text/html", body=f"""<!doctype html><main id=frames></main><script type=module>
+import {{BridgeHost}} from '/bridge.js'; import {{ApiClient}} from '/api.js';
+window.states=[]; window.opened=[];
+const api=new ApiClient({{core_origin:{json.dumps(CORE)},client_id:'component-only-client'}},{{accessToken:async()=> 'parent-only-component-token'}});
+window.launch=async contribution=>{{const iframe=document.createElement('iframe');iframe.width=640;iframe.height=420;document.querySelector('#frames').append(iframe);
+window.bridge=new BridgeHost({{iframe,api,contribution,subjectId:{json.dumps(SUBJECT)},isCurrent:()=>true,coreOrigin:{json.dumps(CORE)},theme:()=>({{theme_tokens:{json.dumps(TOKENS)},reduce_motion:false,reduce_transparency:false}}),onState:(...state)=>states.push(state),openWindow:async value=>{{opened.push(value);return crypto.randomUUID();}}}});await bridge.mount();}};
+</script>""")
+            return
+        if origin == PLUGIN:
+            status, headers, body = self.backend(parsed.path + ("?"+parsed.query if parsed.query else ""))
+            headers = {key:value for key,value in headers.items() if key in ("content-type", "cache-control", "etag", "x-content-type-options", "referrer-policy")}
+            headers["content-security-policy"] = f"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors {SHELL}"
+            route.fulfill(status=status, headers=headers, body=body)
+            return
+        if origin != CORE:
+            route.abort()
+            return
+        cors = {"access-control-allow-origin":SHELL, "access-control-allow-headers":"authorization,content-type,idempotency-key,if-match", "access-control-allow-methods":"GET,POST,OPTIONS", "access-control-expose-headers":"etag,x-request-id", "x-request-id":SUBJECT}
+        if request.method == "OPTIONS":
+            route.fulfill(status=204, headers=cors)
+            return
+        self.calls.append({"path":parsed.path, "method":request.method, "headers":request.all_headers(), "body":request.post_data})
+        if self.revoked:
+            route.fulfill(status=403, headers=cors, content_type="application/json", body=json.dumps({"error":{"code":"PERMISSION_DENIED", "message":"Component source revoked", "retryable":False, "violations":[], "retry_after_ms":None, "resource_id":None}}))
+        elif "/ui/contributions/" in parsed.path:
+            identifier = parsed.path.rsplit("/", 1)[1]
+            value = self.current if identifier == self.current["spec"]["id"] else self.contribution(identifier)
+            route.fulfill(headers=cors, content_type="application/json", body=json.dumps(value))
+        elif request.method == "POST" and parsed.path == f"/api/platform/v1/skills/{SKILL}/calls":
+            value = json.loads(request.post_data)
+            status, _, raw = self.backend(f"/plugins/{build_artifact.PLUGIN_ID}/echo", "POST", value["input"])
+            self.assertEqual(status, 200)
+            output = json.loads(raw)
+            self.backend_messages.append(output)
+            result = {"skill_id":SKILL, "skill_version":"1.0.0", "definition_digest":DIGEST, "call":{"call_id":str(uuid.uuid4()), "contract":{"name":build_artifact.PLUGIN_ID+".echo", "version":"1.0.0", "schema_digest":DIGEST}, "provider_instance_id":INSTANCE, "skill_id":SKILL, "skill_definition_digest":DIGEST, "output":output, "completed_at":datetime.datetime.now(datetime.timezone.utc).isoformat()}}
+            self.results[result["call"]["call_id"]] = result["call"]
+            route.fulfill(headers=cors, content_type="application/json", body=json.dumps(result))
+        elif request.method == "GET" and parsed.path.startswith("/api/platform/v1/calls/") and parsed.path.rsplit("/",1)[1] in self.results:
+            call = self.results[parsed.path.rsplit("/",1)[1]]
+            route.fulfill(headers=cors, content_type="application/json", body=json.dumps({"call_id":call["call_id"],"state":"succeeded","result":call,"error":None}))
+        else:
+            route.fulfill(status=404, headers=cors, content_type="application/json", body='{"error":{"code":"RESOURCE_NOT_FOUND"}}')
+
+    def launch(self):
+        self.page.goto(SHELL+"/")
+        self.page.wait_for_function("typeof launch === 'function'")
+        with self.page.expect_event("framenavigated", predicate=lambda frame:frame.url.startswith(PLUGIN)) as navigation:
+            self.page.evaluate("value=>launch(value)", self.current)
+        self.page.wait_for_function("states.some(state=>state[0]==='active')")
+        frame = navigation.value
+        frame.wait_for_function("() => document.querySelector('#state').textContent.includes('ready') || document.querySelector('#state').textContent.includes('not granted')")
+        return frame
+
+    def test_real_frame_calls_real_independent_process_and_renders_text_only(self):
+        frame = self.launch()
+        self.assertTrue(frame.evaluate("(()=>{try{parent.document.body;return false}catch{return true}})()"))
+        self.assertTrue(frame.evaluate("(()=>{try{parent.sessionStorage.length;return false}catch{return true}})()"))
+        message = "Actual backend <img src=x onerror=alert(1)>"
+        frame.locator("#message").fill(message)
+        frame.locator("#call").click()
+        frame.wait_for_function("() => document.querySelector('#state').textContent==='Skill call completed.'")
+        self.assertEqual(frame.locator("#result").inner_text(), message)
+        self.assertEqual(frame.locator("img").count(), 0)
+        self.assertEqual(self.backend_messages, [{"message":message}])
+        post = next(value for value in self.calls if value["method"] == "POST")
+        body = json.loads(post["body"])
+        self.assertEqual(body["provider_deployment_id"], DEPLOYMENT)
+        self.assertEqual(body["idempotency_key"], post["headers"]["idempotency-key"])
+        self.assertNotIn("cookie", post["headers"])
+        self.assertTrue(frame.evaluate("!document.body.textContent.includes('parent-only-component-token') && localStorage.length===0 && sessionStorage.length===0"))
+
+    def test_widget_opens_only_the_same_deployment_window(self):
+        self.current = self.contribution("echo_widget")
+        frame = self.launch()
+        frame.locator("#open-window").click()
+        self.page.wait_for_function("opened.length===1")
+        opened = self.page.evaluate("opened[0]")
+        self.assertEqual(opened["deployment_id"], DEPLOYMENT)
+        self.assertEqual(opened["spec"]["id"], "echo_window")
+        self.assertEqual(len(self.backend_messages), 0)
+
+    def test_missing_binding_and_source_revocation_do_not_produce_fake_results(self):
+        self.current["bindings"] = []
+        frame = self.launch()
+        self.assertTrue(frame.locator("#call").is_disabled())
+        self.assertEqual(frame.locator("#result").inner_text(), "")
+        self.assertEqual(self.backend_messages, [])
+        self.revoked = True
+        self.page.wait_for_function("states.some(state=>state[0]==='closed')", timeout=8000)
+        self.assertEqual(self.page.locator("iframe").count(), 0)
+
+    def test_wrong_nonce_and_replayed_host_sequence_are_ignored(self):
+        frame = self.launch()
+        self.page.evaluate("""origin=>{const iframe=document.querySelector('iframe'),meta=Object.fromEntries(new URL(iframe.src).hash.slice(1).split('&').map(pair=>pair.split('=').map(decodeURIComponent)));for(const message of [{protocol:meta.protocol,view_id:meta.view_id,channel_nonce:'0'.repeat(64),seq:2,type:'event',event:'host.dispose',params:{reason:'logout'}},{protocol:meta.protocol,view_id:meta.view_id,channel_nonce:meta.channel_nonce,seq:1,type:'event',event:'host.dispose',params:{reason:'logout'}}])iframe.contentWindow.postMessage(message,origin); }""", PLUGIN)
+        frame.locator("#message").fill("Still the valid channel")
+        frame.locator("#call").click()
+        frame.wait_for_function("() => document.querySelector('#state').textContent==='Skill call completed.'")
+        self.assertEqual(self.backend_messages, [{"message":"Still the valid channel"}])
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--webui-public", type=pathlib.Path, required=True, help="The actual official WebUI public/ source directory")
+    args, remaining = parser.parse_known_args()
+    HOST_PUBLIC = args.webui_public.resolve()
+    if not all((HOST_PUBLIC / name).is_file() for name in ("bridge.js", "api.js")):
+        parser.error("The actual official BridgeHost/API modules are required")
+    unittest.main(argv=[sys.argv[0], *remaining])
