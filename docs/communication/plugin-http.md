@@ -10,6 +10,8 @@ RouteSpec.kind=http 必须声明 http_contract_digest；镜像内 `/xelab/http/o
 
 平台只注册插件 OpenAPI 明确声明的路径/方法，前缀不是 catch-all 授权。插件第三方业务接口由它自己的契约定义；内核公开接口清单不假定能预先列出未来插件的业务对象。
 
+操作权限沿用平台 OpenAPI 的 `x-permission` 字符串，必须与匹配的签名 RouteSpec.required_action 完全相同；不另增可由调用方覆盖的权限字段。业务动作只允许 `plugin.http.invoke` 或本插件 `plugin_id.` 命名空间内已注册且资源类型为 plugin 的动作，不能借用其他核心管理权限。审批和每次调用仍查询当前权限定义并使用现有 Authorizer。首个实现 profile 仅接受字面路径、自包含 JSON Schema 和显式成功/错误状态，路径模板、查询参数、外部 Schema 引用及 SSE 不在该 profile 内，未实现时明确拒绝，不隐式透传。
+
 static/webui 仅提供获批 HTTP 文件及页面，GET/HEAD 转发受清单前缀和来源规则限制；业务写接口仍须 http 契约。容器内静态文件路径由插件负责，但内核拒绝路径穿越、编码斜杠和头部注入。
 
 ## 转发规则

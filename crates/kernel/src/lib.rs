@@ -17,6 +17,7 @@ pub mod host_blobs;
 pub mod identity;
 pub mod migration_rpc;
 pub mod offline;
+pub mod plugin_http;
 pub mod policy;
 pub mod recovery;
 pub mod restores;
