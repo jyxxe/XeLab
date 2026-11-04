@@ -364,13 +364,9 @@ pub(crate) async fn handle(
     if headers.contains_key("last-event-id") {
         return Err(Error::invalid("Skill streams do not support Last-Event-ID"));
     }
-    if headers.get_all("origin").iter().count() > 1 {
-        return Err(Error::denied());
-    }
-    let origin = headers.get("origin").and_then(|value| value.to_str().ok());
-    let trusted_origin = app.config.text("server", "public_origin");
-    if (headers.contains_key("origin") && origin != Some(trusted_origin))
-        || (!headers.contains_key("authorization") && origin != Some(trusted_origin))
+    let browser_origin = crate::oauth_http::request_origin(headers)?.map(str::to_owned);
+    if !headers.contains_key("authorization")
+        && browser_origin.as_deref() != Some(app.config.text("server", "public_origin"))
     {
         return Err(Error::denied());
     }
@@ -403,6 +399,7 @@ pub(crate) async fn handle(
     let output = Arc::new(Output::new(sender));
     let actor = app.clone();
     let actor_token = token.clone();
+    let actor_origin = browser_origin.clone();
     tokio::spawn(async move {
         let result = crate::broker::stream_skill(
             &actor,
@@ -413,6 +410,7 @@ pub(crate) async fn handle(
             &input,
             &key,
             &output,
+            actor_origin.as_deref(),
         )
         .await;
         output.finish(result).await;
@@ -423,12 +421,21 @@ pub(crate) async fn handle(
         .recv()
         .await
         .ok_or_else(|| Error::unavailable("Skill stream admission ended"))??;
-    authorize_delivery(&app, &token, peer.ip(), request_id, &first).await?;
+    authorize_delivery_with_origin(
+        &app,
+        &token,
+        peer.ip(),
+        request_id,
+        &first,
+        browser_origin.as_deref(),
+    )
+    .await?;
     let stream = futures_util::stream::unfold(
         (Some(first), receiver, false),
         move |(first, mut receiver, ended)| {
             let app = app.clone();
             let token = token.clone();
+            let browser_origin = browser_origin.clone();
             async move {
                 if ended {
                     return None;
@@ -445,7 +452,15 @@ pub(crate) async fn handle(
                 let checked = if frame.kind == "accepted" {
                     Ok(())
                 } else {
-                    authorize_delivery(&app, &token, peer.ip(), request_id, &frame).await
+                    authorize_delivery_with_origin(
+                        &app,
+                        &token,
+                        peer.ip(),
+                        request_id,
+                        &frame,
+                        browser_origin.as_deref(),
+                    )
+                    .await
                 };
                 let frame = match checked {
                     Ok(()) => frame,
@@ -475,12 +490,24 @@ pub(crate) async fn handle(
     Ok(retain_response_slot(response, response_slot))
 }
 
+#[cfg(test)]
 async fn authorize_delivery(
     app: &App,
     token: &str,
     peer: IpAddr,
     request: Uuid,
     frame: &Frame,
+) -> Result<()> {
+    authorize_delivery_with_origin(app, token, peer, request, frame, None).await
+}
+
+async fn authorize_delivery_with_origin(
+    app: &App,
+    token: &str,
+    peer: IpAddr,
+    request: Uuid,
+    frame: &Frame,
+    browser_origin: Option<&str>,
 ) -> Result<()> {
     ensure_active(app).map_err(|error| error.with_resource(frame.call))?;
     let remaining = (frame.deadline - chrono::Utc::now())
@@ -496,6 +523,7 @@ async fn authorize_delivery(
             frame.call,
             matches!(frame.kind, "item" | "completed"),
             remaining,
+            browser_origin,
         ),
     )
     .await
@@ -511,6 +539,7 @@ async fn authorize_delivery(
         .map_err(|error| error.with_resource(frame.call))
 }
 
+#[allow(clippy::too_many_arguments)] // Original transport Origin accompanies the fixed call identity.
 async fn authorize_delivery_inner(
     app: &App,
     token: &str,
@@ -519,13 +548,15 @@ async fn authorize_delivery_inner(
     call: Uuid,
     business: bool,
     remaining: Duration,
+    browser_origin: Option<&str>,
 ) -> Result<()> {
     let mut connection = app.db.connect_scoped(remaining).await?;
     let transaction = connection.transaction().await?;
-    let ctx = app
+    let mut ctx = app
         .auth
         .authenticate(&transaction, token, peer, request)
         .await?;
+    ctx.browser_origin = browser_origin.map(str::to_owned);
     crate::broker::check_skill_authority(&transaction, &ctx, call).await?;
     let status = transaction
         .query_one("SELECT deadline_at,error FROM calls WHERE id=$1", &[&call])

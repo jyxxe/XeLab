@@ -6,6 +6,7 @@
 - [M3 实现目标与分阶段验收进度](m3-progress.md)
 - [M3 声明式 HTTP、HTTP Skill 与静态网关（集成验收中）](m3-http.md)
 - [M3 HTTP 不可变契约、调用来源与恢复](m3-http-provenance.md)
+- [M3 OAuth、Client、默认界面与 UI 控制接口（集成验收中）](m3-oauth-ui.md)
 - [M1 实现与验收记录](m1-acceptance.md)
 - [M2 Secret 托管与工作负载租约](m2-secrets.md)
 - [M2 不可变 Blob 与可恢复清理](m2-blobs.md)

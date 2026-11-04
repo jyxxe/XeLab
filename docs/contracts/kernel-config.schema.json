@@ -197,7 +197,7 @@
         },
         "shell_origins": {
           "type": "array",
-          "minItems": 1,
+          "minItems": 0,
           "maxItems": 32,
           "uniqueItems": true,
           "items": {
@@ -206,7 +206,7 @@
             "pattern": "^https://",
             "maxLength": 512
           },
-          "description": "允许承载iframe的精确壳源，无路径/凭证/query/fragment；不自动授予OAuth/API权"
+          "description": "显式允许承载iframe的精确外部壳源；可为空，此时只允许内核根据实际Ready/可信发布者/当前部署审批与active Client注册核验的固定WebUI分配源。不自动授予OAuth/API权。"
         }
       },
       "required": [

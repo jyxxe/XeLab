@@ -6,7 +6,7 @@
 
 `GET /auth/ui/login`
 
-内核保留来源，不由插件覆盖；只加载内核自有静态资源，禁止第三方脚本和 frame 嵌入，表单提交到 /api/platform/v1/auth/login。
+内核最小可信登录页面。未登录时显示密码表单；已有可信会话及有效的不透明登录续接 Cookie 时，绑定该会话后跳转固定同意页。续接状态由内核保存，不接受任意 next/return URL。
 
 | 项目 | 定义 |
 |---|---|
@@ -31,3 +31,4 @@
 | 429 | `application/json` → [ErrorEnvelope](../../models/ErrorEnvelope.md) | 调用配额/限流 |
 | 500 | `application/json` → [ErrorEnvelope](../../models/ErrorEnvelope.md) | 内部错误，不泄露敏感信息 |
 | 503 | `application/json` → [ErrorEnvelope](../../models/ErrorEnvelope.md) | 内核未就绪或后端不可用 |
+| 302 | 无响应体 | 可信登录后，继续该浏览器短期绑定的 OAuth 请求，跳转到固定内核同意页 |

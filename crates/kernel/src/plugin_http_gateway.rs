@@ -146,12 +146,24 @@ async fn request_security_inner(
     method: &Method,
     headers: &HeaderMap,
 ) -> Result<()> {
-    if headers.get_all("origin").iter().count() > 1 {
-        return Err(Error::invalid("Duplicate Origin"));
-    }
     let trusted = app.config.text("server", "public_origin");
-    if headers.contains_key("origin") && api::header(headers, "origin")? != trusted {
-        return Err(Error::denied());
+    if crate::oauth_http::request_origin(headers)?.is_some_and(|origin| origin != trusted) {
+        // Foreign browser requests have no ambient core credential. This
+        // preliminary classification does not replace action/resource policy
+        // checks in the actual request transaction or Broker actor.
+        let mut c = app.db.connect_scoped(Duration::from_secs(10)).await?;
+        let tx = c.transaction().await?;
+        crate::oauth_http::credential_context(
+            &tx,
+            &app.auth,
+            headers,
+            SocketAddr::new(peer, 0),
+            request,
+            trusted,
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(());
     }
     let login_cookie = cookie(headers)?;
     if matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE") {
@@ -235,7 +247,7 @@ pub(crate) async fn approve(
     crate::http_contracts::validate_actions(c, manifest).await?;
     let resource = Resource::new("deployment", deployment, Some(owner));
     auth::authorize(c, ctx, "plugin.permission.grant", &resource).await?;
-    let current = Policy::new(c, ctx.peer)
+    let current = Policy::for_context(c, ctx)
         .credential(ctx.credential, 0)
         .await?;
     let paths: Vec<_> = current
@@ -260,7 +272,7 @@ pub(crate) async fn approve(
         .await?
         .get(0);
     let fingerprint = approval_fingerprint(approval, installation, manifest)?;
-    c.execute("INSERT INTO plugin_http_approvals(deployment_id,credential_id,peer,approval_digest,source_paths,created_at) VALUES($1,$2,$3::text::inet,$4,$5,now()) ON CONFLICT(deployment_id) DO UPDATE SET credential_id=$2,peer=$3::text::inet,approval_digest=$4,source_paths=$5,created_at=now()",&[&deployment,&ctx.credential,&ctx.peer.to_string(),&fingerprint,&json!(paths)]).await?;
+    c.execute("INSERT INTO plugin_http_approvals(deployment_id,credential_id,peer,approval_digest,source_paths,browser_origin,created_at) VALUES($1,$2,$3::text::inet,$4,$5,$6,now()) ON CONFLICT(deployment_id) DO UPDATE SET credential_id=$2,peer=$3::text::inet,approval_digest=$4,source_paths=$5,browser_origin=$6,created_at=now()",&[&deployment,&ctx.credential,&ctx.peer.to_string(),&fingerprint,&json!(paths),&ctx.browser_origin]).await?;
     Ok(())
 }
 
@@ -310,7 +322,7 @@ async fn check_approval_inner(
         return Ok(());
     }
     crate::http_contracts::validate_actions(c, manifest).await?;
-    let row=c.query_opt("SELECT d.approval,d.owner_id,d.installation_id,a.credential_id,host(a.peer) peer,a.approval_digest,a.source_paths FROM deployments d JOIN plugin_http_approvals a ON a.deployment_id=d.id WHERE d.id=$1",&[&deployment]).await?.ok_or_else(Error::denied)?;
+    let row=c.query_opt("SELECT d.approval,d.owner_id,d.installation_id,a.credential_id,host(a.peer) peer,a.approval_digest,a.source_paths,a.browser_origin FROM deployments d JOIN plugin_http_approvals a ON a.deployment_id=d.id WHERE d.id=$1",&[&deployment]).await?.ok_or_else(Error::denied)?;
     let approval: Value = row.get("approval");
     if approval_fingerprint(&approval, row.get("installation_id"), manifest)?
         != row.get::<_, String>("approval_digest")
@@ -321,7 +333,7 @@ async fn check_approval_inner(
         .get::<_, String>("peer")
         .parse()
         .map_err(|_| Error::denied())?;
-    let ctx = app
+    let mut ctx = app
         .auth
         .resume(
             c,
@@ -332,6 +344,7 @@ async fn check_approval_inner(
                 .unwrap_or_else(Uuid::new_v4),
         )
         .await?;
+    ctx.browser_origin = row.get("browser_origin");
     let saved: Vec<Path> =
         serde_json::from_value(row.get("source_paths")).map_err(|_| Error::denied())?;
     let current = if let Some((transaction, caller, authority)) =
@@ -339,11 +352,12 @@ async fn check_approval_inner(
             caller.credential == ctx.credential
                 && caller.peer == ctx.peer
                 && caller.subject == ctx.subject
+                && caller.browser_origin == ctx.browser_origin
         }) {
         authority.verify(transaction, caller)?;
         authority.revalidate(transaction, &ctx, &saved).await?
     } else {
-        Policy::new(c, peer)
+        Policy::for_context(c, &ctx)
             .revalidate(&saved, ctx.credential)
             .await?
     };
@@ -392,8 +406,23 @@ async fn handle_with_ingress(
     let (parts, body) = request.into_parts();
     let path = parts.uri.path();
     plugin_http::canonical_path(path)?;
-    if parts.uri.query().is_some() {
-        return Err(Error::invalid("Undeclared plugin query parameters"));
+    if let Some(query) = parts.uri.query() {
+        let deployment = match host {
+            Host::Deployment(id) if matches!(parts.method.as_str(), "GET" | "HEAD") => id,
+            _ => return Err(Error::invalid("Undeclared plugin query parameters")),
+        };
+        // Only a registered callback of this exact signed WebUI may carry
+        // OAuth response fields. The backend always receives path alone.
+        tokio::time::timeout_at(started + Duration::from_secs(10), async {
+            let mut c = app.db.connect_scoped(Duration::from_secs(10)).await?;
+            let tx = c.transaction().await?;
+            db::auth_lock(&tx, false).await?;
+            crate::webui::validate_callback(&tx, &app, deployment, path, query).await?;
+            tx.commit().await?;
+            Ok::<_, Error>(())
+        })
+        .await
+        .map_err(|_| deadline())??;
     }
     plugin_http::reject_upgrade(&parts.headers)?;
     let fixed = match host {
@@ -666,13 +695,14 @@ async fn static_page(
             (None, Vec::new())
         } else {
             request_security(&app, peer, request, method, headers).await?;
-            let ctx = app
+            let mut ctx = app
                 .auth
                 .authenticate(&transaction, api::bearer(headers)?, peer, request)
                 .await?;
+            ctx.browser_origin=crate::oauth_http::request_origin(headers)?.map(str::to_owned);
             let resource = Resource::new("plugin", string(&manifest, "plugin_id")?, Some(row.get("owner_id")));
             auth::authorize(&transaction, &ctx, &route.action, &resource).await?;
-            let paths = Policy::new(&transaction, peer)
+            let paths = Policy::for_context(&transaction, &ctx)
                 .credential(ctx.credential, 0)
                 .await?
                 .into_iter()
@@ -732,7 +762,7 @@ async fn static_page(
     );
     tokio::pin!(fetch);
     let mut monitor = tokio::time::interval(Duration::from_millis(100));
-    let response = loop {
+    let mut response = loop {
         tokio::select! {
             response=&mut fetch => break response?,
             _=monitor.tick()=> static_authority(&app,&binding).await?,
@@ -743,6 +773,51 @@ async fn static_page(
         .await
         .map_err(|_| deadline())??;
     static_authority(&app, &binding).await?;
+    if binding.manifest.get("webui").is_some() || binding.manifest.get("ui").is_some() {
+        tokio::time::timeout_at(
+            binding
+                .deadline
+                .min(tokio::time::Instant::now() + Duration::from_secs(3)),
+            async {
+                let mut c = app.db.connect_scoped(Duration::from_secs(3)).await?;
+                let tx = c.transaction().await?;
+                db::auth_lock(&tx, false).await?;
+                if binding.manifest.get("webui").is_some() {
+                    response.headers.insert(
+                        "content-security-policy",
+                        crate::webui::csp(&tx, &app, binding.deployment, &binding.manifest)
+                            .await?
+                            .parse()
+                            .map_err(|_| Error::denied())?,
+                    );
+                } else {
+                    let ancestors =
+                        crate::webui::frame_ancestors(&tx, &app, binding.deployment).await?;
+                    let ancestors = if ancestors.is_empty() {
+                        "'none'".into()
+                    } else {
+                        ancestors.join(" ")
+                    };
+                    let old = api::header(&response.headers, "content-security-policy")?;
+                    let mut directives = old
+                        .split(';')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty() && !s.starts_with("frame-ancestors "))
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>();
+                    directives.push(format!("frame-ancestors {ancestors}"));
+                    response.headers.insert(
+                        "content-security-policy",
+                        directives.join("; ").parse().map_err(|_| Error::denied())?,
+                    );
+                }
+                tx.commit().await?;
+                Ok::<_, Error>(())
+            },
+        )
+        .await
+        .map_err(|_| deadline())??;
+    }
     let bytes = Bytes::from(response.bytes);
     let body_app = app.clone();
     let body_binding = binding.clone();
@@ -769,6 +844,32 @@ async fn static_page(
         HeaderValue::from_str(&request.to_string()).unwrap(),
     );
     Ok(retain(result, permit))
+}
+
+/// CORS preflight never selects an arbitrary URL or grants authority. It only
+/// admits the exact method/path/headers of one healthy approved signed binding;
+/// the actual request independently passes the complete Broker admission.
+pub(crate) async fn preflight_route(
+    c: &(impl GenericClient + Sync),
+    app: &App,
+    method: &Method,
+    path: &str,
+) -> Result<Vec<String>> {
+    plugin_http::canonical_path(path)?;
+    let plugin = path
+        .strip_prefix("/plugins/")
+        .and_then(|tail| tail.split_once('/'))
+        .map(|(id, _)| id)
+        .ok_or_else(Error::not_found)?;
+    let rows=c.query("SELECT DISTINCT d.id,d.installation_id,n.manifest FROM deployments d JOIN installations n ON n.id=d.installation_id JOIN publishers p ON p.id=n.publisher_id JOIN instances i ON i.deployment_id=d.id WHERE n.plugin_id=$1 AND n.state='installed' AND p.status='trusted' AND d.spec->>'enabled'='true' AND d.archived_at IS NULL AND d.phase='ready' AND i.phase='ready' AND i.health='alive' AND i.generation=d.observed_generation AND i.last_heartbeat_at>now()-interval '1 millisecond'*((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint+(n.manifest->'health'->>'timeout_ms')::bigint)",&[&plugin]).await?;
+    if rows.len() != 1 {
+        return Err(Error::unavailable("No unique healthy fixed HTTP binding"));
+    }
+    let row = &rows[0];
+    let deployment = row.get("id");
+    check_approval(c, app, deployment, &row.get::<_, Value>("manifest")).await?;
+    let registry = crate::http_contracts::load(c, row.get("installation_id")).await?;
+    Ok(registry.resolve(method, path)?.cors_request_header_names())
 }
 
 async fn static_authority(app: &App, binding: &StaticBinding) -> Result<()> {
@@ -800,10 +901,11 @@ async fn static_authority(app: &App, binding: &StaticBinding) -> Result<()> {
         }
         check_approval(&transaction, app, binding.deployment, &binding.manifest).await?;
         if let Some(ctx) = &binding.ctx {
-            let current = app
+            let mut current = app
                 .auth
                 .resume(&transaction, ctx.credential, ctx.peer, ctx.request)
                 .await?;
+            current.browser_origin = ctx.browser_origin.clone();
             if current.subject != ctx.subject {
                 return Err(Error::credential());
             }
@@ -812,7 +914,7 @@ async fn static_authority(app: &App, binding: &StaticBinding) -> Result<()> {
                 string(&binding.manifest, "plugin_id")?,
                 Some(binding.owner),
             );
-            let paths = Policy::new(&transaction, ctx.peer)
+            let paths = Policy::for_context(&transaction, &current)
                 .revalidate(&binding.paths, current.credential)
                 .await?;
             if !auth::rules_allow(

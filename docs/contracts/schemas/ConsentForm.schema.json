@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ConsentForm",
+  "type": "object",
+  "description": "可信同意页原生 URL 编码表单；approved 只接受字符串 true/false。两个同名头字段为传输元数据，验证后移除，不扩展 ConsentDecision JSON。",
+  "additionalProperties": false,
+  "properties": {
+    "authorization_request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "资源唯一标识",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
+    },
+    "approved": {
+      "type": "string",
+      "enum": [
+        "true",
+        "false"
+      ],
+      "description": "明确允许或拒绝固定范围，不接受其他 truthy 表示"
+    },
+    "X-CSRF-Token": {
+      "type": "string",
+      "minLength": 43,
+      "maxLength": 128,
+      "description": "与请求头二选一的会话 CSRF 证明"
+    },
+    "Idempotency-Key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "与请求头二选一的 24h 去重键"
+    }
+  },
+  "required": [
+    "authorization_request_id",
+    "approved"
+  ]
+}

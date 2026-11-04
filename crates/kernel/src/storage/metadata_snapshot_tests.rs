@@ -5,6 +5,183 @@ use crate::{auth, backups::tests::Fixture, db::Db};
 
 const PASSWORD: &str = "fresh offline metadata restore password";
 
+#[tokio::test]
+async fn actual_postgres_oauth_copy_round_trip_resets_families_clients_and_browser_intents() {
+    use crate::oauth::{
+        authorization, clients,
+        tokens::{self, ExchangeOutcome},
+    };
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use serde_json::json;
+    use std::collections::HashMap;
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let mut source = f.app.db.connect().await.unwrap();
+    let ctx = f
+        .app
+        .auth
+        .authenticate(
+            &source,
+            &f.token,
+            "127.0.0.1".parse().unwrap(),
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    let spec = json!({"name":"Snapshot browser client","plugin_id":"org.xelab.webui","redirect_uris":["https://snapshot-ui.example/callback"],"allowed_origins":["https://snapshot-ui.example"],"maximum_rules":[{"action":"account.read","resource":{"kind":"account","match":"ids","ids":[ctx.subject]}}]});
+    let (client, _) = clients::execute(
+        &source,
+        &f.app.auth,
+        &ctx,
+        "createClient",
+        &HashMap::new(),
+        &spec,
+        &axum::http::HeaderMap::new(),
+        "",
+    )
+    .await
+    .unwrap();
+    let verifier = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let input = authorization::AuthorizationInput {
+        client_id: client["client_id"].as_str().unwrap().into(),
+        redirect_uri: "https://snapshot-ui.example/callback".into(),
+        state: "snapshot-browser-state".into(),
+        code_challenge: URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())),
+        scope: format!("client:{}", client["client_id"].as_str().unwrap()),
+    };
+    let tx = source.transaction().await.unwrap();
+    db::auth_lock(&tx, true).await.unwrap();
+    let consent = authorization::begin_authorization(&tx, &f.app.auth, &ctx, &input)
+        .await
+        .unwrap();
+    let authorization::ConsentOutcome::Approved { location } = authorization::decide_consent(
+        &tx,
+        &f.app.auth,
+        &ctx,
+        consent.authorization_request_id,
+        true,
+        &consent.csrf_token,
+    )
+    .await
+    .unwrap() else {
+        panic!("approved consent required");
+    };
+    tx.commit().await.unwrap();
+    let code = url::Url::parse(&location)
+        .unwrap()
+        .query_pairs()
+        .find(|(name, _)| name == "code")
+        .unwrap()
+        .1
+        .into_owned();
+    let ExchangeOutcome::Token(issued)=tokens::exchange(&f.app.db,&f.app.auth,ctx.peer,Uuid::new_v4(),&json!({"grant_type":"authorization_code","client_id":input.client_id,"redirect_uri":input.redirect_uri,"code":code,"code_verifier":verifier}),Some("https://snapshot-ui.example")).await.unwrap() else { panic!("real OAuth exchange required"); };
+    let tx = source.transaction().await.unwrap();
+    db::auth_lock(&tx, true).await.unwrap();
+    authorization::begin_authorization(&tx, &f.app.auth, &ctx, &input)
+        .await
+        .unwrap();
+    authorization::prepare_login(&tx, &f.app.auth, &input, ctx.peer)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    // Current registration can change after historical authorization. Restore
+    // validates the saved binding, and never resurrects that old authority.
+    source.execute("UPDATE clients SET spec=jsonb_set(spec,'{redirect_uris}','[\"https://snapshot-ui.example/new-callback\"]'),revision=revision+1",&[]).await.unwrap();
+    let mut bytes = Vec::new();
+    let summary = export_inner(&mut source, &mut bytes).await.unwrap();
+    assert!(db::snapshot_tables().contains(&"oauth_families"));
+    assert!(db::snapshot_tables().contains(&"oauth_login_intents"));
+    let (target_db, mut destination, recovery) = target(f.backup).await;
+    assert!(
+        !destination
+            .query_one("SELECT EXISTS(SELECT 1 FROM default_ui)", &[])
+            .await
+            .unwrap()
+            .get::<_, bool>(0),
+        "migrations must leave an empty restore target empty"
+    );
+    import_inner(
+        &mut destination,
+        &mut bytes.as_slice(),
+        &summary,
+        recovery,
+        ctx.subject,
+        PASSWORD,
+    )
+    .await
+    .unwrap();
+    crate::oauth::snapshot::ensure_authority_reset(&destination)
+        .await
+        .unwrap();
+    assert_eq!(
+        destination
+            .query_one(
+                "SELECT count(*) FROM oauth_families WHERE status='revoked'",
+                &[]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        1
+    );
+    assert_eq!(
+        destination
+            .query_one(
+                "SELECT count(*) FROM authorization_requests WHERE status='denied'",
+                &[]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        1
+    );
+    assert!(f
+        .app
+        .auth
+        .authenticate(
+            &destination,
+            issued["access_token"].as_str().unwrap(),
+            ctx.peer,
+            Uuid::new_v4()
+        )
+        .await
+        .is_err());
+    target_db.migrate().await.unwrap();
+    crate::oauth::snapshot::ensure_authority_reset(&destination)
+        .await
+        .unwrap();
+    assert!(
+        target_db.check().await.is_err(),
+        "COPY success is not physical recovery readiness"
+    );
+    // Publication independently refuses each surviving browser trust root.
+    destination
+        .execute("UPDATE oauth_families SET status='active'", &[])
+        .await
+        .unwrap();
+    assert!(crate::oauth::snapshot::ensure_authority_reset(&destination)
+        .await
+        .is_err());
+    destination
+        .execute("UPDATE oauth_families SET status='revoked'", &[])
+        .await
+        .unwrap();
+    destination
+        .execute("UPDATE clients SET status='active'", &[])
+        .await
+        .unwrap();
+    assert!(crate::oauth::snapshot::ensure_authority_reset(&destination)
+        .await
+        .is_err());
+    // Invalid frozen source metadata is rejected before a new snapshot exists.
+    source
+        .execute("UPDATE oauth_families SET fixed_paths='[]'", &[])
+        .await
+        .unwrap();
+    assert!(export_inner(&mut source, &mut Vec::new()).await.is_err());
+}
+
 async fn target(backup: Uuid) -> (Db, Client, Uuid) {
     let base = std::env::var("XELAB_TEST_DATABASE_URL").unwrap();
     let admin = Db::new(base.clone()).unwrap().connect().await.unwrap();

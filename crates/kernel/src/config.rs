@@ -143,6 +143,9 @@ pub fn checked_origin(s: &str) -> Result<url::Url> {
     let u = url::Url::parse(s).map_err(|_| Error::invalid("Invalid HTTPS origin"))?;
     if u.scheme() != "https"
         || u.host_str().is_none()
+        || u.origin().ascii_serialization() != s
+        || s.contains('*')
+        || s.bytes().any(|byte| byte.is_ascii_control())
         || u.path() != "/"
         || u.query().is_some()
         || u.fragment().is_some()
@@ -196,12 +199,34 @@ mod tests {
         assert!(Config::from_value(serde_json::to_value(t).unwrap()).is_ok());
     }
     #[test]
+    fn allocated_shells_do_not_require_a_predeclared_unknown_deployment_origin() {
+        let t: toml::Value =
+            toml::from_str(include_str!("../../../docs/contracts/examples/kernel.toml")).unwrap();
+        let mut value = serde_json::to_value(t).unwrap();
+        value["ui_gateway"] = serde_json::json!({"base_domain":"plugins.example","public_port":443,"shell_origins":[]});
+        Config::from_value(value.clone()).unwrap();
+        // An empty static list is not a wildcard. Explicit external parents
+        // still cannot impersonate the trusted core or a deployment origin.
+        for parent in [
+            "https://*.example",
+            value["server"]["public_origin"].as_str().unwrap(),
+            "https://d-00000000000000000000000000000001.plugins.example",
+        ] {
+            let mut invalid = value.clone();
+            invalid["ui_gateway"]["shell_origins"] = serde_json::json!([parent]);
+            assert!(Config::from_value(invalid).is_err());
+        }
+    }
+    #[test]
     fn unsafe_origins_and_private_files_are_rejected() {
         for u in [
             "http://x.test",
             "https://user@x.test",
             "https://x.test/a",
             "https://x.test/?a=1",
+            "https://*.example",
+            "https://x.test/",
+            "https://X.test",
         ] {
             assert!(checked_origin(u).is_err());
         }

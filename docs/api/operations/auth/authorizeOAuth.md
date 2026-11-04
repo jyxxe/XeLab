@@ -29,7 +29,7 @@
 | `state` | query | 是 | string; minLength=`1`; maxLength=`256` | 客户端防 CSRF 随机值 |
 | `code_challenge` | query | 是 | string; minLength=`43`; maxLength=`43`; pattern=`"^[A-Za-z0-9_-]{43}$"` | S256 PKCE challenge |
 | `code_challenge_method` | query | 是 | string; enum=`["S256"]` | 固定 S256 |
-| `scope` | query | 是 | string; minLength=`1`; maxLength=`512` | 申请的权限组/规则句柄，必须提前注册 |
+| `scope` | query | 是 | string; minLength=`1`; maxLength=`512` | 空格分隔且排序去重的预注册句柄：client:<public_client_id> 表示该 Client 注册的 maximum_rules 上限；rule:sha256:<RFC8785规则摘要> 表示该 Client 上限中的单条规则。绑定当前 Client revision，并与当前会话权限交集后冻结原始来源；不得解析任意规则或动态最新版。 |
 
 请求体：无。发送非空请求体返回 `400 INVALID_ARGUMENT`。
 

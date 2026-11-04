@@ -24,7 +24,7 @@ pub async fn invoke(
     input: &Value,
     key: &str,
 ) -> Result<Value> {
-    invoke_bounded(app, token, peer, request_id, input, key, None, None).await
+    invoke_bounded(app, token, peer, request_id, input, key, None, None, None).await
 }
 
 /// Skill identity comes from the path, never from caller-supplied route context.
@@ -38,7 +38,44 @@ pub async fn invoke_skill(
     input: &Value,
     key: &str,
 ) -> Result<Value> {
-    invoke_bounded(app, token, peer, request_id, input, key, Some(skill), None).await
+    invoke_bounded(
+        app,
+        token,
+        peer,
+        request_id,
+        input,
+        key,
+        Some(skill),
+        None,
+        None,
+    )
+    .await
+}
+
+/// Browser Origin is captured only after trusted Host/header classification.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn invoke_from_http(
+    app: &App,
+    token: &str,
+    peer: IpAddr,
+    request_id: Uuid,
+    input: &Value,
+    key: &str,
+    skill: Option<Uuid>,
+    browser_origin: Option<&str>,
+) -> Result<Value> {
+    invoke_bounded(
+        app,
+        token,
+        peer,
+        request_id,
+        input,
+        key,
+        skill,
+        None,
+        browser_origin,
+    )
+    .await
 }
 
 /// Streaming shares the exact ordinary-call admission, journal and finalizer.
@@ -52,6 +89,7 @@ pub(crate) async fn stream_skill(
     input: &Value,
     key: &str,
     output: &crate::skill_streams::Output,
+    browser_origin: Option<&str>,
 ) -> Result<Value> {
     invoke_bounded(
         app,
@@ -62,6 +100,7 @@ pub(crate) async fn stream_skill(
         key,
         Some(skill),
         Some(output),
+        browser_origin,
     )
     .await
 }
@@ -76,6 +115,7 @@ async fn invoke_bounded(
     key: &str,
     skill: Option<Uuid>,
     stream: Option<&crate::skill_streams::Output>,
+    browser_origin: Option<&str>,
 ) -> Result<Value> {
     let started = tokio::time::Instant::now();
     let wall_started = chrono::Utc::now();
@@ -138,6 +178,7 @@ async fn invoke_bounded(
                     key,
                     started,
                     started + Duration::from_millis(effective),
+                    browser_origin,
                 ),
             )
             .await
@@ -156,6 +197,7 @@ async fn invoke_bounded(
                 stream,
                 wall_started,
                 started + Duration::from_millis(effective),
+                browser_origin,
             ),
         )
         .await
@@ -190,6 +232,7 @@ async fn invoke_inner(
     stream: Option<&crate::skill_streams::Output>,
     started: chrono::DateTime<chrono::Utc>,
     deadline_bound: tokio::time::Instant,
+    browser_origin: Option<&str>,
 ) -> Result<Value> {
     validate(
         if skill_id.is_some() {
@@ -207,7 +250,8 @@ async fn invoke_inner(
         .await?;
     let tx = c.transaction().await?;
     db::call_lock(&tx).await?;
-    let ctx = app.auth.authenticate(&tx, token, peer, request_id).await?;
+    let mut ctx = app.auth.authenticate(&tx, token, peer, request_id).await?;
+    ctx.browser_origin = browser_origin.map(str::to_owned);
     let skill = if let Some(id) = skill_id {
         match crate::skills::resolve_for_invoke(&tx, &ctx, id).await {
             Ok(skill) => Some(skill),
@@ -239,7 +283,7 @@ async fn invoke_inner(
             "Skill does not declare a streaming item schema",
         ));
     }
-    let adapted;
+    let mut adapted;
     let original = input;
     let input = if let Some(skill) = &skill {
         let maximum = unsigned(&skill.definition["maximum_timeout_ms"])?;
@@ -255,6 +299,9 @@ async fn invoke_inner(
         }
         validate_business(&skill.definition["input_schema"], &input["input"])?;
         adapted = json!({"contract":skill.definition["target"]["contract"],"input":input["input"],"timeout_ms":timeout});
+        if let Some(deployment) = input.get("provider_deployment_id") {
+            adapted["provider_deployment_id"] = deployment.clone();
+        }
         &adapted
     } else {
         input
@@ -471,7 +518,15 @@ async fn invoke_inner(
         });
         if skill.is_some() {
             check_live_call(
-                app, token, peer, request_id, call, instance, generation, deadline,
+                app,
+                token,
+                peer,
+                request_id,
+                call,
+                instance,
+                generation,
+                deadline,
+                browser_origin,
             )
             .await?;
         }
@@ -500,7 +555,15 @@ async fn invoke_inner(
                         let skill = skill.as_ref().ok_or_else(Error::denied)?;
                         validate_business(&skill.definition["stream_item_schema"], &item)?;
                         check_live_call(
-                            app, token, peer, request_id, call, instance, generation, deadline,
+                            app,
+                            token,
+                            peer,
+                            request_id,
+                            call,
+                            instance,
+                            generation,
+                            deadline,
+                            browser_origin,
                         )
                         .await?;
                         output.emit("item", item).await?;
@@ -563,7 +626,15 @@ async fn invoke_inner(
             // execution may own a short shared authorization transaction when
             // a revocation writer queues ahead of this next reader.
             check_live_call(
-                app, token, peer, request_id, call, instance, generation, deadline,
+                app,
+                token,
+                peer,
+                request_id,
+                call,
+                instance,
+                generation,
+                deadline,
+                browser_origin,
             )
             .await?;
         }
@@ -595,7 +666,8 @@ async fn invoke_inner(
     let tx = c.transaction().await?;
     db::call_lock(&tx).await?;
     let check = async {
-        let current = app.auth.authenticate(&tx, token, peer, request_id).await?;
+        let mut current = app.auth.authenticate(&tx, token, peer, request_id).await?;
+        current.browser_origin = browser_origin.map(str::to_owned);
         if let Some(skill) = &skill {
             crate::host_blobs::check_call_sources(&tx, &current, call).await?;
             let resolved = crate::skills::resolve_for_invoke(&tx, &current, skill.id).await?;
@@ -660,6 +732,7 @@ async fn check_live_call(
     instance: Uuid,
     generation: i64,
     deadline: chrono::DateTime<chrono::Utc>,
+    browser_origin: Option<&str>,
 ) -> Result<()> {
     crate::skill_streams::ensure_active(app)?;
     let mut connection = app
@@ -671,10 +744,11 @@ async fn check_live_call(
         )
         .await?;
     let check = connection.transaction().await?;
-    let current = app
+    let mut current = app
         .auth
         .authenticate(&check, token, peer, request_id)
         .await?;
+    current.browser_origin = browser_origin.map(str::to_owned);
     check_skill_authority(&check, &current, call).await?;
     http::check_route_approval(&check, app, call).await?;
     let status = check

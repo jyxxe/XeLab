@@ -4,7 +4,7 @@
 
 > 状态：规范性设计；由 OpenAPI 生成。
 
-目标由 Skill 固定，调用方不能覆盖 plugin/contract/address
+目标由不可变Skill固定；可选部署约束只能收窄同一安装中的路由，不能覆盖plugin/contract/address或内部授权上下文
 
 ## 字段
 
@@ -13,6 +13,7 @@
 | `input` | [JsonValue](JsonValue.md) | 是 | 见类型定义 | 业务契约定义的 JSON 值；业务输入输出必须另按对应能力的 JSON Schema 校验。控制面字段不能用此类型逃避定义。 |
 | `timeout_ms` | integer | 否 | minimum=`100`; maximum=`300000`; default=`120000` | 显式值不超过Skill.maximum_timeout_ms；省略取min(120000,Skill上限) |
 | `idempotency_key` | string | 否 | minLength=`1`; maxLength=`128` | 有副作用调用的稳定业务去重键 |
+| `provider_deployment_id` | string | 否 | format=`"uuid"`; minLength=`1`; maxLength=`36` | 可选部署约束，只收窄已固定安装内的提供者；不改变plugin/contract/address或授予权限。UI消息桥由宿主填入贡献的固定deployment_id，iframe不能覆盖。不可用时拒绝，不回退到其他部署。 |
 
 ## 对象及跨字段约束
 

@@ -33,6 +33,9 @@ pub struct Context {
     pub(crate) peer: IpAddr,
     pub(crate) request: Uuid,
     pub(crate) chain: Vec<Uuid>,
+    // Set only by trusted HTTP admission after exact Origin validation. Never
+    // deserialize this field from a body, plugin header, or delegation.
+    pub(crate) browser_origin: Option<String>,
 }
 #[derive(Clone)]
 pub struct Resource {
@@ -50,6 +53,7 @@ pub(crate) struct CurrentAuthority<'transaction, 'client> {
     peer: IpAddr,
     request: Uuid,
     chain: Vec<Uuid>,
+    browser_origin: Option<String>,
     paths: Vec<crate::policy::Path>,
     rules: Value,
     plugin_target: Option<(String, Option<Uuid>)>,
@@ -70,7 +74,7 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
         if owner != ctx.subject {
             return Err(Error::credential());
         }
-        let paths = crate::policy::Policy::new(transaction, ctx.peer)
+        let paths = crate::policy::Policy::for_context(transaction, ctx)
             .credential(ctx.credential, 0)
             .await?;
         let rules = crate::policy::rules(&paths);
@@ -81,6 +85,7 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
             peer: ctx.peer,
             request: ctx.request,
             chain: ctx.chain.clone(),
+            browser_origin: ctx.browser_origin.clone(),
             paths,
             rules,
             plugin_target: None,
@@ -97,6 +102,7 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
             || self.peer != ctx.peer
             || self.request != ctx.request
             || self.chain != ctx.chain
+            || self.browser_origin != ctx.browser_origin
         {
             return Err(Error::denied());
         }
@@ -109,7 +115,7 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
         saved: &[crate::policy::Path],
     ) -> Result<Vec<crate::policy::Path>> {
         self.verify(transaction, ctx)?;
-        crate::policy::Policy::new(transaction, ctx.peer)
+        crate::policy::Policy::for_context(transaction, ctx)
             .revalidate_current(saved, &self.paths)
             .await
     }
@@ -169,6 +175,7 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
             || self.peer != ctx.peer
             || self.request != ctx.request
             || self.chain != ctx.chain
+            || self.browser_origin != ctx.browser_origin
             || !rules_allow(&self.rules, action, resource, ctx.peer)
         {
             return Err(Error::denied());
@@ -273,7 +280,7 @@ impl Auth {
         crate::db::auth_lock(c, false).await?;
         let r = c
             .query_opt(
-                "SELECT owner_id FROM credentials WHERE id=$1 AND kind IN ('session','api_key')",
+                "SELECT owner_id FROM credentials WHERE id=$1 AND kind IN ('session','api_key','oauth_access')",
                 &[&credential],
             )
             .await?
@@ -286,6 +293,7 @@ impl Auth {
             peer,
             request,
             chain,
+            browser_origin: None,
         })
     }
     pub fn check_login_budget(&self, account: Uuid, peer: IpAddr) -> Result<()> {
@@ -567,7 +575,9 @@ pub(crate) async fn validate_sources(
                 return Err(Error::credential());
             }
             let kind: String = r.get("kind");
-            if !matches!(kind.as_str(), "session" | "api_key") {
+            if kind == "oauth_access" {
+                crate::oauth::binding(c, id).await?;
+            } else if !matches!(kind.as_str(), "session" | "api_key") {
                 return Err(Error::credential());
             }
             pending.push((false, r.get("owner_id")));

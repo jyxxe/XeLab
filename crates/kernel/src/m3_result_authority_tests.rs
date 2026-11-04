@@ -34,7 +34,6 @@ struct Completed {
     target_action: &'static str,
     target_resource: Value,
     skill: Uuid,
-    deployment: Uuid,
     call: Uuid,
     request: Value,
     key: String,
@@ -222,7 +221,7 @@ impl Completed {
         } else {
             None
         };
-        let request = json!({"input":if let Some(source)=source{json!({"source":source})}else{json!({"message":"private result"})},"timeout_ms":5000});
+        let request = json!({"input":if let Some(source)=source{json!({"source":source})}else{json!({"message":"private result"})},"timeout_ms":5000,"provider_deployment_id":deployment});
         let key = "same completed business request".to_owned();
         let (call, contract, fingerprint) = if http {
             let call = Uuid::new_v4();
@@ -234,7 +233,7 @@ impl Completed {
             crate::db::call_lock(&tx).await.unwrap();
             tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,skill_id,skill_definition_digest,contract,input_digest,idempotency_key,state,deadline_at,created_at,http_binding) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'running',now()+interval '2 minutes',now(),$10)", &[&call,&subject,&caller.credential,&instance,&skill,&crate::skills::definition_digest(&definition).unwrap(),&contract,&contracts::digest(&serde_json::to_vec(&request["input"]).unwrap()),&key,&binding]).await.unwrap();
             let resource = Resource::new("plugin", plugin, Some(issuer.subject));
-            let paths = Policy::new(&tx, caller.peer)
+            let paths = Policy::for_context(&tx, &caller)
                 .with_resource_owner(&resource)
                 .credential(caller.credential, 0)
                 .await
@@ -322,7 +321,6 @@ impl Completed {
             target_action,
             target_resource,
             skill,
-            deployment,
             call,
             request,
             key,
@@ -389,7 +387,7 @@ async fn original_business_proof_cannot_be_replaced(http: bool) {
     let before = f.counters().await;
     let c = f.fixture.app.db.connect().await.unwrap();
     if http {
-        let deployment = f.deployment;
+        let deployment = contracts::id(&f.request, "provider_deployment_id").unwrap();
         c.execute(
             "DELETE FROM plugin_http_approvals WHERE deployment_id=$1",
             &[&deployment],
@@ -445,7 +443,7 @@ async fn original_business_proof_cannot_be_replaced(http: bool) {
             None,
         )
     };
-    let paths = Policy::new(&c, f.caller.peer)
+    let paths = Policy::for_context(&c, &f.caller)
         .with_resource_owner(&resource)
         .credential(f.caller.credential, 0)
         .await

@@ -111,6 +111,6 @@
     "entry_path": "/",
     "management_api_major": 1,
     "isolation": "dedicated_origin",
-    "origin": "https://webui.example.org"
+    "origin": null
   }
 }
