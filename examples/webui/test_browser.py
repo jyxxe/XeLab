@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real Chromium component tests; API fixtures are not core/OCI acceptance."""
 import json
+import os
 import base64
 import hashlib
 import pathlib
@@ -33,7 +34,7 @@ class DesktopBrowser(unittest.TestCase):
     def setUpClass(cls):
         cls.playwright = sync_playwright().start()
         cls.browser = cls.playwright.chromium.launch(
-            executable_path="/usr/bin/chromium", headless=True,
+            executable_path=os.environ.get("XELAB_OAUTH_BROWSER_CHROMIUM", "/usr/bin/chromium"), headless=True,
             args=["--no-sandbox", "--disable-dev-shm-usage"])
 
     @classmethod

@@ -62,6 +62,14 @@ jobs:
         env:
           XELAB_OAUTH_BROWSER_RESULT: ${{ runner.temp }}/xelab-oauth-main-router.json
         run: cargo test --lib actual_main_router_chromium_trusted_login_native_consent_pkce_cors_and_refresh_reuse --locked -- --ignored --nocapture
+      - name: Independent WebUI and iframe components
+        run: |
+          node --test examples/webui/test_api.mjs examples/ui-reference/test_bridge.mjs
+          "$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/webui -p 'test_server.py' -v
+          "$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/webui -p 'test_browser.py' -v
+          "$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/webui -p 'test_bridge.py' -v
+          "$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/ui-reference -p 'test_http.py' -v
+          "$XELAB_OAUTH_BROWSER_PYTHON" examples/ui-reference/test_browser.py --webui-public examples/webui/public -v
       - name: Record physical CI build space
         run: |
           df -h . /mnt
@@ -301,6 +309,17 @@ jobs:
           libraries=[p for p in glob.glob("target/debug/deps/xelab_kernel-*") if os.path.isfile(p) and os.access(p,os.X_OK)]
           assert len(libraries)==1,libraries
           subprocess.run(["sudo","--preserve-env=XELAB_TEST_PLATFORM_SCHEMA_1_IMAGE,XELAB_TEST_PLATFORM_SCHEMA_2_IMAGE,XELAB_TEST_DATABASE_URL,XELAB_TEST_VOLUME_IMAGE,XELAB_TEST_VOLUME_UPGRADE_IMAGE,XELAB_TEST_VOLUME_FAILED_UPGRADE_IMAGE,XELAB_TEST_SCHEMA_IMAGE,XELAB_TEST_SCHEMA_UPGRADE_IMAGE,XELAB_TEST_SCHEMA_TRANSITION_IMAGE,XELAB_TEST_SCHEMA_CRASH_IMAGE,XELAB_TEST_S3_ENDPOINT,XELAB_PLATFORM_SOURCE_RECEIPT","env","XELAB_XFS_TEST=1","bash","tools/test-xfs.sh","--isolated-test-host",binaries[0],volumes[0],libraries[0]],check=True)
+          PYTEST
+      - name: Prepare signed OCI WebUI and UI reference
+        run: bash tools/prepare-m3-ui-images.sh --isolated-test-host --env-file "$GITHUB_ENV"
+      - name: Real OCI OAuth desktop iframe Skill and restart
+        run: |
+          python3 - <<'PYTEST'
+          import glob, os, subprocess
+          binaries=[p for p in glob.glob("target/debug/deps/m3_ui-*") if os.path.isfile(p) and os.access(p,os.X_OK)]
+          assert len(binaries)==1,binaries
+          variables="XELAB_M3_UI_TEST,XELAB_M3_UI_NAMESPACE,XELAB_TEST_WEBUI_IMAGE,XELAB_TEST_UI_REFERENCE_IMAGE,XELAB_TEST_DATABASE_URL,XELAB_OAUTH_BROWSER_CHROMIUM,XELAB_OAUTH_BROWSER_PYTHON"
+          subprocess.run(["sudo", "--preserve-env="+variables, binaries[0], "--ignored", "--nocapture"],check=True)
           PYTEST
       - name: Full workspace regression
         # Preserve each scenario's internal concurrency, without independent

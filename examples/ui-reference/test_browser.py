@@ -11,6 +11,7 @@ import datetime
 import hashlib
 import http.client
 import json
+import os
 import pathlib
 import ssl
 import subprocess
@@ -50,7 +51,7 @@ class IndependentPage(unittest.TestCase):
         cls.port = json.loads(cls.port_file.read_text())["port"]
         cls.manifest = build_artifact.build(test_http.HTTPTests.root / "artifact", str(uuid.uuid4()))
         cls.playwright = sync_playwright().start()
-        cls.browser = cls.playwright.chromium.launch(executable_path="/usr/bin/chromium", headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        cls.browser = cls.playwright.chromium.launch(executable_path=os.environ.get("XELAB_OAUTH_BROWSER_CHROMIUM", "/usr/bin/chromium"), headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
 
     @classmethod
     def tearDownClass(cls):

@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import json
+import os
 import pathlib
 import unittest
 from urllib.parse import urlparse
@@ -48,7 +49,7 @@ class IsolatedBridge(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.playwright = sync_playwright().start()
-        cls.browser = cls.playwright.chromium.launch(executable_path="/usr/bin/chromium", headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        cls.browser = cls.playwright.chromium.launch(executable_path=os.environ.get("XELAB_OAUTH_BROWSER_CHROMIUM", "/usr/bin/chromium"), headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
 
     @classmethod
     def tearDownClass(cls):
