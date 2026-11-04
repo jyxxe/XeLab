@@ -30,6 +30,9 @@
 
 恢复 Owner 获得新建的 Owner Grant 与明确的宿主恢复锚点；新 Grant 使用当前真实时间，不伪造原引导时间。普通 API 不能写入这些锚点。缺少该独立来源的自授 Grant 不能互相证明权限。
 
+密码已清除的历史用户通过[宿主维护重新激活](m2-recovered-accounts.md)设置新密码。
+该操作需要当前恢复 Owner 的真实凭证和维护租约，激活不会恢复旧授权。
+
 ## 显式重新信任已有发布者
 
 恢复 Owner 使用新会话核对保存的发布者 UUID、key_id 及公钥，通过 trustPublisher

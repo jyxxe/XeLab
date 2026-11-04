@@ -21,7 +21,9 @@ const UPGRADE_VOLUME_CLONES: &str = include_str!("../migrations/0011_upgrade_vol
 const VOLUME_SCHEMA_JOBS: &str = include_str!("../migrations/0012_volume_schema_jobs.sql");
 const SCHEMA_BACKUP_REGISTRATION: &str =
     include_str!("../migrations/0013_schema_backup_registration.sql");
-const MIGRATIONS: [&str; 13] = [
+const RECOVERED_ACCOUNT_ACTIVATIONS: &str =
+    include_str!("../migrations/0014_recovered_account_activations.sql");
+const MIGRATIONS: [&str; 14] = [
     BASELINE,
     CALL_CHARGES,
     SECRET_AUTHORITY,
@@ -35,6 +37,7 @@ const MIGRATIONS: [&str; 13] = [
     UPGRADE_VOLUME_CLONES,
     VOLUME_SCHEMA_JOBS,
     SCHEMA_BACKUP_REGISTRATION,
+    RECOVERED_ACCOUNT_ACTIVATIONS,
 ];
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 pub const LEADER_LOCK: i64 = 0x58454c41424d3101;
@@ -112,6 +115,105 @@ pub(crate) async fn deployment_fence(db: &Db, deployment: Uuid) -> Result<Option
         _local: local,
         deployment,
     }))
+}
+
+#[cfg(test)]
+mod recovered_account_migration_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn actual_postgres_v13_recovery_migrates_without_restoring_inherited_rights() {
+        let Ok(base) = std::env::var("XELAB_TEST_DATABASE_URL") else {
+            eprintln!("SKIPPED: recovered-account migration requires PostgreSQL");
+            return;
+        };
+        let admin = Db::new(base.clone()).unwrap().connect().await.unwrap();
+        let name = format!("recovered_account_v13_{}", Uuid::new_v4().simple());
+        admin
+            .batch_execute(&format!("CREATE DATABASE {name}"))
+            .await
+            .unwrap();
+        let db = Db::new(format!("{base} dbname={name}")).unwrap();
+        let mut c = db.connect().await.unwrap();
+        // Construct the actual immutable released layout; never downgrade a
+        // current fixture or rewrite any released migration/checksum.
+        for (offset, sql) in MIGRATIONS.iter().take(13).enumerate() {
+            c.batch_execute(sql).await.unwrap();
+            c.execute(
+                "INSERT INTO schema_migrations(version,checksum,applied_at) VALUES($1,$2,now())",
+                &[&((offset + 1) as i64), &digest(sql.as_bytes())],
+            )
+            .await
+            .unwrap();
+        }
+        let parent = crate::auth::bootstrap(&c, "recovered root", "current recovered owner password", &serde_json::json!({"maximum_depth":4,"maximum_descendants":20,"maximum_api_keys":50,"maximum_concurrent_calls":16,"daily_calls":10000})).await.unwrap();
+        let child = Uuid::new_v4();
+        c.execute("INSERT INTO accounts(id,parent_id,kind,status,display_name,created_at,updated_at) VALUES($1,$2,'user','disabled','historical cleared child',now(),now())", &[&child,&parent]).await.unwrap();
+        c.execute("INSERT INTO account_closure(ancestor_id,descendant_id,depth) VALUES($2,$2,0),($1,$2,1)", &[&parent,&child]).await.unwrap();
+        c.execute("INSERT INTO inheritance_grants(account_id,parent_id,mode,maximum_rules,created_at,updated_at) VALUES($1,$2,'selected','[]',now(),now())", &[&child,&parent]).await.unwrap();
+        c.execute("INSERT INTO platform_recovery_state(recovery_id,backup_id,phase,recovery_owner_id) VALUES($1,$2,'ready',$3)", &[&Uuid::new_v4(),&Uuid::new_v4(),&parent]).await.unwrap();
+        let before: Vec<(i64, String)> = c
+            .query(
+                "SELECT version,checksum FROM schema_migrations ORDER BY version",
+                &[],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| (r.get(0), r.get(1)))
+            .collect();
+        assert!(db.check().await.is_err());
+        db.migrate().await.unwrap();
+        db.migrate().await.unwrap();
+        db.check().await.unwrap();
+        let after: Vec<(i64, String)> = c
+            .query(
+                "SELECT version,checksum FROM schema_migrations WHERE version<=13 ORDER BY version",
+                &[],
+            )
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| (r.get(0), r.get(1)))
+            .collect();
+        assert_eq!(before, after);
+        let inheritance = c.query_one("SELECT mode,maximum_rules,issuer_credential_id FROM inheritance_grants WHERE account_id=$1", &[&child]).await.unwrap();
+        assert_eq!(inheritance.get::<_, String>(0), "all_snapshot");
+        assert_eq!(inheritance.get::<_, Value>(1), serde_json::json!([]));
+        assert!(inheritance.get::<_, Option<Uuid>>(2).is_none());
+        crate::contracts::validate(
+            "Account",
+            &crate::identity::account_value(&c, child).await.unwrap(),
+        )
+        .unwrap();
+        assert!(crate::policy::Policy::new(&c, "127.0.0.1".parse().unwrap())
+            .account(child, 0)
+            .await
+            .is_err());
+        let tx = c.transaction().await.unwrap();
+        tx.execute("UPDATE accounts SET status='active' WHERE id=$1", &[&child])
+            .await
+            .unwrap();
+        let peer = "127.0.0.1".parse().unwrap();
+        let paths = crate::policy::Policy::new(&tx, peer)
+            .account(child, 0)
+            .await
+            .unwrap();
+        assert!(!crate::auth::rules_allow(
+            &crate::policy::rules(&paths),
+            "plugin.deploy",
+            &crate::auth::Resource::new("deployment", "new", Some(child)),
+            peer
+        ));
+        tx.rollback().await.unwrap();
+        assert_eq!(
+            c.query_one("SELECT count(*) FROM recovered_account_activations", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            0
+        );
+    }
 }
 
 #[cfg(test)]
