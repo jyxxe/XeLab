@@ -558,22 +558,30 @@ async fn invoke_inner(
         }
         Ok(out)
     };
-    let monitored = async {
-        tokio::pin!(result);
+    let monitor = async {
+        if skill.is_none() {
+            std::future::pending::<()>().await;
+        }
         loop {
-            tokio::select! {
-                result = &mut result => return result,
-                _ = async { if let Some(stream) = stream { stream.closed().await } else { std::future::pending::<()>().await } } => {
-                    return Err(Error::new("CANCELED", "Skill stream consumer disconnected", axum::http::StatusCode::CONFLICT));
-                }
-                _ = tokio::time::sleep(Duration::from_millis(100)), if skill.is_some() => {
-                    // Revoke in-flight work promptly. Retain its physical slot until
-                    // the controller confirms process fencing, as for RPC timeouts.
-                    check_live_call(app, token, peer, request_id, call, instance, generation, deadline).await?;
-                }
-            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Retain the physical slot until process fencing on failure, as
+            // for RPC timeouts. This guard must be polled alongside execution:
+            // execution may own a short shared authorization transaction when
+            // a revocation writer queues ahead of this next reader.
+            check_live_call(
+                app, token, peer, request_id, call, instance, generation, deadline,
+            )
+            .await?;
         }
     };
+    let consumer = async {
+        if let Some(stream) = stream {
+            stream.closed().await
+        } else {
+            std::future::pending::<()>().await
+        }
+    };
+    let monitored = race_live_call(result, monitor, consumer);
     let mut result = tokio::time::timeout(remaining(), monitored)
         .await
         .unwrap_or_else(|_| {
@@ -687,6 +695,23 @@ async fn invoke_inner(
     skill_result(skill.as_ref(), result.map_err(|e| e.with_resource(call))?)
 }
 
+async fn race_live_call<T>(
+    execution: impl std::future::Future<Output = Result<T>>,
+    monitor: impl std::future::Future<Output = Result<T>>,
+    consumer: impl std::future::Future<Output = ()>,
+) -> Result<T> {
+    tokio::pin!(execution, monitor, consumer);
+    tokio::select! {
+        result = &mut execution => result,
+        result = &mut monitor => result,
+        _ = &mut consumer => Err(Error::new(
+            "CANCELED",
+            "Skill stream consumer disconnected",
+            axum::http::StatusCode::CONFLICT,
+        )),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn check_live_call(
     app: &App,
@@ -775,3 +800,7 @@ fn skill_result(skill: Option<&crate::skills::ResolvedSkill>, call: Value) -> Re
 #[cfg(test)]
 #[path = "broker_schema_tests.rs"]
 mod schema_tests;
+
+#[cfg(test)]
+#[path = "broker_monitor_tests.rs"]
+mod monitor_tests;
