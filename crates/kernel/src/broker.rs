@@ -442,6 +442,7 @@ async fn invoke_inner(
         stream.ensure_open()?;
     }
     tx.commit().await?;
+    drop(c);
     let remaining =
         || Duration::from_millis((deadline - chrono::Utc::now()).num_milliseconds().max(0) as u64);
     let result = async {
