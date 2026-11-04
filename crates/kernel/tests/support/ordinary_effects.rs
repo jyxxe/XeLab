@@ -46,7 +46,7 @@ pub async fn successful(
             .as_array()
             .unwrap()
             .iter()
-            .find(|skill| skill["name"] == format!("org.xelab.echo.{effect}"))
+            .find(|skill| skill["name"] == format!("org.xelab.echo.{}", effect.replace('_', "-")))
             .unwrap();
         let created = api(
             router,
