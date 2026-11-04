@@ -262,9 +262,174 @@ mod runtime_fence_tests {
     }
 }
 
+#[cfg(test)]
+mod scoped_connection_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn abandoned_scoped_query_releases_its_backend_before_the_lock_holder() {
+        let Ok(base) = std::env::var("XELAB_TEST_DATABASE_URL") else {
+            eprintln!("SKIPPED: scoped connection cancellation requires PostgreSQL");
+            return;
+        };
+        let admin = Db::new(base.clone()).unwrap().connect().await.unwrap();
+        let name = format!("scoped_cancel_{}", Uuid::new_v4().simple());
+        admin
+            .batch_execute(&format!("CREATE DATABASE {name}"))
+            .await
+            .unwrap();
+        let db = Db::new(format!("{base} dbname={name}")).unwrap();
+        db.migrate().await.unwrap();
+        let mut holder = db.connect().await.unwrap();
+        let held = holder.transaction().await.unwrap();
+        call_lock(&held).await.unwrap();
+        let observer = db.connect().await.unwrap();
+        let mut scoped = db.connect_scoped(Duration::from_secs(10)).await.unwrap();
+        assert_eq!(
+            scoped
+                .query_one("SHOW statement_timeout", &[])
+                .await
+                .unwrap()
+                .get::<_, String>(0),
+            "10s"
+        );
+        let pid: i32 = scoped
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let waiting = tokio::spawn(async move {
+            let transaction = scoped.transaction().await.unwrap();
+            call_lock(&transaction).await
+        });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let blocked: bool = observer
+                    .query_one(
+                        "SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND NOT granted)",
+                        &[&pid],
+                    )
+                    .await
+                    .unwrap()
+                    .get(0);
+                if blocked {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the scoped backend must actually reach the held lock");
+        let unrelated = db.connect().await.unwrap();
+        let unaffected = tokio::spawn(async move {
+            unrelated
+                .query_one("SELECT pg_sleep(0.2),42::integer", &[])
+                .await
+                .unwrap()
+                .get::<_, i32>(1)
+        });
+        waiting.abort();
+        assert!(waiting.await.unwrap_err().is_cancelled());
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let gone: bool = observer
+                    .query_one(
+                        "SELECT NOT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1)",
+                        &[&pid],
+                    )
+                    .await
+                    .unwrap()
+                    .get(0);
+                if gone {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("abandoned backend must disappear while the holder still owns the lock");
+        assert_eq!(unaffected.await.unwrap(), 42);
+        assert_eq!(
+            observer
+                .query_one("SELECT count(*) FROM reservations", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            0
+        );
+        held.rollback().await.unwrap();
+        let normal = db.connect_scoped(Duration::from_secs(2)).await.unwrap();
+        assert_eq!(
+            normal
+                .query_one("SELECT 7::integer", &[])
+                .await
+                .unwrap()
+                .get::<_, i32>(0),
+            7
+        );
+        drop(normal);
+        assert_eq!(
+            observer
+                .query_one("SELECT 9::integer", &[])
+                .await
+                .unwrap()
+                .get::<_, i32>(0),
+            9
+        );
+    }
+}
+
 #[derive(Clone)]
 pub struct Db {
     dsn: Arc<str>,
+}
+
+/// A request-owned connection. Dropping a PostgreSQL query future alone does
+/// not interrupt its server statement or the detached protocol driver.
+pub(crate) struct ScopedClient {
+    client: Client,
+    driver: Option<ScopedDriver>,
+}
+struct ScopedDriver(tokio::task::JoinHandle<()>);
+impl Drop for ScopedDriver {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+impl std::ops::Deref for ScopedClient {
+    type Target = Client;
+    fn deref(&self) -> &Client {
+        &self.client
+    }
+}
+impl std::ops::DerefMut for ScopedClient {
+    fn deref_mut(&mut self) -> &mut Client {
+        &mut self.client
+    }
+}
+impl Drop for ScopedClient {
+    fn drop(&mut self) {
+        let Some(driver) = self.driver.take() else {
+            return;
+        };
+        let cancel = self.client.cancel_token();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                // A lost socket alone may leave an advisory-lock waiter alive.
+                // Cancel its exact backend first; then close the owned socket.
+                // This Client cannot be reused by another application request.
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    cancel.cancel_query(NoTls),
+                )
+                .await;
+                drop(driver);
+            });
+        } else {
+            drop(driver);
+        }
+    }
 }
 impl Db {
     pub fn new(dsn: String) -> Result<Self> {
@@ -294,6 +459,31 @@ impl Db {
             }
         });
         Ok(c)
+    }
+    pub(crate) async fn connect_scoped(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<ScopedClient> {
+        let (client, connection) = tokio_postgres::connect(&self.dsn, NoTls).await?;
+        let driver = tokio::spawn(async move {
+            if connection.await.is_err() {
+                tracing::error!(reason_code = "DATABASE_CONNECTION_LOST");
+            }
+        });
+        let scoped = ScopedClient {
+            client,
+            driver: Some(ScopedDriver(driver)),
+        };
+        // A server-side bound still applies if the cancellation connection is
+        // unavailable. Never use zero, which disables PostgreSQL's timeout.
+        let milliseconds = timeout.as_millis().clamp(1, 300000).to_string();
+        scoped
+            .query_one(
+                "SELECT set_config('statement_timeout',$1,false)",
+                &[&milliseconds],
+            )
+            .await?;
+        Ok(scoped)
     }
     pub async fn check(&self) -> Result<()> {
         let c = self.connect().await?;
