@@ -609,6 +609,7 @@ impl Drop for StaticLease {
 }
 const STATIC_INSTANCE:&str="SELECT i.id,i.generation,n.id installation_id,n.manifest,d.approval,d.owner_id FROM deployments d JOIN installations n ON n.id=d.installation_id JOIN publishers p ON p.id=n.publisher_id JOIN instances i ON i.deployment_id=d.id WHERE d.id=$1 AND d.archived_at IS NULL AND d.spec->>'enabled'='true' AND d.phase='ready' AND n.state='installed' AND p.status='trusted' AND i.phase='ready' AND i.health='alive' AND i.generation=d.observed_generation AND i.last_heartbeat_at>now()-interval '1 millisecond'*((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint+(n.manifest->'health'->>'timeout_ms')::bigint) ORDER BY i.id";
 
+#[allow(clippy::too_many_arguments)] // Host, request clock and incoming headers remain separate trust inputs.
 async fn static_page(
     app: Arc<App>,
     peer: IpAddr,
