@@ -5,11 +5,13 @@ import hashlib
 import json
 import os
 import pathlib
+import time
 import unittest
 from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
 
 PUBLIC = pathlib.Path(__file__).parent / "public"
+REFERENCE_PUBLIC = pathlib.Path(__file__).resolve().parents[1] / "ui-reference" / "public"
 SHELL, CORE, PLUGIN, ATTACKER = ("https://shell.example.test", "https://core.example.test",
                                  "https://plugin.example.test", "https://attacker.example.test")
 SUBJECT = "00000000-0000-4000-8000-000000000001"
@@ -65,6 +67,7 @@ class IsolatedBridge(unittest.TestCase):
         self.deny_result = False
         self.hold = False
         self.denied = False
+        self.reference_assets = False
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
         self.page.route("**/*", self.route)
 
@@ -89,6 +92,14 @@ window.bridge=new BridgeHost({{iframe:frame,api,contribution,subjectId:{json.dum
 </script>""")
             return
         if origin in (PLUGIN, ATTACKER):
+            if origin == PLUGIN and self.reference_assets:
+                file = pathlib.Path(url.path).name
+                if file not in {"window.html", "app.js", "bridge.js", "styles.css"}:
+                    route.fulfill(status=404, body="not found")
+                    return
+                types = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}
+                route.fulfill(content_type=types[pathlib.Path(file).suffix], headers={"content-security-policy": f"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; frame-ancestors {SHELL}"}, body=(REFERENCE_PUBLIC / file).read_bytes())
+                return
             route.fulfill(content_type="text/html", headers={"content-security-policy": f"default-src 'none'; script-src 'unsafe-inline'; connect-src 'none'; frame-ancestors {SHELL}"}, body=FRAME if origin == PLUGIN else "<!doctype html><p>Wrong-origin frame</p>")
             return
         if origin != CORE:
@@ -143,6 +154,75 @@ window.bridge=new BridgeHost({{iframe:frame,api,contribution,subjectId:{json.dum
 
     def posts(self):
         return [call for call in self.calls if call["method"] == "POST"]
+
+    def test_handshake_budget_begins_after_real_reference_document_load(self):
+        self.reference_assets = True
+        self.current["frame_url"] = PLUGIN + "/ui/org.xelab.fixture/window.html"
+        self.current["spec"]["entry_path"] = "/window.html"
+        self.current["spec"]["skill_bindings"][0]["modes"] = ["call"]
+        self.current["bindings"][0]["modes"] = ["call"]
+        pending_documents, pending_metadata = [], []
+        gate = {"metadata": False}
+        self.page.route(self.current["frame_url"], lambda route: pending_documents.append(route))
+        def metadata(route):
+            if gate["metadata"] and route.request.method != "OPTIONS":
+                pending_metadata.append(route)
+            else:
+                self.route(route)
+        self.page.route(CORE + "/api/platform/v1/ui/contributions/**", metadata)
+        self.page.goto(SHELL + "/")
+        self.page.wait_for_function("() => typeof launch === 'function'")
+        self.page.evaluate("value => {window.mounting=launch(value).catch(error=>{window.mountingError=error.code;});}", self.current)
+        deadline = time.monotonic() + 5
+        while not pending_documents and time.monotonic() < deadline:
+            self.page.wait_for_timeout(10)
+        self.assertEqual(len(pending_documents), 1)
+        # Deliberately hold a real browser document request for nine wall-clock
+        # seconds, then require two more seconds of current Core proof.
+        self.page.wait_for_timeout(9000)
+        gate["metadata"] = True
+        with self.page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith(PLUGIN)) as navigation:
+            self.route(pending_documents[0])
+        frame = navigation.value
+        frame.wait_for_load_state("load")
+        loaded = time.monotonic()
+        frame.locator("#call").wait_for(state="visible")
+        self.page.wait_for_timeout(2000)
+        self.assertEqual(self.page.locator("#frames iframe").count(), 1, "The ten-second handshake budget starts after the target document loads")
+        self.assertTrue(frame.locator("#call").is_disabled(), "Current authorization must still complete before host.init")
+        self.assertGreater(len(pending_metadata), 0)
+        gate["metadata"] = False
+        for route in pending_metadata:
+            self.route(route)
+        frame.wait_for_function("() => document.querySelector('#call')?.disabled === false")
+        self.page.wait_for_function("() => states.some(item=>item[0]==='active')")
+        self.assertEqual(self.posts(), [])
+        print({"component": "BridgeHost_real_reference_fixture_not_Core", "load_to_verified_active_ms": round((time.monotonic()-loaded)*1000)})
+
+    def test_close_during_verification_does_not_resurrect_channel(self):
+        pending = []
+        def metadata(route):
+            if route.request.method == "OPTIONS":
+                self.route(route)
+            else:
+                pending.append(route)
+        self.page.route(CORE + "/api/platform/v1/ui/contributions/**", metadata)
+        self.page.goto(SHELL + "/")
+        self.page.wait_for_function("() => typeof launch === 'function'")
+        self.page.evaluate("value => {window.mounting=launch(value).catch(error=>{window.mountingError=error.code;});}", self.current)
+        deadline = time.monotonic() + 5
+        while not pending and time.monotonic() < deadline:
+            self.page.wait_for_timeout(10)
+        self.assertEqual(len(pending), 1)
+        self.page.evaluate("() => bridge.close('close')")
+        # Complete the intercepted server handler even though its client was
+        # canceled, and prove a late valid proof cannot revive the closed view.
+        for route in pending:
+            route.fulfill(headers={"access-control-allow-origin": SHELL}, content_type="application/json", body=json.dumps(self.current))
+        self.page.wait_for_function("() => window.mountingError !== undefined")
+        self.assertEqual(self.page.locator("#frames iframe").count(), 0)
+        self.assertFalse(self.page.evaluate("states.some(item=>item[0]==='active')"))
+        self.assertEqual(self.posts(), [])
 
     def test_widget_visibility_is_not_implicit_refresh_without_shell_read_proof(self):
         self.current = contribution("summary", "widget")

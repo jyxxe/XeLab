@@ -201,6 +201,60 @@ class DesktopBrowser(unittest.TestCase):
         window.wait_for()
         return window
 
+    def skill_body_audit(self):
+        # Core here is an explicit routed component adapter. The same observer
+        # runs against actual Core/OCI only in the separate acceptance driver.
+        report = {"checks": {}, "http": {"actual_skill_successes": 0, "unique_skill_call_ids": 0, "skill_post_attempts": 0}}
+        observed = {"observer_failure": False, "error_counts": {}, "active_request_observers": 0, "active_response_observers": 0}
+        bodies = DRIVER.SkillBodyAudit(CORE, SKILL, report, observed)
+        self.context.on("request", bodies.request)
+        self.context.on("response", bodies.response)
+        self.context.on("requestfinished", bodies.finished)
+        self.context.on("requestfailed", bodies.failed)
+        return report, observed, bodies
+
+    def test_skill_json_is_queued_until_outer_pump_reads_actual_response(self):
+        report, observed, bodies = self.skill_body_audit()
+        self.open()
+        skills = self.app("Skill")
+        skills.get_by_role("button", name="调用测试", exact=True).click()
+        editor = self.page.locator('.window[data-app="editor-invokeSkill"]')
+        bodies.expect(1)
+        editor.get_by_role("button", name="提交", exact=True).click()
+        editor.locator("pre.result").wait_for()
+        self.page.evaluate("() => true")
+        # The application has read its response, and callbacks are idle. Our
+        # independent body audit must still be queued rather than assume success.
+        self.assertEqual(observed["active_response_observers"], 0)
+        self.assertEqual(report["http"]["actual_skill_successes"], 0)
+        self.assertEqual(len(bodies.queue), 1)
+        self.assertTrue(bodies.queue[0]["finished"])
+        DRIVER.wait_for_observers(self.page, observed, bodies)
+        self.assertEqual(report["http"]["actual_skill_successes"], 1)
+        self.assertEqual(report["http"]["unique_skill_call_ids"], 1)
+        self.assertEqual(bodies.calls, [DEPLOYMENT])
+        self.assertEqual(bodies.queue, [])
+        self.assertFalse(observed["observer_failure"], observed["error_counts"])
+
+    def test_management_editor_closes_only_after_real_json_body_audit(self):
+        report, observed, bodies = self.skill_body_audit()
+        self.open()
+        skills = self.app("Skill")
+        skills.get_by_role("button", name="调用测试", exact=True).click()
+        editor = self.page.locator('.window[data-app="editor-invokeSkill"]')
+        editor.get_by_label("请求 JSON", exact=True).fill(json.dumps({"input": {"message": "Must audit before editor abort"}, "idempotency_key": "component-close-audit"}))
+        bodies.expect(1)
+        editor.get_by_role("button", name="提交", exact=True).click()
+        editor.get_by_text('"message": "Must audit before editor abort"', exact=False).wait_for()
+        self.assertEqual(report["http"]["actual_skill_successes"], 0)
+        DRIVER.close_windows(self.page, report, observed, bodies)
+        self.assertEqual(self.page.locator(".window").count(), 0)
+        self.assertTrue(report["checks"]["all_windows_close"])
+        self.assertEqual(report["http"], {"actual_skill_successes": 1, "unique_skill_call_ids": 1, "skill_post_attempts": 1})
+        self.assertEqual(report["body_observation"]["queued_bodies"], 0)
+        self.assertEqual(report["body_observation"]["unfinished_requests"], 0)
+        self.assertFalse(observed["observer_failure"], observed["error_counts"])
+
     def test_trusted_login_pkce_and_no_password(self):
         self.open(False)
         self.assertEqual(self.page.locator('input[type="password"]').count(), 0)
@@ -456,8 +510,8 @@ class DesktopBrowser(unittest.TestCase):
 
     def test_reference_window_open_settles_before_strict_network_audit_close(self):
         self.real_reference = True
-        observed = {"observer_failure": False, "error_counts": {}, "active_request_observers": 0, "active_response_observers": 0}
-        counts = {"plugin_headers": 0, "core_json": 0, "skill_json": 0}
+        report, observed, bodies = self.skill_body_audit()
+        counts = {"plugin_headers": 0}
         def audit(request):
             observed["active_request_observers"] += 1
             try:
@@ -469,23 +523,6 @@ class DesktopBrowser(unittest.TestCase):
             finally:
                 observed["active_request_observers"] -= 1
         self.context.on("request", audit)
-        def audit_body(response):
-            observed["active_response_observers"] += 1
-            phase = "response_read"
-            try:
-                parsed = urlparse(response.url)
-                if f"{parsed.scheme}://{parsed.netloc}" == CORE and response.request.method != "OPTIONS":
-                    if parsed.path.endswith("/calls"):
-                        phase = "response_skill_body"
-                    response.json()
-                    counts["core_json"] += 1
-                    if phase == "response_skill_body":
-                        counts["skill_json"] += 1
-            except Exception as error:
-                DRIVER.record_observer_failure(observed, phase, error)
-            finally:
-                observed["active_response_observers"] -= 1
-        self.context.on("response", audit_body)
         for identifier, kind in [("echo_window", "window"), ("echo_widget", "widget")]:
             value = contribution(identifier, kind)
             value["plugin_id"] = "org.xelab.ui-reference"
@@ -501,10 +538,11 @@ class DesktopBrowser(unittest.TestCase):
         skills.get_by_role("button", name="调用测试", exact=True).click()
         editor = self.page.locator('.window[data-app="editor-invokeSkill"]')
         editor.get_by_role("textbox", name="请求 JSON", exact=True).fill(json.dumps({"input": {"message": "Observed response before window abort"}, "idempotency_key": "component-observer-body"}))
+        bodies.expect(1)
         editor.get_by_role("button", name="提交", exact=True).click()
         editor.locator("pre.result").wait_for()
-        DRIVER.close_windows(self.page, {"checks": {}}, observed)
-        self.assertEqual(counts["skill_json"], 1)
+        DRIVER.close_windows(self.page, report, observed, bodies)
+        self.assertEqual(report["http"]["actual_skill_successes"], 1)
         self.page.get_by_role("button", name="打开应用启动器", exact=True).click()
         self.page.get_by_role("button", name="启动插件页面", exact=True).click()
         listing = self.page.locator('.window[data-app="contributions"]')
@@ -522,13 +560,13 @@ class DesktopBrowser(unittest.TestCase):
         navigated.value.wait_for_load_state("load")
         self.assertTrue(navigated.value.locator("#call").is_disabled())
         self.page.locator("#source-probe").evaluate("element => element.remove()")
-        DRIVER.wait_for_observers(self.page, observed)
+        DRIVER.wait_for_observers(self.page, observed, bodies)
         self.assertGreaterEqual(counts["plugin_headers"], 12)
         self.context.close()
         self.assertEqual(observed["active_request_observers"], 0)
         self.assertEqual(observed["active_response_observers"], 0)
         self.assertFalse(observed["observer_failure"], observed["error_counts"])
-        print(json.dumps({"component": "desktop_reference_window_observer_not_core", "plugin_headers": counts["plugin_headers"], "core_json": counts["core_json"], "skill_json": counts["skill_json"], "active_requests": observed["active_request_observers"], "active_responses": observed["active_response_observers"], "observer_failure": observed["observer_failure"]}, sort_keys=True))
+        print(json.dumps({"component": "desktop_reference_window_observer_not_core", "plugin_headers": counts["plugin_headers"], "skill_json": report["http"]["actual_skill_successes"], "unique_skill_call_ids": report["http"]["unique_skill_call_ids"], "active_requests": observed["active_request_observers"], "active_responses": observed["active_response_observers"], "observer_failure": observed["observer_failure"]}, sort_keys=True))
 
     def test_mutating_401_never_refreshes_or_retries_business_request(self):
         self.open()
