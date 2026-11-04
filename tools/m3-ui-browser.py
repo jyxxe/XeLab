@@ -70,6 +70,108 @@ def record_observer_failure(observed, phase, error):
     buckets[key] = min(buckets.get(key, 0) + 1, 65535)
 
 
+def selected_failure_category(value):
+    # Compare only exact fixed browser codes; never retain the original value.
+    codes = ("net::ERR_ABORTED", "net::ERR_TIMED_OUT", "net::ERR_CONNECTION_RESET", "net::ERR_CONNECTION_CLOSED", "net::ERR_HTTP2_PROTOCOL_ERROR", "net::ERR_FAILED")
+    return value if isinstance(value, str) and value in codes else "OTHER"
+
+
+class LoginBootstrapAudit:
+    """Bounded filename/status and boolean diagnostics; never a ready gate."""
+    files = ("app.js", "runtime-config.js", "api.js", "oauth.js", "bridge.js", "styles.css")
+    stages = ("root_navigation", "welcome_login_click", "account_wait", "account_fill", "password_fill", "login_submit_click", "consent_wait", "consent_submit_click", "callback_wait", "session_wait", "connection_wait", "core_cookie_check", "plugin_cookie_check")
+
+    def __init__(self, core, ui, reference, report):
+        self.origins = {core: "core", ui: "ui", reference: "reference"}
+        self.ui, self.report, self.requests = ui, report, {}
+        self.records = report.setdefault("bootstrap", {})
+
+    def entry(self, label):
+        if label not in ("owner", "child"):
+            return None
+        return self.records.setdefault(label, {"assets": {}, "snapshots": {}})
+
+    def stage(self, label, stage):
+        if self.entry(label) is not None and stage in self.stages:
+            self.entry(label)["stage"] = stage
+            self.report["step"] = label + "_" + stage
+
+    def request(self, request, label):
+        if self.entry(label) is None or url_origin(request.url) != self.ui:
+            return None
+        path = urllib.parse.urlsplit(request.url).path
+        filename = path.removeprefix("/ui/org.xelab.webui/")
+        if path != "/ui/org.xelab.webui/" + filename or filename not in self.files:
+            return None
+        if (label, request) not in self.requests and len(self.requests) >= 128:
+            entry = self.entry(label)
+            entry["ignored_asset_events"] = min(entry.get("ignored_asset_events", 0) + 1, 65535)
+            return None
+        state = self.requests.setdefault((label, request), {"file": filename, "status": None, "finished": False, "failed": False})
+        self.publish(label)
+        return state
+
+    def response(self, response, label):
+        state = self.request(response.request, label)
+        if state is not None:
+            state["status"] = response.status if 100 <= response.status <= 599 else 0
+            self.publish(label)
+
+    def terminal(self, request, label, failed):
+        state = self.request(request, label)
+        if state is not None:
+            state["failed" if failed else "finished"] = True
+            self.publish(label)
+
+    def publish(self, label):
+        assets = {}
+        for (owner, _), state in self.requests.items():
+            if owner != label:
+                continue
+            item = assets.setdefault(state["file"], {"requested": 0, "finished": 0, "failed": 0, "status_counts": {}})
+            item["requested"] = min(item["requested"] + 1, 65535)
+            for key in ("finished", "failed"):
+                item[key] = min(item[key] + int(state[key]), 65535)
+            if state["status"] is not None:
+                code = str(state["status"])
+                if code not in item["status_counts"] and len(item["status_counts"]) >= 8:
+                    code = "0"
+                item["status_counts"][code] = min(item["status_counts"].get(code, 0) + 1, 65535)
+        self.entry(label)["assets"] = assets
+
+    def snapshot(self, page, label, name):
+        if self.entry(label) is None or name not in ("root", "failure"):
+            return
+        snapshot = {"page_closed": page.is_closed(), "dom_available": False}
+        self.entry(label)["snapshots"][name] = snapshot
+        try:
+            snapshot["origin_class"] = self.origins.get(url_origin(page.url), "other")
+            if page.is_closed():
+                return
+            # One bounded read-only diagnostic after navigation or failure.
+            # It never retries an action or participates in its ready predicate.
+            value = page.locator("html").evaluate("""() => {
+              const button=document.querySelector('#welcome-login');
+              const visible=!!button && button.getClientRects().length>0 && getComputedStyle(button).visibility!=='hidden';
+              return {ready_state:document.readyState,dock_populated:!!document.querySelector('#dock')?.children.length,
+                clock_nonempty:!!document.querySelector('#clock')?.textContent?.trim(),
+                welcome_login_exists:!!button,welcome_login_visible:visible,welcome_login_enabled:!!button&&!button.disabled,
+                account_exists:!!document.querySelector('#account'),password_exists:!!document.querySelector('#password'),
+                consent_exists:!!document.querySelector('#consent'),logged_in_control:document.querySelector('#login')?.textContent==='退出'};
+            }""", timeout=1000)
+            snapshot["dom_available"] = True
+            snapshot["ready_state"] = value.get("ready_state") if value.get("ready_state") in ("loading", "interactive", "complete") else "other"
+            for key in ("dock_populated", "clock_nonempty", "welcome_login_exists", "welcome_login_visible", "welcome_login_enabled", "account_exists", "password_exists", "consent_exists", "logged_in_control"):
+                snapshot[key] = value.get(key) if isinstance(value.get(key), bool) else None
+        except Exception as error:
+            snapshot["diagnostic_error_bucket"] = error_bucket(error)
+
+    def failure(self, page, label, error):
+        name = type(error).__name__
+        self.entry(label)["error_type"] = name if name in ("TimeoutError", "Error", "CheckFailed") else "OtherError"
+        self.snapshot(page, label, "failure")
+
+
 class SkillBodyAudit:
     """Read actual selected response bodies outside Playwright event callbacks."""
     def __init__(self, core, skill, report, observed):
@@ -82,16 +184,20 @@ class SkillBodyAudit:
         return (url_origin(request.url) == self.core and request.method == "POST"
                 and urllib.parse.urlsplit(request.url).path == f"/api/platform/v1/skills/{self.skill}/calls")
 
-    def request(self, request):
+    def request(self, request, context_label=None):
         if not self.selected(request):
             return None
         if request not in self.requests:
-            self.requests[request] = {"finished": False, "failed": False, "response": None, "read": False, "failure_recorded": False}
+            self.requests[request] = {"finished": False, "failed": False, "response": None, "read": False, "verified": False, "failure_recorded": False, "context_label": "unlabeled", "finished_before_failed": False, "failed_before_finished": False, "failure_snapshot": None, "echo_matches_request": None, "started_at": time.monotonic(), "response_ms": None, "finished_ms": None, "failed_ms": None, "failure_category": None, "expected_at_start": self.expected_successes}
             self.report["http"]["skill_post_attempts"] += 1
+        if context_label in ("owner", "child", "component"):
+            self.requests[request]["context_label"] = context_label
         return self.requests[request]
 
     def response(self, response):
         state = self.request(response.request)
+        if state is not None and state["response_ms"] is None:
+            state["response_ms"] = self.elapsed_ms(state)
         if state is not None and response.status == 200 and state["response"] is None:
             state["response"] = response
             self.queue.append(state)
@@ -99,16 +205,54 @@ class SkillBodyAudit:
     def finished(self, request):
         state = self.request(request)
         if state is not None:
+            if state["finished_ms"] is None:
+                state["finished_ms"] = self.elapsed_ms(state)
+            if state["failed"] and not state["finished"]:
+                state["failed_before_finished"] = True
             state["finished"] = True
 
     def failed(self, request):
         state = self.request(request)
         if state is not None:
+            if not state["failed"]:
+                state["failed_ms"] = self.elapsed_ms(state)
+                try:
+                    state["failure_category"] = selected_failure_category(request.failure)
+                except Exception:
+                    state["failure_category"] = "OTHER"
+                state["finished_before_failed"] = state["finished"]
+                state["failure_snapshot"] = {"context_label": state["context_label"], "expected_successes": self.expected_successes, "finished": state["finished"], "read": state["read"], "body_verified": state["verified"], "failure_category": state["failure_category"], "response_ms": state["response_ms"], "failed_ms": state["failed_ms"], "finished_ms": state["finished_ms"]}
             state["failed"] = True
+
+    def elapsed_ms(self, state):
+        return min(max(int((time.monotonic() - state["started_at"]) * 1000), 0), 300000)
 
     def expect(self, successes, attempts=None):
         self.expected_successes = successes
         self.expected_attempts = successes if attempts is None else attempts
+
+    def record_reason(self, reason, state, duplicate_index=None):
+        # Fixed bounded labels and booleans only: never include an identity,
+        # request/response body, URL, header or original exception message.
+        reasons = ("SelectedRequestFailed", "ResponseNotObject", "SkillMismatch", "CallNotObject", "CallIdMissing", "CallIdInvalid", "NotCanonical", "CallSkillMismatch", "Duplicate")
+        if reason not in reasons:
+            raise CheckFailed("invalid_body_diagnostic_reason")
+        counts = self.observed.setdefault("skill_body_reasons", {})
+        counts[reason] = min(counts.get(reason, 0) + 1, 65535)
+        item = dict(state["failure_snapshot"]) if reason == "SelectedRequestFailed" else {
+            "context_label": state["context_label"], "expected_successes": self.expected_successes,
+            "finished": state["finished"], "read": state["read"], "body_verified": state["verified"],
+        }
+        item.update(reason=reason, echo_matches_request=state["echo_matches_request"])
+        if duplicate_index is not None and 0 <= duplicate_index <= 4:
+            item["duplicate_index"] = duplicate_index
+        failures = self.observed.setdefault("skill_body_failure_stats", [])
+        if len(failures) < 6:
+            failures.append(item)
+
+    def reject(self, reason, state, duplicate_index=None):
+        self.record_reason(reason, state, duplicate_index)
+        raise CheckFailed(reason)
 
     def read_completed(self):
         # Body RPCs may pump more callbacks. Iterate snapshots, and preserve
@@ -116,7 +260,8 @@ class SkillBodyAudit:
         for state in list(self.requests.values()):
             if state["failed"] and not state["failure_recorded"]:
                 state["failure_recorded"] = True
-                record_observer_failure(self.observed, "response_skill_body", CheckFailed("selected_skill_request_failed"))
+                self.record_reason("SelectedRequestFailed", state)
+                record_observer_failure(self.observed, "response_skill_body", CheckFailed("SelectedRequestFailed"))
         for state in list(self.queue):
             if state["read"] or not (state["finished"] or state["failed"]):
                 continue
@@ -128,13 +273,39 @@ class SkillBodyAudit:
                 # Response.json already waits internally; requestfinished is
                 # recorded above, so never issue a second response.finished RPC.
                 value = state["response"].json()
-                call = value.get("call") if isinstance(value, dict) else None
-                identifier = call.get("call_id") if isinstance(call, dict) else None
-                if (not isinstance(value, dict) or value.get("skill_id") != self.skill or not isinstance(identifier, str)
-                        or str(uuid.UUID(identifier)) != identifier
-                        or call.get("skill_id", self.skill) != self.skill
-                        or identifier in self.calls):
-                    raise CheckFailed("selected_skill_response_identity")
+                if not isinstance(value, dict):
+                    self.reject("ResponseNotObject", state)
+                call = value.get("call")
+                # Optional echo correlation is diagnostic only, never a new
+                # acceptance condition. Values stay private even on failure.
+                try:
+                    request_value = json.loads(state["response"].request.post_data or "null")
+                    source = request_value.get("input", {}).get("message")
+                    target = call.get("output", {}).get("message") if isinstance(call, dict) else None
+                    if isinstance(source, str) and isinstance(target, str):
+                        state["echo_matches_request"] = source == target
+                except Exception:
+                    pass
+                if value.get("skill_id") != self.skill:
+                    self.reject("SkillMismatch", state)
+                if not isinstance(call, dict):
+                    self.reject("CallNotObject", state)
+                identifier = call.get("call_id")
+                if identifier is None:
+                    self.reject("CallIdMissing", state)
+                if not isinstance(identifier, str):
+                    self.reject("CallIdInvalid", state)
+                try:
+                    canonical = str(uuid.UUID(identifier))
+                except ValueError:
+                    self.reject("CallIdInvalid", state)
+                if canonical != identifier:
+                    self.reject("NotCanonical", state)
+                if call.get("skill_id", self.skill) != self.skill:
+                    self.reject("CallSkillMismatch", state)
+                if identifier in self.calls:
+                    self.reject("Duplicate", state, self.calls.index(identifier))
+                state["verified"] = True
                 self.calls.append(identifier)
                 self.report["http"]["actual_skill_successes"] += 1
                 self.report["http"]["unique_skill_call_ids"] = len(set(self.calls))
@@ -149,6 +320,13 @@ class SkillBodyAudit:
             "unique_call_ids": len(set(self.calls)), "attempts": self.report["http"]["skill_post_attempts"],
             "queued_bodies": len(self.queue),
             "unfinished_requests": sum(not (state["finished"] or state["failed"]) for state in self.requests.values()),
+            "finished_requests": sum(state["finished"] for state in self.requests.values()),
+            "failed_requests": sum(state["failed"] for state in self.requests.values()),
+            "all_requests_finished": all(state["finished"] for state in self.requests.values()),
+            "finished_before_failed": any(state["finished_before_failed"] for state in self.requests.values()),
+            "finished_before_failed_requests": sum(state["finished_before_failed"] for state in self.requests.values()),
+            "failed_before_finished_requests": sum(state["failed_before_finished"] for state in self.requests.values()),
+            "request_lifecycle": [{"ordinal": ordinal, "context_label": state["context_label"], "expected_at_start": state["expected_at_start"], "start_ms": 0, "response_ms": state["response_ms"], "finished_ms": state["finished_ms"], "failed_ms": state["failed_ms"], "failure_category": state["failure_category"]} for ordinal, state in enumerate(list(self.requests.values())[:6])],
         }
 
     def complete(self):
@@ -316,13 +494,14 @@ def run(config, report):
     report["observation"] = observed
     bodies = SkillBodyAudit(core, config["skill_id"], report, observed)
     calls = bodies.calls
+    bootstrap = LoginBootstrapAudit(core, ui, reference, report)
 
-    def observe_request(request):
+    def observe_request(request, context_label=None):
         observed["active_request_observers"] += 1
         phase = "request_origin"
         try:
             location = url_origin(request.url)
-            bodies.request(request)
+            bodies.request(request, context_label)
             phase = "request_body"
             body = request.post_data
             if body and "password" in body and location != core:
@@ -374,40 +553,61 @@ def run(config, report):
         finally:
             observed["active_response_observers"] -= 1
 
-    def context(browser):
+    def context(browser, label):
         result = browser.new_context(viewport={"width": 1440, "height": 1000})
-        result.on("request", observe_request)
+        result.on("request", lambda request: observe_request(request, label))
         result.on("response", observe_response)
+        result.on("request", lambda request: bootstrap.request(request, label))
+        result.on("response", lambda response: bootstrap.response(response, label))
+        result.on("requestfinished", lambda request: bootstrap.terminal(request, label, False))
+        result.on("requestfailed", lambda request: bootstrap.terminal(request, label, True))
         result.on("requestfinished", bodies.finished)
         result.on("requestfailed", bodies.failed)
         result.on("page", lambda page: page.on("pageerror", lambda _: observed.__setitem__("page_errors", observed["page_errors"] + 1)))
         return result
 
     def login(browser, account, password, label):
-        report["step"] = label + "_default_ui_navigation"
-        ctx = context(browser)
+        bootstrap.stage(label, "root_navigation")
+        ctx = context(browser, label)
         page = ctx.new_page()
         page.set_default_timeout(25000)
-        response = page.goto(core + "/", wait_until="domcontentloaded")
-        require(response is not None and response.status == 200 and url_origin(page.url) == ui, label + "_root_redirects_to_actual_oci_ui")
-        page.locator("#welcome-login").click()
-        page.locator("#account").wait_for()
-        require(url_origin(page.url) == core and urllib.parse.urlsplit(page.url).path == "/auth/ui/login", label + "_password_only_on_trusted_core")
-        page.locator("#account").fill(account)
-        page.locator("#password").fill(password)
-        page.locator("#submit").click()
-        page.locator("#consent").wait_for()
-        require(url_origin(page.url) == core, label + "_trusted_native_consent")
-        require(page.locator('#consent input[name="X-CSRF-Token"]').count() == 1, label + "_request_specific_consent_csrf")
-        page.locator('#consent button[name="approved"][value="true"]').click()
-        page.wait_for_url(lambda url: url_origin(str(url)) == ui and urllib.parse.urlsplit(str(url)).path == "/ui/org.xelab.webui/")
-        page.wait_for_function("() => document.querySelector('#login')?.textContent === '退出'")
-        page.wait_for_function("() => document.querySelector('#connection')?.textContent === '已连接核心'")
-        require(page.locator("#welcome").is_hidden(), label + "_actual_pkce_login_completed")
-        cookies = ctx.cookies([core])
-        session = next((cookie for cookie in cookies if cookie["name"] == "__Host-xelab_auth"), None)
-        require(session is not None and session["httpOnly"] and session["secure"] and session["sameSite"] == "Lax" and session["path"] == "/" and session["domain"] == hosts[0], label + "_host_only_core_session_cookie")
-        require(not any(cookie["name"] == "__Host-xelab_auth" for cookie in ctx.cookies([ui, reference])), label + "_no_core_cookie_on_plugin_hosts")
+        try:
+            response = page.goto(core + "/", wait_until="domcontentloaded")
+            require(response is not None and response.status == 200 and url_origin(page.url) == ui, label + "_root_redirects_to_actual_oci_ui")
+            bootstrap.snapshot(page, label, "root")
+            bootstrap.stage(label, "welcome_login_click")
+            page.locator("#welcome-login").click()
+            bootstrap.stage(label, "account_wait")
+            page.locator("#account").wait_for()
+            require(url_origin(page.url) == core and urllib.parse.urlsplit(page.url).path == "/auth/ui/login", label + "_password_only_on_trusted_core")
+            bootstrap.stage(label, "account_fill")
+            page.locator("#account").fill(account)
+            bootstrap.stage(label, "password_fill")
+            page.locator("#password").fill(password)
+            bootstrap.stage(label, "login_submit_click")
+            page.locator("#submit").click()
+            bootstrap.stage(label, "consent_wait")
+            page.locator("#consent").wait_for()
+            require(url_origin(page.url) == core, label + "_trusted_native_consent")
+            require(page.locator('#consent input[name="X-CSRF-Token"]').count() == 1, label + "_request_specific_consent_csrf")
+            bootstrap.stage(label, "consent_submit_click")
+            page.locator('#consent button[name="approved"][value="true"]').click()
+            bootstrap.stage(label, "callback_wait")
+            page.wait_for_url(lambda url: url_origin(str(url)) == ui and urllib.parse.urlsplit(str(url)).path == "/ui/org.xelab.webui/")
+            bootstrap.stage(label, "session_wait")
+            page.wait_for_function("() => document.querySelector('#login')?.textContent === '退出'")
+            bootstrap.stage(label, "connection_wait")
+            page.wait_for_function("() => document.querySelector('#connection')?.textContent === '已连接核心'")
+            require(page.locator("#welcome").is_hidden(), label + "_actual_pkce_login_completed")
+            bootstrap.stage(label, "core_cookie_check")
+            cookies = ctx.cookies([core])
+            session = next((cookie for cookie in cookies if cookie["name"] == "__Host-xelab_auth"), None)
+            require(session is not None and session["httpOnly"] and session["secure"] and session["sameSite"] == "Lax" and session["path"] == "/" and session["domain"] == hosts[0], label + "_host_only_core_session_cookie")
+            bootstrap.stage(label, "plugin_cookie_check")
+            require(not any(cookie["name"] == "__Host-xelab_auth" for cookie in ctx.cookies([ui, reference])), label + "_no_core_cookie_on_plugin_hosts")
+        except Exception as error:
+            bootstrap.failure(page, label, error)
+            raise
         return ctx, page
 
     def open_app(page, identifier, title, dock=True):

@@ -69,6 +69,7 @@ jobs:
           node --test examples/webui/test_api.mjs examples/ui-reference/test_bridge.mjs
           "$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/webui -p 'test_server.py' -v
           "$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/webui -p 'test_browser.py' -v
+          "$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/webui -p 'test_shell.py' -v
           "$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/webui -p 'test_bridge.py' -v
           "$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/ui-reference -p 'test_http.py' -v
           "$XELAB_OAUTH_BROWSER_PYTHON" examples/ui-reference/test_browser.py --webui-public examples/webui/public -v

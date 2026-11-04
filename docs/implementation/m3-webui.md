@@ -2,12 +2,11 @@
 
 [实施目录](README.md) · [M3 进度](m3-progress.md) · [核心 OAuth/UI](m3-oauth-ui.md) · [WebUI 部署](../../examples/webui/DEPLOYMENT.md) · [独立 UI 插件](../../examples/ui-reference/README.md)
 
-记录日期：2026-11-04。D/E 的执行代码和 F 的真实集成测试已存在于开发分支； 完整 F 尚未执行通过，不能据组件结果宣布 M3 完成。合并与最终结论须对应精确提交的 CI。 既有 main `201fb5a92854cbcefe7e547dca121b89796f1506` 的 [CI 41845259790](https://github.com/jyxxe/XeLab/actions/runs/41845259790) 已成功；该提交不含本次 D/E/F，不能归入整体 F 证据。
-
+记录日期：2026-11-04。D/E 的执行代码和 F 的真实集成测试已存在于开发分支；M3 尚未完成。main `e9ad62b83708e46569ca47f74413f6890950cdb5` 的 [CI 41860893005](https://github.com/jyxxe/XeLab/actions/runs/41860893005) 已成功，包含合并的 #39–44，尚不包含 #45–47。#46 的历史精确提交 `4e8a42c2…` 已在 [CI 41906679990](https://github.com/jyxxe/XeLab/actions/runs/41906679990) 的 full 和 focus 两个 job 完成真实 F、53 项浏览器检查与11项 Core 检查；这不替代后续修改、依赖 PR 或最终 main 的完整门禁。
 ## 已实现路径
 
 - `examples/webui/server.py`、`Dockerfile`、`build_artifact.py`：独立 `org.xelab.webui`，UID/GID 65532，已有 mTLS Lifecycle、签名静态路由及公开运行配置；没有数据库或管理代理后门。
-- `examples/webui/public/{app,api,oauth}.js`、HTML/CSS：菜单、Dock、启动器、多窗口、组件、键盘/小屏操作、主题及本人偏好；通过封闭操作表访问真实管理 API。未知副作用保留原幂等键，凭证变化后锁定原编辑器，不盲目刷新重发。
+- `examples/webui/public/{app,api,oauth}.js`、HTML/CSS：菜单、Dock、启动器、多窗口、组件、键盘/小屏操作、主题及本人偏好；贡献搜索和分页、固定窗口 Dock、签名尺寸范围内的组件布局编辑、API Key 只读元数据，固定贡献窗口按当前权限及签名/白名单摘要受控恢复；通过封闭操作表访问真实管理 API。未知副作用保留原幂等键，凭证变化后锁定原编辑器，不盲目刷新重发。
 - `examples/webui/public/bridge.js`：固定安装/部署/贡献摘要，隔离 iframe、随机 view/nonce、精确 source/origin、协议/序列、负载/并发/速率限制；`skill.call` 仅解析固定 alias，宿主注入贡献部署，结果另读原 Call 复核当前权限；`window.open` 只开同一固定部署的获准窗口。
 - `examples/ui-reference/`：独立 HTTP echo 进程、窗口和组件、固定 HTTP Skill/OpenAPI、`xelab.ui/1` 客户端；组件能请求窗口，不取得核心凭证或任意代理能力。输出采用文本，未收到真实结果不会显示成功。
 - `crates/kernel/src/{ui,webui,deployments}.rs` 及 OAuth/HTTP/Skill 既有模块：签名贡献发现、账户偏好、默认 UI、精确 Client/回调及停用配置更新；沿用核心 Authorizer、Broker、Runtime 和追加迁移 16。
@@ -19,7 +18,7 @@
 
 | 检查 | 2026-11-04 已执行结果 | 不能据此证明的内容 |
 |---|---|---|
-| WebUI Node / 回环 mTLS / Chromium 桌面 / 隔离桥 | 16 / 9 / 11 / 8 项通过，无跳过 | 浏览器使用明确核心响应夹具，非真实 Owner/OCI 整体授权 |
+| WebUI Node / 回环 mTLS / Chromium 桌面 / 隔离桥 | 16 / 9 / 20+12 / 10 项通过，无跳过 | 浏览器使用明确核心响应夹具，非真实 Owner/OCI 整体授权 |
 | 独立 UI 插件 Python / Node / Chromium | 7 / 5 / 4 项通过，无跳过 | 组件适配器不实现核心授权、OAuth、签名准入或 Runtime |
 | WebUI 打包组件 | `68e50b22…` 镜像，真实生成的 Lifecycle RPC、mTLS 静态服务通过 | 非签名安装，也不是生产镜像的整体核心调用 |
 | UI reference 生产镜像打包组件 | `5a654ccb…`，真实 ENTRYPOINT、Lifecycle、5 文件 GET/HEAD、HTTP echo 及拒绝/排空，42 条断言通过 | 42 条断言不是 42 个独立测试；上下文为明确的组件值，未验证核心授权或签名 |
@@ -35,6 +34,7 @@ set -euo pipefail
 node --test examples/webui/test_api.mjs examples/ui-reference/test_bridge.mjs
 "$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/webui -p 'test_server.py' -v
 "$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/webui -p 'test_browser.py' -v
+"$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/webui -p 'test_shell.py' -v
 "$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/webui -p 'test_bridge.py' -v
 "$XELAB_OAUTH_BROWSER_PYTHON" -m unittest discover -s examples/ui-reference -p 'test_http.py' -v
 "$XELAB_OAUTH_BROWSER_PYTHON" examples/ui-reference/test_browser.py --webui-public examples/webui/public -v
