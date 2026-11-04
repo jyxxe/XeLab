@@ -36,6 +36,7 @@ async fn journal(f: &Fixture, operation: Uuid) -> Value {
 }
 
 pub async fn exercise() {
+    xelab_kernel::init_crypto();
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     assert_eq!(unsafe { libc::geteuid() }, 0);
     assert_eq!(std::env::var("XELAB_XFS_TEST").unwrap(), "1");
