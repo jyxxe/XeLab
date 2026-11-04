@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 pub mod authorization;
 pub mod clients;
+pub mod snapshot;
 pub mod tokens;
 
 /// A persisted client/family binding, not caller-supplied routing context.

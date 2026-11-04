@@ -24,6 +24,7 @@ pub struct Path {
 pub struct Policy<'a, C> {
     c: &'a C,
     peer: IpAddr,
+    browser_origin: Option<String>,
     evaluating_grants: HashSet<Uuid>,
     proving_self_grants: HashSet<Uuid>,
 }
@@ -32,9 +33,20 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
         Self {
             c,
             peer,
+            browser_origin: None,
             evaluating_grants: HashSet::new(),
             proving_self_grants: HashSet::new(),
         }
+    }
+
+    pub fn for_context(c: &'a C, ctx: &Context) -> Self {
+        Self::with_browser_origin(c, ctx.peer, ctx.browser_origin.as_deref())
+    }
+
+    pub fn with_browser_origin(c: &'a C, peer: IpAddr, origin: Option<&str>) -> Self {
+        let mut policy = Self::new(c, peer);
+        policy.browser_origin = origin.map(str::to_owned);
+        policy
     }
 
     pub async fn account(&mut self, account: Uuid, depth: usize) -> Result<Vec<Path>> {
@@ -146,6 +158,21 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
         {
             return Err(Error::credential());
         }
+        let binding = if row.get::<_, String>("kind") == "oauth_access" {
+            let binding = crate::oauth::binding(self.c, credential).await?;
+            // An origin-restricted grant is one authority alternative. Do not
+            // reject independent alternatives belonging to the same account.
+            if self
+                .browser_origin
+                .as_ref()
+                .is_some_and(|origin| *origin != binding.origin)
+            {
+                return Ok(Vec::new());
+            }
+            Some(binding)
+        } else {
+            None
+        };
         let mut paths = Box::pin(self.account(row.get("owner_id"), depth + 1)).await?;
         if let Some(issuer) = row.get::<_, Option<Uuid>>("issuer_credential_id") {
             let limits = Box::pin(self.credential(issuer, depth + 1)).await?;
@@ -154,7 +181,7 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
         match row.get::<_, String>("kind").as_str() {
             "session" => {}
             "oauth_access" => {
-                let binding = crate::oauth::binding(self.c, credential).await?;
+                let binding = binding.ok_or_else(Error::credential)?;
                 paths = self
                     .freeze(
                         paths,
@@ -651,7 +678,7 @@ pub async fn allows(
     if !registered(c, action, &resource.kind).await? {
         return Ok(false);
     }
-    let paths = Policy::new(c, ctx.peer)
+    let paths = Policy::for_context(c, ctx)
         .credential(ctx.credential, 0)
         .await?;
     Ok(rules_allow(&rules(&paths), action, resource, ctx.peer))

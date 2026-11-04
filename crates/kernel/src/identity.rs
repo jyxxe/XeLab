@@ -630,7 +630,7 @@ pub async fn execute(
             }
             let expiry = body.get("expires_at").map(policy::timestamp).transpose()?;
             bounded_expiry(c, ctx, parent, expiry).await?;
-            let mut policy = Policy::new(c, ctx.peer);
+            let mut policy = Policy::for_context(c, ctx);
             let mut paths = policy.select(ctx, &body["inheritance"]).await?;
             let parent_paths = policy.account(parent, 0).await?;
             paths = policy.intersection(&paths, &parent_paths).await?;
@@ -755,7 +755,7 @@ pub async fn execute(
             if caller.is_some() && original != caller {
                 return Err(Error::denied());
             }
-            let mut policy = Policy::new(c, ctx.peer);
+            let mut policy = Policy::for_context(c, ctx);
             let selected = policy.select(ctx, body).await?;
             let parent_paths = policy.account(parent, 0).await?;
             let mut paths = policy.intersection(&selected, &parent_paths).await?;
@@ -847,7 +847,9 @@ pub async fn execute(
         }
         "createGroup" | "publishGroupVersion" => {
             let rules = body["rules"].as_array().unwrap();
-            Policy::new(c, ctx.peer).require_subset(ctx, rules).await?;
+            Policy::for_context(c, ctx)
+                .require_subset(ctx, rules)
+                .await?;
             let group;
             if name == "createGroup" {
                 group = Uuid::new_v4();
@@ -973,7 +975,7 @@ pub async fn execute(
             let (rules, blocked) =
                 match auth::validate_sources(c, None, Some(account), ctx.peer).await {
                     Ok(_) => (
-                        policy::rules(&Policy::new(c, ctx.peer).account(account, 0).await?),
+                        policy::rules(&Policy::for_context(c, ctx).account(account, 0).await?),
                         json!([]),
                     ),
                     Err(e) if e.code == "INVALID_CREDENTIAL" => (json!([]), json!([account])),
@@ -986,7 +988,9 @@ pub async fn execute(
         }
         "checkAuthorization" => {
             let requested = json!({"action":body["action"],"resource":body["resource"]});
-            let result = Policy::new(c, ctx.peer).covers_now(ctx, &requested).await;
+            let result = Policy::for_context(c, ctx)
+                .covers_now(ctx, &requested)
+                .await;
             let allowed = match result {
                 Ok(allowed) => allowed,
                 Err(e) if matches!(e.code, "PERMISSION_DENIED" | "INVALID_ARGUMENT") => false,
@@ -1063,7 +1067,7 @@ pub(crate) async fn call_sources_for(
     action: &str,
     resource: &Resource,
 ) -> Result<BTreeSet<Uuid>> {
-    let paths = Policy::new(c, ctx.peer)
+    let paths = Policy::for_context(c, ctx)
         .credential(ctx.credential, 0)
         .await?;
     let mut alternatives = Vec::new();
@@ -1160,7 +1164,7 @@ async fn issue_key(
     policy::validate_conditions(&body["conditions"])?;
     bounded_expiry(c, ctx, owner, Some(expiry)).await?;
     let mode = string(&body["inheritance"], "mode")?;
-    let mut policy = Policy::new(c, ctx.peer);
+    let mut policy = Policy::for_context(c, ctx);
     let selected = policy.select(ctx, &body["inheritance"]).await?;
     let owned = policy.account(owner, 0).await?;
     let mut paths = policy.intersection(&selected, &owned).await?;
@@ -1267,7 +1271,7 @@ async fn create_grant(
             return Err(Error::not_found());
         }
         let raw: Value = row.get(0);
-        let policy = Policy::new(c, ctx.peer);
+        let policy = Policy::for_context(c, ctx);
         for rule in raw.as_array().unwrap() {
             let left = policy::Path {
                 rule: rule.clone(),
@@ -1304,7 +1308,9 @@ async fn create_grant(
             .ok_or_else(Error::denied)?;
         }
     }
-    Policy::new(c, ctx.peer).require_subset(ctx, &rules).await?;
+    Policy::for_context(c, ctx)
+        .require_subset(ctx, &rules)
+        .await?;
     let grant = Uuid::new_v4();
     let issuer = issuing_key(c, ctx).await?;
     c.execute("INSERT INTO grants(id,subject_id,issuer_id,issuer_credential_id,role_id,group_id,group_version,scope,expires_at,status,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'active',now(),now())", &[&grant,&account,&ctx.subject,&issuer,&role,&group,&version,&scope,&expires]).await?;
@@ -1439,7 +1445,7 @@ pub(crate) async fn list(
     let sql=format!("SELECT to_jsonb(t) FROM {table} t WHERE created_at<=$1 AND (created_at,id::text)>($2,$3) ORDER BY created_at,id LIMIT 201");
     let rows = c.query(&sql, &[&watermark, &last_time, &last_id]).await?;
     let available = policy::rules(
-        &Policy::new(c, ctx.peer)
+        &Policy::for_context(c, ctx)
             .credential(ctx.credential, 0)
             .await?,
     );

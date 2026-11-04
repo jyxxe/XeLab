@@ -43,7 +43,5 @@ pub fn init_crypto() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-#[cfg(test)]
-mod oauth_http;
-#[cfg(test)]
+pub mod oauth_http;
 mod trusted_auth;

@@ -166,6 +166,7 @@ async fn exchange_code(
         &ctx,
         &row.get::<_, Value>("fixed_paths"),
         &row.get::<_, Value>("fixed_rules"),
+        &row.get::<_, String>("origin"),
     )
     .await
     {
@@ -287,6 +288,7 @@ async fn exchange_refresh(
         &ctx,
         &f.get::<_, Value>("fixed_paths"),
         &f.get::<_, Value>("maximum_rules"),
+        &f.get::<_, String>("origin"),
     )
     .await
     {

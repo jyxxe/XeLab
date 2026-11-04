@@ -33,6 +33,9 @@ pub struct Context {
     pub(crate) peer: IpAddr,
     pub(crate) request: Uuid,
     pub(crate) chain: Vec<Uuid>,
+    // Set only by trusted HTTP admission after exact Origin validation. Never
+    // deserialize this field from a body, plugin header, or delegation.
+    pub(crate) browser_origin: Option<String>,
 }
 #[derive(Clone)]
 pub struct Resource {
@@ -126,6 +129,7 @@ impl Auth {
             peer,
             request,
             chain,
+            browser_origin: None,
         })
     }
     pub fn check_login_budget(&self, account: Uuid, peer: IpAddr) -> Result<()> {

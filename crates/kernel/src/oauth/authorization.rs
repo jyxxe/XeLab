@@ -144,7 +144,7 @@ pub async fn begin_authorization(
     db::auth_lock(c, true).await?;
     let ctx = session_context(c, auth, ctx).await?;
     let (client, origin, scope, rules) = validate_client(c, input).await?;
-    let mut policy = Policy::new(c, ctx.peer);
+    let mut policy = Policy::with_browser_origin(c, ctx.peer, Some(&origin));
     let paths = policy
         .select(&ctx, &json!({"mode":"selected","rules":rules}))
         .await?;
@@ -206,10 +206,11 @@ pub(crate) async fn live_paths(
     ctx: &Context,
     saved: &Value,
     ceiling: &Value,
+    target_origin: &str,
 ) -> Result<Vec<Path>> {
     let paths: Vec<Path> =
         serde_json::from_value(saved.clone()).map_err(|_| Error::credential())?;
-    let mut policy = Policy::new(c, ctx.peer);
+    let mut policy = Policy::with_browser_origin(c, ctx.peer, Some(target_origin));
     let live = policy.revalidate(&paths, ctx.credential).await?;
     let caps: Vec<Path> = ceiling
         .as_array()
@@ -289,6 +290,7 @@ pub async fn decide_consent(
         &ctx,
         &row.get::<_, Value>("fixed_paths"),
         &row.get::<_, Value>("fixed_rules"),
+        &row.get::<_, String>("origin"),
     )
     .await?;
     if !row

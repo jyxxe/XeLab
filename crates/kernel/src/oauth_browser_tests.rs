@@ -1,0 +1,276 @@
+//! Actual PostgreSQL + TLS + Chromium OAuth component acceptance. This adapter
+//! exercises real handlers/Identity without claiming the final main Host router
+//! or an independent OCI WebUI has already been integrated.
+use super::{Fixture, PASSWORD};
+use crate::{api, db, error::Result, identity, oauth_http};
+use axum::{
+    body::{to_bytes, Body},
+    extract::{ConnectInfo, State},
+    http::{Request, StatusCode},
+    response::{IntoResponse, Response},
+    routing::get,
+    Router,
+};
+use base64::{engine::general_purpose::STANDARD, Engine};
+use rcgen::{CertificateParams, KeyPair};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::HashMap,
+    fs,
+    io::Write,
+    net::{SocketAddr, TcpListener},
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
+use tower::ServiceExt;
+use uuid::Uuid;
+
+#[derive(Clone)]
+struct BrowserCore {
+    app: Arc<api::App>,
+    account: Uuid,
+}
+
+async fn account_read(
+    fixture: &BrowserCore,
+    peer: SocketAddr,
+    request_id: Uuid,
+    request: Request<Body>,
+) -> Result<Response> {
+    oauth_http::trusted_host(&fixture.app, &request)?;
+    let headers = request.headers().clone();
+    if request.uri().query().is_some()
+        || !to_bytes(request.into_body(), 1)
+            .await
+            .map_err(|_| crate::error::Error::invalid("Unexpected account read body"))?
+            .is_empty()
+    {
+        return Err(crate::error::Error::denied());
+    }
+    let mut c = fixture
+        .app
+        .db
+        .connect_scoped(Duration::from_secs(10))
+        .await?;
+    let tx = c.transaction().await?;
+    db::auth_lock(&tx, false).await?;
+    let ctx = oauth_http::credential_context(
+        &tx,
+        &fixture.app.auth,
+        &headers,
+        peer,
+        request_id,
+        fixture.app.config.text("server", "public_origin"),
+    )
+    .await?;
+    let params = HashMap::from([("account_id".to_owned(), fixture.account.to_string())]);
+    identity::authorize(&tx, &ctx, "getAccount", &params, &Value::Null).await?;
+    let (value, status) = identity::execute(
+        &tx,
+        &fixture.app.auth,
+        &ctx,
+        "getAccount",
+        &params,
+        &Value::Null,
+        &headers,
+        "",
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(api::response(value, status, request_id))
+}
+
+async fn core_component(
+    State(fixture): State<BrowserCore>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    mut request: Request<Body>,
+) -> Response {
+    let request_id = Uuid::new_v4();
+    if oauth_http::handles(request.method().as_str(), request.uri().path()) {
+        return oauth_http::handle(fixture.app, peer, request_id, request).await;
+    }
+    if request.method() == "GET"
+        && request.uri().path() == format!("/api/platform/v1/accounts/{}", fixture.account)
+    {
+        let headers = request.headers().clone();
+        let mut response = account_read(&fixture, peer, request_id, request)
+            .await
+            .unwrap_or_else(IntoResponse::into_response);
+        // Registered-origin CORS on an error conveys no account authority.
+        if let Ok(c) = fixture.app.db.connect_scoped(Duration::from_secs(10)).await {
+            if let Err(error) = oauth_http::cors_response(&*c, &headers, &mut response).await {
+                return error.into_response();
+            }
+        }
+        return response;
+    }
+    if request.method() == "POST" && request.uri().path() == "/api/platform/v1/auth/login" {
+        // Use the existing actual password endpoint. Its actual Origin/Cookie
+        // rules still run; do not rewrite HTTP/2 authority into a synthetic Host.
+        if let Err(error) = oauth_http::trusted_host(&fixture.app, &request) {
+            return error.into_response();
+        }
+        request.extensions_mut().insert(ConnectInfo(peer));
+        return api::router(fixture.app).oneshot(request).await.unwrap();
+    }
+    crate::error::Error::not_found().into_response()
+}
+
+async fn callback(State(core): State<String>) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/html; charset=utf-8")
+        .header("cache-control", "no-store")
+        .header("referrer-policy", "no-referrer")
+        .header(
+            "content-security-policy",
+            format!("default-src 'none'; connect-src {core}; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"),
+        )
+        .body(Body::from("<!doctype html><html><head><title>Actual OAuth callback fixture</title></head><body><main>OAuth callback received by the independent UI origin.</main></body></html>"))
+        .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requires actual PostgreSQL, Python Playwright and Chromium; OAuth TLS component, not main Host/OCI acceptance"]
+async fn chromium_trusted_login_native_consent_pkce_cors_and_refresh_reuse() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let core_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let ui_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    core_listener.set_nonblocking(true).unwrap();
+    ui_listener.set_nonblocking(true).unwrap();
+    let core = format!(
+        "https://core.localhost:{}",
+        core_listener.local_addr().unwrap().port()
+    );
+    let ui = format!(
+        "https://ui.localhost:{}",
+        ui_listener.local_addr().unwrap().port()
+    );
+    let fixture = Fixture::new(&core, &ui)
+        .await
+        .expect("explicit browser acceptance requires XELAB_TEST_DATABASE_URL");
+    let key = KeyPair::generate().unwrap();
+    let cert = CertificateParams::new(vec!["core.localhost".into(), "ui.localhost".into()])
+        .unwrap()
+        .self_signed(&key)
+        .unwrap();
+    let spki = STANDARD.encode(Sha256::digest(key.public_key_der()));
+    let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
+        cert.pem().into_bytes(),
+        key.serialize_pem().into_bytes(),
+    )
+    .await
+    .unwrap();
+    let core_handle = axum_server::Handle::new();
+    let ui_handle = axum_server::Handle::new();
+    let core_router = Router::new()
+        .fallback(core_component)
+        .with_state(BrowserCore {
+            app: fixture.app.clone(),
+            account: fixture.owner,
+        });
+    let core_server = tokio::spawn(
+        axum_server::from_tcp_rustls(core_listener, tls.clone())
+            .handle(core_handle.clone())
+            .serve(core_router.into_make_service_with_connect_info::<SocketAddr>()),
+    );
+    let ui_server = tokio::spawn(
+        axum_server::from_tcp_rustls(ui_listener, tls)
+            .handle(ui_handle.clone())
+            .serve(
+                Router::new()
+                    .route("/callback", get(callback))
+                    .with_state(core.clone())
+                    .into_make_service(),
+            ),
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let configuration = directory.path().join("oauth-browser-fixture.json");
+    let output_path = directory.path().join("oauth-browser-result.json");
+    let configuration_body = json!({
+        "core_origin":core,"ui_origin":ui,"redirect_uri":format!("{ui}/callback"),
+        "client_id":fixture.client["client_id"],"account_id":fixture.owner,
+        "password":PASSWORD,"scope":format!("client:{}",fixture.client["client_id"].as_str().unwrap()),
+        "api_read_path":format!("/api/platform/v1/accounts/{}",fixture.owner),
+        "expected_account_id":fixture.owner,"connect_ip":"127.0.0.1","tls_spki_sha256":spki,
+        "chromium_path":std::env::var("XELAB_OAUTH_BROWSER_CHROMIUM").unwrap_or_else(|_|"/usr/bin/chromium".into()),
+    });
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&configuration)
+        .unwrap()
+        .write_all(&serde_json::to_vec(&configuration_body).unwrap())
+        .unwrap();
+    let driver = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tools/oauth-browser.py");
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(180),
+        tokio::process::Command::new(
+            std::env::var("XELAB_OAUTH_BROWSER_PYTHON").unwrap_or_else(|_| "python3".into()),
+        )
+        .arg(driver)
+        .arg("--fixture")
+        .arg(&configuration)
+        .arg("--output")
+        .arg(&output_path)
+        .kill_on_drop(true)
+        .output(),
+    )
+    .await;
+    core_handle.graceful_shutdown(Some(Duration::from_secs(1)));
+    ui_handle.graceful_shutdown(Some(Duration::from_secs(1)));
+    let _ = tokio::time::timeout(Duration::from_secs(3), core_server).await;
+    let _ = tokio::time::timeout(Duration::from_secs(3), ui_server).await;
+    let output = outcome
+        .expect("actual OAuth browser subprocess exceeded 180 seconds")
+        .expect("actual OAuth browser subprocess could not start");
+    // Read only the driver's structured, secret-free report. Child stderr or a
+    // Playwright exception can include form data/URLs and must never be printed.
+    let report: Value = fs::read(&output_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_else(|| json!({"status":"failed","step":"browser_report_missing"}));
+    let mut safe_report = json!({"component":"actual_pg_tls_browser_not_main_host_or_oci",
+        "status":report["status"],"step":report["step"],"error_type":report["error_type"],
+        "browser_version":report["browser_version"],"playwright_version":report["playwright_version"],
+        "checks":report["checks"],"http":report["http"],"elapsed_seconds":report["elapsed_seconds"]});
+    let evidence = fixture.app.db.connect().await.unwrap();
+    let counts=evidence.query_one("SELECT (SELECT count(*) FROM authorization_requests WHERE client_id=$1 AND status IN('approved','consumed')) AS decided,(SELECT count(*) FROM idempotency_records i JOIN authorization_requests r ON i.resource_id=r.id::text WHERE r.client_id=$1 AND i.path='/api/platform/v1/auth/consents' AND i.response_status=302 AND i.safe_response IS NULL) AS redirects",&[&fixture.client["client_id"].as_str().unwrap()]).await.unwrap();
+    safe_report["http"]["server_approved_or_consumed_requests"] =
+        json!(counts.get::<_, i64>("decided"));
+    safe_report["http"]["server_secret_free_consent_302_records"] =
+        json!(counts.get::<_, i64>("redirects"));
+    if let Ok(path) = std::env::var("XELAB_OAUTH_BROWSER_RESULT") {
+        fs::write(&path, serde_json::to_vec_pretty(&safe_report).unwrap()).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    println!("{safe_report}");
+    assert!(
+        output.status.success(),
+        "browser component failed: {safe_report}"
+    );
+    assert_eq!(report["status"], "passed", "{safe_report}");
+    for check in [
+        "actual_password_login_http_200",
+        "exact_registered_callback",
+        "callback_state_and_code",
+        "pkce_exchange_cors_http_200",
+        "actual_account_cors_read",
+        "wrong_pkce_rejected",
+        "authorization_code_replay_rejected",
+        "refresh_credentials_rotated",
+        "refresh_family_revoked",
+        "reused_family_access_denied",
+        "password_never_sent_to_ui",
+        "core_cookie_never_sent_to_ui",
+    ] {
+        assert_eq!(
+            report["checks"][check], true,
+            "missing browser check: {check}"
+        );
+    }
+}

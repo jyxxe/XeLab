@@ -275,7 +275,7 @@ pub async fn execute(
     match name {
         "createClient" => {
             validate_spec(body)?;
-            Policy::new(c, ctx.peer)
+            Policy::for_context(c, ctx)
                 .require_subset(ctx, body["maximum_rules"].as_array().unwrap())
                 .await?;
             let id = Uuid::new_v4();
@@ -304,7 +304,7 @@ pub async fn execute(
                 ));
             }
             validate_spec(body)?;
-            Policy::new(c, ctx.peer)
+            Policy::for_context(c, ctx)
                 .require_subset(ctx, body["maximum_rules"].as_array().unwrap())
                 .await?;
             c.execute(
