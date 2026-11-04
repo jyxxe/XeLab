@@ -1143,7 +1143,34 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     let frozen = offline.freeze_source().await.unwrap();
     assert!(!frozen.images().is_empty());
     assert!(!frozen.stopped_lsn().is_empty());
-    assert!(frozen.volume_sources().await.unwrap().is_empty());
+    let frozen_sources = frozen.volume_sources().await.unwrap();
+    assert_eq!(
+        frozen_sources
+            .iter()
+            .map(|s| s.id)
+            .collect::<std::collections::BTreeSet<_>>(),
+        [source_volume.volume, versioned_source.volume]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+    );
+    assert_eq!(
+        frozen_sources
+            .iter()
+            .find(|s| s.id == versioned_source.volume)
+            .unwrap()
+            .data_schema_version
+            .as_deref(),
+        Some("1")
+    );
+    assert!(matches!(
+        frozen_sources
+            .iter()
+            .find(|s| s.id == source_volume.volume)
+            .unwrap()
+            .data_schema_version
+            .as_deref(),
+        None | Some("none")
+    ));
     assert!(app.runtime.inventory().await.unwrap().is_empty());
     assert_eq!(
         c.query_one(
