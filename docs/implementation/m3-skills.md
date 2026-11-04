@@ -19,7 +19,7 @@
 | `invokeSkill` | 普通 capability 目标的非流式调用，通过 Broker 发送至固定安装的真实 OCI 实例 |
 | `streamSkill` | 后续切片实现普通 OCI 声明流；准确边界与待验收证据见[流式调用](m3-skill-streams.md) |
 
-HTTP 目标见独立 HTTP 实现；micro、extension、排队和 HostService 的 Skill 方法仍未交付。
+HTTP 目标见独立 HTTP 实现；micro、extension、异步任务排队和 HostService 的 Skill 方法仍未交付。
 `HostService.ListSkillCandidates/ResolveSkill/CheckSkillAccess/InvokeSkill/InvokeSkillStream`
 继续返回 UNIMPLEMENTED，不能通过插件声称已经取得内部 Skill 路由上下文。
 本次不新增 BatchEngine、Workflow、MPR 或 Extension 执行系统。
