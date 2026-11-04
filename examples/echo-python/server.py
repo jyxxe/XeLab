@@ -53,14 +53,23 @@ class Echo(lifecycle.PluginLifecycleServicer, capability.CapabilityServiceServic
         # Only the explicitly signed crash-test artifact opts into this probe.
         # Production activation has no scratch mount, so it cannot retain this
         # private journal. The kernel never consumes it as format/health proof.
-        if "--migration-pause-after-initialize" not in sys.argv or not self.store.scratch.is_dir():
+        if "--migration-pause-after-initialize" not in sys.argv:
             return
+        mounts = [line.split() for line in pathlib.Path("/proc/self/mountinfo").read_text().splitlines()]
+        scratch = next((mount for mount in mounts if mount[4] == str(self.store.scratch)), None)
+        if scratch is None:
+            # The image's empty directory survives detachment; its existence
+            # does not prove the private project is still mounted there.
+            if phase == "initialize_known":
+                return
+            raise ValueError("Initialization probe requires the actual private scratch mount")
+        if "rw" not in scratch[5].split(","):
+            raise ValueError("Initialization probe scratch must be writable")
         path = self.store.scratch / "initialization-probe.json"
         events = read(path)[1] if path.exists() else []
         if not isinstance(events, list) or len(events) >= 16:
             raise ValueError("Initialization probe exceeded its bound")
-        mount = next(line.split() for line in pathlib.Path("/proc/self/mountinfo").read_text().splitlines()
-                     if line.split()[4] == str(self.store.data))
+        mount = next(mount for mount in mounts if mount[4] == str(self.store.data))
         events.append({"phase": phase, "business_read_only": "ro" in mount[5].split(",")})
         atomic(path, events)
 
