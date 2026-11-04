@@ -19,7 +19,7 @@ pub async fn invoke(
     input: &Value,
     key: &str,
 ) -> Result<Value> {
-    invoke_inner(app, token, peer, request_id, input, key, None).await
+    invoke_bounded(app, token, peer, request_id, input, key, None).await
 }
 
 /// Skill identity comes from the path, never from caller-supplied route context.
@@ -33,7 +33,37 @@ pub async fn invoke_skill(
     input: &Value,
     key: &str,
 ) -> Result<Value> {
-    invoke_inner(app, token, peer, request_id, input, key, Some(skill)).await
+    invoke_bounded(app, token, peer, request_id, input, key, Some(skill)).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn invoke_bounded(
+    app: &App,
+    token: &str,
+    peer: IpAddr,
+    request_id: Uuid,
+    input: &Value,
+    key: &str,
+    skill: Option<Uuid>,
+) -> Result<Value> {
+    let timeout = input["timeout_ms"]
+        .as_u64()
+        .unwrap_or(if skill.is_some() { 120000 } else { 30000 })
+        .min(300000);
+    // Dropping admission rolls back its transaction; dropping execution leaves
+    // the durable Call reservation for the existing fenced recovery path.
+    tokio::time::timeout(
+        Duration::from_millis(timeout),
+        invoke_inner(app, token, peer, request_id, input, key, skill),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        Err(Error::new(
+            "DEADLINE_EXCEEDED",
+            "Call deadline elapsed; inspect any admitted call before retrying",
+            axum::http::StatusCode::GATEWAY_TIMEOUT,
+        ))
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

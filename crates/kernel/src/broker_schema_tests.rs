@@ -56,7 +56,7 @@ async fn actual_postgres_idempotent_schema_call_never_replays_unknown_dispatch()
     .await
     .unwrap();
     c.execute("INSERT INTO provider_records(instance_id,name,version,availability,features,observed_generation,observed_at) VALUES($1,$2,$3,'ready','[]',2,now())", &[&instance,&contract["name"].as_str().unwrap(),&contract["version"].as_str().unwrap()]).await.unwrap();
-    let request = json!({"contract":contract,"input":{"message":"one durable request"},"provider_deployment_id":deployment,"timeout_ms":1000});
+    let request = json!({"contract":contract,"input":{"message":"one durable request"},"provider_deployment_id":deployment,"timeout_ms":10000});
     let key = "schema-unknown-call";
     for variant in ["unversioned", "other_contract", "other_schema"] {
         let mut wrong = manifest.clone();
@@ -99,9 +99,13 @@ async fn actual_postgres_idempotent_schema_call_never_replays_unknown_dispatch()
     )
     .await
     .unwrap();
-    assert!(invoke(app, &f.token, peer, Uuid::new_v4(), &request, key)
+    let unknown = invoke(app, &f.token, peer, Uuid::new_v4(), &request, key)
         .await
-        .is_err());
+        .unwrap_err();
+    assert!(
+        unknown.resource_id.is_some(),
+        "dispatch must reach the missing runtime: {unknown:?}"
+    );
     let call = c
         .query_one(
             "SELECT id,state FROM calls WHERE provider_instance_id=$1",
@@ -215,4 +219,41 @@ async fn actual_postgres_idempotent_schema_call_never_replays_unknown_dispatch()
     )
     .await
     .is_err());
+}
+
+#[tokio::test]
+async fn actual_postgres_call_deadline_cancels_blocked_admission_without_charging() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let mut c = f.app.db.connect().await.unwrap();
+    let tx = c.transaction().await.unwrap();
+    db::call_lock(&tx).await.unwrap();
+    let request = json!({"contract":{"name":"org.xelab.echo","version":"1.0.0","schema_digest":digest(b"deadline")},"input":{},"timeout_ms":100});
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        invoke(
+            &f.app,
+            &f.token,
+            "127.0.0.1".parse().unwrap(),
+            Uuid::new_v4(),
+            &request,
+            "blocked-admission",
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(result.code, "DEADLINE_EXCEEDED");
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM calls WHERE idempotency_key='blocked-admission'",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        0
+    );
 }
