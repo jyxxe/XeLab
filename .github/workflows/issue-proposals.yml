@@ -1,0 +1,34 @@
+name: Issue proposal checks
+on:
+  pull_request:
+    paths:
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/labels.json'
+      - '.github/workflows/issue-proposals.yml'
+      - '.github/workflows/issue-labels.yml'
+      - 'tools/issues/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/labels.json'
+      - '.github/workflows/issue-proposals.yml'
+      - '.github/workflows/issue-labels.yml'
+      - 'tools/issues/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install configuration checker dependency
+        run: python3 -m pip install -r tools/issues/requirements.txt
+      - name: Validate forms and workflow boundaries
+        run: python3 tools/issues/validate.py
+      - name: Test non-destructive label synchronization
+        run: python3 -m unittest discover -s tools/issues -p 'test_*.py' -v
