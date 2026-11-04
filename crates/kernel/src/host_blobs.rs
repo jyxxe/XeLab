@@ -464,7 +464,7 @@ async fn charged_business_paths(
         .collect();
     let mut filtered = Vec::new();
     let (target_action, _) = crate::broker::business_target(c, call).await?;
-    for path in paths {
+    'candidate: for path in paths {
         if path.rule["action"] != target_action && path.rule["action"] != "skill.invoke" {
             filtered.push(path);
             continue;
@@ -481,9 +481,11 @@ async fn charged_business_paths(
             continue;
         }
         for issuer in issuers {
-            required.extend(
-                auth::validate_sources(c, issuer.get(1), Some(issuer.get(0)), ctx.peer).await?,
-            );
+            match auth::validate_sources(c, issuer.get(1), Some(issuer.get(0)), ctx.peer).await {
+                Ok(sources) => required.extend(sources),
+                Err(error) if error.code == "INVALID_CREDENTIAL" => continue 'candidate,
+                Err(error) => return Err(error),
+            }
         }
         if required.is_subset(&charged) {
             filtered.push(path);

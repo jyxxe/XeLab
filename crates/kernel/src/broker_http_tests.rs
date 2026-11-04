@@ -181,8 +181,14 @@ impl Component {
             .unwrap();
         let owner = ctx.subject;
         let publisher = Uuid::new_v4();
-        let (artifact, manifest, openapi) =
+        let (artifact, mut manifest, openapi) =
             crate::http_contracts::tests::fixture_manifest(publisher);
+        manifest["concurrency"]["max_active_requests"] = json!(2);
+        fs::write(
+            artifact.path().join("xelab/plugin.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
         let installation = Uuid::new_v4();
         let deployment = Uuid::new_v4();
         let instance = Uuid::new_v4();
@@ -592,7 +598,7 @@ async fn missing_no_blob_context_cannot_be_replaced_on_replay(f: &Component) {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn real_gateway_postgres_and_independent_mtls_plugin_close_the_http_component_loop() {
     let Some(f) = Component::new().await else {
         return;
@@ -759,7 +765,7 @@ async fn real_gateway_postgres_and_independent_mtls_plugin_close_the_http_compon
     // The core pool must reject before dispatch: a backend-only refusal is429,
     // whereas Broker admission returns RESOURCE_EXHAUSTED503.
     let mut held = Vec::new();
-    for index in 0..4 {
+    for index in 0..2 {
         let router = f.router.clone();
         let host = f.host();
         let token = f.token.clone();
@@ -771,7 +777,7 @@ async fn real_gateway_postgres_and_independent_mtls_plugin_close_the_http_compon
                     &host,
                     HOLD,
                     Some(&token),
-                    br#"{"message":"held","delay_ms":4000}"#.to_vec(),
+                    br#"{"message":"held","delay_ms":2000}"#.to_vec(),
                     &[
                         ("content-type", "application/json".into()),
                         ("idempotency-key", format!("component-held-{index}")),
@@ -789,15 +795,23 @@ async fn real_gateway_postgres_and_independent_mtls_plugin_close_the_http_compon
             response
         }));
     }
-    // Admission is serialized by the real Broker lock and current policy
-    // checks. Keep actual requests alive long enough to observe all four;
-    // this is independent of the signed route and Skill deadline assertions.
-    let observation = tokio::time::timeout(Duration::from_secs(4), async {
-        while f.active().await != 4 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
+    // This metadata component declares two physical slots; the independent
+    // upstream has four. A third503 therefore proves core shared admission.
+    // The privileged OCI suite separately exercises the signed mixed4-slot image.
+    let observer = f.app.db.connect().await.unwrap();
+    let observation =
+        tokio::time::timeout(Duration::from_secs(7), async {
+            loop {
+                let active: i64 = observer.query_one(
+                "SELECT count(*) FROM reservations WHERE kind='call' AND status<>'released'", &[],
+            ).await.unwrap().get(0);
+                if active == 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await;
     if observation.is_err() {
         let active = f.active().await;
         for (index, task) in held.into_iter().enumerate() {
@@ -818,19 +832,55 @@ async fn real_gateway_postgres_and_independent_mtls_plugin_close_the_http_compon
         for row in c.query("SELECT state,coalesce(wait_event_type,'CPU'),coalesce(wait_event,''),count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() GROUP BY 1,2,3 ORDER BY 1,2,3",&[]).await.unwrap() {
             eprintln!("PostgreSQL activity: state={} wait_type={} wait_event={} count={}",row.get::<_,String>(0),row.get::<_,String>(1),row.get::<_,String>(2),row.get::<_,i64>(3));
         }
-        panic!("Four real HTTP requests were not concurrently admitted within4s; active={active}");
+        panic!("Two real HTTP requests were not concurrently admitted within the signed route deadline; active={active}");
     }
-    assert_eq!(f.active().await, 4);
+    assert_eq!(f.active().await, 2);
+    assert_eq!(observer.query_one(
+        "SELECT count(*) FROM calls WHERE state='running' AND http_binding->>'operation_id'='holdMessage'", &[],
+    ).await.unwrap().get::<_, i64>(0),2);
+    let charged_before: i64 = observer
+        .query_one(
+            "SELECT daily_calls_used FROM quotas WHERE account_id=$1",
+            &[&f.owner],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let calls_before: i64 = observer
+        .query_one("SELECT count(*) FROM calls", &[])
+        .await
+        .unwrap()
+        .get(0);
     let exhausted = f
-        .direct(ECHO, json!({"message":"fifth"}), "component-fifth")
+        .direct(ECHO, json!({"message":"third"}), "component-third")
         .await;
     assert_eq!(exhausted.0, 503, "{}", exhausted.1);
     assert_eq!(exhausted.1["error"]["code"], "RESOURCE_EXHAUSTED");
+    assert_eq!(
+        observer
+            .query_one("SELECT count(*) FROM calls", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        calls_before
+    );
+    assert_eq!(
+        observer
+            .query_one(
+                "SELECT daily_calls_used FROM quotas WHERE account_id=$1",
+                &[&f.owner]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        charged_before
+    );
     for task in held {
         assert_eq!(task.await.unwrap().0, 200);
     }
     assert_eq!(f.active().await, 0);
     owner_scoped_deployments_cannot_reuse_frozen_authority(&f).await;
+    missing_no_blob_context_cannot_be_replaced_on_replay(&f).await;
     // Fault injection is in this independent server process only. The core must
     // validate actual mTLS response bytes against the signed output schema.
     let bad = f
@@ -888,10 +938,21 @@ async fn real_gateway_postgres_and_independent_mtls_plugin_close_the_http_compon
     .await
     .unwrap();
     assert!(!tail.contains("event: completed"));
-    assert!(tail.contains("event: failed") || tail.contains("event: canceled"));
+    let frames: Vec<Value> = tail
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .map(|data| serde_json::from_str(data).unwrap())
+        .collect();
+    assert_eq!(
+        frames.len(),
+        1,
+        "Revoked HTTP stream delivered queued data: {tail}"
+    );
+    assert_eq!(frames[0]["kind"], "failed", "{tail}");
+    assert_eq!(frames[0]["sequence"], 2, "{tail}");
+    assert_eq!(frames[0]["payload"]["code"], "INVALID_CREDENTIAL", "{tail}");
     // The OCI suite proves the subsequent Controller fence. This component has
     // no runtime and deliberately does not clear those durable reservations.
     assert!(f.active().await >= 1);
-    missing_no_blob_context_cannot_be_replaced_on_replay(&f).await;
     f.app.shutdown.store(true, Ordering::SeqCst);
 }

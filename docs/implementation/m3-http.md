@@ -120,11 +120,16 @@ PostgreSQL 组件需要隔离的 XELAB_TEST_DATABASE_URL。
 [Kernel 工作流](../../.github/workflows/kernel.yml)，要求独占 containerd/runc、
 cgroups v2、网络及显式 XELAB_HTTP_OCI_TEST=1；不能用 Docker 组件探针代替。
 
-记录时，5 项不可变契约 PostgreSQL 测试通过，新增缓存回归尚未执行；
+记录时，5 项不可变契约 PostgreSQL 测试通过，新增缓存回归待最终批次；
 Python 参考插件 12 项测试及 HTTP-only/混合两个实际打包探针通过。
-核心/PG/真实 mTLS 插件组件已执行 HTTP Skill 的 5 秒调用、相同键重放、
-双层授权拒绝及实际 SSE completed，但整个测试随后在 1 秒内观察四路并发的断言失败。
-夹具已改为 hold 4000 ms、轮询 4 秒，保留原 10 秒路由和 5 秒 Skill 上限；
-重跑结果待确认。这些部分断言不构成完整组件、真实内核 OCI 或 workspace 通过。
-正式 PR、精确提交 CI 和最终 main 结果须在验收后补齐。
+核心/PG/独立真实 mTLS 插件组件已完整通过：原 5 秒 Skill 调用、同键重放、
+双层授权拒绝、JSON/SSE、精确撤权失败、跨部署 owner 隔离、缺少冻结上下文拒绝，
+以及声明两槽的两路实际请求、第三路核心 503 且无新增 Call/计费、成功后槽释放。
+此前四路 debug 组件试验有实际 deadline 失败，不能计为压力或容量通过；
+签名参考制品与真实 OCI 四槽混合 HTTP/RPC 场景保持不变，尚待 CI 执行。
+串行安全批次 11 项通过，包括真实 PG 排队授权写入者与 Grant 跨账本等待到期；
+新增 issuer-account 到期两项的夹具被既有 require_subset 正确拒绝，
+已使组规则保留签发 Key 的原始到期上限，修正后结果待确认。
+新增缓存/快照、完整 workspace、Clippy、真实内核 OCI、正式 PR/最终 main CI
+仍待最终验证。这些组件结果不替代真实 OCI、浏览器或生产验收。
 AWS/独立宿主与 RUN-03 继续按[持续进度](m3-progress.md)单独待验收。

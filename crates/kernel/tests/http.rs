@@ -920,7 +920,20 @@ async fn signed_http_and_static_gateway_use_real_oci_and_shared_broker() {
     )
     .await;
     assert_eq!(revoked.0, 204, "{}", revoked.1);
-    live.terminal().await;
+    let revoked_events = live.terminal().await;
+    let revoked_frames: Vec<Value> = revoked_events
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .map(|data| serde_json::from_str(data).unwrap())
+        .collect();
+    assert_eq!(
+        revoked_frames.len(),
+        2,
+        "Revoked HTTP stream delivered queued data: {revoked_events}"
+    );
+    assert_eq!(revoked_frames[1]["kind"], "failed");
+    assert_eq!(revoked_frames[1]["sequence"], 2);
+    assert_eq!(revoked_frames[1]["payload"]["code"], "INVALID_CREDENTIAL");
     wait_active(&db, 0).await;
     wait_ready(&db, &deployment).await;
     let disabled_stream = OpenedEvents::open(&router, &host, &token, "http-live-disable").await;

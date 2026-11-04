@@ -102,6 +102,17 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
         }
         Ok(())
     }
+    pub(crate) async fn revalidate(
+        &self,
+        transaction: &tokio_postgres::Transaction<'_>,
+        ctx: &Context,
+        saved: &[crate::policy::Path],
+    ) -> Result<Vec<crate::policy::Path>> {
+        self.verify(transaction, ctx)?;
+        crate::policy::Policy::new(transaction, ctx.peer)
+            .revalidate_current(saved, &self.paths)
+            .await
+    }
     pub(crate) fn bind_plugin(
         &mut self,
         transaction: &tokio_postgres::Transaction<'_>,

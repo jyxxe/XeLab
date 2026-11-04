@@ -259,7 +259,6 @@ async fn execute_inner(
         )
         .await?;
     let tx = c.transaction().await?;
-    db::call_lock(&tx).await?;
     let ctx = app.auth.authenticate(&tx, token, peer, request).await?;
     let mut authority = crate::auth::CurrentAuthority::new(&tx, &ctx).await?;
     let skill = if let Some(skill) = input.skill {
@@ -308,6 +307,12 @@ async fn execute_inner(
             .headers
             .insert("content-type", "application/json".parse().unwrap());
     }
+    // Expensive current-policy preparation can run concurrently under the
+    // shared auth fence. The physical ledger, provider rows and mutable budget
+    // choices remain serialized in the established order below.
+    db::call_lock(&tx).await?;
+    let current = app.auth.authenticate(&tx, token, peer, request).await?;
+    authority.verify(&tx, &current)?;
     let target = resolve(&tx, &input, skill.as_ref()).await?;
     let op = target.operation()?;
     input.deadline = input.deadline.min(input.started + op.route.timeout);
@@ -320,9 +325,15 @@ async fn execute_inner(
     let wall_deadline =
         chrono::Utc::now() + chrono::Duration::from_std(remaining).map_err(|_| expired())?;
     let headers = op.request(&input.headers, &input.bytes)?;
-    crate::http_contracts::validate_actions(&tx, &target.manifest).await?;
-    crate::plugin_http_gateway::check_approval(&tx, app, target.deployment, &target.manifest)
-        .await?;
+    crate::plugin_http_gateway::check_approval_prepared(
+        &tx,
+        app,
+        target.deployment,
+        &target.manifest,
+        &ctx,
+        &authority,
+    )
+    .await?;
     if target.manifest["business_entry"] == "skill_required" && skill.is_none() {
         return Err(Error::denied());
     }
@@ -927,7 +938,8 @@ impl Output {
                 return;
             }
         }
-        self.terminal("failed", error.detail()).await;
+        let (kind, payload) = terminal_error(&error);
+        self.terminal(kind, payload).await;
     }
 }
 fn encode(value: &Value) -> Result<Vec<u8>> {
@@ -974,13 +986,21 @@ async fn delivery(
     let mut c = app.db.connect_scoped(remaining).await?;
     let tx = c.transaction().await?;
     let ctx = app.auth.authenticate(&tx, token, peer, request).await?;
-    check_skill_authority(&tx, &ctx, identity.call).await?;
-    check_route_approval(&tx, app, identity.call).await?;
     let row = tx
-        .query_one("SELECT error FROM calls WHERE id=$1", &[&identity.call])
+        .query_one(
+            "SELECT owner_id,credential_id,error FROM calls WHERE id=$1",
+            &[&identity.call],
+        )
         .await?;
+    if row.get::<_, Uuid>("owner_id") != ctx.subject
+        || row.get::<_, Option<Uuid>>("credential_id") != Some(ctx.credential)
+    {
+        return Err(Error::denied());
+    }
+    // A recorded cancellation is authoritative even if Controller has already
+    // drained the physical instance; it never authorizes or delivers data.
     if row
-        .get::<_, Option<Value>>(0)
+        .get::<_, Option<Value>>("error")
         .is_some_and(|e| e["code"] == "CANCELED")
     {
         return Err(Error::new(
@@ -989,6 +1009,8 @@ async fn delivery(
             StatusCode::CONFLICT,
         ));
     }
+    check_skill_authority(&tx, &ctx, identity.call).await?;
+    check_route_approval(&tx, app, identity.call).await?;
     tx.commit().await?;
     crate::skill_streams::ensure_active(app)
 }
@@ -1158,13 +1180,21 @@ fn error_frame(
         .map_err(|_| Error::denied())?
         .clone()
         .ok_or_else(Error::denied)?;
+    let (kind, payload) = terminal_error(&error);
     Ok((
         encode(
-            &json!({"call_id":identity.call,"sequence":sequence,"kind":"failed","payload":error.detail(),"terminal":true}),
+            &json!({"call_id":identity.call,"sequence":sequence,"kind":kind,"payload":payload,"terminal":true}),
         )?,
         true,
         sequence,
     ))
+}
+fn terminal_error(error: &Error) -> (&'static str, Value) {
+    match error.code {
+        "CANCELED" => ("canceled", json!({"reason":"requested"})),
+        "DEADLINE_EXCEEDED" => ("canceled", json!({"reason":"deadline"})),
+        _ => ("failed", error.detail()),
+    }
 }
 
 #[cfg(test)]

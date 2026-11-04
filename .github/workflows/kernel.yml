@@ -214,7 +214,9 @@ jobs:
           subprocess.run(["sudo","--preserve-env=XELAB_TEST_PLATFORM_SCHEMA_1_IMAGE,XELAB_TEST_PLATFORM_SCHEMA_2_IMAGE,XELAB_TEST_DATABASE_URL,XELAB_TEST_VOLUME_IMAGE,XELAB_TEST_VOLUME_UPGRADE_IMAGE,XELAB_TEST_VOLUME_FAILED_UPGRADE_IMAGE,XELAB_TEST_SCHEMA_IMAGE,XELAB_TEST_SCHEMA_UPGRADE_IMAGE,XELAB_TEST_SCHEMA_TRANSITION_IMAGE,XELAB_TEST_SCHEMA_CRASH_IMAGE,XELAB_TEST_S3_ENDPOINT,XELAB_PLATFORM_SOURCE_RECEIPT","env","XELAB_XFS_TEST=1","bash","tools/test-xfs.sh","--isolated-test-host",binaries[0],volumes[0],libraries[0]],check=True)
           PYTEST
       - name: Full workspace regression
-        run: cargo test --workspace --all-targets --locked
+        # Preserve each scenario's internal concurrency, without independent
+        # Argon/policy fixtures competing with signed deadline assertions.
+        run: cargo test --workspace --all-targets --locked -- --test-threads=1
       - name: Strict documentation validation
         run: |
           python3 -m venv /tmp/xelab-docs

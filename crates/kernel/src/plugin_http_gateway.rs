@@ -270,6 +270,39 @@ pub(crate) async fn check_approval(
     deployment: Uuid,
     manifest: &Value,
 ) -> Result<()> {
+    check_approval_inner(c, app, deployment, manifest, None).await
+}
+
+pub(crate) async fn check_approval_prepared(
+    transaction: &tokio_postgres::Transaction<'_>,
+    app: &App,
+    deployment: Uuid,
+    manifest: &Value,
+    context: &Context,
+    authority: &auth::CurrentAuthority<'_, '_>,
+) -> Result<()> {
+    authority.verify(transaction, context)?;
+    check_approval_inner(
+        transaction,
+        app,
+        deployment,
+        manifest,
+        Some((transaction, context, authority)),
+    )
+    .await
+}
+
+async fn check_approval_inner(
+    c: &(impl GenericClient + Sync),
+    app: &App,
+    deployment: Uuid,
+    manifest: &Value,
+    prepared: Option<(
+        &tokio_postgres::Transaction<'_>,
+        &Context,
+        &auth::CurrentAuthority<'_, '_>,
+    )>,
+) -> Result<()> {
     if !manifest["routes"]
         .as_array()
         .is_some_and(|routes| !routes.is_empty())
@@ -290,13 +323,30 @@ pub(crate) async fn check_approval(
         .map_err(|_| Error::denied())?;
     let ctx = app
         .auth
-        .resume(c, row.get("credential_id"), peer, Uuid::new_v4())
+        .resume(
+            c,
+            row.get("credential_id"),
+            peer,
+            prepared
+                .map(|(_, ctx, _)| ctx.request)
+                .unwrap_or_else(Uuid::new_v4),
+        )
         .await?;
     let saved: Vec<Path> =
         serde_json::from_value(row.get("source_paths")).map_err(|_| Error::denied())?;
-    let current = Policy::new(c, peer)
-        .revalidate(&saved, ctx.credential)
-        .await?;
+    let current = if let Some((transaction, caller, authority)) =
+        prepared.filter(|(_, caller, _)| {
+            caller.credential == ctx.credential
+                && caller.peer == ctx.peer
+                && caller.subject == ctx.subject
+        }) {
+        authority.verify(transaction, caller)?;
+        authority.revalidate(transaction, &ctx, &saved).await?
+    } else {
+        Policy::new(c, peer)
+            .revalidate(&saved, ctx.credential)
+            .await?
+    };
     let resource = Resource::new("deployment", deployment, Some(row.get("owner_id")));
     if !auth::rules_allow(
         &policy::rules(&current),
