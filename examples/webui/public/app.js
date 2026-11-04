@@ -528,10 +528,14 @@ async function boot() {
       const subjects=[...new Set(rows(sessions.data).filter(item=>item.status==='active').map(item=>item.account_id))];
       if(subjects.length===1) accountId=subjects[0];
     } catch { /* Authorization may intentionally exclude session metadata. */ }
-    try {const result=await request('getMyUiPreferences');preferences=result.data;preferenceEtag=result.etag||revision(result.data);preview=structuredClone(result.data.spec);applyTheme();await renderWidgets();}catch{ /* Settings reports the unavailable dependency. */ }
     const key=layoutKey();
-    if(key&&preview.restore_windows) {
-      try {const restored=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(restored))for(const item of restored.slice(0,runtimeConfig.max_open_windows||16)){const app=apps.find(candidate=>candidate.id===item.app);if(app&&item.rect&&['x','y','width','height'].every(key=>Number.isFinite(item.rect[key])))openWindow(app,item);}}catch{/* Invalid optional local layout is discarded. */}
+    // Read the previous session's layout before any further await. Interactive
+    // windows opened while preferences load already save their own layout.
+    let restored=[];
+    try {const stored=key?JSON.parse(localStorage.getItem(key)||'[]'):[];if(Array.isArray(stored))restored=stored.slice(0,runtimeConfig.max_open_windows||16);}catch{/* Invalid optional local layout is discarded. */}
+    try {const result=await request('getMyUiPreferences');preferences=result.data;preferenceEtag=result.etag||revision(result.data);preview=structuredClone(result.data.spec);applyTheme();await renderWidgets();}catch{ /* Settings reports the unavailable dependency. */ }
+    if(key&&key===layoutKey()&&preview.restore_windows&&windows.size===0) {
+      try {for(const item of restored){const app=apps.find(candidate=>candidate.id===item.app);if(app&&item.rect&&['x','y','width','height'].every(key=>Number.isFinite(item.rect[key])))openWindow(app,item);}}catch{/* Invalid optional local layout is discarded. */}
     }
   }catch(error){clearPrivateViews();toast(`登录未完成：${error.code||error.message}`);}
 }

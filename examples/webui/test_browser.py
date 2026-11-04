@@ -4,6 +4,7 @@ import json
 import os
 import base64
 import hashlib
+import importlib.util
 import pathlib
 import unittest
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -19,6 +20,9 @@ ACCOUNT = "00000000-0000-4000-8000-000000000001"
 SKILL = "00000000-0000-4000-8000-000000000002"
 DEPLOYMENT = "00000000-0000-4000-8000-000000000003"
 NOW = "2026-11-04T00:00:00Z"
+DRIVER_SPEC = importlib.util.spec_from_file_location("m3_ui_browser", pathlib.Path(__file__).resolve().parents[2] / "tools/m3-ui-browser.py")
+DRIVER = importlib.util.module_from_spec(DRIVER_SPEC)
+DRIVER_SPEC.loader.exec_module(DRIVER)
 
 
 def preferences():
@@ -55,6 +59,8 @@ class DesktopBrowser(unittest.TestCase):
         self.abort_business = False
         self.errors = []
         self.expected_challenge = None
+        self.hold_preferences = False
+        self.pending_preferences = []
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
         self.page.route("**/*", self.route)
 
@@ -91,6 +97,9 @@ class DesktopBrowser(unittest.TestCase):
                    "etag": '"rev-1"', "x-request-id": ACCOUNT}
         if request.method == "OPTIONS":
             route.fulfill(status=204, headers=headers)
+            return
+        if self.hold_preferences and request.method == "GET" and url.path.endswith("/me/ui-preferences"):
+            self.pending_preferences.append(route)
             return
         self.calls.append({"method": request.method, "path": url.path,
                            "headers": request.all_headers(), "body": request.post_data})
@@ -252,6 +261,55 @@ class DesktopBrowser(unittest.TestCase):
         self.assertTrue(window.is_visible())
         window.get_by_role("button", name="关闭系统状态").click()
         self.assertEqual(self.page.locator(".window").count(), 0)
+
+    def test_delayed_preferences_do_not_restore_live_windows(self):
+        self.hold_preferences = True
+        self.saved["spec"]["theme"]["mode"] = "dark"
+        self.open()
+        window = self.app("插件中心")
+        window.get_by_role("heading", name="fixture deployment", exact=True).wait_for()
+        original = window.get_attribute("data-view-id")
+        self.assertEqual(len(self.pending_preferences), 1)
+        self.hold_preferences = False
+        for route in self.pending_preferences:
+            self.route(route)
+        self.page.wait_for_function("() => document.documentElement.dataset.theme === 'dark'")
+        self.assertEqual(self.page.locator('.window[data-app="plugins"]').count(), 1)
+        self.assertEqual(window.get_attribute("data-view-id"), original)
+        self.assertEqual(len([call for call in self.calls if call["path"].endswith("/installations")]), 1)
+
+    def test_delayed_preferences_restore_previous_multiwindow_layout(self):
+        self.hold_preferences = True
+        self.saved["spec"]["theme"]["mode"] = "dark"
+        key = f"xelab:windows:{CORE}:browser-component:{ACCOUNT}"
+        saved = [{"app": "resources", "rect": {"x": 40 + index * 24, "y": 24 + index * 20, "width": 500, "height": 400}, "minimized": False, "maximized": False} for index in range(2)]
+        saved.append(None)  # Invalid optional storage must not clear the session.
+        self.context.add_init_script(f"if(location.origin === {json.dumps(SHELL)}) localStorage.setItem({json.dumps(key)}, {json.dumps(json.dumps(saved))});")
+        self.open()
+        self.assertEqual(self.page.locator(".window").count(), 0)
+        self.assertEqual(len(self.pending_preferences), 1)
+        self.hold_preferences = False
+        for route in self.pending_preferences:
+            self.route(route)
+        self.page.wait_for_function("() => document.querySelectorAll('.window[data-app=resources]').length === 2")
+        self.page.wait_for_function("() => document.querySelectorAll('.window[data-app=resources] pre.result').length === 2")
+        self.assertEqual(self.page.locator('.window[data-app="resources"] pre.result').count(), 2)
+        self.assertTrue(self.page.get_by_role("button", name="退出", exact=True).is_visible())
+
+    def test_acceptance_closes_foreground_and_minimized_windows_through_controls(self):
+        self.open()
+        self.app("系统状态").get_by_text('"component-only"', exact=False).wait_for()
+        self.app("设置")
+        report = {"checks": {}}
+        DRIVER.close_windows(self.page, report)
+        self.assertEqual(self.page.locator(".window").count(), 0)
+        for name in ("系统状态", "设置"):
+            window = self.app(name)
+            window.get_by_role("button", name="最小化" + name, exact=True).click()
+        self.assertEqual(self.page.locator(".window:visible").count(), 0)
+        DRIVER.close_windows(self.page, report)
+        self.assertEqual(self.page.locator(".window").count(), 0)
+        self.assertTrue(report["checks"]["all_windows_close"])
 
     def test_skill_fixed_uuid_real_request_shape_and_stable_manual_retry(self):
         self.open()
