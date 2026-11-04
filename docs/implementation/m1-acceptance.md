@@ -88,7 +88,8 @@ createDeployment 和 setDeploymentEnabled 的成功结果按现有契约返回�
 时的完整部署快照。旧启停观察不能完成相反的新意图，迟到处理不改写终态。
 本地真实 HTTP/PostgreSQL 已验证创建、启用/禁用结果符合 Deployment、默认字段完整，
 相反意图保持 pending，终态不重写。该数据库用例的阶段是元数据夹具，不是 OCI
-健康/停止证明；真实 OCI 用例另在每个成功创建/启停操作轮询处校验结果，远端待执行。
+健康/停止证明。真实 OCI 用例另在每个成功创建/启停操作轮询处校验结果，已在
+[PR #30 最终完整 CI](https://github.com/jyxxe/XeLab/actions/runs/41749600112) 实际通过。
 这项修复不代替 RUN-03 独立宿主验收。
 
 ## Controller 稳定化（PR #4 遗留项）
