@@ -1,6 +1,5 @@
-//! Actual PostgreSQL OAuth domain execution. Schema16 SQL is applied explicitly
-//! to an isolated schema14 fixture: migration15/16 registry integration and HTTP
-//! browser tests remain a separate root-owned gate, never claimed here.
+//! Actual PostgreSQL OAuth domain execution on the registered sequential schema.
+//! Browser, OCI WebUI and production acceptance have separate executable gates.
 use super::*;
 use crate::{
     auth, contracts, db, identity,
@@ -23,9 +22,6 @@ impl Fixture {
     async fn new(rules: Value) -> Option<Self> {
         let base = crate::backups::tests::Fixture::new().await?;
         let mut c = base.app.db.connect().await.unwrap();
-        c.batch_execute(include_str!("../migrations/0016_oauth_state.sql"))
-            .await
-            .unwrap();
         let tx = c.transaction().await.unwrap();
         db::auth_lock(&tx, true).await.unwrap();
         let ctx = base

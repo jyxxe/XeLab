@@ -1171,3 +1171,6 @@ async fn skill_frozen_business_proofs_exclude_exhausted_uncharged_alternatives()
         .unwrap();
     assert!(!auth::rules_allow(&crate::policy::rules(&withdrawn),"capability.invoke",&auth::Resource::new("capability","fixture@1.0.0",None),peer),"an uncharged current alternative must not sustain the admitted work after its charged proof is revoked");
 }
+
+#[path = "m3_result_authority_tests.rs"]
+mod result_authority;

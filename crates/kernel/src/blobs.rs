@@ -64,12 +64,17 @@ async fn context(
     token: &str,
     peer: SocketAddr,
     request: Uuid,
+    browser_origin: Option<&str>,
 ) -> Result<Context> {
     if app.leader.is_closed() || app.shutdown.load(Ordering::SeqCst) {
         return Err(Error::unavailable("Controller leadership is unavailable"));
     }
     db::auth_lock(c, false).await?;
-    app.auth.authenticate(c, token, peer.ip(), request).await
+    let mut ctx = app.auth.authenticate(c, token, peer.ip(), request).await?;
+    // Preserve the original HTTP Origin for Policy::for_ctx at every authority
+    // check, including after staging input and before each streamed output block.
+    ctx.browser_origin = browser_origin.map(str::to_owned);
+    Ok(ctx)
 }
 fn parameters(query: &str) -> Result<std::collections::HashMap<String, String>> {
     let mut params = std::collections::HashMap::new();
@@ -234,16 +239,14 @@ async fn execute(
     let (op, params) = api::operation(parts.method.as_str(), path).ok_or_else(Error::not_found)?;
     let name = op["operationId"].as_str().unwrap();
     let headers = &parts.headers;
-    if let Some(origin) = headers.get("origin") {
-        if origin.to_str().ok() != Some(app.config.text("server", "public_origin")) {
-            return Err(Error::denied());
-        }
-    }
+    // The public API gateway has already checked Cookie/CSRF and classified a
+    // foreign caller as a direct OAuth access credential. Keep its strict,
+    // unmodified Origin when this streaming handler reauthenticates later.
+    let browser_origin = crate::oauth_http::request_origin(headers)?.map(str::to_owned);
     let mutating = parts.method == "POST" || parts.method == "DELETE";
     if mutating
         && !headers.contains_key("authorization")
-        && headers.get("origin").and_then(|v| v.to_str().ok())
-            != Some(app.config.text("server", "public_origin"))
+        && browser_origin.as_deref() != Some(app.config.text("server", "public_origin"))
     {
         return Err(Error::denied());
     }
@@ -277,7 +280,15 @@ async fn execute(
     };
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
-    let ctx = context(&app, &tx, &token, peer, request_id).await?;
+    let ctx = context(
+        &app,
+        &tx,
+        &token,
+        peer,
+        request_id,
+        browser_origin.as_deref(),
+    )
+    .await?;
     *actor = Some(ctx.clone());
     if name == "uploadBlob" {
         if args.len() != 1 || !args.contains_key("content_type") {
@@ -361,7 +372,15 @@ async fn execute(
             &json!({"size":size,"digest":expected,"content_type":mime}),
         )?);
         let tx = c.transaction().await?;
-        let ctx = context(&app, &tx, &token, peer, request_id).await?;
+        let ctx = context(
+            &app,
+            &tx,
+            &token,
+            peer,
+            request_id,
+            browser_origin.as_deref(),
+        )
+        .await?;
         auth::authorize(
             &tx,
             &ctx,
@@ -508,6 +527,7 @@ async fn execute(
         tokio::fs::File::from_std(file),
         app,
         token,
+        browser_origin,
         peer,
         request_id,
         id,
@@ -516,7 +536,7 @@ async fn execute(
     );
     let stream = futures_util::stream::try_unfold(
         state,
-        |(mut file, app, token, peer, request, id, remaining, started)| async move {
+        |(mut file, app, token, browser_origin, peer, request, id, remaining, started)| async move {
             if remaining == 0 {
                 return Ok::<_, Error>(None);
             }
@@ -525,7 +545,7 @@ async fn execute(
             }
             let mut c = app.db.connect().await?;
             let tx = c.transaction().await?;
-            let ctx = context(&app, &tx, &token, peer, request).await?;
+            let ctx = context(&app, &tx, &token, peer, request, browser_origin.as_deref()).await?;
             let row = tx
                 .query_opt(
                     &format!("SELECT owner_id FROM blobs WHERE id=$1 AND {LIVE}"),
@@ -547,6 +567,7 @@ async fn execute(
                     file,
                     app,
                     token,
+                    browser_origin,
                     peer,
                     request,
                     id,

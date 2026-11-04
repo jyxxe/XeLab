@@ -158,11 +158,6 @@ async fn actual_postgres_clients_keep_public_identity_filter_visibility_and_revo
         return;
     };
     let mut c = fixture.app.db.connect().await.unwrap();
-    if !crate::oauth::schema_available(&c).await.unwrap() {
-        c.batch_execute(include_str!("../../migrations/0016_oauth_state.sql"))
-            .await
-            .unwrap();
-    }
     let tx = c.transaction().await.unwrap();
     db::auth_lock(&tx, true).await.unwrap();
     let ctx = fixture

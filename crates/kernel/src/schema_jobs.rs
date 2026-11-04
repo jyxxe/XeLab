@@ -173,7 +173,7 @@ pub(crate) async fn reserve(
         return Err(Error::exhausted());
     }
     let authority = serde_json::to_value(
-        Policy::new(c, ctx.peer)
+        Policy::for_context(c, ctx)
             .credential(ctx.credential, 0)
             .await?,
     )?;
@@ -262,7 +262,7 @@ async fn authorize_saved(c: &(impl GenericClient + Sync), ctx: &Context, row: &R
     let saved: Vec<policy::Path> =
         serde_json::from_value(row.get("authority")).map_err(|_| Error::denied())?;
     let rules = policy::rules(
-        &Policy::new(c, ctx.peer)
+        &Policy::for_context(c, ctx)
             .revalidate(&saved, ctx.credential)
             .await?,
     );

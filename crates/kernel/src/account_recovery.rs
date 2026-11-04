@@ -74,7 +74,7 @@ async fn issue_rows(
         ));
     }
     let (recovery, imported) = gate(c, ctx.subject).await?;
-    let paths = Policy::new(c, ctx.peer)
+    let paths = Policy::for_context(c, ctx)
         .credential(ctx.credential, 0)
         .await?;
     let rules = policy::rules(&paths);

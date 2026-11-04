@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "SkillInvokeRequest",
   "type": "object",
-  "description": "目标由 Skill 固定，调用方不能覆盖 plugin/contract/address",
+  "description": "目标由不可变Skill固定；可选部署约束只能收窄同一安装中的路由，不能覆盖plugin/contract/address或内部授权上下文",
   "additionalProperties": false,
   "properties": {
     "input": {
@@ -20,6 +20,14 @@
       "minLength": 1,
       "maxLength": 128,
       "description": "有副作用调用的稳定业务去重键"
+    },
+    "provider_deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 36,
+      "description": "可选部署约束，只收窄已固定安装内的提供者；不改变plugin/contract/address或授予权限。UI消息桥由宿主填入贡献的固定deployment_id，iframe不能覆盖。不可用时拒绝，不回退到其他部署。",
+      "format": "uuid",
+      "example": "00000000-0000-4000-8000-000000000001"
     }
   },
   "required": [

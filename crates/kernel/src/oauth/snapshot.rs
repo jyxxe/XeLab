@@ -15,6 +15,18 @@ fn conflict() -> Error {
     Error::conflict("OAuth snapshot binding is inconsistent")
 }
 
+/// A restored database cannot publish readiness while any historical browser
+/// client, consent, continuation or credential family can confer authority.
+pub async fn ensure_authority_reset(c: &(impl GenericClient + Sync)) -> Result<()> {
+    let live: bool = c.query_one("SELECT EXISTS(SELECT 1 FROM clients WHERE status='active') OR EXISTS(SELECT 1 FROM authorization_requests WHERE status IN ('pending','approved')) OR EXISTS(SELECT 1 FROM oauth_families WHERE status='active') OR EXISTS(SELECT 1 FROM oauth_login_intents) OR EXISTS(SELECT 1 FROM credentials WHERE kind IN ('oauth_access','oauth_refresh') AND status='active')", &[]).await?.get(0);
+    if live {
+        return Err(Error::conflict(
+            "Historical browser authority survived recovery",
+        ));
+    }
+    Ok(())
+}
+
 fn rules(value: &Value) -> Result<()> {
     let values = value.as_array().ok_or_else(conflict)?;
     if values.len() > 4096 {
@@ -115,6 +127,32 @@ fn intent(value: &Value) -> Result<()> {
 /// authenticated snapshot. No live permission or publisher trust is inferred.
 /// Recovery must still revoke credentials/families/clients and delete intents.
 pub async fn validate_snapshot(c: &(impl GenericClient + Sync)) -> Result<()> {
+    // These are internal provenance fields, not authority supplied by a
+    // restored plugin or a new HTTP request. NULL explicitly denotes CLI use.
+    for table in [
+        "host_proxy_approvals",
+        "plugin_http_approvals",
+        "host_rpc_contexts",
+    ] {
+        let mut after: Option<Uuid> = None;
+        let key = if table == "host_rpc_contexts" {
+            "call_id"
+        } else {
+            "deployment_id"
+        };
+        loop {
+            let rows=c.query(&format!("SELECT {key},browser_origin FROM {table} WHERE ($1::uuid IS NULL OR {key}>$1) ORDER BY {key} LIMIT 200"),&[&after]).await?;
+            if rows.is_empty() {
+                break;
+            }
+            for row in rows {
+                after = Some(row.get(key));
+                if let Some(value) = row.get::<_, Option<String>>("browser_origin") {
+                    origin(&value)?;
+                }
+            }
+        }
+    }
     let mut after: Option<Uuid> = None;
     loop {
         let rows = c
@@ -295,9 +333,6 @@ mod tests {
         let mut c = f.app.db.connect().await.unwrap();
         // Component evidence only: register real sequential 15/16 migrations
         // before the final offline COPY/import acceptance in the C integration.
-        c.batch_execute(include_str!("../../migrations/0016_oauth_state.sql"))
-            .await
-            .unwrap();
         let peer = "127.0.0.1".parse().unwrap();
         let ctx = f
             .app

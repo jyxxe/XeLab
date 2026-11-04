@@ -1,123 +1,24 @@
-//! Actual PostgreSQL + TLS + Chromium OAuth component acceptance. This adapter
-//! exercises real handlers/Identity without claiming the final main Host router
-//! or an independent OCI WebUI has already been integrated.
+//! Actual api::router + PostgreSQL + TLS + Chromium OAuth acceptance. The core
+//! listener serves the production router directly, including its Host, login,
+//! OAuth, Origin and Identity checks. The separate UI is a callback fixture;
+//! this does not claim independent OCI WebUI delivery.
 use super::{Fixture, PASSWORD};
-use crate::{api, db, error::Result, identity, oauth_http};
+use crate::api;
 use axum::{
-    body::{to_bytes, Body},
-    extract::{ConnectInfo, State},
-    http::{Request, StatusCode},
-    response::{IntoResponse, Response},
-    routing::get,
-    Router,
+    body::Body, extract::State, http::StatusCode, response::Response, routing::get, Router,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use rcgen::{CertificateParams, KeyPair};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
     fs,
     io::Write,
     net::{SocketAddr, TcpListener},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::PathBuf,
-    sync::Arc,
     time::Duration,
 };
-use tower::ServiceExt;
-use uuid::Uuid;
-
-#[derive(Clone)]
-struct BrowserCore {
-    app: Arc<api::App>,
-    account: Uuid,
-}
-
-async fn account_read(
-    fixture: &BrowserCore,
-    peer: SocketAddr,
-    request_id: Uuid,
-    request: Request<Body>,
-) -> Result<Response> {
-    oauth_http::trusted_host(&fixture.app, &request)?;
-    let headers = request.headers().clone();
-    if request.uri().query().is_some()
-        || !to_bytes(request.into_body(), 1)
-            .await
-            .map_err(|_| crate::error::Error::invalid("Unexpected account read body"))?
-            .is_empty()
-    {
-        return Err(crate::error::Error::denied());
-    }
-    let mut c = fixture
-        .app
-        .db
-        .connect_scoped(Duration::from_secs(10))
-        .await?;
-    let tx = c.transaction().await?;
-    db::auth_lock(&tx, false).await?;
-    let ctx = oauth_http::credential_context(
-        &tx,
-        &fixture.app.auth,
-        &headers,
-        peer,
-        request_id,
-        fixture.app.config.text("server", "public_origin"),
-    )
-    .await?;
-    let params = HashMap::from([("account_id".to_owned(), fixture.account.to_string())]);
-    identity::authorize(&tx, &ctx, "getAccount", &params, &Value::Null).await?;
-    let (value, status) = identity::execute(
-        &tx,
-        &fixture.app.auth,
-        &ctx,
-        "getAccount",
-        &params,
-        &Value::Null,
-        &headers,
-        "",
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(api::response(value, status, request_id))
-}
-
-async fn core_component(
-    State(fixture): State<BrowserCore>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    mut request: Request<Body>,
-) -> Response {
-    let request_id = Uuid::new_v4();
-    if oauth_http::handles(request.method().as_str(), request.uri().path()) {
-        return oauth_http::handle(fixture.app, peer, request_id, request).await;
-    }
-    if request.method() == "GET"
-        && request.uri().path() == format!("/api/platform/v1/accounts/{}", fixture.account)
-    {
-        let headers = request.headers().clone();
-        let mut response = account_read(&fixture, peer, request_id, request)
-            .await
-            .unwrap_or_else(IntoResponse::into_response);
-        // Registered-origin CORS on an error conveys no account authority.
-        if let Ok(c) = fixture.app.db.connect_scoped(Duration::from_secs(10)).await {
-            if let Err(error) = oauth_http::cors_response(&*c, &headers, &mut response).await {
-                return error.into_response();
-            }
-        }
-        return response;
-    }
-    if request.method() == "POST" && request.uri().path() == "/api/platform/v1/auth/login" {
-        // Use the existing actual password endpoint. Its actual Origin/Cookie
-        // rules still run; do not rewrite HTTP/2 authority into a synthetic Host.
-        if let Err(error) = oauth_http::trusted_host(&fixture.app, &request) {
-            return error.into_response();
-        }
-        request.extensions_mut().insert(ConnectInfo(peer));
-        return api::router(fixture.app).oneshot(request).await.unwrap();
-    }
-    crate::error::Error::not_found().into_response()
-}
 
 async fn callback(State(core): State<String>) -> Response {
     Response::builder()
@@ -134,8 +35,8 @@ async fn callback(State(core): State<String>) -> Response {
 }
 
 #[tokio::test]
-#[ignore = "requires actual PostgreSQL, Python Playwright and Chromium; OAuth TLS component, not main Host/OCI acceptance"]
-async fn chromium_trusted_login_native_consent_pkce_cors_and_refresh_reuse() {
+#[ignore = "requires actual PostgreSQL, Python Playwright and Chromium; production main router over TLS, callback fixture is not an OCI WebUI"]
+async fn actual_main_router_chromium_trusted_login_native_consent_pkce_cors_and_refresh_reuse() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let core_listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let ui_listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -166,12 +67,7 @@ async fn chromium_trusted_login_native_consent_pkce_cors_and_refresh_reuse() {
     .unwrap();
     let core_handle = axum_server::Handle::new();
     let ui_handle = axum_server::Handle::new();
-    let core_router = Router::new()
-        .fallback(core_component)
-        .with_state(BrowserCore {
-            app: fixture.app.clone(),
-            account: fixture.owner,
-        });
+    let core_router = api::router(fixture.app.clone());
     let core_server = tokio::spawn(
         axum_server::from_tcp_rustls(core_listener, tls.clone())
             .handle(core_handle.clone())
@@ -234,7 +130,7 @@ async fn chromium_trusted_login_native_consent_pkce_cors_and_refresh_reuse() {
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_else(|| json!({"status":"failed","step":"browser_report_missing"}));
-    let mut safe_report = json!({"component":"actual_pg_tls_browser_not_main_host_or_oci",
+    let mut safe_report = json!({"component":"actual_main_router_pg_tls_browser_not_oci_webui",
         "status":report["status"],"step":report["step"],"error_type":report["error_type"],
         "browser_version":report["browser_version"],"playwright_version":report["playwright_version"],
         "checks":report["checks"],"http":report["http"],"elapsed_seconds":report["elapsed_seconds"]});
@@ -251,7 +147,7 @@ async fn chromium_trusted_login_native_consent_pkce_cors_and_refresh_reuse() {
     println!("{safe_report}");
     assert!(
         output.status.success(),
-        "browser component failed: {safe_report}"
+        "actual main router browser acceptance failed: {safe_report}"
     );
     assert_eq!(report["status"], "passed", "{safe_report}");
     for check in [

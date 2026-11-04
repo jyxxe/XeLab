@@ -36,6 +36,6 @@ NodeConfig 的线上变更写入数据库并覆盖 resources 对应的运行预�
 
 贡献源固定为`https://d-<deployment UUID去连字符>.<ui_gateway.base_domain>`，public_port非443时追加端口；路径由PluginUiSpec.base_path与entry_path组成。主机名映射必须精确命中已批准部署，未知Host或伪造转发头拒绝，不能根据请求Host任意构造API返回URL。
 
-base_domain是受控DNS后缀，逐label验证，不接受IP、通配符或空label。shell_origins为允许嵌入的精确HTTPS源，不能与贡献源或内核认证源相同；还需与实际WebUI注册来源匹配。此列表只决定frame-ancestors，不取代OAuth客户端注册/用户授权，也不自动放开API CORS。
+base_domain是受控DNS后缀，逐label验证，不接受IP、通配符或空label。shell_origins为显式允许嵌入的精确外部HTTPS源，不能与贡献源或内核认证源相同。列表可以为空：平台生成的WebUI部署源必须经过可信发布者、最新健康单实例、当前部署审批和active Client精确注册核验后，才能动态加入frame-ancestors；普通Client的任意origin不会加入。此机制不取代OAuth/用户授权，也不自动放开API CORS。未知父源和与贡献同源的父页面继续拒绝。
 
 部署者将通配DNS/TLS和外部入口指向平台受控静态网关，可由同节点反向代理完成；网关只能访问批准的容器HTTP8080。DNS/证书未完成时贡献显示unavailable，不能降级到同源frame；内核管理API和CLI继续可用。修改源配置需重启并使旧frame通道失效。

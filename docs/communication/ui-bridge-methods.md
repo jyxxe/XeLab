@@ -14,7 +14,7 @@
 | batch.cancel | binding_alias、batch_id、if_match(强ETag)、idempotency_key；reason可选1..512字符 | SkillBatch；POST /skill-batches/{id}/cancel |
 | window.open | contribution_id(本插件贡献ID) | {view_id:UUID}；宿主重新发现同部署window，检查plugin.ui.open和窗口上限后打开 |
 
-路径均相对于/api/platform/v1；iframe不提供路径本身。skill.call要求绑定modes含call；batch.*要求含batch。调用前重新核对贡献摘要及Skill定义摘要，失配停止通道；核心继续验证当前Skill/目标权限。
+路径均相对于/api/platform/v1；iframe不提供路径本身。skill.call要求绑定modes含call；batch.*要求含batch。调用前重新核对贡献摘要及Skill定义摘要，失配停止通道；宿主从核验记录填入 provider_deployment_id，严格固定贡献部署，iframe 不能提交或覆盖。核心继续验证固定安装、该部署和当前Skill/目标权限；该部署不可用时拒绝，不改路由到同安装的其他部署。
 
 batch.create在iframe协议只允许run_as=user，禁止service_account_id；需要获批长期服务身份时在核心任务中心明确提交。batch.get/items/result/cancel核对批次为当前owner、固定Skill UUID/digest与本绑定一致；插件不能用其他批次ID突破页面白名单，即使壳本身拥有更宽管理权限。
 

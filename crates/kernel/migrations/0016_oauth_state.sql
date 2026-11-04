@@ -1,6 +1,11 @@
 -- Appended after the real HTTP migration 15; never rewrite the schema baseline.
 -- Public Client/OAuth models are unchanged. Only trusted internal bindings live here.
 ALTER TABLE clients ADD COLUMN created_by uuid REFERENCES accounts(id);
+-- A trusted browser origin is internal provenance, never a public request
+-- context field. NULL retains explicit CLI/background issuance semantics.
+ALTER TABLE host_proxy_approvals ADD COLUMN browser_origin text CHECK(browser_origin IS NULL OR octet_length(browser_origin) BETWEEN 1 AND 512);
+ALTER TABLE plugin_http_approvals ADD COLUMN browser_origin text CHECK(browser_origin IS NULL OR octet_length(browser_origin) BETWEEN 1 AND 512);
+ALTER TABLE host_rpc_contexts ADD COLUMN browser_origin text CHECK(browser_origin IS NULL OR octet_length(browser_origin) BETWEEN 1 AND 512);
 ALTER TABLE authorization_requests ADD COLUMN scope text NOT NULL DEFAULT '' CHECK(octet_length(scope)<=512);
 ALTER TABLE authorization_requests ADD COLUMN origin text NOT NULL DEFAULT '' CHECK(octet_length(origin)<=512);
 ALTER TABLE authorization_requests ADD COLUMN client_revision bigint NOT NULL DEFAULT 1 CHECK(client_revision>0);

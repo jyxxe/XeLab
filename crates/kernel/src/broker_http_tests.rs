@@ -42,6 +42,9 @@ const HOLD: &str = "/plugins/org.xelab.http-echo/hold";
 const EVENTS: &str = "/plugins/org.xelab.http-echo/events";
 const PAGE: &str = "/ui/org.xelab.http-echo/index.html";
 
+#[path = "oauth_http_selector_tests.rs"]
+mod selectors;
+
 async fn raw(
     router: &Router,
     method: &str,
@@ -678,6 +681,7 @@ async fn real_gateway_postgres_and_independent_mtls_plugin_close_the_http_compon
         .0,
         200
     );
+    selectors::fixed_http_skill_deployment_selector(&f, &skill).await;
     let input =
         json!({"input":{"message":"real HTTP Skill"},"timeout_ms":5000,"idempotency_key":"业务🔑"});
     let skill_rule =

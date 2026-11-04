@@ -28,6 +28,7 @@ struct Input {
     deployment: Option<Uuid>,
     skill: Option<Uuid>,
     skill_input: Option<Value>,
+    browser_origin: Option<String>,
     started: tokio::time::Instant,
     deadline: tokio::time::Instant,
 }
@@ -58,6 +59,7 @@ pub(super) async fn execute_skill(
     key: &str,
     started: tokio::time::Instant,
     deadline: tokio::time::Instant,
+    browser_origin: Option<&str>,
 ) -> Result<Value> {
     let value = Input {
         method: Method::POST,
@@ -65,9 +67,13 @@ pub(super) async fn execute_skill(
         headers: HeaderMap::new(),
         bytes: Vec::new(),
         key: key.into(),
-        deployment: None,
+        deployment: input
+            .get("provider_deployment_id")
+            .map(|_| id(input, "provider_deployment_id"))
+            .transpose()?,
         skill: Some(skill),
         skill_input: Some(input.clone()),
+        browser_origin: browser_origin.map(str::to_owned),
         started,
         deadline,
     };
@@ -111,6 +117,7 @@ pub async fn invoke(
         deployment,
         skill: None,
         skill_input: None,
+        browser_origin: crate::oauth_http::request_origin(headers)?.map(str::to_owned),
         started,
         deadline: started + Duration::from_millis(300000),
     };
@@ -260,7 +267,8 @@ async fn execute_inner(
         )
         .await?;
     let tx = c.transaction().await?;
-    let ctx = app.auth.authenticate(&tx, token, peer, request).await?;
+    let mut ctx = app.auth.authenticate(&tx, token, peer, request).await?;
+    ctx.browser_origin = input.browser_origin.clone();
     let mut authority = crate::auth::CurrentAuthority::new(&tx, &ctx).await?;
     let skill = if let Some(skill) = input.skill {
         match crate::skills::resolve_http_for_invoke(&tx, &ctx, skill, &authority).await {
@@ -312,7 +320,8 @@ async fn execute_inner(
     // shared auth fence. The physical ledger, provider rows and mutable budget
     // choices remain serialized in the established order below.
     db::call_lock(&tx).await?;
-    let current = app.auth.authenticate(&tx, token, peer, request).await?;
+    let mut current = app.auth.authenticate(&tx, token, peer, request).await?;
+    current.browser_origin = input.browser_origin.clone();
     authority.verify(&tx, &current)?;
     let target = resolve(&tx, &input, skill.as_ref()).await?;
     let op = target.operation()?;
@@ -402,7 +411,7 @@ async fn execute_inner(
     if let Some(prior)=tx.query_opt("SELECT fingerprint,resource_id,safe_response,response_status FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method=$3 AND path=$4 AND key=$5 AND expires_at>now() FOR UPDATE",&[&ctx.subject,&ctx.credential,&method,&path,&key]).await?{
         if prior.get::<_,String>("fingerprint")!=fingerprint{return Err(Error::new("IDEMPOTENCY_CONFLICT","HTTP key was already bound to different input",StatusCode::CONFLICT));}
         let call=prior.get::<_,Option<String>>("resource_id").and_then(|s|s.parse::<Uuid>().ok()).ok_or_else(Error::denied)?;
-        crate::host_blobs::check_call_sources(&tx,&ctx,call).await?;
+        check_skill_authority(&tx,&ctx,call).await?;
         let saved=tx.query_one("SELECT state,result FROM calls WHERE id=$1",&[&call]).await?;
         if saved.get::<_,String>("state")!="succeeded"{return Err(Error::new("OUTCOME_UNKNOWN","Prior HTTP call is not a confirmed success",StatusCode::CONFLICT).with_resource(call));}
         let value:Value=saved.get::<_,Option<Value>>("result").ok_or_else(Error::denied)?;
@@ -410,7 +419,7 @@ async fn execute_inner(
         let saved:Value=prior.get::<_,Option<Value>>("safe_response").ok_or_else(||Error::conflict("Generation streams cannot be replayed; inspect Call").with_resource(call))?;
         let status=StatusCode::from_u16(prior.get::<_,Option<i32>>("response_status").ok_or_else(Error::denied)? as u16).map_err(|_|Error::denied())?;
         let mut headers=HeaderMap::new();for (name,value) in saved["headers"].as_object().ok_or_else(Error::denied)?{headers.insert(axum::http::HeaderName::from_bytes(name.as_bytes()).map_err(|_|Error::denied())?,string(&json!({"v":value}),"v")?.parse().map_err(|_|Error::denied())?);}
-        if let Some(output)=output {output.bind(call,wall_deadline);}
+        if let Some(output)=output {output.bind_origin(call,wall_deadline,input.browser_origin.as_deref());}
         return Ok((value,Some(plugin_http::transport::Response{status,headers,bytes:serde_json::to_vec(&saved["body"])?})));
     }
     let (accounts, charged) = reserve_business(
@@ -465,7 +474,7 @@ async fn execute_inner(
     tx.execute("INSERT INTO idempotency_records(subject_id,credential_id,method,path,key,fingerprint,resource_id,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,now()+interval '24 hours',now())",&[&ctx.subject,&ctx.credential,&method,&path,&key,&fingerprint,&call.to_string()]).await?;
     if let Some(output) = output {
         output.ensure_open()?;
-        output.bind(call, wall_deadline);
+        output.bind_origin(call, wall_deadline, input.browser_origin.as_deref());
     }
     drop(authority);
     tx.commit().await?;
@@ -480,6 +489,7 @@ async fn execute_inner(
             target.instance,
             target.generation,
             wall_deadline,
+            input.browser_origin.as_deref(),
         )
         .await?;
         if let Some(output) = output {
@@ -527,6 +537,7 @@ async fn execute_inner(
                 response,
                 output,
                 wall_deadline,
+                input.browser_origin.as_deref(),
             )
             .await?;
             let value = terminal["payload"].clone();
@@ -609,6 +620,7 @@ async fn execute_inner(
                     target.instance,
                     target.generation,
                     wall_deadline,
+                    input.browser_origin.as_deref(),
                 )
                 .await
                 {
@@ -637,7 +649,8 @@ async fn execute_inner(
     let tx = c.transaction().await?;
     db::call_lock(&tx).await?;
     let authority = async {
-        let current = app.auth.authenticate(&tx, token, peer, request).await?;
+        let mut current = app.auth.authenticate(&tx, token, peer, request).await?;
+        current.browser_origin = input.browser_origin.clone();
         check_skill_authority(&tx, &current, call).await?;
         check_route_approval(&tx, app, call).await
     }
@@ -824,6 +837,7 @@ pub(super) async fn check_binding(
 struct Identity {
     call: Uuid,
     deadline: chrono::DateTime<chrono::Utc>,
+    browser_origin: Option<String>,
 }
 type Head = (StatusCode, HeaderMap, bool);
 struct Output {
@@ -835,9 +849,22 @@ struct Output {
     terminal: std::sync::atomic::AtomicBool,
 }
 impl Output {
+    #[cfg(test)]
     fn bind(&self, call: Uuid, deadline: chrono::DateTime<chrono::Utc>) {
+        self.bind_origin(call, deadline, None);
+    }
+    fn bind_origin(
+        &self,
+        call: Uuid,
+        deadline: chrono::DateTime<chrono::Utc>,
+        browser_origin: Option<&str>,
+    ) {
         if let Ok(mut i) = self.identity.lock() {
-            *i = Some(Identity { call, deadline });
+            *i = Some(Identity {
+                call,
+                deadline,
+                browser_origin: browser_origin.map(str::to_owned),
+            });
         }
     }
     fn ensure_open(&self) -> Result<()> {
@@ -986,7 +1013,8 @@ async fn delivery(
     }
     let mut c = app.db.connect_scoped(remaining).await?;
     let tx = c.transaction().await?;
-    let ctx = app.auth.authenticate(&tx, token, peer, request).await?;
+    let mut ctx = app.auth.authenticate(&tx, token, peer, request).await?;
+    ctx.browser_origin = identity.browser_origin.clone();
     let row = tx
         .query_one(
             "SELECT owner_id,credential_id,error FROM calls WHERE id=$1",
@@ -1034,6 +1062,7 @@ async fn read_events(
     response: reqwest::Response,
     output: &Output,
     deadline: chrono::DateTime<chrono::Utc>,
+    browser_origin: Option<&str>,
 ) -> Result<Value> {
     let mut source = response.bytes_stream();
     let mut buffer = Vec::new();
@@ -1130,6 +1159,7 @@ async fn read_events(
                 target.instance,
                 target.generation,
                 deadline,
+                browser_origin,
             )
             .await?;
             if value["terminal"] == true {

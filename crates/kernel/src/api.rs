@@ -167,20 +167,117 @@ async fn handle(
             )
         }
     };
+    if host == crate::plugin_http_gateway::Host::Core
+        && crate::oauth_http::handles(request.method().as_str(), request.uri().path())
+    {
+        return crate::oauth_http::handle(app, peer, request_id, request).await;
+    }
     if host != crate::plugin_http_gateway::Host::Core
         || request.uri().path().starts_with("/plugins/")
         || request.uri().path().starts_with("/ui/")
     {
-        return match crate::plugin_http_gateway::handle(app, peer, request_id, host, request).await
-        {
-            Ok(response) => response,
-            Err(error) => response(
+        let headers = request.headers().clone();
+        let mut result =
+            match crate::plugin_http_gateway::handle(app.clone(), peer, request_id, host, request)
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => response(
+                    json!({"error":error.detail(),"request_id":request_id}),
+                    error.status.as_u16(),
+                    request_id,
+                ),
+            };
+        if host == crate::plugin_http_gateway::Host::Core {
+            cors_response(&app, &headers, &mut result).await;
+        }
+        return result;
+    }
+    // Trusted OAuth pages/native consent have request-bound CSRF semantics;
+    // dispatch only after the core Host and before ordinary Cookie CSRF checks.
+    if request.uri().path() == "/" && matches!(request.method().as_str(), "GET" | "HEAD") {
+        let head = request.method() == axum::http::Method::HEAD;
+        let invalid_query = request.uri().query().is_some();
+        let body = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            to_bytes(request.into_body(), 0),
+        )
+        .await;
+        let boundary = if invalid_query {
+            Err(Error::invalid(
+                "Root redirect does not accept query parameters",
+            ))
+        } else {
+            match body {
+                Ok(Ok(bytes)) if bytes.is_empty() => Ok(()),
+                Ok(_) => Err(Error::invalid("Root redirect requires an empty body")),
+                Err(_) => Err(Error::unavailable("Root request body deadline elapsed")),
+            }
+        };
+        if let Err(error) = boundary {
+            let mut r = response(
                 json!({"error":error.detail(),"request_id":request_id}),
                 error.status.as_u16(),
                 request_id,
-            ),
+            );
+            if head {
+                *r.body_mut() = Body::empty();
+            }
+            return r;
+        }
+        return match crate::webui::redirect(&app).await {
+            Ok(location) => Response::builder()
+                .status(302)
+                .header("location", location)
+                .header("cache-control", "no-store")
+                .header("x-request-id", request_id.to_string())
+                .body(Body::empty())
+                .unwrap(),
+            Err(error) => {
+                let mut r = response(
+                    json!({"error":error.detail(),"request_id":request_id}),
+                    error.status.as_u16(),
+                    request_id,
+                );
+                if head {
+                    *r.body_mut() = Body::empty();
+                }
+                r
+            }
         };
     }
+    let headers = request.headers().clone();
+    let mut result = handle_core(app.clone(), peer, request_id, request, response_operation).await;
+    // CORS conveys no authority. Every foreign request is independently
+    // classified/authenticated and authorized before this response is built.
+    cors_response(&app, &headers, &mut result).await;
+    result
+}
+
+async fn cors_response(app: &App, headers: &HeaderMap, result: &mut Response) {
+    if crate::oauth_http::request_origin(headers)
+        .ok()
+        .flatten()
+        .is_some_and(|origin| origin != app.config.text("server", "public_origin"))
+    {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let c = app
+                .db
+                .connect_scoped(std::time::Duration::from_secs(3))
+                .await?;
+            crate::oauth_http::cors_response(&*c, headers, result).await
+        })
+        .await;
+    }
+}
+
+async fn handle_core(
+    app: Arc<App>,
+    peer: SocketAddr,
+    request_id: Uuid,
+    request: Request<Body>,
+    response_operation: Option<&str>,
+) -> Response {
     if !operation(request.method().as_str(), request.uri().path()).is_some_and(|(op, _)| {
         matches!(
             op["operationId"].as_str(),
@@ -300,11 +397,7 @@ async fn dispatch(
             200,
         ));
     }
-    if let Some(origin) = headers.get("origin") {
-        if origin.to_str().ok() != Some(app.config.text("server", "public_origin")) {
-            return Err(Error::denied());
-        }
-    }
+    let browser_origin = crate::oauth_http::request_origin(&headers)?;
     let bytes = to_bytes(request.into_body(), 4194304).await.map_err(|_| {
         Error::new(
             "PAYLOAD_TOO_LARGE",
@@ -391,13 +484,15 @@ async fn dispatch(
         if !app.ready.load(Ordering::SeqCst) {
             return Err(Error::unavailable("Kernel is not ready"));
         }
-        return broker::invoke(
+        return broker::invoke_from_http(
             app,
             token,
             peer.ip(),
             request_id,
             &body,
             header(&headers, "idempotency-key")?,
+            None,
+            browser_origin,
         )
         .await
         .map(|v| (v, 200));
@@ -406,14 +501,15 @@ async fn dispatch(
         if !app.ready.load(Ordering::SeqCst) {
             return Err(Error::unavailable("Kernel is not ready"));
         }
-        return broker::invoke_skill(
+        return broker::invoke_from_http(
             app,
             token,
             peer.ip(),
             request_id,
-            path_id(&params, "skill_id")?,
             &body,
             header(&headers, "idempotency-key")?,
+            Some(path_id(&params, "skill_id")?),
+            browser_origin,
         )
         .await
         .map(|value| (value, 200));
@@ -424,14 +520,25 @@ async fn dispatch(
     db::auth_lock(
         &tx,
         (mutating
-            && (identity::handles(name) || secrets::handles(name) || crate::skills::handles(name)))
+            && (identity::handles(name)
+                || secrets::handles(name)
+                || crate::skills::handles(name)
+                || crate::oauth::clients::handles(name)
+                || crate::webui::handles(name)
+                || crate::ui::handles(name)
+                || crate::deployments::handles(name)))
             || matches!(name, "getQuota" | "trustPublisher" | "revokePublisher"),
     )
     .await?;
-    let ctx = app
-        .auth
-        .authenticate(&tx, token, peer.ip(), request_id)
-        .await?;
+    let ctx = crate::oauth_http::credential_context(
+        &tx,
+        &app.auth,
+        &headers,
+        peer,
+        request_id,
+        app.config.text("server", "public_origin"),
+    )
+    .await?;
     let key = if mutating {
         Some(header(&headers, "idempotency-key")?)
     } else {
@@ -501,6 +608,14 @@ async fn dispatch(
     let execution=async {
     let result = if identity::handles(name) {
         identity::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
+    } else if crate::oauth::clients::handles(name) {
+        crate::oauth::clients::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
+    } else if crate::webui::handles(name) {
+        crate::webui::execute(&tx,app,&ctx,name,&body,&headers,uri.query().unwrap_or("")).await?
+    } else if crate::ui::handles(name) {
+        crate::ui::execute(&tx,app,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
+    } else if crate::deployments::handles(name) {
+        crate::deployments::execute(&tx,app,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
     } else if crate::skills::handles(name) {
         crate::skills::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
     } else if crate::volumes::handles(name) {
@@ -527,8 +642,12 @@ async fn dispatch(
         "getCall" => {
             let call = path_id(&params, "call_id")?;
             let r = tx
-                .query_one("SELECT state,result,error FROM calls WHERE id=$1", &[&call])
+                .query_one("SELECT state,result,error,skill_id,http_binding FROM calls WHERE id=$1", &[&call])
                 .await?;
+            if r.get::<_,Option<Value>>("result").is_some() && (r.get::<_,Option<Uuid>>("skill_id").is_some()||r.get::<_,Option<Value>>("http_binding").is_some()) {
+                broker::check_skill_authority(&tx,&ctx,call).await.map_err(|error|if matches!(error.code,"PERMISSION_DENIED"|"INVALID_CREDENTIAL"|"RESOURCE_NOT_FOUND"|"STATE_CONFLICT"){Error::denied()}else{error})?;
+                if r.get::<_,Option<Value>>("http_binding").is_some() {broker::check_http_approval(&tx,app,call).await.map_err(|error|if matches!(error.code,"PERMISSION_DENIED"|"INVALID_CREDENTIAL"|"RESOURCE_NOT_FOUND"|"STATE_CONFLICT"){Error::denied()}else{error})?;}
+            }
             (
                 json!({"call_id":call,"state":r.get::<_,String>(0),"result":r.get::<_,Option<Value>>(1),"error":r.get::<_,Option<Value>>(2)}),
                 200,
@@ -850,6 +969,18 @@ async fn authorize_operation(
     if identity::handles(name) {
         return identity::authorize(c, ctx, name, params, body).await;
     }
+    if crate::oauth::clients::handles(name) {
+        return crate::oauth::clients::authorize(c, ctx, name, params, body).await;
+    }
+    if crate::webui::handles(name) {
+        return crate::webui::authorize(c, ctx, name).await;
+    }
+    if crate::ui::handles(name) {
+        return crate::ui::authorize(c, ctx, name, params, body).await;
+    }
+    if crate::deployments::handles(name) {
+        return crate::deployments::authorize(c, ctx, name, params, body).await;
+    }
     if crate::skills::handles(name) {
         return crate::skills::authorize(c, ctx, name, params, body).await;
     }
@@ -874,7 +1005,7 @@ async fn authorize_operation(
     if name == "installPlugin" {
         // Stage/verify the signed artifact first. Only its verified manifest can
         // supply plugin_id; the worker authorizes that actual ID before commit.
-        let paths = crate::policy::Policy::new(c, ctx.peer)
+        let paths = crate::policy::Policy::for_context(c, ctx)
             .credential(ctx.credential, 0)
             .await?;
         if paths.iter().any(|p| {

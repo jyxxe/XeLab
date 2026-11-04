@@ -380,6 +380,13 @@ fn under(path: &str, prefix: &str) -> bool {
 }
 
 impl Operation {
+    pub(crate) fn cors_request_header_names(&self) -> Vec<String> {
+        self.request_headers
+            .keys()
+            .map(|name| name.as_str().to_owned())
+            .collect()
+    }
+
     fn compile(
         path: &str,
         method: Method,

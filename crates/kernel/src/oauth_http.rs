@@ -33,7 +33,10 @@ pub fn handles(method: &str, path: &str) -> bool {
             "GET",
             "/oauth/authorize" | "/auth/ui/login" | "/auth/ui/consent"
         ) | ("POST", "/oauth/token" | CONSENT_PATH)
-    ) || (method == "OPTIONS" && (path == "/oauth/token" || path.starts_with("/api/platform/v1/")))
+    ) || (method == "OPTIONS"
+        && (path == "/oauth/token"
+            || path.starts_with("/api/platform/v1/")
+            || path.starts_with("/plugins/")))
 }
 
 fn cookie(headers: &HeaderMap, name: &str) -> Result<Option<String>> {
@@ -64,6 +67,9 @@ fn origin(headers: &HeaderMap) -> Result<Option<&str>> {
         }
     }
     Ok(value)
+}
+pub(crate) fn request_origin(headers: &HeaderMap) -> Result<Option<&str>> {
+    origin(headers)
 }
 fn trusted_host(app: &App, request: &Request<Body>) -> Result<()> {
     let public = app.config.origin()?;
@@ -148,9 +154,6 @@ pub async fn credential_context(
 ) -> Result<Context> {
     let browser = origin(headers)?;
     let cookie = cookie(headers, AUTH_COOKIE)?;
-    if headers.contains_key("authorization") && cookie.is_some() {
-        return Err(Error::credential());
-    }
     let foreign = browser.is_some_and(|value| value != core_origin);
     if foreign && (!headers.contains_key("authorization") || headers.contains_key("cookie")) {
         return Err(Error::denied());
@@ -158,6 +161,25 @@ pub async fn credential_context(
     let mut ctx = auth
         .authenticate(c, crate::api::bearer(headers)?, peer.ip(), request)
         .await?;
+    if let Some(cookie) = cookie
+        .as_deref()
+        .filter(|_| headers.contains_key("authorization"))
+    {
+        let session = auth.authenticate(c, cookie, peer.ip(), request).await?;
+        let kind: String = c
+            .query_one(
+                "SELECT kind FROM credentials WHERE id=$1",
+                &[&session.credential],
+            )
+            .await?
+            .get(0);
+        if kind != "session" {
+            return Err(Error::credential());
+        }
+        if session.subject != ctx.subject {
+            return Err(Error::invalid("Bearer and Cookie subjects differ"));
+        }
+    }
     let kind: String = c
         .query_one(
             "SELECT kind FROM credentials WHERE id=$1",
@@ -165,7 +187,7 @@ pub async fn credential_context(
         )
         .await?
         .get(0);
-    if cookie.is_some() && kind != "session" {
+    if !headers.contains_key("authorization") && cookie.is_some() && kind != "session" {
         return Err(Error::credential());
     }
     if foreign && kind != "oauth_access" {
@@ -505,12 +527,34 @@ async fn preflight(app: &App, headers: &HeaderMap, path: &str, request: Uuid) ->
     }
     let browser = origin(headers)?.ok_or_else(Error::denied)?;
     let method = one_header(headers, "access-control-request-method")?.ok_or_else(Error::denied)?;
+    let c = app.db.connect_scoped(Duration::from_secs(10)).await?;
+    if !registered_origin(&*c, browser).await? {
+        return Err(Error::denied());
+    }
+    let mut declared = Vec::new();
     if path == "/oauth/token" {
         if method != "POST" {
             return Err(Error::denied());
         }
+    } else if path.starts_with("/plugins/") {
+        declared = crate::plugin_http_gateway::preflight_route(
+            &*c,
+            app,
+            &method.parse().map_err(|_| Error::denied())?,
+            path,
+        )
+        .await?;
     } else {
-        let (operation, _) = crate::api::operation(method, path).ok_or_else(Error::not_found)?;
+        let (operation, params) =
+            crate::api::operation(method, path).ok_or_else(Error::not_found)?;
+        for parameter in operation["parameters"].as_array().unwrap() {
+            if parameter["in"] == "path" {
+                let value = params
+                    .get(parameter["name"].as_str().unwrap())
+                    .ok_or_else(Error::not_found)?;
+                contracts::validate_business(&parameter["schema"], &json!(value))?;
+            }
+        }
         if !path.starts_with("/api/platform/v1/")
             || matches!(
                 operation["operationId"].as_str(),
@@ -534,15 +578,12 @@ async fn preflight(app: &App, headers: &HeaderMap, path: &str, request: Uuid) ->
                     | "accept"
                     | "range"
                     | "x-request-id"
-            ) || !names.insert(name)
+            ) && !declared.contains(&name)
+                || !names.insert(name)
             {
                 return Err(Error::denied());
             }
         }
-    }
-    let c = app.db.connect_scoped(Duration::from_secs(10)).await?;
-    if !registered_origin(&*c, browser).await? {
-        return Err(Error::denied());
     }
     let mut response = crate::api::response(Value::Null, 204, request);
     cors(&mut response, browser)?;
