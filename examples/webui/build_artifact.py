@@ -9,10 +9,10 @@ import uuid
 from server import https_origin
 
 
-def build(root, publisher, webui_origin, platform="linux/amd64", plugin_version="1.0.0"):
+def build(root, publisher, webui_origin=None, platform="linux/amd64", plugin_version="1.0.0"):
     if platform not in ("linux/amd64", "linux/arm64") or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", plugin_version):
         raise ValueError("An explicit supported platform and release version are required")
-    origin = https_origin(webui_origin)
+    origin = None if webui_origin is None else https_origin(webui_origin)
     source = pathlib.Path(__file__).resolve().parents[2] / "docs/preset-plugins/webui/manifest.json"
     manifest = json.loads(source.read_bytes())
     manifest["publisher_id"] = str(uuid.UUID(publisher))
@@ -24,8 +24,9 @@ def build(root, publisher, webui_origin, platform="linux/amd64", plugin_version=
     schema["properties"].update({
         "core_origin": {"type": "string", "minLength": 1, "maxLength": 2048,
                         "description": "Exact trusted HTTPS core origin; public configuration, never a credential"},
-        "client_id": {"type": "string", "minLength": 1, "maxLength": 128,
-                      "pattern": "^[A-Za-z0-9._~-]+$", "description": "Registered public OAuth Client identifier"},
+        "client_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 128,
+                      "pattern": "^[A-Za-z0-9._~-]+$", "default": None,
+                      "description": "Null only for initial disabled deployment; Initialize requires the registered public Client identifier"},
     })
     schema["required"] += ["core_origin", "client_id"]
     # Queueing belongs to the existing Broker. This UI workload does not add a
@@ -41,7 +42,7 @@ def build(root, publisher, webui_origin, platform="linux/amd64", plugin_version=
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--publisher-id", required=True)
-    parser.add_argument("--webui-origin", required=True, help="Exact registered isolated HTTPS WebUI origin")
+    parser.add_argument("--webui-origin", help="Optional exact preassigned HTTPS origin; default null lets the platform allocate it after deployment creation")
     parser.add_argument("--output", type=pathlib.Path, default=pathlib.Path("examples/webui/generated"))
     parser.add_argument("--platform", choices=["linux/amd64", "linux/arm64"], default="linux/amd64")
     parser.add_argument("--plugin-version", default="1.0.0")

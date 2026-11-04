@@ -6,12 +6,11 @@ The image runs as UID/GID 65532. Its declared minimum is 500 CPU millis, 5368709
 
 ## Build and sign
 
-Run commands from the repository root. Replace each example value with the actual registered publisher and isolated HTTPS shell origin. `--webui-origin` is part of the signed manifest; changing the origin requires a new artifact and normal approval.
+Run commands from the repository root. Replace each example publisher/image value with the actual registered value. The default signed `webui.origin=null` asks the platform to allocate the isolated origin after it creates the deployment UUID; the builder does not need to guess that future UUID. Optional `--webui-origin` is only for a previously assigned exact origin and must match the core's mapping.
 
 ```sh
 python3 examples/webui/build_artifact.py \
-  --publisher-id 00000000-0000-4000-8000-000000000001 \
-  --webui-origin https://desktop.example.org
+  --publisher-id 00000000-0000-4000-8000-000000000001
 docker build -f examples/webui/Dockerfile -t docker.io/example/xelab-webui:1.0.0 .
 docker save docker.io/example/xelab-webui:1.0.0 -o /tmp/xelab-webui-image.tar
 sudo ctr -n xelab images import /tmp/xelab-webui-image.tar
@@ -31,7 +30,9 @@ The signing helper rejects the placeholder digest. Keep the publisher private ke
 
 ## Public configuration and OAuth registration
 
-Register a public OAuth Client for the signed WebUI origin. Its exact redirect URI is:
+Create the deployment **disabled** first, using the known `core_origin`, the shell defaults below and `client_id:null`. The manifest configuration schema permits null for this setup step; the running service's Initialize rejects it and cannot become ready with a null client.
+
+Use the resulting deployment UUID to obtain the platform-assigned isolated origin through the core/CLI configuration. Register a public OAuth Client for that exact origin. For an allocated origin represented below as `https://desktop.example.org`, its exact redirect URI is:
 
 ```text
 https://desktop.example.org/ui/org.xelab.webui/callback
@@ -41,7 +42,7 @@ Allowed origins must include the same exact canonical shell origin. Choose an au
 
 Include `session.read` for the current account so the host can establish a unique subject without a new identity endpoint. Fixed Skill bridge results also require `capability.call.read` for that subject's original Call, as well as `plugin.ui.open`, `skill.invoke` and the actual capability/HTTP target action. Preference persistence needs `ui.preferences.read/update`. These are ceilings: the core still intersects them with each user's actual current authority. An omitted permission produces an unavailable/denied state rather than a service-account fallback. Access-token rotation closes old iframe channels/results; a rejected or unknown mutation is never automatically refreshed and replayed under a new credential.
 
-Set the deployment config to these public values, using the actual public client identifier and trusted core origin:
+After Client registration, use the existing `updateDeployment` operation while this deployment remains disabled/stopped to replace its complete config with these public values and the actual Client ID. Then approve, explicitly enable, check readiness, and choose it as default UI. This order avoids a dependency cycle: install → disabled deployment with null Client → allocated origin → register Client → update config with real Client → approve/enable/default UI. No fake external Client or ready state is used.
 
 ```json
 {

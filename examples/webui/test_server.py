@@ -55,7 +55,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(validate_config(public_config()), public_config())
         integer_numbers = {**public_config(), "max_open_windows": 16.0}
         self.assertEqual(validate_config(integer_numbers)["max_open_windows"], 16)
-        for update in [{"token": "never-allowed"}, {"client_id": "bad client"}, {"core_origin": "http://core.test"},
+        for update in [{"token": "never-allowed"}, {"client_id": "bad client"}, {"client_id": None}, {"core_origin": "http://core.test"},
                        {"max_active_widgets": True}, {"max_open_windows": 1.5}, {"management_api_major": True},
                        {"widget_min_refresh_seconds": 29}, {"default_theme": "external-css"}]:
             with self.subTest(update=update):
@@ -80,6 +80,12 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(manifest["routes"][0]["maximum_body_bytes"], 0)
             self.assertEqual(manifest["minimum_resources"]["memory_bytes"], 536870912)
             self.assertEqual(set(manifest["config_schema"]["required"]), set(public_config()))
+        with tempfile.TemporaryDirectory() as directory:
+            allocated = build_artifact.build(pathlib.Path(directory), "00000000-0000-4000-8000-000000000001")
+            self.assertIsNone(allocated["webui"]["origin"])
+            self.assertEqual(allocated["config_schema"]["properties"]["client_id"]["type"], ["string", "null"])
+            with self.assertRaises(ValueError):
+                validate_config({**public_config(), "client_id": None})
 
     def test_generation_lifecycle_and_active_drain(self):
         state = State()
