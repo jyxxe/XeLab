@@ -20,6 +20,12 @@ const windows = new Map();
 const widgetViews = new Map();
 const widgetIntents = new Map();
 const widgetPinned = new Map();
+const dockPinned = new Map();
+let launcherItems = [];
+let launcherCursor = null;
+let launcherLoading = false;
+let launcherError = null;
+let launcherEpoch = 0;
 let layer = 10;
 let accountId = null;
 let preferences = null;
@@ -80,7 +86,7 @@ function layoutKey() { return accountId ? `xelab:windows:${runtimeConfig.core_or
 function saveLayout() {
   const key = layoutKey();
   if (!key || !preview.restore_windows) return;
-  const layout = [...windows.values()].filter(win => !win.ephemeral && !win.contribution).map(win => ({app:win.app.id, rect:win.rect, minimized:win.minimized, maximized:win.maximized}));
+  const layout = [...windows.values()].filter(win => win.restoreRef || !win.ephemeral).map(win => ({app:win.restoreRef?'contribution':win.app.id,...(win.restoreRef?{contribution:win.restoreRef}:{}),rect:win.rect,minimized:win.minimized,maximized:win.maximized}));
   try { localStorage.setItem(key, JSON.stringify(layout)); } catch { /* Storage is optional. */ }
 }
 function clearPrivateViews() {
@@ -90,7 +96,8 @@ function clearPrivateViews() {
   if (key) localStorage.removeItem(key);
   for (const win of [...windows.values()]) closeWindow(win, false);
   for (const widget of widgetViews.values()) widget.dispose();
-  widgetViews.clear();widgetIntents.clear();widgetPinned.clear();
+  widgetViews.clear();widgetIntents.clear();widgetPinned.clear();dockPinned.clear();
+  launcherEpoch++;launcherItems=[];launcherCursor=null;launcherLoading=false;launcherError=null;
   preferences = null;
   preferenceEtag = null;
   preview = defaults();
@@ -135,6 +142,7 @@ function applyTheme() {
   document.documentElement.classList.toggle('reduced-transparency', preview.theme.reduce_transparency);
   $('#dock').dataset.position = preview.dock.position;
   $('#dock').dataset.autoHide = String(preview.dock.auto_hide);
+  renderDock();
   for(const win of windows.values())win.bridge?.themeChanged();
   for(const widget of widgetViews.values())widget.bridge?.themeChanged();
 }
@@ -208,7 +216,7 @@ function openWindow(app, options = {}) {
   const titlebar = node('header', {class:'window-title', tabindex:0, 'aria-label':`${app.title}窗口。Alt加方向键移动，Alt加Shift加方向键调整大小。`});
   const content = node('div', {class:'window-content'});
   const element = node('section', {class:'window', role:'dialog', 'aria-labelledby':`title-${id}`, 'data-view-id':id, 'data-app':app.id}, titlebar, content);
-  const win = {id, app, content, element, rect:options.rect || {x:40+windows.size*24,y:24+windows.size*20,width:680,height:520}, minimized:false,maximized:Boolean(options.maximized),ephemeral:Boolean(options.ephemeral),controller:null};
+  const win = {id, app, content, element, rect:options.rect || {x:40+windows.size*24,y:24+windows.size*20,width:680,height:520}, minimized:false,maximized:Boolean(options.maximized),ephemeral:Boolean(options.ephemeral),restoreRef:options.restoreRef,controller:null};
   const minimize = () => { win.minimized = true; element.hidden = true; win.bridge?.setVisible(false);renderDock(); saveLayout(); };
   const maximize = () => { win.maximized = !win.maximized; fit(win); saveLayout(); };
   titlebar.append(node('div', {class:'window-controls'}, button('×',()=>closeWindow(win),{'aria-label':`关闭${app.title}`}),button('−',minimize,{'aria-label':`最小化${app.title}`}),button('□',maximize,{'aria-label':`最大化或恢复${app.title}`})),heading);
@@ -276,14 +284,14 @@ function editor(title, operation, {params={}, initial={}, etag, body=true, note=
   }},{ephemeral:true});
 }
 function details(title, data) { return openWindow({id:'details',title,render:async win=>win.content.replaceChildren(raw(data))},{ephemeral:true}); }
-async function listSection(win, {title,operation,query={},actions=[],renderItem}) {
-  const result = await request(operation,{query:{limit:50,...query},signal:win.controller.signal});
+async function listSection(win, {title,operation,params={},query={},actions=[],renderItem}) {
+  const result = await request(operation,{params,query:{limit:50,...query},signal:win.controller.signal});
   const list = node('div',{class:'list'});
   const append = data => { for (const item of rows(data)) list.append(renderItem(item)); };
   append(result.data);
   const more = button('加载下一页',async()=> {
     more.disabled = true;
-    try { const next = await request(operation,{query:{limit:50,...query,cursor:more.dataset.cursor},signal:win.controller.signal}); append(next.data); more.dataset.cursor=next.data.next_cursor||'';more.hidden=!next.data.next_cursor; }
+    try { const next = await request(operation,{params,query:{limit:50,...query,cursor:more.dataset.cursor},signal:win.controller.signal}); append(next.data); more.dataset.cursor=next.data.next_cursor||'';more.hidden=!next.data.next_cursor; }
     catch(error) { list.append(failure(error)); } finally { more.disabled=false; }
   });
   more.dataset.cursor = result.data.next_cursor || '';
@@ -326,11 +334,25 @@ async function accounts(win) {
       const result = await request('getAccount',{params:{account_id:id},signal:win.controller.signal});
       display.replaceChildren(node('h3',{},`${result.data.display_name} · ${result.data.status}`),raw(result.data));
       const read = (title,operation) => button(title,async()=> { try { const data=await request(operation,{params:{account_id:id},signal:win.controller.signal});details(title,data.data); } catch(error){toast(`${error.code||'请求失败'}：${error.message}`);} });
-      display.append(node('div',{class:'toolbar'},read('有效权限与阻断祖先','getEffectivePermissions'),read('授权组来源','listGrants'),read('资源配额','getQuota'),button('子账户',async()=> { try { const data=await request('listAccounts',{query:{parent_id:id,limit:200},signal:win.controller.signal});details('子账户与继承模式',data.data); }catch(error){toast(error.message);} })));
+      display.append(node('div',{class:'toolbar'},read('有效权限与阻断祖先','getEffectivePermissions'),read('授权组来源','listGrants'),read('资源配额','getQuota'),button('API Key 元数据',()=>openWindow({id:`api-keys:${id}`,title:'API Key 元数据',render:keys=>apiKeys(keys,id)})),button('子账户',async()=> { try { const data=await request('listAccounts',{query:{parent_id:id,limit:200},signal:win.controller.signal});details('子账户与继承模式',data.data); }catch(error){toast(error.message);} })));
     } catch(error) {display.replaceChildren(failure(error));}
   };
   win.content.replaceChildren(toolbar(win,'账户与权限'),node('p',{class:'muted'},'账户身份、祖先限制与凭证来源均以核心返回为准；WebUI 不收集平台密码。'),node('div',{class:'inline-field'},accountInput,button('读取',()=>inspect(accountInput.value.trim()))),display);
   if (accountId) await inspect(accountId); else display.replaceChildren(state('unavailable','当前账户详情尚不可用','当前委托未获准读取本人会话元数据。可输入已知账户 UUID，在现有授权内查询。'));
+}
+function keyMetadata(value) {
+  // Only the read model's scalar metadata is displayed, even if a broken
+  // backend accidentally attaches a one-time issuance field to its response.
+  const result={};
+  for(const field of ['id','revision','owner_id','name','prefix','status','issuer_credential_id','created_at','updated_at','last_used_at']) {
+    const item=value[field];
+    if(item===null||typeof item==='string'||Number.isSafeInteger(item))result[field]=item;
+  }
+  if(['selected','all_snapshot','follow_parent'].includes(value.inheritance?.mode))result.inheritance={mode:value.inheritance.mode};
+  return result;
+}
+async function apiKeys(win,account) {
+  await listSection(win,{title:'API Key 元数据',operation:'listApiKeys',params:{account_id:account},renderItem:item=>node('article',{class:'card'},node('h3',{},item.name),node('p',{},`${item.status} · ${item.prefix}`),raw(keyMetadata(item)),button('读取密钥元数据',async()=>{try{const result=await request('getApiKey',{params:{credential_id:item.id},signal:win.controller.signal});details('API Key 元数据详情',keyMetadata(result.data));}catch(error){toast(`${error.code||'请求失败'}：${error.message}`);}}))});
 }
 async function resources(win) {
   const result = await request('getNode',{signal:win.controller.signal});
@@ -345,12 +367,56 @@ async function openContribution(value){
   const fixed=validateContribution(current.data,{parentOrigin:location.origin,coreOrigin:runtimeConfig.core_origin});
   if(!sameContribution(value,fixed))throw new Error('贡献或权限已改变，请刷新后明确打开当前版本。');
   if(fixed.spec.kind!=='window')throw new Error('该贡献不是窗口。');
-  return openWindow({id:`plugin:${fixed.deployment_id}:${fixed.spec.id}`,title:`${fixed.spec.title} · ${fixed.plugin_id}`,render:async win=>{
-    win.contribution=fixed;
-    win.rect.width=fixed.spec.window.width;win.rect.height=fixed.spec.window.height;fit(win);
-    const resize=win.element.querySelector('.window-resize');resize.hidden=!fixed.spec.window.resizable;
-    await mountContribution(win.content,fixed,win);
-  }},{ephemeral:true});
+  const epoch=sessionEpoch,reference=await contributionReference(fixed);
+  if(epoch!==sessionEpoch||!oauth.loggedIn||!accountId)throw new Error('登录来源已改变，请重新打开页面。');
+  return openWindow({id:`plugin:${fixed.deployment_id}:${fixed.spec.id}`,title:`${fixed.spec.title} · ${fixed.plugin_id}`,render:win=>displayContribution(win,fixed,reference,false)},{ephemeral:true,restoreRef:reference});
+}
+async function contributionReference(fixed) {
+  const bindings=fixed.bindings.map(binding=>({alias:binding.alias,skill_id:binding.skill_id,definition_digest:binding.definition_digest,modes:[...binding.modes].sort()})).sort((left,right)=>left.alias<right.alias?-1:left.alias>right.alias?1:0);
+  const digest=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(bindings))))].map(value=>value.toString(16).padStart(2,'0')).join('');
+  return{deployment_id:fixed.deployment_id,contribution_id:fixed.spec.id,installation_id:fixed.installation_id,manifest_digest:fixed.manifest_digest,contribution_digest:fixed.contribution_digest,bindings_digest:`sha256:${digest}`};
+}
+function validContributionReference(value){
+  const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i,digest=/^sha256:[a-f0-9]{64}$/;
+  return value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===6&&uuid.test(value.deployment_id)&&uuid.test(value.installation_id)&&/^[a-z][a-z0-9_-]{0,63}$/.test(value.contribution_id)&&['manifest_digest','contribution_digest','bindings_digest'].every(field=>digest.test(value[field]));
+}
+async function displayContribution(win,fixed,reference,keepRect){
+  if(!windows.has(win.id)||win.controller.signal.aborted)return;
+  win.dispose?.();win.restoreRef=reference;win.contribution=fixed;
+  win.app.id=`plugin:${fixed.deployment_id}:${fixed.spec.id}`;win.app.title=`${fixed.spec.title} · ${fixed.plugin_id}`;
+  win.element.dataset.app=win.app.id;win.element.querySelector('.window-title h2').textContent=win.app.title;
+  for(const[index,control]of [...win.element.querySelectorAll('.window-controls button')].entries())control.setAttribute('aria-label',`${['关闭','最小化','最大化或恢复'][index]}${win.app.title}`);
+  const resize=win.element.querySelector('.window-resize');resize.hidden=!fixed.spec.window.resizable;resize.setAttribute('aria-label',`调整${win.app.title}大小`);
+  if(!keepRect){win.rect.width=fixed.spec.window.width;win.rect.height=fixed.spec.window.height;}
+  fit(win);renderDock();saveLayout();
+  await mountContribution(win.content,fixed,win);
+}
+function restoreContribution(item){
+  const reference=item.contribution;
+  if(!validContributionReference(reference))return;
+  openWindow({id:`plugin:${reference.deployment_id}:${reference.contribution_id}`,title:`插件窗口 · ${reference.contribution_id}`,render:win=>restoreContributionView(win,reference)},{...item,ephemeral:true,restoreRef:reference});
+}
+async function restoreContributionView(win,reference){
+  const read=async()=>{
+    const result=await request('getUiContribution',{params:{deployment_id:reference.deployment_id,contribution_id:reference.contribution_id},signal:win.controller.signal});
+    const fixed=validateContribution(result.data,{parentOrigin:location.origin,coreOrigin:runtimeConfig.core_origin});
+    if(fixed.spec.kind!=='window')throw new Error('保存的贡献不再是窗口。');
+    return{fixed,current:await contributionReference(fixed)};
+  };
+  try{
+    const{fixed,current}=await read();
+    if(JSON.stringify(current)!==JSON.stringify(reference))throw new Error('安装、贡献版本或获准白名单已改变，尚未恢复插件页面。');
+    await displayContribution(win,fixed,current,true);
+  }catch(error){
+    if(!windows.has(win.id)||win.controller.signal.aborted)return;
+    const outcome=node('div');
+    const retry=button('明确重新发现并加载',async()=>{
+      retry.disabled=true;outcome.replaceChildren(state('loading','重新核对当前贡献…'));
+      try{const{fixed,current}=await read();await displayContribution(win,fixed,current,true);}
+      catch(next){outcome.replaceChildren(failure(next));retry.disabled=false;}
+    });
+    win.content.replaceChildren(state('unavailable','插件窗口等待确认','原布局已保留；没有恢复旧调用、输入或结果，也未自动接受新版白名单。'),failure(error),retry,outcome);
+  }
 }
 async function mountContribution(container,fixed,owner){
   const frame=node('iframe',{class:'bridge-frame'}),status=node('p',{class:'contribution-note'},'正在核对固定贡献并握手…');
@@ -365,11 +431,64 @@ async function mountContribution(container,fixed,owner){
   await bridge.mount();
   bridge.setVisible(document.visibilityState==='visible'&&!owner.minimized);
 }
-async function widgetMutation(intentId,mutate){
+async function preferenceMutation(intentId,mutate){
   let intent=widgetIntents.get(intentId);
-  if(!intent){const current=await request('getMyUiPreferences');const body=structuredClone(current.data.spec);mutate(body.widgets);intent={body,etag:current.etag||revision(current.data),key:crypto.randomUUID()};widgetIntents.set(intentId,intent);}
+  if(!intent){const current=await request('getMyUiPreferences');const body=structuredClone(current.data.spec);mutate(body);intent={body,etag:current.etag||revision(current.data),key:crypto.randomUUID()};widgetIntents.set(intentId,intent);}
   const saved=await request('setMyUiPreferences',{body:intent.body,etag:intent.etag,idempotencyKey:intent.key});
-  widgetIntents.delete(intentId);preferences=saved.data;preferenceEtag=saved.etag||revision(saved.data);preview=structuredClone(saved.data.spec);applyTheme();await renderWidgets();
+  widgetIntents.delete(intentId);preferences=saved.data;preferenceEtag=saved.etag||revision(saved.data);preview=structuredClone(saved.data.spec);applyTheme();await renderWidgets();await resolveDockPins();renderLauncher();
+}
+async function widgetMutation(intentId,mutate){return preferenceMutation(intentId,body=>mutate(body.widgets));}
+const contributionKey=value=>({deployment_id:value.deployment_id,contribution_id:value.spec.id});
+const pinId=key=>`${key.deployment_id}:${key.contribution_id}`;
+const isPinned=value=>preview.dock.pinned.some(key=>pinId(key)===pinId(contributionKey(value)));
+async function togglePin(value) {
+  const key=contributionKey(value),identity=pinId(key),remove=isPinned(value);
+  if(!remove){
+    if(!accountId||!oauth.loggedIn)throw new Error('固定贡献需要当前账户和核心偏好。');
+    const current=await request('getUiContribution',{params:key});
+    const fixed=validateContribution(current.data,{parentOrigin:location.origin,coreOrigin:runtimeConfig.core_origin});
+    if(fixed.spec.kind!=='window'||!sameContribution(value,fixed))throw new Error('固定贡献已改变，请重新发现后明确选择。');
+    dockPinned.set(identity,{fixed});
+  }
+  await preferenceMutation(`${remove?'unpin':'pin'}:${identity}`,body=>{
+    if(remove)body.dock.pinned=body.dock.pinned.filter(item=>pinId(item)!==identity);
+    else if(!body.dock.pinned.some(item=>pinId(item)===identity)){
+      if(body.dock.pinned.length>=64)throw new Error('Dock 最多固定64个贡献。');
+      body.dock.pinned.push(key);
+    }
+  });
+  if(remove)dockPinned.delete(identity);
+}
+function pinControl(value) {
+  const control=button(isPinned(value)?'取消固定到 Dock':'固定到 Dock',async()=>{
+    control.disabled=true;
+    try{await togglePin(value);control.textContent=isPinned(value)?'取消固定到 Dock':'固定到 Dock';control.setAttribute('aria-label',`${isPinned(value)?'取消固定':'固定'} ${value.spec.title}`);}
+    catch(error){toast(error.message);}finally{control.disabled=false;}
+  },{disabled:value.availability!=='ready'&&!isPinned(value),'aria-label':`${isPinned(value)?'取消固定':'固定'} ${value.spec.title}`});
+  return control;
+}
+async function resolveDockPins() {
+  const epoch=sessionEpoch;
+  const wanted=preview.dock.pinned;
+  for(const id of dockPinned.keys())if(!wanted.some(key=>pinId(key)===id))dockPinned.delete(id);
+  const pending=wanted.filter(key=>!dockPinned.has(pinId(key)));
+  for(const key of pending)dockPinned.set(pinId(key),{loading:true});
+  renderDock();
+  let index=0;
+  await Promise.all(Array.from({length:Math.min(4,pending.length)},async()=>{
+    while(index<pending.length){
+      const key=pending[index++];let entry;
+      try{
+        const current=await request('getUiContribution',{params:key});
+        const fixed=validateContribution(current.data,{parentOrigin:location.origin,coreOrigin:runtimeConfig.core_origin});
+        if(fixed.spec.kind!=='window')throw new Error('固定记录不是窗口贡献。');
+        entry={fixed};
+      }catch(error){entry={error};}
+      if(epoch!==sessionEpoch)return;
+      if(preview.dock.pinned.some(item=>pinId(item)===pinId(key)))dockPinned.set(pinId(key),entry);
+      renderDock();
+    }
+  }));
 }
 async function addWidget(value){
   if(!accountId||!oauth.loggedIn){toast('组件需要读取当前账户身份与核心偏好。');return;}
@@ -377,7 +496,52 @@ async function addWidget(value){
   const fixed=validateContribution(current.data,{parentOrigin:location.origin,coreOrigin:runtimeConfig.core_origin});
   if(!sameContribution(value,fixed))throw new Error('贡献或权限已改变，请刷新后重新选择。');
   if(fixed.spec.kind!=='widget')throw new Error('该贡献不是组件。');
-  await widgetMutation(`add:${fixed.deployment_id}:${fixed.spec.id}`,items=>{if(items.length>=32)throw new Error('布局最多32项。');const id=crypto.randomUUID();widgetPinned.set(id,fixed);items.push({instance_id:id,contribution:{deployment_id:fixed.deployment_id,contribution_id:fixed.spec.id},column:0,row:items.length*2,columns:fixed.spec.widget.columns,rows:fixed.spec.widget.rows});});
+  await widgetMutation(`add:${fixed.deployment_id}:${fixed.spec.id}`,items=>{
+    if(items.length>=32)throw new Error('布局最多32项。');
+    const id=crypto.randomUUID(),placement={instance_id:id,contribution:contributionKey(fixed),column:0,row:0,columns:fixed.spec.widget.columns,rows:fixed.spec.widget.rows};
+    while(items.some(other=>overlaps(placement,other))&&placement.row<255)placement.row++;
+    if(items.some(other=>overlaps(placement,other)))throw new Error('当前网格没有可用位置，请先调整组件布局。');
+    widgetPinned.set(id,fixed);items.push(placement);
+  });
+}
+function overlaps(left,right){return left.column<right.column+right.columns&&left.column+left.columns>right.column&&left.row<right.row+right.rows&&left.row+left.rows>right.row;}
+function editWidget(placement,fixed) {
+  openWindow({id:`widget-layout:${placement.instance_id}`,title:`组件布局 · ${fixed.spec.title}`,render:async win=>{
+    const result=await request('getMyUiPreferences',{signal:win.controller.signal});
+    let original=result.data.spec.widgets.find(item=>item.instance_id===placement.instance_id);
+    if(!original||pinId(original.contribution)!==pinId(contributionKey(fixed)))throw new Error('组件已移除或布局来源已改变。');
+    const form=node('form',{class:'settings-grid'}),inputs={},outcome=node('div',{'aria-live':'polite'});
+    for(const[field,label,min,max]of [['column','列坐标',0,255],['row','行坐标',0,255],['columns','宽度格数',fixed.spec.widget.min_columns,fixed.spec.widget.max_columns],['rows','高度格数',fixed.spec.widget.min_rows,fixed.spec.widget.max_rows]]){
+      inputs[field]=node('input',{type:'number',step:1,min,max,value:original[field],'aria-label':label,required:true});
+      form.append(node('label',{},`${label}（${min}–${max}）`,inputs[field]));
+    }
+    const save=button('保存组件布局',()=>{});save.type='submit';
+    form.addEventListener('submit',async event=>{
+      event.preventDefault();const wanted={};
+      for(const[field,input]of Object.entries(inputs)){
+        const value=input.valueAsNumber;
+        if(!Number.isInteger(value)||value<Number(input.min)||value>Number(input.max)){outcome.replaceChildren(state('error','布局超出范围','坐标必须为0–255整数，尺寸必须符合该固定贡献的签名范围。'));return;}
+        wanted[field]=value;
+      }
+      save.disabled=true;outcome.replaceChildren(state('loading','正在保存布局…'));
+      try{
+        const current=await request('getUiContribution',{params:contributionKey(fixed),signal:win.controller.signal});
+        const verified=validateContribution(current.data,{parentOrigin:location.origin,coreOrigin:runtimeConfig.core_origin});
+        if(!sameContribution(fixed,verified))throw new Error('固定贡献或权限已改变，请重新发现后调整布局。');
+        await widgetMutation(`layout:${placement.instance_id}:${JSON.stringify(original)}:${JSON.stringify(wanted)}`,items=>{
+          const item=items.find(item=>item.instance_id===placement.instance_id);
+          if(JSON.stringify(item)!==JSON.stringify(original))throw new Error('组件布局已改变，请关闭此窗口后重新读取。');
+          const updated={...item,...wanted};
+          if(items.some(other=>other.instance_id!==item.instance_id&&overlaps(updated,other)))throw new Error('此位置与其他组件重叠，请选择空闲网格。');
+          Object.assign(item,wanted);
+        });
+        original=structuredClone(preview.widgets.find(item=>item.instance_id===placement.instance_id));
+        outcome.replaceChildren(state('ready','组件布局已保存','位置和尺寸来自核心当前用户偏好。'));
+      }catch(error){outcome.replaceChildren(failure(error));}finally{save.disabled=false;}
+    });
+    form.append(node('p',{class:'muted'},'每格96逻辑像素，间距12；小屏幕按顺序展示，保留此处保存的网格布局。'),save,outcome);
+    win.content.replaceChildren(form);
+  }},{ephemeral:true});
 }
 async function renderWidgets(){
   if(!oauth.loggedIn||!accountId)return;
@@ -403,6 +567,7 @@ async function renderWidgets(){
       if(widgetPinned.has(placement.instance_id)&&!sameContribution(widgetPinned.get(placement.instance_id),fixed))throw new Error('固定贡献发生变化，请明确重新加载。');
       widgetPinned.set(placement.instance_id,fixed);
       card.querySelector('h3').textContent=fixed.spec.title;
+      card.querySelector('.toolbar').append(button('布局',()=>editWidget(preview.widgets.find(item=>item.instance_id===placement.instance_id)||placement,fixed),{'aria-label':`调整组件布局 ${fixed.spec.title}`}));
       await mountContribution(body,fixed,widget);
       const visible=new IntersectionObserver(entries=>{for(const entry of entries)setWidgetVisible(widget,entry.isIntersecting&&document.visibilityState==='visible');});visible.observe(card);
       const cleanup=widget.dispose;widget.dispose=()=>{visible.disconnect();cleanup();};
@@ -429,11 +594,11 @@ async function verifyPureWidget(fixed){
 function setWidgetVisible(widget,visible){const resumed=visible&&!widget.visible;widget.visible=visible;widget.bridge?.setVisible(visible);clearInterval(widget.refreshTimer);if(visible&&widget.refreshSeconds&&widget.bridge){if(resumed)widget.bridge.refresh().catch(()=>{});widget.refreshTimer=setInterval(()=>widget.bridge?.refresh().catch(()=>{}),widget.refreshSeconds*1000);}}
 document.addEventListener('visibilitychange',()=>{for(const win of windows.values())win.bridge?.setVisible(!win.minimized&&!win.element.hidden&&document.visibilityState==='visible');for(const widget of widgetViews.values())setWidgetVisible(widget,document.visibilityState==='visible'&&widget.element.getBoundingClientRect().bottom>0&&widget.element.getBoundingClientRect().top<innerHeight);});
 async function contributions(win) {
-  await listSection(win,{title:'插件页面',operation:'listUiContributions',renderItem:item=>node('article',{class:'card'},node('h3',{},item.spec.title||item.spec.id),node('p',{},`${item.spec.kind} · ${item.availability}`),node('p',{class:'code'},item.contribution_digest),node('p',{},item.reason_codes.join(' · ')),node('div',{class:'toolbar'},button('固定贡献详情',()=>details('已批准 UI 贡献',item)),button(item.spec.kind==='widget'?'添加桌面组件':'打开隔离窗口',async()=>{try{if(item.spec.kind==='widget')await addWidget(item);else await openContribution(item);}catch(error){toast(error.message);}},{disabled:item.availability!=='ready'})))});
+  await listSection(win,{title:'插件页面',operation:'listUiContributions',renderItem:item=>node('article',{class:'card'},node('h3',{},item.spec.title||item.spec.id),node('p',{},`${item.spec.kind} · ${item.availability}`),node('p',{class:'code'},item.contribution_digest),node('p',{},item.reason_codes.join(' · ')),node('div',{class:'toolbar'},button('固定贡献详情',()=>details('已批准 UI 贡献',item)),button(item.spec.kind==='widget'?'添加桌面组件':'打开隔离窗口',async()=>{try{if(item.spec.kind==='widget')await addWidget(item);else await openContribution(item);}catch(error){toast(error.message);}},{disabled:item.availability!=='ready'}),item.spec.kind==='window'?pinControl(item):null))});
 }
 async function settings(win) {
   if (oauth.loggedIn) {
-    try { const result=await request('getMyUiPreferences',{signal:win.controller.signal});preferences=result.data;preferenceEtag=result.etag||revision(result.data);preview=structuredClone(result.data.spec);applyTheme(); }
+    try { const result=await request('getMyUiPreferences',{signal:win.controller.signal});preferences=result.data;preferenceEtag=result.etag||revision(result.data);preview=structuredClone(result.data.spec);applyTheme();await resolveDockPins(); }
     catch(error) { toast(`核心偏好暂不可用：${error.code||error.message}。主题更改将仅为预览。`); }
   }
   const notice = node('p',{class:'theme-preview-note'},preferences?'已读取当前用户核心偏好。':'核心偏好未加载；以下仅为本页预览，未持久保存。');
@@ -493,8 +658,18 @@ function renderDock() {
     dock.append(button('',()=> { const minimized=active.find(win=>win.minimized||win.element.hidden);if(minimized)focus(minimized);else openWindow(app); },{'aria-label':`打开${app.title}`,'data-app-id':app.id,'data-active':String(active.length>0)}));
     dock.lastChild.append(node('span',{class:'app-icon','aria-hidden':true},app.icon),node('span',{},app.title));
   }
+  for(const key of preview.dock.pinned){
+    const entry=dockPinned.get(pinId(key)),fixed=entry?.fixed,title=fixed?.spec.title||key.contribution_id;
+    const group=node('div',{class:'dock-pin'});
+    const active=[...windows.values()].some(win=>win.app.id===`plugin:${key.deployment_id}:${key.contribution_id}`);
+    group.append(button(`▧ ${title}`,async()=>{
+      try{await openContribution(fixed);}catch(error){dockPinned.set(pinId(key),{fixed,error});renderDock();toast(error.message);}
+    },{'aria-label':`打开固定贡献 ${title}`,disabled:!fixed||Boolean(entry.error),'data-active':String(active),title:entry?.error?'贡献不可用；取消固定后重新发现。':`固定部署 ${key.deployment_id}`}));
+    group.append(button('×',async()=>{try{await togglePin({deployment_id:key.deployment_id,spec:{id:key.contribution_id,title}});}catch(error){toast(error.message);}},{'aria-label':`取消固定 ${title}`,class:'dock-unpin'}));
+    dock.append(group);
+  }
   for (const win of windows.values()) if(win.minimized) dock.append(button(`↥ ${win.app.title}`,()=>focus(win),{'aria-label':`恢复${win.app.title}`}));
-  dock.append(button('应用',()=>{renderLauncher();$('#launcher').showModal();},{'aria-label':'打开应用启动器'}));
+  dock.append(button('应用',openLauncher,{'aria-label':'打开应用启动器'}));
 }
 function renderLauncher() {
   const search=$('#app-search').value.trim().toLowerCase();
@@ -504,8 +679,39 @@ function renderLauncher() {
     entry.append(node('span',{class:'app-icon','aria-hidden':true},matching.icon),node('span',{},matching.title));
   }
   for(const[ index,win]of[...windows.values()].entries())if(win.app.title.toLowerCase().includes(search))$('#app-grid').append(button(`↥ ${win.app.title}`,()=>{$('#launcher').close();focus(win);},{'aria-label':`聚焦窗口${index+1} ${win.app.title}`}));
+  if(!oauth.loggedIn)return;
+  const found=launcherItems.filter(item=>`${item.spec.title} ${item.spec.id} ${item.plugin_id}`.toLowerCase().includes(search));
+  for(const item of found){
+    const launch=button(item.spec.kind==='widget'?'添加桌面组件':'打开隔离窗口',async()=>{
+      launch.disabled=true;
+      try{if(item.spec.kind==='widget')await addWidget(item);else await openContribution(item);$('#launcher').close();}
+      catch(error){toast(error.message);}finally{launch.disabled=item.availability!=='ready';}
+    },{disabled:item.availability!=='ready','aria-label':`启动贡献 ${item.spec.title}`});
+    $('#app-grid').append(node('article',{class:'launcher-contribution card'},node('h3',{},item.spec.title),node('p',{},`${item.spec.kind} · ${item.availability}`),node('p',{class:'code'},`${item.plugin_id} · ${item.deployment_id}`),node('p',{},item.reason_codes.join(' · ')),launch,item.spec.kind==='window'?pinControl(item):null));
+  }
+  const status=node('div',{class:'launcher-status'});
+  if(launcherLoading)status.append(state('loading','正在发现获准贡献…'));
+  else if(launcherError)status.append(failure(launcherError),button('重新发现贡献',()=>loadLauncher(true)));
+  else if(!found.length)status.append(state('empty','已加载贡献中没有匹配项','搜索只包含当前授权可见的贡献；可继续分页或重新发现。'));
+  if(launcherCursor&&!launcherLoading)status.append(button('加载更多贡献',()=>loadLauncher(false)));
+  $('#app-grid').append(status);
 }
-$('#launcher-toggle').addEventListener('click',()=>{renderLauncher();$('#launcher').showModal();});
+async function loadLauncher(reset) {
+  if(!oauth.loggedIn)return;
+  if(launcherLoading&&!reset)return;
+  const epoch=reset?++launcherEpoch:launcherEpoch;
+  if(reset){launcherItems=[];launcherCursor=null;}
+  launcherLoading=true;launcherError=null;renderLauncher();
+  try{
+    const result=await request('listUiContributions',{query:{limit:50,...(!reset&&launcherCursor?{cursor:launcherCursor}:{})}});
+    if(epoch!==launcherEpoch)return;
+    for(const item of rows(result.data))if(!launcherItems.some(existing=>pinId(contributionKey(existing))===pinId(contributionKey(item))))launcherItems.push(item);
+    launcherCursor=result.data.next_cursor||null;
+  }catch(error){if(epoch===launcherEpoch)launcherError=error;}
+  finally{if(epoch===launcherEpoch){launcherLoading=false;renderLauncher();}}
+}
+function openLauncher(){renderLauncher();$('#launcher').showModal();loadLauncher(true);}
+$('#launcher-toggle').addEventListener('click',openLauncher);
 $('#launcher-close').addEventListener('click',()=>$('#launcher').close());
 $('#app-search').addEventListener('input',renderLauncher);
 $('#theme-toggle').addEventListener('click',()=>openWindow(apps.find(app=>app.id==='settings')));
@@ -533,9 +739,9 @@ async function boot() {
     // windows opened while preferences load already save their own layout.
     let restored=[];
     try {const stored=key?JSON.parse(localStorage.getItem(key)||'[]'):[];if(Array.isArray(stored))restored=stored.slice(0,runtimeConfig.max_open_windows||16);}catch{/* Invalid optional local layout is discarded. */}
-    try {const result=await request('getMyUiPreferences');preferences=result.data;preferenceEtag=result.etag||revision(result.data);preview=structuredClone(result.data.spec);applyTheme();await renderWidgets();}catch{ /* Settings reports the unavailable dependency. */ }
+    try {const result=await request('getMyUiPreferences');preferences=result.data;preferenceEtag=result.etag||revision(result.data);preview=structuredClone(result.data.spec);applyTheme();await renderWidgets();await resolveDockPins();}catch{ /* Settings reports the unavailable dependency. */ }
     if(key&&key===layoutKey()&&preview.restore_windows&&windows.size===0) {
-      try {for(const item of restored){const app=apps.find(candidate=>candidate.id===item.app);if(app&&item.rect&&['x','y','width','height'].every(key=>Number.isFinite(item.rect[key])))openWindow(app,item);}}catch{/* Invalid optional local layout is discarded. */}
+      try {for(const item of restored){if(!item?.rect||!['x','y','width','height'].every(key=>Number.isFinite(item.rect[key])))continue;if(item.app==='contribution')restoreContribution(item);else{const app=apps.find(candidate=>candidate.id===item.app);if(app)openWindow(app,item);}}}catch{/* Invalid optional local layout is discarded. */}
     }
   }catch(error){clearPrivateViews();toast(`登录未完成：${error.code||error.message}`);}
 }

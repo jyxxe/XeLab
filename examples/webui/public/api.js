@@ -37,6 +37,8 @@ export const OPERATIONS = Object.freeze({
   listSessions: operation('GET', '/sessions', page),
   listAccounts: operation('GET', '/accounts', { ...page, parent_id: 'uuid' }),
   getAccount: operation('GET', '/accounts/{account_id}'),
+  listApiKeys: operation('GET', '/accounts/{account_id}/api-keys', page),
+  getApiKey: operation('GET', '/api-keys/{credential_id}'),
   updateAccount: operation('PATCH', '/accounts/{account_id}', {}, true, true),
   createChildAccount: operation('POST', '/accounts/{account_id}/children', {}, true),
   getEffectivePermissions: operation('GET', '/accounts/{account_id}/effective-permissions'),

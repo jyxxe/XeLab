@@ -15,6 +15,7 @@ use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     fs,
     io::{Read, Seek, SeekFrom, Write},
     net::{SocketAddr, TcpListener},
@@ -481,6 +482,289 @@ async fn instance_cgroup_limits(app: &App, deployment: &str, approved: &Value) -
     json!({"cpu_quota_us":cpu[0],"cpu_period_us":cpu[1],"memory_bytes":memory,"pids":pids})
 }
 
+// Diagnostic identities stay in memory. Evidence contains fixed roles, enums
+// and numbers only, and is captured before any shutdown or runtime cleanup.
+struct DiagnosticTarget {
+    role: &'static str,
+    deployment: Uuid,
+    instance: Option<Uuid>,
+}
+
+fn diagnostic_enum(value: &str, allowed: &[&'static str]) -> &'static str {
+    allowed
+        .iter()
+        .copied()
+        .find(|item| *item == value)
+        .unwrap_or("other")
+}
+
+fn diagnostic_effect(value: &str) -> &'static str {
+    diagnostic_enum(
+        value,
+        &[
+            "none",
+            "idempotent",
+            "queryable",
+            "non_repeatable",
+            "not_recorded",
+        ],
+    )
+}
+
+fn diagnostic_counters(bytes: &[u8], keys: &[&str]) -> Value {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return json!({"status":"parse_error"});
+    };
+    let mut values = BTreeMap::new();
+    for line in text.lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.len() != 2 {
+            return json!({"status":"parse_error"});
+        }
+        let Ok(value) = fields[1].parse::<u64>() else {
+            return json!({"status":"parse_error"});
+        };
+        if keys.contains(&fields[0]) && values.insert(fields[0], value).is_some() {
+            return json!({"status":"parse_error"});
+        }
+    }
+    let mut result = json!({"status":"ok","counters":{}});
+    for key in keys {
+        result["counters"][*key] = match values.get(key) {
+            Some(value) => json!({"status":"ok","value":value}),
+            None => json!({"status":"missing_key"}),
+        };
+    }
+    result
+}
+
+fn diagnostic_file(path: &Path, keys: &[&str]) -> Value {
+    let read = (|| -> std::io::Result<Vec<u8>> {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)?;
+        let mut bytes = Vec::new();
+        file.take(4097).read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })();
+    match read {
+        Ok(bytes) if bytes.len() > 4096 => json!({"status":"oversized"}),
+        Ok(bytes) if !keys.is_empty() => diagnostic_counters(&bytes, keys),
+        Ok(bytes) => match std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok())
+        {
+            Some(value) => json!({"status":"ok","value":value}),
+            None => json!({"status":"parse_error"}),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({"status":"missing"}),
+        Err(_) => json!({"status":"read_error"}),
+    }
+}
+
+fn diagnostic_cgroup(path: &Path) -> Value {
+    json!({
+        "memory_current":diagnostic_file(&path.join("memory.current"), &[]),
+        "pids_current":diagnostic_file(&path.join("pids.current"), &[]),
+        "memory_events":diagnostic_file(&path.join("memory.events"), &["low","high","max","oom","oom_kill","oom_group_kill"]),
+        "pids_events":diagnostic_file(&path.join("pids.events"), &["max"])
+    })
+}
+
+async fn diagnostic_cgroup_bounded(path: PathBuf) -> Value {
+    match tokio::time::timeout(
+        Duration::from_secs(1),
+        tokio::task::spawn_blocking(move || diagnostic_cgroup(&path)),
+    )
+    .await
+    {
+        Ok(Ok(value)) => value,
+        Ok(Err(_)) => json!({"status":"read_error"}),
+        Err(_) => json!({"status":"timeout"}),
+    }
+}
+
+fn diagnostic_tasks(bytes: &[u8]) -> Result<BTreeMap<Uuid, &'static str>, ()> {
+    let text = std::str::from_utf8(bytes).map_err(|_| ())?;
+    let mut lines = text.lines().filter(|line| !line.trim().is_empty());
+    let header: Vec<_> = lines.next().ok_or(())?.split_whitespace().collect();
+    if header != ["TASK", "PID", "STATUS"] {
+        return Err(());
+    }
+    let mut tasks = BTreeMap::new();
+    for line in lines {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.len() != 3 || fields[1].parse::<u32>().is_err() {
+            return Err(());
+        }
+        let id = fields[0].parse::<Uuid>().map_err(|_| ())?;
+        let status = diagnostic_enum(
+            fields[2],
+            &[
+                "RUNNING", "CREATED", "STOPPED", "PAUSED", "PAUSING", "UNKNOWN",
+            ],
+        );
+        if tasks.insert(id, status).is_some() {
+            return Err(());
+        }
+    }
+    Ok(tasks)
+}
+
+async fn diagnostic_database(
+    app: &App,
+    targets: &mut [DiagnosticTarget],
+    evidence: &mut Value,
+) -> Result<(), ()> {
+    let c = app.db.connect().await.map_err(|_| ())?;
+    // HTTP Calls do not persist a signed side_effect classification. Report
+    // that absence separately from Call state=unknown; never invent a claim.
+    let calls=c.query("SELECT c.state,CASE WHEN c.http_binding IS NOT NULL THEN 'not_recorded' ELSE COALESCE(p.spec->>'side_effect','not_recorded') END AS effect,count(*) AS count FROM calls c LEFT JOIN capability_contracts p ON p.name=c.contract->>'name' AND p.version=c.contract->>'version' AND p.schema_digest=c.contract->>'schema_digest' GROUP BY c.state,effect",&[]).await.map_err(|_| ())?;
+    let mut counts: BTreeMap<(&str, &str), i64> = BTreeMap::new();
+    for row in calls {
+        let state = diagnostic_enum(
+            &row.get::<_, String>("state"),
+            &[
+                "accepted",
+                "running",
+                "succeeded",
+                "failed",
+                "canceled",
+                "unknown",
+            ],
+        );
+        let effect = diagnostic_effect(&row.get::<_, String>("effect"));
+        *counts.entry((state, effect)).or_default() += row.get::<_, i64>("count");
+    }
+    evidence["calls"] = json!(counts
+        .into_iter()
+        .map(|((state, effect), count)| json!({"state":state,"effect":effect,"count":count}))
+        .collect::<Vec<_>>());
+    for target in targets {
+        let deployment = c
+            .query_opt(
+                "SELECT phase,observed_generation FROM deployments WHERE id=$1",
+                &[&target.deployment],
+            )
+            .await
+            .map_err(|_| ())?;
+        let Some(row) = deployment else {
+            evidence["deployments"][target.role] = json!({"status":"missing"});
+            continue;
+        };
+        let phase = diagnostic_enum(
+            &row.get::<_, String>("phase"),
+            &[
+                "disabled",
+                "waiting_resources",
+                "reconciling",
+                "ready",
+                "degraded",
+                "failed",
+                "draining",
+            ],
+        );
+        let mut entry = json!({"status":"ok","phase":phase,"observed_generation":row.get::<_, i64>("observed_generation"),"instance_status":"missing"});
+        // Do not restrict this query to Ready: failed/draining instances are
+        // exactly the evidence needed. Preserve only the latest trusted ID.
+        let latest=c.query_opt("SELECT id,generation,phase,health,restart_count,(SELECT count(*) FROM instances WHERE deployment_id=$1) AS total FROM instances WHERE deployment_id=$1 ORDER BY generation DESC,ordinal LIMIT 1",&[&target.deployment]).await.map_err(|_| ())?;
+        if let Some(row) = latest {
+            target.instance = Some(row.get("id"));
+            entry["instance_status"] = json!("ok");
+            entry["instance_count"] = json!(row.get::<_, i64>("total"));
+            entry["generation"] = json!(row.get::<_, i64>("generation"));
+            entry["restart_count"] = json!(row.get::<_, i32>("restart_count"));
+            entry["instance_phase"] = json!(diagnostic_enum(
+                &row.get::<_, String>("phase"),
+                &["pending", "starting", "ready", "degraded", "draining", "stopped", "failed"]
+            ));
+            entry["health"] = json!(diagnostic_enum(
+                &row.get::<_, String>("health"),
+                &["alive", "unhealthy", "unknown"]
+            ));
+        }
+        evidence["deployments"][target.role] = entry;
+    }
+    Ok(())
+}
+
+async fn diagnostic_snapshot(app: &App, targets: &mut [DiagnosticTarget]) -> Value {
+    let mut evidence = json!({"status":"collecting","database_status":"not_observed","tasks_status":"not_observed","exit_status":"unsupported","calls":null,"deployments":{},"runtime":{},"kernel_ready":app.ready.load(Ordering::SeqCst),"kernel_shutdown":app.shutdown.load(Ordering::SeqCst),"consistency":"best_effort_non_atomic","counter_comparison":"absolute_only_lifetime_not_proven"});
+    let collected=std::panic::AssertUnwindSafe(tokio::time::timeout(Duration::from_secs(8),async {
+        evidence["database_status"]=json!(match tokio::time::timeout(Duration::from_secs(2),diagnostic_database(app,targets,&mut evidence)).await {
+            Ok(Ok(()))=>"ok",Ok(Err(()))=>"read_error",Err(_)=>"timeout"
+        });
+        let tasks=tokio::time::timeout(Duration::from_secs(2),app.runtime.ctr(&["tasks".into(),"list".into()])).await;
+        let tasks=match tasks {
+            Ok(Ok(bytes))=>match diagnostic_tasks(&bytes) {Ok(tasks)=>{evidence["tasks_status"]=json!("ok");Some(tasks)},Err(())=>{evidence["tasks_status"]=json!("parse_error");None}},
+            Ok(Err(_))=>{evidence["tasks_status"]=json!("read_error");None},
+            Err(_)=>{evidence["tasks_status"]=json!("timeout");None}
+        };
+        if let Some(tasks)=tasks.as_ref() {
+            let mut counts=BTreeMap::new();
+            for status in tasks.values() {*counts.entry(*status).or_insert(0u64)+=1;}
+            evidence["namespace_task_status_counts"]=json!(counts);
+        }
+        for target in targets.iter().take(2) {
+            evidence["runtime"][target.role]=match target.instance {
+                Some(id)=>json!({"identity_source":if evidence["database_status"]=="ok" && evidence["deployments"][target.role]["instance_status"]=="ok" {"current_database"} else {"last_observed_database"},"task_status":tasks.as_ref().map(|tasks|tasks.get(&id).copied().unwrap_or("MISSING")).unwrap_or("not_observed"),"cgroup":diagnostic_cgroup_bounded(Path::new("/sys/fs/cgroup/xelab/plugins").join(id.to_string())).await}),
+                None=>json!({"identity_source":"not_observed","task_status":"not_observed","cgroup_status":"not_observed"})
+            };
+        }
+        evidence["plugin_pool"]=diagnostic_cgroup_bounded(PathBuf::from("/sys/fs/cgroup/xelab/plugins")).await;
+    })).catch_unwind().await;
+    evidence["status"] = json!(match collected {
+        Ok(Ok(())) => "complete",
+        Ok(Err(_)) => "timeout",
+        Err(_) => "collector_failed",
+    });
+    evidence
+}
+
+#[test]
+fn diagnostic_parsers_reject_ambiguous_or_missing_evidence() {
+    assert_eq!(diagnostic_effect("not_recorded"), "not_recorded");
+    assert_eq!(diagnostic_effect("untrusted-effect"), "other");
+    assert_eq!(
+        diagnostic_counters(b"oom 0\noom_kill 2\n", &["oom", "oom_kill"])["counters"]["oom_kill"]
+            ["value"],
+        2
+    );
+    assert_eq!(
+        diagnostic_counters(b"oom 0\n", &["oom_kill"])["counters"]["oom_kill"]["status"],
+        "missing_key"
+    );
+    for bytes in [
+        b"oom 1\noom 2\n".as_slice(),
+        b"oom -1\n",
+        b"oom 1 extra\n",
+        b"\xff",
+    ] {
+        assert_eq!(
+            diagnostic_counters(bytes, &["oom"])["status"],
+            "parse_error"
+        );
+    }
+    assert!(diagnostic_tasks(b"TASK PID STATUS\n").unwrap().is_empty());
+    assert!(diagnostic_tasks(b"TASK PID STATUS\ninvalid 1 RUNNING\n").is_err());
+    let row = "00000000-0000-4000-8000-000000000001 1 RUNNING\n";
+    assert!(diagnostic_tasks(format!("TASK PID STATUS\n{row}{row}").as_bytes()).is_err());
+    let tasks = diagnostic_tasks(
+        b"TASK PID STATUS\n00000000-0000-4000-8000-000000000001 1 untrusted-status\n",
+    )
+    .unwrap();
+    assert_eq!(tasks.values().copied().collect::<Vec<_>>(), ["other"]);
+    let root = tempfile::tempdir().unwrap();
+    assert_eq!(
+        diagnostic_file(&root.path().join("missing"), &[])["status"],
+        "missing"
+    );
+    let file = root.path().join("oversized");
+    fs::write(&file, vec![b'1'; 4097]).unwrap();
+    assert_eq!(diagnostic_file(&file, &[])["status"], "oversized");
+}
+
 async fn installed(
     router: &Router,
     host: &str,
@@ -843,6 +1127,7 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
         .await,
     );
     let mut report = json!({"test":"real_core_oci_oauth_webui_iframe","status":"running","production_capacity":"DEFERRED","metadata_budget":"synthetic_component_only_real_cgroups","aws":"DEFERRED","checks":{}});
+    let mut diagnostic_targets = Vec::new();
     let outcome=std::panic::AssertUnwindSafe(async {
         let app=&running.as_ref().unwrap().app;let router=api::router(app.clone());let host=public_host(app);
         let login=status(api(&router,&host,"login",&[],None,json!({"account_id":owner,"password":password}),"owner-login",None).await,200,"login");
@@ -852,7 +1137,9 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
         let (reference_manifest,reference_installation)=installed(&router,&host,&token,"ui-reference","XELAB_TEST_UI_REFERENCE_IMAGE").await;
         let mut web_config=json!({"core_origin":core,"client_id":null,"management_api_major":1,"default_page":"desktop","default_theme":"system","max_open_windows":16,"max_active_widgets":8,"widget_min_refresh_seconds":30,"ui_protocol_major":1});
         let web_deployment=create_deployment(&router,&host,&token,&web_installation,"M3 official WebUI",web_manifest["minimum_resources"].clone(),web_config.clone()).await;
+        diagnostic_targets.push(DiagnosticTarget {role:"official_webui",deployment:web_deployment.parse().unwrap(),instance:None});
         let reference_deployment=create_deployment(&router,&host,&token,&reference_installation,"M3 independent UI reference",reference_manifest["minimum_resources"].clone(),json!({})).await;
+        diagnostic_targets.push(DiagnosticTarget {role:"ui_reference",deployment:reference_deployment.parse().unwrap(),instance:None});
         let ui=format!("https://d-{}.{BASE_DOMAIN}:{}",web_deployment.replace('-',""),address.port());
         let reference_origin=format!("https://d-{}.{BASE_DOMAIN}:{}",reference_deployment.replace('-',""),address.port());
         let effective=status(api(&router,&host,"getEffectivePermissions",&[("account_id",owner.to_string())],Some(&token),Value::Null,"owner-scope",None).await,200,"getEffectivePermissions");
@@ -873,6 +1160,7 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
         let approved_reference=read_deployment(&router,&host,&token,&reference_deployment).await;
         report["cgroup_limits"]=json!({"official_webui":instance_cgroup_limits(app,&web_deployment,&approved_web["spec"]["limits"]).await,"ui_reference":instance_cgroup_limits(app,&reference_deployment,&approved_reference["spec"]["limits"]).await});
         report["checks"]["both_oci_images_enforce_approved_cpu_memory_and_pids_cgroups"]=json!(true);
+        report["diagnostics"]["baseline"]=diagnostic_snapshot(app,&mut diagnostic_targets).await;
         let skill=status(api(&router,&host,"registerSkill",&[],Some(&token),json!({"installation_id":reference_installation["installation_id"],"definition":reference_manifest["skills"][0],"enabled":false}),"register-fixed-skill",None).await,201,"registerSkill");
         let skill_id=skill["id"].as_str().unwrap().to_owned();
         status(api(&router,&host,"setSkillEnabled",&[("skill_id",skill_id.clone())],Some(&token),json!({"enabled":true}),"enable-fixed-skill",skill["revision"].as_i64()).await,200,"setSkillEnabled");
@@ -976,6 +1264,35 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
     }).catch_unwind().await;
     if outcome.is_err() {
         report["status"] = json!("failed");
+        // The overall browser timeout can unwind before its normal safe-report
+        // import. Read only the bounded, structured evidence file, never stderr.
+        report["browser_report_read_status"] = json!("missing_or_read_error");
+        if let Ok(file) = fs::File::open(root.join("browser-safe.json")) {
+            let mut bytes = Vec::new();
+            if file.take(1_048_577).read_to_end(&mut bytes).is_ok() && bytes.len() <= 1_048_576 {
+                if let Ok(safe) = serde_json::from_slice::<Value>(&bytes) {
+                    report["browser"] = safe;
+                    report["browser_report_read_status"] = json!("ok");
+                } else {
+                    report["browser_report_read_status"] = json!("parse_error");
+                }
+            } else {
+                report["browser_report_read_status"] = json!("oversized_or_read_error");
+            }
+        }
+        if let Some(active) = running.as_ref() {
+            report["diagnostics"]["failure_before_shutdown"] =
+                diagnostic_snapshot(&active.app, &mut diagnostic_targets).await;
+        } else {
+            report["diagnostics"]["failure_before_shutdown"] =
+                json!({"status":"kernel_not_running"});
+        }
+        // Cleanup can itself fail. Preserve the original pre-cleanup state first
+        // without leaking task IDs, paths, credentials, bodies or raw errors.
+        eprintln!(
+            "M3_UI_FAILURE_EVIDENCE {}",
+            serde_json::to_string(&report).unwrap()
+        );
     }
     if let Some(active) = running.take() {
         active.shutdown().await;
