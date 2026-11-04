@@ -311,6 +311,18 @@ async fn immutable_registry_rejects_unsigned_changes_and_conflicting_installatio
     assert_eq!(historical.get::<_, Value>(0), f.manifest["skills"][0]);
     assert!(!historical.get::<_, bool>(1));
     assert!(historical.get::<_, bool>(2));
+    let audits = c.query("SELECT action,resource FROM audit_events WHERE (action IN ('registerSkill','setSkillEnabled','archiveSkill') AND outcome='succeeded') OR action='setSkillEnabled' AND outcome='failed'", &[]).await.unwrap();
+    assert!(audits.len() >= 5);
+    for audit in audits {
+        let resource: Value = audit.get("resource");
+        assert_eq!(resource["kind"], "skill");
+        assert_eq!(
+            resource["ids"][0],
+            created.1["id"],
+            "audit must bind the actual Skill: {}",
+            audit.get::<_, String>("action")
+        );
+    }
 }
 
 #[tokio::test]

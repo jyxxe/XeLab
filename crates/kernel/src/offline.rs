@@ -450,8 +450,8 @@ async fn source_preflight(c: &(impl GenericClient + Sync)) -> Result<()> {
     for row in c.query("SELECT volume_id FROM volume_allocations WHERE state<>'deleted' ORDER BY volume_id LIMIT 17", &[]).await? {
         formats::binding(c, row.get("volume_id")).await?;
     }
+    crate::skills::validate_snapshot_bindings(c).await?;
     for name in [
-        "skills",
         "workflows",
         "tasks",
         "schedules",

@@ -428,6 +428,17 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         &manifest,
     )
     .await;
+    let registered_skill = api(
+        &router,
+        "getSkill",
+        &[("skill_id", skill.clone())],
+        Some(token),
+        Value::Null,
+        "read-registered-skill",
+        None,
+    )
+    .await;
+    assert_eq!(registered_skill.0, 200, "{}", registered_skill.1);
     let call_id = called.1["call_id"].as_str().unwrap();
     assert_eq!(
         api(
@@ -1387,6 +1398,55 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     )
     .await
     .unwrap();
+    let recovered_skill=restored_client.query_one("SELECT s.id,s.definition,s.definition_digest,s.installation_id,s.enabled,n.state,p.status FROM skills s JOIN installations n ON n.id=s.installation_id JOIN publishers p ON p.id=n.publisher_id WHERE s.id=$1", &[&skill.parse::<Uuid>().unwrap()]).await.unwrap();
+    assert_eq!(recovered_skill.get::<_, Uuid>("id").to_string(), skill);
+    assert_eq!(
+        recovered_skill.get::<_, Value>("definition"),
+        registered_skill.1["definition"]
+    );
+    assert_eq!(
+        recovered_skill.get::<_, String>("definition_digest"),
+        registered_skill.1["definition_digest"].as_str().unwrap()
+    );
+    assert_eq!(
+        recovered_skill
+            .get::<_, Uuid>("installation_id")
+            .to_string(),
+        registered_skill.1["installation_id"].as_str().unwrap()
+    );
+    assert!(
+        recovered_skill.get::<_, bool>("enabled"),
+        "saved Skill intent is history, not authority"
+    );
+    assert_eq!(
+        recovered_skill.get::<_, String>("status"),
+        "revoked",
+        "restored Skill must not revive publisher trust"
+    );
+    let recovered_auth = Auth::new(vec![42; 32]).unwrap();
+    assert!(
+        recovered_auth
+            .authenticate(
+                &restored_client,
+                token,
+                "127.0.0.1".parse().unwrap(),
+                Uuid::new_v4()
+            )
+            .await
+            .is_err(),
+        "restored Skill cannot revive old credentials"
+    );
+    assert_eq!(
+        restored_client
+            .query_one(
+                "SELECT count(*) FROM deployments WHERE spec->>'enabled'='true'",
+                &[]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
     assert!(
         recovered.check().await.is_err(),
         "physical recovery is still incomplete; metadata import must not open the gate"
@@ -1959,6 +2019,26 @@ async fn ordinary_skill_lifecycle(
     .await;
     assert_eq!(called.0, 200, "{}", called.1);
     contracts::validate("SkillCallResult", &called.1).unwrap();
+    assert_eq!(called.1["call"]["skill_id"], called.1["skill_id"]);
+    assert_eq!(
+        called.1["call"]["skill_definition_digest"],
+        called.1["definition_digest"]
+    );
+    let recorded = api(
+        router,
+        "getCall",
+        &[(
+            "call_id",
+            called.1["call"]["call_id"].as_str().unwrap().to_owned(),
+        )],
+        Some(token),
+        Value::Null,
+        "read-skill-call",
+        None,
+    )
+    .await;
+    assert_eq!(recorded.0, 200, "{}", recorded.1);
+    assert_eq!(recorded.1["result"], called.1["call"]);
     assert_ne!(
         called.1["call"]["call_id"],
         prior_capability_call["call_id"]
