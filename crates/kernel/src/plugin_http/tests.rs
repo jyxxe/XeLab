@@ -170,7 +170,7 @@ fn signed_artifact_loader_preserves_exact_file_and_refuses_symlinks() {
             .unwrap()
             .operations
             .len(),
-        7
+        8
     );
     let path = directory.path().join("xelab/http/openapi.json");
     let original = std::fs::read(&path).unwrap();
@@ -380,7 +380,7 @@ async fn real_reference_server_uses_pinned_mtls_and_sanitized_transport() {
     .unwrap();
     let bytes = fs::read(examples.join("openapi.json")).unwrap();
     let manifest = json!({"plugin_id":"org.xelab.http-echo","routes":[
-        {"path_prefix":"/plugins/org.xelab.http-echo/","methods":["GET","POST","PUT","PATCH","DELETE"],"kind":"http","required_action":"plugin.http.invoke","maximum_body_bytes":8192,"timeout_ms":10000,"http_contract_digest":digest(&bytes)},
+        {"path_prefix":"/plugins/org.xelab.http-echo/","methods":["GET","HEAD","POST","PUT","PATCH","DELETE"],"kind":"http","required_action":"plugin.http.invoke","maximum_body_bytes":8192,"timeout_ms":10000,"http_contract_digest":digest(&bytes)},
         {"path_prefix":"/ui/org.xelab.http-echo/","methods":["GET","HEAD"],"kind":"static","required_action":"plugin.ui.open","maximum_body_bytes":0,"timeout_ms":10000,"authentication":"public"}
     ]});
     let registry = Registry::compile(&manifest, Some(&bytes)).unwrap();
@@ -619,7 +619,7 @@ fn http_stream_and_fixed_method_candidates_keep_distinct_signed_schema_authoriti
             .unwrap();
     let registry = from_signed_artifact(&manifest, directory.path()).unwrap();
     let definitions = manifest["skills"].as_array().unwrap();
-    assert_eq!(definitions.len(), 6);
+    assert_eq!(definitions.len(), 7);
     let stream = registry.bind_skill(&definitions[1]).unwrap();
     assert_eq!(stream.id, "streamMessages");
     assert_eq!(
@@ -635,6 +635,7 @@ fn http_stream_and_fixed_method_candidates_keep_distinct_signed_schema_authoriti
         (3, Method::PUT, 201),
         (4, Method::PATCH, 200),
         (5, Method::DELETE, 204),
+        (6, Method::HEAD, 200),
     ] {
         let operation = registry.bind_skill(&definitions[index]).unwrap();
         assert_eq!(operation.method, method);
@@ -653,6 +654,24 @@ fn http_stream_and_fixed_method_candidates_keep_distinct_signed_schema_authoriti
     let mut altered = manifest.clone();
     altered["skills"][1]["stream_item_schema"] = json!({"type":"integer"});
     assert!(from_signed_artifact(&altered, directory.path()).is_err());
+    let head = registry.bind_skill(&definitions[6]).unwrap();
+    assert!(head
+        .response(StatusCode::OK, &HeaderMap::new(), b"unverifiable body")
+        .is_err());
+    let raw = std::fs::read(directory.path().join("xelab/http/openapi.json")).unwrap();
+    let mut doc: Value = serde_json::from_slice(&raw).unwrap();
+    doc["paths"]["/plugins/org.xelab.http-echo/read"]["head"]["responses"]["200"]["content"] =
+        json!({"application/json":{"schema":{"type":"object"}}});
+    let raw = serde_json::to_vec(&doc).unwrap();
+    let mut head_claim = manifest.clone();
+    head_claim["routes"][0]["http_contract_digest"] = json!(digest(&raw));
+    let error = Registry::compile(&head_claim, Some(&raw))
+        .err()
+        .expect("HEAD cannot promise an absent JSON output");
+    assert_eq!(
+        error.message,
+        "Bodyless HTTP response cannot declare content"
+    );
     let mut altered = definitions[1].clone();
     altered["target"]["http_contract_digest"] = json!(digest(b"different stream"));
     assert!(registry.bind_skill(&altered).is_err());

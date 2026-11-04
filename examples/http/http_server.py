@@ -324,7 +324,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.safe_request():
             return
-        if self.path == READ_PATH and self.command == "GET":
+        if self.path == READ_PATH and self.command in ("GET", "HEAD"):
             self.bodyless_business(200, {"message": "HTTP fixed read"})
             return
         if self.path != STATIC_PATH:
@@ -355,7 +355,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not acquired:
                 self.error(429 if self.server.state.ready() else 503, "UNAVAILABLE")
                 return
-            self.reply(status, b"" if status == 204 else encoded(value))
+            self.reply(status, b"" if status == 204 or self.command == "HEAD" else encoded(value))
 
     def do_PUT(self):
         self.do_POST()

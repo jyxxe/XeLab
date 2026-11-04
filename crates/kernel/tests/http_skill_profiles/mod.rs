@@ -99,6 +99,7 @@ pub(super) async fn fixed_methods_and_stream(
             json!({"message":"OCI PATCH"}),
         ),
         (5, Value::Null, Value::Null),
+        (6, Value::Null, Value::Null),
     ] {
         let skill = register(router, token, manifest, installed, index).await;
         let called = api(
@@ -241,6 +242,10 @@ pub(super) async fn after_restart_and_live_revoke(
         .query_one("SELECT state,result FROM calls WHERE id=$1", &[&call])
         .await
         .unwrap();
-    assert_ne!(row.get::<_, String>("state"), "succeeded");
+    assert_eq!(
+        row.get::<_, String>("state"),
+        "unknown",
+        "A physically fenced non-idempotent HTTP stream must retain its unknown business outcome"
+    );
     assert!(row.get::<_, Option<Value>>("result").is_none());
 }

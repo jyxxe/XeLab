@@ -10,7 +10,7 @@ RouteSpec.kind=http 必须声明 http_contract_digest；镜像内 `/xelab/http/o
 
 平台只注册插件 OpenAPI 明确声明的路径/方法，前缀不是 catch-all 授权。插件第三方业务接口由它自己的契约定义；内核公开接口清单不假定能预先列出未来插件的业务对象。
 
-操作权限沿用平台 OpenAPI 的 `x-permission` 字符串，必须与匹配的签名 RouteSpec.required_action 完全相同；不另增可由调用方覆盖的权限字段。业务动作只允许 `plugin.http.invoke` 或本插件 `plugin_id.` 命名空间内已注册且资源类型为 plugin 的动作，不能借用其他核心管理权限。审批和每次调用仍查询当前权限定义并使用现有 Authorizer。实现 profile 接受字面路径、自包含 JSON Schema、显式成功/错误状态和下述 SSE；路径模板、查询参数、外部 Schema 引用、业务 HEAD 和静态 Range 明确拒绝，不隐式透传。
+操作权限沿用平台 OpenAPI 的 `x-permission` 字符串，必须与匹配的签名 RouteSpec.required_action 完全相同；不另增可由调用方覆盖的权限字段。业务动作只允许 `plugin.http.invoke` 或本插件 `plugin_id.` 命名空间内已注册且资源类型为 plugin 的动作，不能借用其他核心管理权限。审批和每次调用仍查询当前权限定义并使用现有 Authorizer。实现 profile 接受字面路径、自包含 JSON Schema、显式成功/错误状态和下述 SSE；路径模板、查询参数、外部 Schema 引用和静态 Range 明确拒绝，不隐式透传。
 
 static/webui 仅提供获批 HTTP 文件及页面，GET/HEAD 转发受清单前缀和来源规则限制；业务写接口仍须 http 契约。容器内静态文件路径由插件负责，但内核拒绝路径穿越、编码斜杠和头部注入。
 
@@ -32,6 +32,6 @@ WebSocket 不属于本版通用路由协议；HTTP/SSE 已覆盖明确需求。�
 
 声明式 `200 text/event-stream` 的媒体 Schema 描述每个 `data` 的自包含 StreamEvent，`event/id/data` 必须一致，accepted 首帧、sequence 从 1 连续递增、恰好一个终帧。内核逐帧验证签名 Schema、固定 Call/提供者及当前权限，确认 EOF 和持久化成功后才交付 completed；EOF 缺终帧、终帧后继续数据或结构错误均失败。禁止 Last-Event-ID 恢复，沿用[通用背压上限](streaming.md)，心跳不构成业务授权。HTTP Skill 同样可固定到已声明的 SSE 操作，外部响应使用 SkillStreamEvent，后端仍只能产生原 HTTP StreamEvent，不能自报 Skill UUID/摘要。
 
-HTTP Skill 的 identity 映射只使用固定操作的方法、字面路径及 JSON 正文，不将业务输入转换成 URL、查询或请求头。GET 等无正文操作要求 `input=null`，204 结果要求可验证的 null 输出；JSON 操作的所有已声明成功状态须与固定 Skill 输出 Schema 一致，不仅限于 POST/200。流式候选的 OpenAPI 自包含 StreamEvent Schema 还须通过标准 JSON Schema 的按 kind 条件分支明确约束 `item.payload` 和 `completed.payload.output`，分别与签名 Skill 的 item/output Schema 精确一致；通用 JsonValue 信封不充当业务 Schema。注册时比较，执行时同时验证完整签名事件、Skill item/output、固定调用和提供者。完成后的虚拟 ContractRef 由核心构造，插件只证明原 `plugin_id.http`/版本/HTTP 契约摘要。流中断/取消不证明副作用已回滚，Call 保持 unknown 及原提供者围栏；相同流键只允许核查原 Call，不重新发送或拼接。
+HTTP Skill 的 identity 映射只使用固定操作的方法、字面路径及 JSON 正文，不将业务输入转换成 URL、查询或请求头。GET/HEAD 等无正文操作要求 `input=null`，204 和业务 HEAD 结果要求可验证的 null 输出；HEAD 的成功与错误响应均明确不声明 content，只验证实际状态/获准头和无正文，不能假称缺失正文满足 JSON 对象 Schema。JSON 操作的所有已声明成功状态须与固定 Skill 输出 Schema 一致，不仅限于 POST/200。流式候选的 OpenAPI 自包含 StreamEvent Schema 还须通过标准 JSON Schema 的按 kind 条件分支明确约束 `item.payload` 和 `completed.payload.output`，分别与签名 Skill 的 item/output Schema 精确一致；通用 JsonValue 信封不充当业务 Schema。注册时比较，执行时同时验证完整签名事件、Skill item/output、固定调用和提供者。完成后的虚拟 ContractRef 由核心构造，插件只证明原 `plugin_id.http`/版本/HTTP 契约摘要。流中断/取消不证明副作用已回滚，Call 保持 unknown 及原提供者围栏；相同流键只允许核查原 Call，不重新发送或拼接。
 
 所有真实业务转发复用 Broker 的实例共享并发、祖先配额、来源凭证计费和 Call 围栏。静态 GET/HEAD 使用同一物理实例池的轻量请求预留，不伪造公共主体或用户日调用；已确认传输结束或已证明进程停止后才释放。用户断线或请求结果不明关闭上游并保持未知预留至物理围栏，不自动重试。响应 Body 的独立有界容量持续到 Body 被销毁，不随物理 Call 提前回收。

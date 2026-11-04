@@ -85,6 +85,7 @@ async fn signed_http_skill_stream_and_fixed_methods_execute_with_original_author
             json!({"message":"actual PATCH200"}),
         ),
         (5, Value::Null, Value::Null),
+        (6, Value::Null, Value::Null),
     ] {
         let skill = register(&f, index).await;
         let called=management(&f.router,"invokeSkill",&[("skill_id",skill)],&f.token,

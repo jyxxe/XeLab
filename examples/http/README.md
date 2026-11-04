@@ -35,7 +35,7 @@ python3 examples/echo/sign_artifact.py \
 业务请求在 `Initialize` 后接受，在 `Drain` 后拒绝；实例应用额外限制四个同时活动业务请求。该局部限制不代替内核所有入口共享的 Broker 并发与配额。GET/HEAD 静态壳不需要用户凭证，但后端连接仍须内核 mTLS。测试使用临时 CA 和真实回环 HTTPS，覆盖正确内核、其他工作负载、缺证书、委托、正文、路径和停用状态；不使用 AWS。
 
 
-签名参考制品还提供 GET `/read`、PUT/PATCH `/created` 和 DELETE `/discard`，
+签名参考制品还提供 GET/HEAD `/read`、PUT/PATCH `/created` 和 DELETE `/discard`，
 验证固定方法、201 JSON 和 204 无正文结果；每项均有对应不可变 Skill 候选。
 `events` 候选通过公开 `streamSkill` 调用，OpenAPI 完整事件 Schema 与 Skill 的 item/output
 双重校验；插件只能返回原 HTTP Call 身份，核心才构造 Skill 结果信封。

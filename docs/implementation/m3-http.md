@@ -23,8 +23,9 @@ Registry 只注册明确的方法和字面路径，前缀不是业务 catch-all�
 当前 profile 支持 JSON 业务操作、声明式 `200 text/event-stream`、
 以及 static GET/HEAD；HTTP Skill 固定操作的方法与所有成功状态，
 JSON 正文/输出和 SSE 的 item/output Schema 与签名候选及 OpenAPI 精确核对。
-无正文操作使用 null identity 输入，204 返回 null，不能由输入选择 URL 或方法。
-路径模板、查询参数、业务 HEAD、
+无正文操作使用 null identity 输入，204 和声明式 HEAD 返回 null，不能由输入选择 URL 或方法。
+HEAD 的所有响应均须显式无 content，不能以空正文冒充已验证 JSON 输出。
+路径模板、查询参数、
 静态 Range、WebSocket、插件 Cookie 和重定向明确拒绝。
 WebUI、UI Contribution、OAuth 与 UI 桥还没有因此获得准入。
 data_schema_version 非 none 的公开制品门禁继续关闭。

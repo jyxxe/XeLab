@@ -358,7 +358,7 @@ impl Registry {
                                 &definition["output_schema"],
                             )
                         })
-                } else if **status == 204 {
+                } else if **status == 204 || op.method == Method::HEAD {
                     compile_business(&definition["output_schema"])
                         .is_ok_and(|schema| schema.is_valid(&Value::Null))
                 } else {
@@ -402,7 +402,21 @@ fn stream_payload_schema(
                 .as_array()
                 .is_some_and(|values| values.len() == 1 && values[0] == kind)
     }
-    let payload = if selected(&schema["if"], kind) {
+    let condition = &schema["if"];
+    let discriminator_only = condition.as_object().is_some_and(|value| {
+        value
+            .keys()
+            .all(|key| ["properties", "required"].contains(&key.as_str()))
+            && condition["properties"]
+                .as_object()
+                .is_some_and(|properties| properties.len() == 1 && properties.contains_key("kind"))
+            && condition.get("required").is_none_or(|required| {
+                required
+                    .as_array()
+                    .is_some_and(|fields| fields.iter().all(|field| field == "kind"))
+            })
+    });
+    let payload = if discriminator_only && selected(condition, kind) {
         schema
             .get("then")
             .and_then(|value| value.get("properties"))
@@ -502,11 +516,6 @@ impl Operation {
         route: &Route,
         hash: &str,
     ) -> Result<Self> {
-        if method == Method::HEAD {
-            return Err(Error::invalid(
-                "Business HEAD is not implemented by the JSON HTTP profile",
-            ));
-        }
         if value.get("servers").is_some_and(nonempty)
             || value.get("callbacks").is_some_and(nonempty)
             || value.get("security").is_some_and(nonempty)
@@ -571,9 +580,11 @@ impl Operation {
             if (300..400).contains(&status) {
                 return Err(Error::invalid("Business HTTP redirects are not admitted"));
             }
-            let (media_type, schema) = if status == 204 {
+            let (media_type, schema) = if status == 204 || method == Method::HEAD {
                 if response.get("content").is_some_and(nonempty) {
-                    return Err(Error::invalid("204 response cannot carry content"));
+                    return Err(Error::invalid(
+                        "Bodyless HTTP response cannot declare content",
+                    ));
                 }
                 (None, None)
             } else {

@@ -1555,6 +1555,39 @@
             }
           }
         }
+      },
+      "head": {
+        "operationId": "inspectMessage",
+        "x-permission": "plugin.http.invoke",
+        "responses": {
+          "200": {
+            "description": "Bodyless HEAD response 200"
+          },
+          "400": {
+            "description": "Bodyless HEAD response 400"
+          },
+          "403": {
+            "description": "Bodyless HEAD response 403"
+          },
+          "404": {
+            "description": "Bodyless HEAD response 404"
+          },
+          "405": {
+            "description": "Bodyless HEAD response 405"
+          },
+          "413": {
+            "description": "Bodyless HEAD response 413"
+          },
+          "415": {
+            "description": "Bodyless HEAD response 415"
+          },
+          "429": {
+            "description": "Bodyless HEAD response 429"
+          },
+          "503": {
+            "description": "Bodyless HEAD response 503"
+          }
+        }
       }
     },
     "/plugins/org.xelab.http-echo/created": {

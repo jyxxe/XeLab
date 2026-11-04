@@ -30,7 +30,7 @@ def build(root, publisher, platform="linux/amd64", plugin_version="1.0.0", inclu
         "minimum_resources": {"cpu_millis": 100, "memory_bytes": 67108864, "ephemeral_bytes": 1048576, "pids": 64},
         "health": {"startup_timeout_ms": 60000, "interval_ms": 5000, "timeout_ms": 2000, "failure_threshold": 3},
         "routes": [
-            {"path_prefix": "/plugins/" + PLUGIN_ID + "/", "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"], "kind": "http", "required_action": "plugin.http.invoke",
+            {"path_prefix": "/plugins/" + PLUGIN_ID + "/", "methods": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"], "kind": "http", "required_action": "plugin.http.invoke",
              "maximum_body_bytes": 8192, "timeout_ms": 10000, "http_contract_digest": digest, "authentication": "user"},
             {"path_prefix": "/ui/" + PLUGIN_ID + "/", "methods": ["GET", "HEAD"], "kind": "static",
              "required_action": "plugin.http.invoke", "maximum_body_bytes": 0, "timeout_ms": 10000, "authentication": "public"},
@@ -59,7 +59,7 @@ def build(root, publisher, platform="linux/amd64", plugin_version="1.0.0", inclu
         "target": {"kind": "http", "plugin_id": PLUGIN_ID, "http_operation_id": stream_operation["operationId"], "http_contract_digest": digest},
         "mapping": "identity", "maximum_timeout_ms": 10000, "input_blobs": False, "tags": ["http", "stream"],
     })
-    for method, suffix, success in [("get", "read", "200"), ("put", "created", "201"), ("patch", "created", "200"), ("delete", "discard", "204")]:
+    for method, suffix, success in [("get", "read", "200"), ("put", "created", "201"), ("patch", "created", "200"), ("delete", "discard", "204"), ("head", "read", "200")]:
         fixed = contract["paths"]["/plugins/" + PLUGIN_ID + "/" + suffix][method]
         manifest["skills"].append({
             "name": PLUGIN_ID + "." + method, "version": plugin_version,

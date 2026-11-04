@@ -82,7 +82,8 @@ class HTTPTests(unittest.TestCase):
         cases = [("GET", READ_PATH, b"", 200, {"message": "HTTP fixed read"}),
                  ("PUT", CREATED_PATH, b'{"message":"created"}', 201, {"message": "created"}),
                  ("PATCH", CREATED_PATH, b'{"message":"patched"}', 200, {"message": "patched"}),
-                 ("DELETE", DISCARD_PATH, b"", 204, None)]
+                 ("DELETE", DISCARD_PATH, b"", 204, None),
+                 ("HEAD", READ_PATH, b"", 200, None)]
         for method, path, body, expected, value in cases:
             with self.subTest(method=method):
                 status, _, result = self.request(method=method, path=path, body=body)
