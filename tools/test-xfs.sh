@@ -18,14 +18,14 @@ cleanup() {
   # test files; never recurse through a live image or volume mount.
   local target
   local -a service_mounts
-  mapfile -t service_mounts < <(findmnt -rn -o TARGET | awk -v prefix="$work/service/" -v recovery="$work/platform-target/" 'index($0,prefix)==1 || index($0,recovery)==1' | sort -r)
+  mapfile -t service_mounts < <(findmnt -rn -o TARGET | awk -v prefix="$work/service/" -v recovery="$work/platform-target/" -v crash="$work/kernel-crash/" 'index($0,prefix)==1 || index($0,recovery)==1 || index($0,crash)==1' | sort -r)
   for target in "${service_mounts[@]}"; do
     if ! umount "$target"; then
       echo "Cleanup failed: isolated test mount retained at $target" >&2
       exit 1
     fi
   done
-  for name in platform-target/volumes restore-service/volumes service/volumes readonly accounting enforced; do
+  for name in platform-target/volumes restore-service/volumes kernel-crash/volumes service/volumes readonly accounting enforced; do
     if mountpoint -q "$work/$name"; then
       if ! umount "$work/$name"; then
         echo "Cleanup failed: isolated test mount retained at $work/$name" >&2
@@ -33,8 +33,8 @@ cleanup() {
       fi
     fi
   done
-  rm -f -- "$work/enforced.img" "$work/accounting.img" "$work/service.img" "$work/restore.img" "$work/platform.img"
-  rm -rf --one-file-system -- "$work/service" "$work/restore-service" "$work/platform-target"
+  rm -f -- "$work/enforced.img" "$work/accounting.img" "$work/service.img" "$work/restore.img" "$work/platform.img" "$work/kernel-crash.img"
+  rm -rf --one-file-system -- "$work/service" "$work/restore-service" "$work/platform-target" "$work/kernel-crash"
   rmdir -- "$work/enforced" "$work/accounting" "$work/readonly" "$work"
   exit "$rc"
 }
@@ -63,7 +63,26 @@ if [[ $# -ge 3 ]]; then
   mount -o loop,prjquota,nosuid,nodev,noexec "$work/service.img" "$work/service/volumes"
   chmod 700 "$work/service/volumes"
   export XELAB_VOLUME_TEST_ROOT="$work/service"
-  "$volume_binary" --ignored --nocapture
+  "$volume_binary" --ignored --nocapture --skip actual_kernel_process_death_resumes_initializing_checkpoint
+  # Each invocation is a separate process owning its actual host/database lease.
+  # Never place the crash case in the original process's retained host lease.
+  mkdir -m 700 "$work/kernel-crash" "$work/kernel-crash/volumes"
+  truncate -s 512M "$work/kernel-crash.img"
+  mkfs.xfs -q "$work/kernel-crash.img"
+  mount -o loop,prjquota,nosuid,nodev,noexec "$work/kernel-crash.img" "$work/kernel-crash/volumes"
+  chmod 700 "$work/kernel-crash/volumes"
+  export XELAB_VOLUME_TEST_ROOT="$work/kernel-crash"
+  export XELAB_KERNEL_CRASH_RECEIPT="$work/kernel-crash/resume.json"
+  ulimit -c 0
+  set +e
+  XELAB_KERNEL_CRASH_MODE=abort "$volume_binary" --ignored --nocapture --exact actual_kernel_process_death_resumes_initializing_checkpoint
+  crash_status=$?
+  set -e
+  if [[ $crash_status != 134 ]]; then
+    echo "Kernel component must actually die from SIGABRT; got $crash_status" >&2
+    exit 1
+  fi
+  XELAB_KERNEL_CRASH_MODE=resume "$volume_binary" --ignored --nocapture --exact actual_kernel_process_death_resumes_initializing_checkpoint
 fi
 
 if [[ $# == 4 ]]; then

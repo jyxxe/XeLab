@@ -19,7 +19,7 @@ from xelab.v1 import host_pb2 as host
 from xelab.v1 import host_pb2_grpc as host_service
 from xelab.v1 import migration_pb2 as migration
 from xelab.v1 import migration_pb2_grpc as migration_service
-from migration_store import Store
+from migration_store import Store, atomic, read
 
 
 def digest(raw):
@@ -49,6 +49,30 @@ class Echo(lifecycle.PluginLifecycleServicer, capability.CapabilityServiceServic
         require_kernel(context)
         return life.DescribeResponse(manifest_json=self.raw, manifest_digest=digest(self.raw))
 
+    def initialization_probe(self, phase):
+        # Only the explicitly signed crash-test artifact opts into this probe.
+        # Production activation has no scratch mount, so it cannot retain this
+        # private journal. The kernel never consumes it as format/health proof.
+        if "--migration-pause-after-initialize" not in sys.argv:
+            return
+        mounts = [line.split() for line in pathlib.Path("/proc/self/mountinfo").read_text().splitlines()]
+        scratch = next((mount for mount in mounts if mount[4] == str(self.store.scratch)), None)
+        if scratch is None:
+            # The image's empty directory survives detachment; its existence
+            # does not prove the private project is still mounted there.
+            if phase == "initialize_known":
+                return
+            raise ValueError("Initialization probe requires the actual private scratch mount")
+        if "rw" not in scratch[5].split(","):
+            raise ValueError("Initialization probe scratch must be writable")
+        path = self.store.scratch / "initialization-probe.json"
+        events = read(path)[1] if path.exists() else []
+        if not isinstance(events, list) or len(events) >= 16:
+            raise ValueError("Initialization probe exceeded its bound")
+        mount = next(mount for mount in mounts if mount[4] == str(self.store.data))
+        events.append({"phase": phase, "business_read_only": "ro" in mount[5].split(",")})
+        atomic(path, events)
+
     def Initialize(self, request, context):
         require_kernel(context)
         if (request.instance_id != os.environ["XELAB_INSTANCE_ID"]
@@ -60,7 +84,13 @@ class Echo(lifecycle.PluginLifecycleServicer, capability.CapabilityServiceServic
         with self.lock:
             if self.store is not None:
                 try:
+                    fresh = not self.store.path.exists()
                     self.store.initialize()
+                    self.initialization_probe("initialize_fresh" if fresh else "initialize_known")
+                    if fresh and "--migration-pause-after-initialize" in sys.argv:
+                        while context.is_active():
+                            time.sleep(0.05)
+                        context.abort(grpc.StatusCode.UNAVAILABLE, "Crash probe initialization response withheld")
                 except (OSError, ValueError):
                     context.abort(grpc.StatusCode.FAILED_PRECONDITION, "Existing business schema differs; Initialize cannot migrate data")
             self.initialized, self.draining = True, False
@@ -192,6 +222,7 @@ class Echo(lifecycle.PluginLifecycleServicer, capability.CapabilityServiceServic
         with self.lock:
             try:
                 plan_id, plan_digest, value = self.store.plan(key, request.deployment_id, request.source_schema, request.target_schema)
+                self.initialization_probe("plan")
                 return migration.MigrationPlan(plan_id=plan_id, plan_digest=plan_digest, requires_exclusive_write=True,
                                                backward_read_compatible=False, reversible=False,
                                                temporary_bytes_required=value["temporary_bytes_required"])
@@ -217,6 +248,7 @@ class Echo(lifecycle.PluginLifecycleServicer, capability.CapabilityServiceServic
             try:
                 self.store.bind(request.plan_id, key, os.environ["XELAB_DEPLOYMENT_ID"])
                 observed = self.store.verify(request.plan_id, request.volume_fence)
+                self.initialization_probe("verify")
                 return migration.MigrationResult(plan_id=request.plan_id, succeeded=True, observed_schema=observed)
             except (OSError, ValueError, KeyError, TypeError):
                 context.abort(grpc.StatusCode.FAILED_PRECONDITION, "Actual business format does not match the saved plan")
