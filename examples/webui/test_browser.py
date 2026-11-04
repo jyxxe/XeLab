@@ -9,7 +9,7 @@ import pathlib
 import unittest
 from urllib.parse import parse_qs, urlencode, urlparse
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeoutError
 from test_bridge import contribution, FRAME, PLUGIN
 
 PUBLIC = pathlib.Path(__file__).parent / "public"
@@ -270,6 +270,44 @@ class DesktopBrowser(unittest.TestCase):
         for private in (SKILL, DEPLOYMENT, CORE, "first-component-intent", "different-component-intent", "component-token"):
             self.assertNotIn(private, safe)
 
+    def test_actual_aborted_skill_request_is_fatal_with_fixed_network_category(self):
+        # A real Chromium request aborted by this explicit component adapter;
+        # no fake Request/Response object replaces the network event lifecycle.
+        report, observed, bodies = self.skill_body_audit()
+        self.abort_business = True
+        self.open()
+        self.page.route(CORE + f"/api/platform/v1/skills/{SKILL}/calls", lambda route: route.abort("aborted") if route.request.method == "POST" else self.route(route))
+        bodies.expect(1)
+        rejected = self.page.evaluate("""async ({core,skill}) => {
+          try {await fetch(core+'/api/platform/v1/skills/'+skill+'/calls',{
+            method:'POST',headers:{Authorization:'Bearer component-token','Content-Type':'application/json','Idempotency-Key':'aborted-component-intent'},
+            body:JSON.stringify({input:{message:'private component message'}})});return false;}catch{return true;}
+        }""", {"core": CORE, "skill": SKILL})
+        self.assertTrue(rejected)
+        with self.assertRaises(DRIVER.CheckFailed):
+            DRIVER.wait_for_observers(self.page, observed, bodies)
+        self.assertEqual(observed["skill_body_reasons"], {"SelectedRequestFailed": 1})
+        failure = observed["skill_body_failure_stats"][0]
+        self.assertEqual(failure["failure_category"], "net::ERR_ABORTED")
+        self.assertFalse(failure["finished"])
+        self.assertFalse(failure["read"])
+        self.assertFalse(failure["body_verified"])
+        self.assertEqual(report["http"], {"actual_skill_successes": 0, "unique_skill_call_ids": 0, "skill_post_attempts": 1})
+        body = report["body_observation"]
+        self.assertEqual(body["failed_requests"], 1)
+        self.assertEqual(body["unfinished_requests"], 0)
+        self.assertFalse(body["all_requests_finished"])
+        lifecycle = body["request_lifecycle"][0]
+        self.assertEqual(lifecycle["start_ms"], 0)
+        self.assertIsNone(lifecycle["response_ms"])
+        self.assertIsNone(lifecycle["finished_ms"])
+        self.assertIsInstance(lifecycle["failed_ms"], int)
+        self.assertTrue(0 <= lifecycle["failed_ms"] <= 300000)
+        self.assertEqual(DRIVER.selected_failure_category('private unknown error '+CORE), 'OTHER')
+        encoded = json.dumps({"report": report, "observed": observed})
+        for private in (CORE, SKILL, 'private component message', 'aborted-component-intent', 'component-token'):
+            self.assertNotIn(private, encoded)
+
     def test_management_editor_closes_only_after_real_json_body_audit(self):
         report, observed, bodies = self.skill_body_audit()
         self.open()
@@ -288,6 +326,43 @@ class DesktopBrowser(unittest.TestCase):
         self.assertEqual(report["body_observation"]["queued_bodies"], 0)
         self.assertEqual(report["body_observation"]["unfinished_requests"], 0)
         self.assertFalse(observed["observer_failure"], observed["error_counts"])
+
+    def test_bootstrap_dependency_failure_reports_only_safe_stage_and_state(self):
+        # Real routed HTTP responses, with a deliberate module dependency503.
+        # This Core adapter component does not diagnose the real OCI failure.
+        report = {"checks": {}}
+        bootstrap = DRIVER.LoginBootstrapAudit(CORE, SHELL, PLUGIN, report)
+        self.context.on("request", lambda request: bootstrap.request(request, "owner"))
+        self.context.on("response", lambda response: bootstrap.response(response, "owner"))
+        self.context.on("requestfinished", lambda request: bootstrap.terminal(request, "owner", False))
+        self.context.on("requestfailed", lambda request: bootstrap.terminal(request, "owner", True))
+        self.page.route(SHELL + BASE + "runtime-config.js", lambda route: route.fulfill(status=503, content_type="text/javascript", body=""))
+        bootstrap.stage("owner", "root_navigation")
+        self.assertEqual(self.page.goto(SHELL + BASE, wait_until="domcontentloaded").status, 200)
+        bootstrap.snapshot(self.page, "owner", "root")
+        bootstrap.stage("owner", "welcome_login_click")
+        self.page.locator("#welcome-login").click()
+        bootstrap.stage("owner", "account_wait")
+        with self.assertRaises(BrowserTimeoutError) as failed:
+            self.page.locator("#account").wait_for(timeout=100)
+        bootstrap.failure(self.page, "owner", failed.exception)
+        self.assertEqual(report["step"], "owner_account_wait")
+        diagnostic = report["bootstrap"]["owner"]
+        self.assertEqual(diagnostic["error_type"], "TimeoutError")
+        asset = diagnostic["assets"]["runtime-config.js"]
+        self.assertEqual(asset["status_counts"], {"503": 1})
+        self.assertEqual(asset["finished"] + asset["failed"], 1)
+        for snapshot in diagnostic["snapshots"].values():
+            self.assertEqual(snapshot["origin_class"], "ui")
+            self.assertFalse(snapshot["dock_populated"])
+            self.assertFalse(snapshot["clock_nonempty"])
+            self.assertTrue(snapshot["welcome_login_exists"])
+            self.assertTrue(snapshot["welcome_login_visible"])
+            self.assertTrue(snapshot["welcome_login_enabled"])
+            self.assertFalse(snapshot["account_exists"])
+        encoded = json.dumps(report)
+        for private in (CORE, SHELL, PLUGIN, ACCOUNT, "component-token", "Timeout 100ms"):
+            self.assertNotIn(private, encoded)
 
     def test_trusted_login_pkce_and_no_password(self):
         self.open(False)

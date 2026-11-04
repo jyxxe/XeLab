@@ -2,7 +2,7 @@
 
 [实施索引](README.md) · [目标 Issue #38](https://github.com/jyxxe/XeLab/issues/38) · [里程碑](roadmap.md)
 
-状态快照：2026-11-04 18:20 UTC；本页保留该时刻的阶段证据，不自动代表后续分支状态。
+状态快照：2026-11-04 21:23 UTC；本页保留该时刻的阶段证据，不自动代表后续分支状态。
 GitHub 状态会继续变化，最终完成清单以[目标 #38](https://github.com/jyxxe/XeLab/issues/38)持续维护的实际证据为准。
 初始基线为 main
 `dbb35cbc7c2c110c88de7ba16dc2d4569fad3ad2`，内部 Schema 14。
@@ -18,9 +18,9 @@ GitHub 状态会继续变化，最终完成清单以[目标 #38](https://github.
 #43/#44 精确提交 CI 成功；main 自身 [CI 41860893005](https://github.com/jyxxe/XeLab/actions/runs/41860893005) 也已全部成功，包含 242 默认 Rust、真实 OAuth 浏览器 42 checks、OCI/XFS/恢复及严格文档检查。
 已合并的七项 Skill 操作、首个普通纯调用/流 profile、HTTP 基础及 OAuth 控制面不能代替完整目标。
 [Draft #45](https://github.com/jyxxe/XeLab/pull/45) 的独立 WebUI/桥、
-[Draft #46](https://github.com/jyxxe/XeLab/pull/46) 的普通四类副作用/QueryResult 和
+[#46](https://github.com/jyxxe/XeLab/pull/46) 的普通四类副作用/QueryResult 和
 [Draft #47](https://github.com/jyxxe/XeLab/pull/47) 的 HTTP Skill 六方法/SSE 均已有源码，
-最终真实 OCI 门禁及合并未完成；M3 仍未完成。#42 的严格容量诊断与精确 tar 清理保持，
+最终合并及 main 门禁未完成；#46 的历史精确提交两个 job 已完整通过，#45/#47 仍有真实浏览器失败，M3 仍未完成。#42 的严格容量诊断与精确 tar 清理保持，
 其成功不能倒推旧容量失败的根因已被证明。
 
 ## 范围与协作
@@ -91,9 +91,10 @@ GitHub 状态会继续变化，最终完成清单以[目标 #38](https://github.
 |---|---|
 | [#43](https://github.com/jyxxe/XeLab/pull/43) `68522810…` | [41850322061](https://github.com/jyxxe/XeLab/actions/runs/41850322061) 成功；已合并为 `a285c4ba…` |
 | [#44](https://github.com/jyxxe/XeLab/pull/44) `f427b4c5…` | [41851424259](https://github.com/jyxxe/XeLab/actions/runs/41851424259) 成功；已合并为 main `e9ad62b8…` |
-| [Draft #45](https://github.com/jyxxe/XeLab/pull/45) `acf558cc…` | 前一 `257ef1b` 的 [41878371384](https://github.com/jyxxe/XeLab/actions/runs/41878371384) 真实安装/Ready/cgroup、Owner OAuth、Node 与目录 GET200 通过，随后关闭窗口超时；新 head 修复初始布局恢复竞态及实际前景关闭控件，Chromium 桌面14/Node21通过，新 [41885559126](https://github.com/jyxxe/XeLab/actions/runs/41885559126) 在执行，完整 F 尚未通过 |
-| [Draft #46](https://github.com/jyxxe/XeLab/pull/46) `62e020a6…`（本页后仍有修复） | [41879467933](https://github.com/jyxxe/XeLab/actions/runs/41879467933) 普通四类副作用/非纯流/QueryResult 真实 OCI sentinel 通过，随后旧离线快照拒绝已退出写入者，整轮失败；夹具撤销卷审批原会话后才 abort Controller 的竞争正在修正，保持生产 fail-closed，不能以子场景通过替代最终 CI |
-| [Draft #47](https://github.com/jyxxe/XeLab/pull/47) `031d306e…`（本文档更新前） | [41879474976](https://github.com/jyxxe/XeLab/actions/runs/41879474976) 真实 HTTP Skill 六方法/HEAD/SSE 1 PASS/155.62s，普通副作用/旧 OCI 1 PASS/529.62s，XFS/private restore 通过；完整 F 在目录成功后的关闭阶段失败，workspace/docs/protocol 被跳过；合并修复及文档后仍须核对新精确 CI |
+| [Draft #45](https://github.com/jyxxe/XeLab/pull/45) `10988924…` | [41906534772](https://github.com/jyxxe/XeLab/actions/runs/41906534772) focus 成功；full 在第2个实际成功 UI 动作的正文审计失败，只有1个已验证正文/2次POST。旧 CheckFailed/Other 未细分原因，不能放行或推断唯一根因 |
+| [#46](https://github.com/jyxxe/XeLab/pull/46) `4e8a42c2…` | [41906679990](https://github.com/jyxxe/XeLab/actions/runs/41906679990) full/focus 全部成功：各53 browser+11 Core、5 unique/6 POST、隐私flags=false/errors={}；workspace 256 passed/0 failed/12 ignored，11项前置真实组件另行执行，仅AWS未执行。已 ready，依赖 #45，未合并；后续修改仍须新精确CI |
+| [Draft #47](https://github.com/jyxxe/XeLab/pull/47) `6cc1e268…` | [41910926152](https://github.com/jyxxe/XeLab/actions/runs/41910926152) 真实HTTP/ordinary/XFS/恢复通过；focus在WebUI根200后、可信登录前Timeout。full第3次合法UI echo/text为真，但浏览器记录 SelectedRequestFailed，finished=false，故仅2个实际正文/3次POST；身份/重复校验尚未读取，不推断Core泄漏或CDP串正文。后续workspace/docs/protocol未执行，失败继续定位 |
+
 
 目录缺口与实际网络证据分别记录：早期缺少列表实现的503是源码分析，
 当时真实浏览器在带查询 OPTIONS400 停止，尚未发送目录 GET。
@@ -108,7 +109,7 @@ CI DWARF/incremental 产物优化和 90 分钟总作业预算只改变测试构�
 Node 21、WebUI mTLS 9、reference HTTP 7、Chromium 桌面 14/桥 8/reference 4
 项组件测试已执行通过；独立打包 Docker 探针也通过。rootless Docker 的 CgroupDriver=none，不证明实际逐容器资源限制。
 真实签名两镜像、公开安装/Client 引导、Owner/子账户 OAuth、iframe Skill、攻击账本、
-撤权、停止 WebUI 后 CLI 及同进程核心组件重启的 `m3_ui` 测试已接入 CI，尚未执行通过。
+撤权、停止 WebUI 后 CLI 及同进程核心组件重启的 `m3_ui` 测试已接入 CI，并在 #46 上述历史精确提交两个 job 实际通过；当前依赖及后续修改仍须完整验证。
 [实现与复现入口](m3-webui.md)明确组件、真实 OCI 与生产验收的证据边界。
 普通副作用/QueryResult 和 HTTP Skill 六方法/SSE 的定向 PostgreSQL/mTLS 组件及合并源码检查已有本地结果，
 详见 [Skill](m3-skills.md)、[流](m3-skill-streams.md)和[HTTP](m3-http.md)；组件与已通过的真实子门禁均不能替代 #46/#47 最终完整 CI。
