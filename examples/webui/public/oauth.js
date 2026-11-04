@@ -157,12 +157,14 @@ export class OAuthSession extends EventTarget {
   }
 
   #save(data) {
+    const previousAccess = this.#tokens?.access_token;
     this.#tokens = {
       core_origin: this.#config.core_origin, client_id: this.#config.client_id,
       access_token: data.access_token, refresh_token: data.refresh_token ?? null,
       expires_at: Date.now() + data.expires_in * 1000, scope: data.scope,
     };
     this.#storage.setItem(this.#key, JSON.stringify(this.#tokens));
+    if (previousAccess && previousAccess !== data.access_token) this.dispatchEvent(new Event('credentialchange'));
   }
 
   refresh() {

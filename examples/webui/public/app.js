@@ -1,6 +1,7 @@
 import {runtimeConfig} from './runtime-config.js';
 import {ApiClient} from './api.js';
 import {OAuthSession} from './oauth.js';
+import {BridgeHost,validateContribution,sameContribution} from './bridge.js';
 
 const $ = selector => document.querySelector(selector);
 const node = (tag, props = {}, ...children) => {
@@ -16,11 +17,15 @@ const node = (tag, props = {}, ...children) => {
 };
 const button = (text, action, props = {}) => node('button', {type: 'button', onclick: action, ...props}, text);
 const windows = new Map();
+const widgetViews = new Map();
+const widgetIntents = new Map();
+const widgetPinned = new Map();
 let layer = 10;
 let accountId = null;
 let preferences = null;
 let preferenceEtag = null;
 let toastTimer;
+let sessionEpoch=0;
 const oauth = new OAuthSession(runtimeConfig);
 const api = new ApiClient(runtimeConfig, oauth);
 const defaults = () => ({theme: {mode: 'system', reduce_motion: false, reduce_transparency: false}, dock: {position: 'bottom', auto_hide: false, pinned: []}, widgets: [], restore_windows: true});
@@ -57,8 +62,10 @@ function permittedContent(win) {
   return false;
 }
 async function request(operation, options = {}) {
+  const epoch=sessionEpoch;
   try {
     const result = await api.invoke(operation, options);
+    if(epoch!==sessionEpoch)throw new Error('登录来源已经改变；旧请求结果不再显示。');
     $('#connection').textContent = '已连接核心';
     return result;
   } catch (error) {
@@ -77,10 +84,13 @@ function saveLayout() {
   try { localStorage.setItem(key, JSON.stringify(layout)); } catch { /* Storage is optional. */ }
 }
 function clearPrivateViews() {
+  sessionEpoch++;
   const key = layoutKey();
+  accountId = null;
   if (key) localStorage.removeItem(key);
   for (const win of [...windows.values()]) closeWindow(win, false);
-  accountId = null;
+  for (const widget of widgetViews.values()) widget.dispose();
+  widgetViews.clear();widgetIntents.clear();widgetPinned.clear();
   preferences = null;
   preferenceEtag = null;
   preview = defaults();
@@ -89,8 +99,14 @@ function clearPrivateViews() {
   $('#connection').textContent = '未连接';
   $('#welcome').hidden = false;
   $('#login').textContent = '登录';
+  renderLauncher();
 }
 oauth.addEventListener('logout', clearPrivateViews);
+oauth.addEventListener('credentialchange',()=>{
+  for(const win of windows.values())win.bridge?.close('unavailable');
+  for(const widget of widgetViews.values())widget.bridge?.close('unavailable');
+  toast('访问凭证已轮换；旧插件页面通道已关闭，请先核实未完成的原调用，再明确打开。');
+});
 async function login() {
   try { await oauth.startLogin(); } catch (error) { toast(`无法进入可信登录：${error.message}`); }
 }
@@ -112,6 +128,12 @@ function applyTheme() {
   document.documentElement.classList.toggle('reduced-transparency', preview.theme.reduce_transparency);
   $('#dock').dataset.position = preview.dock.position;
   $('#dock').dataset.autoHide = String(preview.dock.auto_hide);
+  for(const win of windows.values())win.bridge?.themeChanged();
+  for(const widget of widgetViews.values())widget.bridge?.themeChanged();
+}
+function bridgeTheme(){
+  const mode=preview.theme.mode==='system'?(mediaDark.matches?'dark':'light'):preview.theme.mode;
+  return{theme_tokens:structuredClone(mode==='custom'?preview.theme.custom_tokens:baseTokens[mode]),reduce_motion:preview.theme.reduce_motion||mediaMotion.matches,reduce_transparency:preview.theme.reduce_transparency};
 }
 mediaDark.addEventListener('change', applyTheme);
 mediaMotion.addEventListener('change', applyTheme);
@@ -122,16 +144,19 @@ function fit(win) {
   if (win.maximized) Object.assign(win.element.style, {left:'6px', top:'6px', width:`${Math.max(300, area.width-12)}px`, height:`${Math.max(240, area.height-12)}px`});
   else {
     const r = win.rect;
-    r.width = Math.max(300, Math.min(r.width, area.width-12));
-    r.height = Math.max(240, Math.min(r.height, area.height-12));
+    const limits=win.contribution?.spec.window;
+    r.width = Math.min(area.width-12, Math.max(limits?.min_width||300, Math.min(r.width,limits?.max_width||4096)));
+    r.height = Math.min(area.height-12, Math.max(limits?.min_height||240, Math.min(r.height,limits?.max_height||2160)));
     r.x = Math.max(6, Math.min(r.x, Math.max(6, area.width-r.width-6)));
     r.y = Math.max(6, Math.min(r.y, Math.max(6, area.height-r.height-6)));
     Object.assign(win.element.style, {left:`${r.x}px`, top:`${r.y}px`, width:`${r.width}px`, height:`${r.height}px`});
   }
+  win.bridge?.viewportChanged();
 }
 function focus(win) {
-  if (matchMedia('(max-width:650px)').matches) for (const other of windows.values()) other.element.hidden = other !== win;
+  if (matchMedia('(max-width:650px)').matches) for (const other of windows.values()) {other.element.hidden = other !== win;other.bridge?.setVisible(other===win&&document.visibilityState==='visible');}
   win.minimized = false;
+  win.bridge?.setVisible(document.visibilityState==='visible');
   win.element.hidden = false;
   if (++layer > 1000) { layer = 10; for (const other of windows.values()) other.element.style.zIndex = String(layer++); }
   for (const other of windows.values()) other.element.dataset.focused = String(other === win);
@@ -153,7 +178,7 @@ function closeWindow(win, persist = true) {
 function pointerMove(win, handle, resize) {
   handle.addEventListener('pointerdown', event => {
     if (event.button !== 0 || (!resize && event.target.closest('button'))) return;
-    if (win.maximized || matchMedia('(max-width:650px)').matches) return;
+    if (win.maximized || matchMedia('(max-width:650px)').matches||(resize&&win.contribution?.spec.window.resizable===false)) return;
     focus(win);
     const start = {x:event.clientX,y:event.clientY,...win.rect};
     const pointerX = event.clientX, pointerY = event.clientY;
@@ -177,12 +202,13 @@ function openWindow(app, options = {}) {
   const content = node('div', {class:'window-content'});
   const element = node('section', {class:'window', role:'dialog', 'aria-labelledby':`title-${id}`, 'data-view-id':id, 'data-app':app.id}, titlebar, content);
   const win = {id, app, content, element, rect:options.rect || {x:40+windows.size*24,y:24+windows.size*20,width:680,height:520}, minimized:false,maximized:Boolean(options.maximized),ephemeral:Boolean(options.ephemeral),controller:null};
-  const minimize = () => { win.minimized = true; element.hidden = true; renderDock(); saveLayout(); };
+  const minimize = () => { win.minimized = true; element.hidden = true; win.bridge?.setVisible(false);renderDock(); saveLayout(); };
   const maximize = () => { win.maximized = !win.maximized; fit(win); saveLayout(); };
   titlebar.append(node('div', {class:'window-controls'}, button('×',()=>closeWindow(win),{'aria-label':`关闭${app.title}`}),button('−',minimize,{'aria-label':`最小化${app.title}`}),button('□',maximize,{'aria-label':`最大化或恢复${app.title}`})),heading);
   titlebar.addEventListener('dblclick', event => { if (!event.target.closest('button')) maximize(); });
   titlebar.addEventListener('keydown', event => {
     if (!event.altKey || !['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)) return;
+    if(event.shiftKey&&win.contribution?.spec.window.resizable===false)return;
     event.preventDefault();
     const horizontal = ['ArrowLeft','ArrowRight'].includes(event.key), delta = ['ArrowLeft','ArrowUp'].includes(event.key) ? -20 : 20;
     const key = event.shiftKey ? (horizontal ? 'width' : 'height') : (horizontal ? 'x' : 'y');
@@ -193,6 +219,7 @@ function openWindow(app, options = {}) {
   const resize = button('', ()=>{}, {class:'window-resize', 'aria-label':`调整${app.title}大小`});
   resize.addEventListener('keydown', event => {
     if (!event.key.startsWith('Arrow')) return;
+    if(win.contribution?.spec.window.resizable===false)return;
     event.preventDefault();
     win.rect[['ArrowLeft','ArrowRight'].includes(event.key) ? 'width' : 'height'] += ['ArrowLeft','ArrowUp'].includes(event.key) ? -20 : 20;
     fit(win); saveLayout();
@@ -208,9 +235,10 @@ function openWindow(app, options = {}) {
   focus(win);
   loadApp(win);
   titlebar.focus();
+  if(options.minimized)minimize();
   return win;
 }
-window.addEventListener('resize',()=> { for (const win of windows.values()) fit(win); });
+window.addEventListener('resize',()=> { for (const win of windows.values()){fit(win);if(!matchMedia('(max-width:650px)').matches&&!win.minimized){win.element.hidden=false;win.bridge?.setVisible(document.visibilityState==='visible');}} });
 
 function toolbar(win, title, ...actions) { return node('div',{class:'toolbar'},node('h2',{},title),...actions,button('刷新',()=>loadApp(win))); }
 async function loadApp(win) {
@@ -303,8 +331,97 @@ async function resources(win) {
 async function clients(win) {
   await listSection(win,{title:'UI 客户端',operation:'listClients',actions:[button('注册公共客户端',()=>editor('注册 UI Client','createClient',{initial:{name:'',plugin_id:'',redirect_uris:[],allowed_origins:[],maximum_rules:[]}})),button('默认界面',async()=> { try { const result=await request('getDefaultUi',{signal:win.controller.signal});editor('设置默认界面','setDefaultUi',{initial:{deployment_id:result.data.deployment_id??null},etag:result.etag||revision(result.data),note:'设为 null 关闭根路径跳转。修改前请保留部署说明中的内核 CLI 恢复命令。'}); }catch(error){toast(error.message);} })],renderItem:item=>node('article',{class:'card'},node('h3',{},item.spec.name),node('p',{},item.status),node('p',{class:'code'},item.client_id),node('p',{},item.spec.allowed_origins.join(', ')),node('div',{class:'toolbar'},button('详情',()=>details('Client 信任范围',item)),button('修改',()=>editor('修改 Client','updateClient',{params:{client_id:item.id},initial:item.spec,etag:revision(item),note:'修改将作废旧授权请求与本Client现有凭证族。禁用Client不能通过修改复活。'})),button('禁用',()=>editor('禁用 Client','disableClient',{params:{client_id:item.id},body:false,etag:revision(item),note:'禁用会撤销本Client凭证族；保留核心 API/CLI 恢复路径。'}))))});
 }
+async function openContribution(value){
+  if(!accountId||!oauth.loggedIn){toast('打开页面需要当前账户的 session.read 权限以固定桥接主体。');return null;}
+  const current=await request('getUiContribution',{params:{deployment_id:value.deployment_id,contribution_id:value.spec.id}});
+  const fixed=validateContribution(current.data,{parentOrigin:location.origin,coreOrigin:runtimeConfig.core_origin});
+  if(!sameContribution(value,fixed))throw new Error('贡献或权限已改变，请刷新后明确打开当前版本。');
+  if(fixed.spec.kind!=='window')throw new Error('该贡献不是窗口。');
+  return openWindow({id:`plugin:${fixed.deployment_id}:${fixed.spec.id}`,title:`${fixed.spec.title} · ${fixed.plugin_id}`,render:async win=>{
+    win.contribution=fixed;
+    win.rect.width=fixed.spec.window.width;win.rect.height=fixed.spec.window.height;fit(win);
+    const resize=win.element.querySelector('.window-resize');resize.hidden=!fixed.spec.window.resizable;
+    await mountContribution(win.content,fixed,win);
+  }},{ephemeral:true});
+}
+async function mountContribution(container,fixed,owner){
+  const frame=node('iframe',{class:'bridge-frame'}),status=node('p',{class:'contribution-note'},'正在核对固定贡献并握手…');
+  container.replaceChildren(node('p',{class:'contribution-note',title:`安装 ${fixed.installation_id}；清单 ${fixed.manifest_digest}`},`固定贡献 ${fixed.contribution_digest.slice(0,23)}…`),status,frame);
+  const bridge=new BridgeHost({iframe:frame,api,contribution:fixed,subjectId:accountId,isCurrent:subject=>oauth.loggedIn&&accountId===subject,coreOrigin:runtimeConfig.core_origin,viewId:owner.id,theme:bridgeTheme,
+    openWindow:async contribution=>(await openContribution(contribution))?.id,
+    onState:(phase,reason)=>{if(phase==='active')status.hidden=true;else if(phase==='closed'){owner.bridge=null;owner.closed=true;clearInterval(owner.refreshTimer);container.replaceChildren(state('unavailable','页面通道已关闭',`${reason} · 请重新发现并明确打开当前版本。`));}},
+  });
+  owner.bridge=bridge;
+  const observer=new ResizeObserver(()=>bridge.viewportChanged());observer.observe(frame);
+  owner.dispose=()=>{observer.disconnect();clearInterval(owner.refreshTimer);bridge.close('close');};
+  await bridge.mount();
+  bridge.setVisible(document.visibilityState==='visible'&&!owner.minimized);
+}
+async function widgetMutation(intentId,mutate){
+  let intent=widgetIntents.get(intentId);
+  if(!intent){const current=await request('getMyUiPreferences');const body=structuredClone(current.data.spec);mutate(body.widgets);intent={body,etag:current.etag||revision(current.data),key:crypto.randomUUID()};widgetIntents.set(intentId,intent);}
+  const saved=await request('setMyUiPreferences',{body:intent.body,etag:intent.etag,idempotencyKey:intent.key});
+  widgetIntents.delete(intentId);preferences=saved.data;preferenceEtag=saved.etag||revision(saved.data);preview=structuredClone(saved.data.spec);applyTheme();await renderWidgets();
+}
+async function addWidget(value){
+  if(!accountId||!oauth.loggedIn){toast('组件需要读取当前账户身份与核心偏好。');return;}
+  const current=await request('getUiContribution',{params:{deployment_id:value.deployment_id,contribution_id:value.spec.id}});
+  const fixed=validateContribution(current.data,{parentOrigin:location.origin,coreOrigin:runtimeConfig.core_origin});
+  if(!sameContribution(value,fixed))throw new Error('贡献或权限已改变，请刷新后重新选择。');
+  if(fixed.spec.kind!=='widget')throw new Error('该贡献不是组件。');
+  await widgetMutation(`add:${fixed.deployment_id}:${fixed.spec.id}`,items=>{if(items.length>=32)throw new Error('布局最多32项。');const id=crypto.randomUUID();widgetPinned.set(id,fixed);items.push({instance_id:id,contribution:{deployment_id:fixed.deployment_id,contribution_id:fixed.spec.id},column:0,row:items.length*2,columns:fixed.spec.widget.columns,rows:fixed.spec.widget.rows});});
+}
+async function renderWidgets(){
+  if(!oauth.loggedIn||!accountId)return;
+  const placements=preview.widgets||[],ids=new Set(placements.map(item=>item.instance_id));
+  for(const[id,widget]of widgetViews)if(!ids.has(id)){widget.dispose();widget.element.remove();widgetViews.delete(id);widgetPinned.delete(id);}
+  for(const placement of placements){
+    const key=JSON.stringify(placement.contribution);let widget=widgetViews.get(placement.instance_id);
+    if(widget&&widget.key!==key){widget.dispose();widget.element.remove();widgetViews.delete(placement.instance_id);widget=null;}
+    if(widget){widget.element.style.gridColumn=`${placement.column+1}/span ${placement.columns}`;widget.element.style.gridRow=`${placement.row+1}/span ${placement.rows}`;continue;}
+    const card=node('article',{class:'card widget-card'}),body=node('div',{class:'widget-content'});
+    const remove=button('移除',async()=>{try{await widgetMutation(`remove:${placement.instance_id}`,items=>{const index=items.findIndex(item=>item.instance_id===placement.instance_id);if(index>=0)items.splice(index,1);});}catch(error){toast(error.message);}});
+    card.append(node('div',{class:'toolbar'},node('h3',{},'桌面组件'),remove),body);card.style.gridColumn=`${placement.column+1}/span ${placement.columns}`;card.style.gridRow=`${placement.row+1}/span ${placement.rows}`;
+    $('#widgets').append(card);
+    widget={id:crypto.randomUUID(),key,element:card,dispose:()=>{},bridge:null,visible:true};widgetViews.set(placement.instance_id,widget);
+    const retry=button('明确重新加载',async()=>{widget.dispose();card.remove();widgetViews.delete(placement.instance_id);widgetPinned.delete(placement.instance_id);await renderWidgets();});
+    card.querySelector('.toolbar').append(retry);
+    if([...widgetViews.values()].filter(item=>item.bridge).length>=(runtimeConfig.max_active_widgets??8)){body.replaceChildren(state('unavailable','等待激活','活动组件已达部署上限；移除其他活动组件后明确重新加载。'));continue;}
+    body.replaceChildren(state('loading','读取获准组件…'));
+    try{
+      const result=await request('getUiContribution',{params:placement.contribution});
+      const fixed=validateContribution(result.data,{parentOrigin:location.origin,coreOrigin:runtimeConfig.core_origin});
+      if(fixed.spec.kind!=='widget')throw new Error('布局引用不是获准组件。');
+      if(widgetPinned.has(placement.instance_id)&&!sameContribution(widgetPinned.get(placement.instance_id),fixed))throw new Error('固定贡献发生变化，请明确重新加载。');
+      widgetPinned.set(placement.instance_id,fixed);
+      card.querySelector('h3').textContent=fixed.spec.title;
+      await mountContribution(body,fixed,widget);
+      const visible=new IntersectionObserver(entries=>{for(const entry of entries)setWidgetVisible(widget,entry.isIntersecting&&document.visibilityState==='visible');});visible.observe(card);
+      const cleanup=widget.dispose;widget.dispose=()=>{visible.disconnect();cleanup();};
+      card.querySelector('.toolbar').append(button('刷新',()=>widget.bridge?.refresh().catch(()=>{})));
+      if((fixed.spec.refresh_interval_seconds??0)>0){
+        try{await verifyPureWidget(fixed);widget.refreshSeconds=Math.max(fixed.spec.refresh_interval_seconds,runtimeConfig.widget_min_refresh_seconds||30);setWidgetVisible(widget,widget.visible);}
+        catch{card.append(node('p',{class:'contribution-note'},'当前来源不足以证明纯只读目标；周期刷新未开启。'));}
+      }
+    }catch(error){body.replaceChildren(failure(error));}
+  }
+}
+async function verifyPureWidget(fixed){
+  const bindings=fixed.bindings.filter(binding=>binding.modes.includes('call'));
+  if(!bindings.length)throw new Error('缺少已批准读取。');
+  const installed=await request('getInstallation',{params:{installation_id:fixed.installation_id}});
+  for(const binding of bindings){
+    const {data:skill}=await request('getSkill',{params:{skill_id:binding.skill_id}});
+    const target=skill.definition.target;
+    if(skill.id!==binding.skill_id||skill.definition_digest!==binding.definition_digest||skill.installation_id!==fixed.installation_id||!skill.enabled||skill.availability!=='ready'||target.kind!=='capability')throw new Error('读取绑定无法固定。');
+    const capability=installed.data.manifest.capabilities.find(item=>item.contract.name===target.contract.name&&item.contract.version===target.contract.version&&item.contract.schema_digest===target.contract.schema_digest);
+    if(capability?.side_effect!=='none')throw new Error('目标不是纯读取。');
+  }
+}
+function setWidgetVisible(widget,visible){widget.visible=visible;widget.bridge?.setVisible(visible);clearInterval(widget.refreshTimer);if(visible&&widget.refreshSeconds&&widget.bridge)widget.refreshTimer=setInterval(()=>widget.bridge?.refresh().catch(()=>{}),widget.refreshSeconds*1000);}
+document.addEventListener('visibilitychange',()=>{for(const win of windows.values())win.bridge?.setVisible(!win.minimized&&!win.element.hidden&&document.visibilityState==='visible');for(const widget of widgetViews.values())setWidgetVisible(widget,document.visibilityState==='visible'&&widget.element.getBoundingClientRect().bottom>0&&widget.element.getBoundingClientRect().top<innerHeight);});
 async function contributions(win) {
-  await listSection(win,{title:'插件页面',operation:'listUiContributions',renderItem:item=>node('article',{class:'card'},node('h3',{},item.spec.title||item.spec.id),node('p',{},`${item.spec.kind} · ${item.availability}`),node('p',{class:'code'},item.contribution_digest),node('p',{},item.reason_codes.join(' · ')),button('固定贡献详情',()=>details('已批准 UI 贡献',item)),state('unavailable','消息桥接入待完成','当前仅发现核心返回的贡献元数据，未创建不受控 iframe。'))});
+  await listSection(win,{title:'插件页面',operation:'listUiContributions',renderItem:item=>node('article',{class:'card'},node('h3',{},item.spec.title||item.spec.id),node('p',{},`${item.spec.kind} · ${item.availability}`),node('p',{class:'code'},item.contribution_digest),node('p',{},item.reason_codes.join(' · ')),node('div',{class:'toolbar'},button('固定贡献详情',()=>details('已批准 UI 贡献',item)),button(item.spec.kind==='widget'?'添加桌面组件':'打开隔离窗口',async()=>{try{if(item.spec.kind==='widget')await addWidget(item);else await openContribution(item);}catch(error){toast(error.message);}},{disabled:item.availability!=='ready'})))});
 }
 async function settings(win) {
   if (oauth.loggedIn) {
@@ -365,11 +482,11 @@ function renderDock() {
   const dock=$('#dock');dock.replaceChildren();
   for (const app of apps.filter(value=>!['clients','contributions','tasks'].includes(value.id))) {
     const active=[...windows.values()].filter(win=>win.app.id===app.id);
-    dock.append(button('',()=> { const minimized=active.find(win=>win.minimized);if(minimized)focus(minimized);else openWindow(app); },{'aria-label':`打开${app.title}`,'data-app-id':app.id,'data-active':String(active.length>0)}));
+    dock.append(button('',()=> { const minimized=active.find(win=>win.minimized||win.element.hidden);if(minimized)focus(minimized);else openWindow(app); },{'aria-label':`打开${app.title}`,'data-app-id':app.id,'data-active':String(active.length>0)}));
     dock.lastChild.append(node('span',{class:'app-icon','aria-hidden':true},app.icon),node('span',{},app.title));
   }
   for (const win of windows.values()) if(win.minimized) dock.append(button(`↥ ${win.app.title}`,()=>focus(win),{'aria-label':`恢复${win.app.title}`}));
-  dock.append(button('应用',()=>$('#launcher').showModal(),{'aria-label':'打开应用启动器'}));
+  dock.append(button('应用',()=>{renderLauncher();$('#launcher').showModal();},{'aria-label':'打开应用启动器'}));
 }
 function renderLauncher() {
   const search=$('#app-search').value.trim().toLowerCase();
@@ -378,8 +495,9 @@ function renderLauncher() {
     const matching=apps.filter(app=>app.title.toLowerCase().includes(search)||app.id.includes(search))[index];
     entry.append(node('span',{class:'app-icon','aria-hidden':true},matching.icon),node('span',{},matching.title));
   }
+  for(const[ index,win]of[...windows.values()].entries())if(win.app.title.toLowerCase().includes(search))$('#app-grid').append(button(`↥ ${win.app.title}`,()=>{$('#launcher').close();focus(win);},{'aria-label':`聚焦窗口${index+1} ${win.app.title}`}));
 }
-$('#launcher-toggle').addEventListener('click',()=>$('#launcher').showModal());
+$('#launcher-toggle').addEventListener('click',()=>{renderLauncher();$('#launcher').showModal();});
 $('#launcher-close').addEventListener('click',()=>$('#launcher').close());
 $('#app-search').addEventListener('input',renderLauncher);
 $('#theme-toggle').addEventListener('click',()=>openWindow(apps.find(app=>app.id==='settings')));
@@ -402,7 +520,7 @@ async function boot() {
       const subjects=[...new Set(rows(sessions.data).filter(item=>item.status==='active').map(item=>item.account_id))];
       if(subjects.length===1) accountId=subjects[0];
     } catch { /* Authorization may intentionally exclude session metadata. */ }
-    try {const result=await request('getMyUiPreferences');preferences=result.data;preferenceEtag=result.etag||revision(result.data);preview=structuredClone(result.data.spec);applyTheme();}catch{ /* Settings reports the unavailable dependency. */ }
+    try {const result=await request('getMyUiPreferences');preferences=result.data;preferenceEtag=result.etag||revision(result.data);preview=structuredClone(result.data.spec);applyTheme();await renderWidgets();}catch{ /* Settings reports the unavailable dependency. */ }
     const key=layoutKey();
     if(key&&preview.restore_windows) {
       try {const restored=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(restored))for(const item of restored.slice(0,runtimeConfig.max_open_windows||16)){const app=apps.find(candidate=>candidate.id===item.app);if(app&&item.rect&&['x','y','width','height'].every(key=>Number.isFinite(item.rect[key])))openWindow(app,item);}}catch{/* Invalid optional local layout is discarded. */}

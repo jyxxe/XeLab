@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""Real cross-origin Chromium frames with explicit core fixtures, not M3 E2E."""
+import copy
+import hashlib
+import json
+import pathlib
+import unittest
+from urllib.parse import urlparse
+from playwright.sync_api import sync_playwright
+
+PUBLIC = pathlib.Path(__file__).parent / "public"
+SHELL, CORE, PLUGIN, ATTACKER = ("https://shell.example.test", "https://core.example.test",
+                                 "https://plugin.example.test", "https://attacker.example.test")
+SUBJECT = "00000000-0000-4000-8000-000000000001"
+DEPLOYMENT = "00000000-0000-4000-8000-000000000002"
+INSTALLATION = "00000000-0000-4000-8000-000000000003"
+SKILL = "00000000-0000-4000-8000-000000000004"
+DIGEST = "sha256:" + "a" * 64
+THEME = {"theme_tokens": {"accent": "#4F7CFF", "desktop": "#E9EEF7", "surface": "#FFFFFF", "text": "#18202C", "muted_text": "#526074", "border": "#CBD5E1", "danger": "#B42318", "radius_px": 12, "blur_px": 16, "panel_opacity": 0.92, "font": "system"}, "reduce_motion": False, "reduce_transparency": False}
+
+
+def contribution(identifier="main", kind="window"):
+    spec = {"id": identifier, "kind": kind, "title": "Independent fixture", "description": "Bridge component fixture", "entry_path": "/index.html", "refresh_interval_seconds": 0,
+            "skill_bindings": [{"alias": "echo", "name": "org.xelab.fixture.echo", "version": "1.0.0", "modes": ["call", "batch"]}]}
+    if kind == "window":
+        spec["window"] = {"width": 640, "height": 400, "min_width": 320, "min_height": 200, "max_width": 1024, "max_height": 800, "resizable": True}
+    else:
+        spec["widget"] = {"columns": 3, "rows": 2, "min_columns": 1, "min_rows": 1, "max_columns": 8, "max_rows": 8}
+    spec_digest = "sha256:" + hashlib.sha256(json.dumps(spec, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return {"deployment_id": DEPLOYMENT, "installation_id": INSTALLATION, "plugin_id": "org.xelab.fixture", "manifest_digest": "sha256:" + "b" * 64, "contribution_digest": spec_digest,
+            "spec": spec, "frame_url": PLUGIN + "/ui/org.xelab.fixture/index.html", "frame_origin": PLUGIN, "availability": "ready", "reason_codes": [],
+            "bindings": [{"alias": "echo", "skill_id": SKILL, "definition_digest": DIGEST, "modes": ["call", "batch"]}]}
+
+
+FRAME = """<!doctype html><meta charset=utf-8><p>Independent test plugin</p><script>
+const metadata=Object.fromEntries(new URLSearchParams(location.hash.slice(1)));
+window.messages=[];window.sequence=0;window.responses=()=>messages.filter(m=>m.type==='response');
+addEventListener('message',e=>{if(e.source!==parent||e.origin!==metadata.parent_origin)return;messages.push(e.data);});
+window.emit=(method,params,id,overrides={})=>parent.postMessage({protocol:metadata.protocol,view_id:metadata.view_id,channel_nonce:metadata.channel_nonce,seq:++sequence,type:'request',request_id:id,method,params,...overrides},metadata.parent_origin);
+window.meta=metadata;
+window.domBlocked=false;try{parent.document.body}catch{domBlocked=true}
+window.storageBlocked=false;try{parent.sessionStorage.length}catch{storageBlocked=true}
+parent.postMessage({protocol:metadata.protocol,view_id:metadata.view_id,channel_nonce:metadata.channel_nonce,seq:++sequence,type:'ready'},metadata.parent_origin);
+</script>"""
+
+
+class IsolatedBridge(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.playwright = sync_playwright().start()
+        cls.browser = cls.playwright.chromium.launch(executable_path="/usr/bin/chromium", headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.browser.close()
+        cls.playwright.stop()
+
+    def setUp(self):
+        self.context = self.browser.new_context()
+        self.page = self.context.new_page()
+        self.current = contribution()
+        self.calls, self.pending, self.errors = [], [], []
+        self.result_record = None
+        self.deny_result = False
+        self.hold = False
+        self.denied = False
+        self.page.on("pageerror", lambda error: self.errors.append(str(error)))
+        self.page.route("**/*", self.route)
+
+    def tearDown(self):
+        self.assertEqual(self.errors, [])
+        self.context.close()
+
+    def route(self, route):
+        request, url = route.request, urlparse(route.request.url)
+        origin = f"{url.scheme}://{url.netloc}"
+        if origin == SHELL:
+            if url.path.endswith(".js"):
+                file = PUBLIC / pathlib.Path(url.path).name
+                route.fulfill(content_type="text/javascript", body=file.read_bytes())
+            else:
+                route.fulfill(content_type="text/html", body=f"""<!doctype html><div id=frames></div><script type=module>
+import {{BridgeHost}} from '/bridge.js';import {{ApiClient}} from '/api.js';
+window.currentSubject={json.dumps(SUBJECT)};window.states=[];window.opened=[];
+const api=new ApiClient({{core_origin:{json.dumps(CORE)},client_id:'bridge-component'}},{{accessToken:async()=> 'component-token'}});
+window.launch=async(contribution)=>{{let frame=document.createElement('iframe');frame.width=640;frame.height=400;document.querySelector('#frames').append(frame);
+window.bridge=new BridgeHost({{iframe:frame,api,contribution,subjectId:{json.dumps(SUBJECT)},isCurrent:subject=>subject===currentSubject,coreOrigin:{json.dumps(CORE)},theme:()=>({json.dumps(THEME)}),onState:(state,reason)=>states.push([state,reason]),openWindow:async value=>{{opened.push(value);return crypto.randomUUID();}}}});await bridge.mount();return bridge.viewId;}};
+</script>""")
+            return
+        if origin in (PLUGIN, ATTACKER):
+            route.fulfill(content_type="text/html", headers={"content-security-policy": f"default-src 'none'; script-src 'unsafe-inline'; connect-src 'none'; frame-ancestors {SHELL}"}, body=FRAME if origin == PLUGIN else "<!doctype html><p>Wrong-origin frame</p>")
+            return
+        if origin != CORE:
+            route.abort()
+            return
+        headers = {"access-control-allow-origin": SHELL, "access-control-allow-headers": "authorization,content-type,idempotency-key,if-match", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-expose-headers": "etag,x-request-id", "x-request-id": SUBJECT}
+        if request.method == "OPTIONS":
+            route.fulfill(status=204, headers=headers)
+            return
+        self.calls.append({"method": request.method, "path": url.path, "body": request.post_data, "headers": request.all_headers()})
+        if self.denied:
+            route.fulfill(status=403, headers=headers, content_type="application/json", body=json.dumps({"error": {"code": "PERMISSION_DENIED", "message": "fixture authorization revoked", "retryable": False, "violations": [], "retry_after_ms": None, "resource_id": None}}))
+        elif "/ui/contributions/" in url.path:
+            data = copy.deepcopy(self.current)
+            if url.path.endswith("/detail"):
+                data["spec"]["id"] = "detail"
+            route.fulfill(headers=headers, content_type="application/json", body=json.dumps(data))
+        elif url.path == f"/api/platform/v1/skills/{SKILL}/calls" and request.method == "POST":
+            if self.hold:
+                self.pending.append((route, headers, json.loads(request.post_data)))
+            else:
+                self.result(route, headers, json.loads(request.post_data))
+        elif url.path == f"/api/platform/v1/calls/{INSTALLATION}" and request.method == "GET":
+            if self.deny_result:
+                route.fulfill(status=403, headers=headers, content_type="application/json", body=json.dumps({"error": {"code": "PERMISSION_DENIED", "message": "original proof revoked", "retryable": False, "violations": [], "retry_after_ms": None, "resource_id": None}}))
+            else:
+                route.fulfill(headers=headers, content_type="application/json", body=json.dumps({"call_id": INSTALLATION, "state": "succeeded", "result": self.result_record, "error": None}))
+        else:
+            route.fulfill(status=404, headers=headers, content_type="application/json", body='{"error":{"code":"RESOURCE_NOT_FOUND"}}')
+
+    def result(self, route, headers, body):
+        self.result_record = {"call_id": INSTALLATION, "skill_id": SKILL, "skill_definition_digest": DIGEST, "output": body["input"]}
+        route.fulfill(headers=headers, content_type="application/json", body=json.dumps({"skill_id": SKILL, "skill_version": "1.0.0", "definition_digest": DIGEST, "call": self.result_record}))
+
+    def launch(self):
+        self.page.goto(SHELL + "/")
+        self.page.wait_for_function("typeof launch === 'function'")
+        with self.page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith(PLUGIN)) as navigated:
+            self.page.evaluate("value=>launch(value)", self.current)
+        self.page.wait_for_function("states.some(item=>item[0]==='active')")
+        frame = navigated.value
+        frame.wait_for_function("messages.some(message=>message.type==='host.init')")
+        return frame
+
+    def send(self, frame, method="skill.call", params=None, identifier=1, overrides=None):
+        params = params if params is not None else {"binding_alias": "echo", "input": {"message": "iframe"}, "idempotency_key": "stable-intent"}
+        frame.evaluate("args=>emit(args.method,args.params,args.id,args.overrides)", {"method": method, "params": params, "id": identifier, "overrides": overrides or {}})
+
+    def responses(self, frame, count):
+        frame.wait_for_function("count=>responses().length>=count", arg=count)
+        return frame.evaluate("responses()")
+
+    def posts(self):
+        return [call for call in self.calls if call["method"] == "POST"]
+
+    def test_fixed_call_handshake_dom_isolation_and_stable_derived_key(self):
+        frame = self.launch()
+        self.assertTrue(frame.evaluate("domBlocked && storageBlocked"))
+        init = frame.evaluate("messages.find(message=>message.type==='host.init')")
+        self.assertEqual(init["seq"], 1)
+        self.assertEqual(len(init["channel_nonce"]), 64)
+        self.assertNotIn("component-token", json.dumps(init))
+        self.assertEqual(init["params"]["bindings"][0]["skill_id"], SKILL)
+        self.send(frame)
+        response = self.responses(frame, 1)[0]
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["call"]["output"], {"message": "iframe"})
+        post = self.posts()[0]
+        expected = "ui-" + hashlib.sha256(json.dumps({"subject_id": SUBJECT, "installation_id": INSTALLATION, "deployment_id": DEPLOYMENT, "contribution_id": self.current["spec"]["id"], "contribution_digest": self.current["contribution_digest"], "method": "skill.call", "idempotency_key": "stable-intent"}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        self.assertEqual(post["headers"]["idempotency-key"], expected)
+        self.assertEqual(json.loads(post["body"])["idempotency_key"], expected)
+        self.assertEqual(json.loads(post["body"])["provider_deployment_id"], DEPLOYMENT)
+        self.assertEqual(post["path"], f"/api/platform/v1/skills/{SKILL}/calls")
+        self.assertNotIn("cookie", post["headers"])
+        self.assertTrue(frame.evaluate("""async origin=>{try{await fetch(origin+'/api/platform/v1/node');return false}catch{return true}}""", CORE))
+        old_view = frame.evaluate("meta.view_id")
+        self.page.evaluate("bridge.close('close')")
+        frame = self.launch()
+        self.assertNotEqual(frame.evaluate("meta.view_id"), old_view)
+        self.send(frame)
+        self.responses(frame, 1)
+        self.assertEqual(self.posts()[-1]["headers"]["idempotency-key"], expected)
+        self.current["deployment_id"] = "00000000-0000-4000-8000-000000000099"
+        frame = self.launch()
+        self.send(frame)
+        self.responses(frame, 1)
+        self.assertNotEqual(self.posts()[-1]["headers"]["idempotency-key"], expected)
+        self.assertEqual(json.loads(self.posts()[-1]["body"])["provider_deployment_id"], self.current["deployment_id"])
+
+    def test_alias_extra_fields_future_methods_and_same_deployment_window(self):
+        frame = self.launch()
+        self.send(frame, params={"binding_alias": "other", "input": {}, "idempotency_key": "x"})
+        self.assertEqual(self.responses(frame, 1)[0]["error"]["code"], "BINDING_UNAVAILABLE")
+        self.send(frame, params={"binding_alias": "echo", "input": {}, "idempotency_key": "x", "skill_id": SKILL}, identifier=2)
+        self.assertEqual(self.responses(frame, 2)[1]["error"]["code"], "PROTOCOL_ERROR")
+        self.send(frame, params={"binding_alias": "echo", "input": {}, "idempotency_key": "x", "provider_deployment_id": "00000000-0000-4000-8000-000000000099"}, identifier=3)
+        self.assertEqual(self.responses(frame, 3)[2]["error"]["code"], "PROTOCOL_ERROR")
+        self.send(frame, "batch.create", {"binding_alias": "echo", "request": {"run_as": "user"}, "idempotency_key": "x"}, 4)
+        self.assertEqual(self.responses(frame, 4)[3]["error"]["code"], "METHOD_NOT_ALLOWED")
+        self.send(frame, "window.open", {"contribution_id": "detail"}, 5)
+        opened = self.responses(frame, 5)[4]
+        self.assertTrue(opened["ok"])
+        self.assertEqual(self.page.evaluate("opened[0].deployment_id"), DEPLOYMENT)
+        self.send(frame, "window.open", {"contribution_id": "detail", "url": CORE + "/auth/ui/login"}, 6)
+        self.assertEqual(self.responses(frame, 6)[5]["error"]["code"], "PROTOCOL_ERROR")
+        self.assertEqual(self.posts(), [])
+
+    def test_pending_dedup_conflict_sequence_source_and_four_call_cap(self):
+        frame = self.launch()
+        self.hold = True
+        self.send(frame)
+        self.page.wait_for_function("true")
+        self.page.wait_for_timeout(100)
+        self.send(frame)
+        for identifier in (2, 3, 4):
+            self.send(frame, identifier=identifier)
+            self.page.wait_for_timeout(50)
+        self.send(frame, identifier=5)
+        result = self.responses(frame, 1)[0]
+        self.assertEqual(result["error"]["code"], "RATE_LIMITED")
+        self.assertEqual(len(self.pending), 4)
+        for route, headers, body in self.pending:
+            self.result(route, headers, body)
+        self.pending.clear()
+        self.responses(frame, 5)
+        self.assertEqual(len(self.posts()), 4)
+        self.send(frame, identifier=1)
+        self.responses(frame, 6)
+        self.assertEqual(len(self.posts()), 4)
+        self.send(frame, params={"binding_alias": "echo", "input": {"changed": True}, "idempotency_key": "stable-intent"}, identifier=1)
+        self.assertEqual(self.responses(frame, 7)[-1]["error"]["code"], "IDEMPOTENCY_CONFLICT")
+        old_sequence = frame.evaluate("sequence")
+        self.send(frame, identifier=6, overrides={"seq": old_sequence})
+        self.send(frame, identifier=6, overrides={"channel_nonce": "0" * 64})
+        metadata = frame.evaluate("meta")
+        self.page.evaluate("""origin=>{const frame=document.createElement('iframe');frame.id='attacker';frame.src=origin;document.body.append(frame)}""", ATTACKER)
+        attacker = self.page.frame_locator("#attacker")
+        attacker.locator("p").wait_for()
+        wrong = next(candidate for candidate in self.page.frames if candidate.url.startswith(ATTACKER))
+        wrong.evaluate("metadata=>parent.postMessage({protocol:metadata.protocol,view_id:metadata.view_id,channel_nonce:metadata.channel_nonce,seq:999,type:'request',request_id:7,method:'skill.call',params:{binding_alias:'echo',input:{},idempotency_key:'x'}},metadata.parent_origin)", metadata)
+        self.page.wait_for_timeout(150)
+        self.assertEqual(len(frame.evaluate("responses()")), 7)
+        self.assertEqual(len(self.posts()), 4)
+        self.assertFalse(self.page.evaluate("states.some(item=>item[0]==='closed')"))
+        self.hold = False
+        self.send(frame, identifier=6)
+        self.assertTrue(self.responses(frame, 8)[-1]["ok"])
+
+    def test_revocation_upgrade_reload_and_logout_destroy_channels(self):
+        frame = self.launch()
+        self.denied = True
+        self.send(frame)
+        self.page.wait_for_function("states.some(item=>item[0]==='closed')")
+        self.assertEqual(self.page.locator("#frames iframe").count(), 0)
+        self.assertEqual(self.posts(), [])
+
+        self.denied = False
+        frame = self.launch()
+        self.current["manifest_digest"] = "sha256:" + "d" * 64
+        self.send(frame)
+        self.page.wait_for_function("states.some(item=>item[0]==='closed'&&item[1]==='upgrade')")
+        self.assertEqual(self.posts(), [])
+        frame = self.launch()
+        frame.evaluate("location.reload()")
+        self.page.wait_for_function("states.some(item=>item[0]==='closed')")
+        self.assertEqual(self.page.locator("#frames iframe").count(), 0)
+        frame = self.launch()
+        self.page.evaluate("currentSubject='00000000-0000-4000-8000-000000000099'")
+        self.send(frame)
+        self.page.wait_for_function("states.some(item=>item[0]==='closed')")
+        self.assertEqual(self.page.locator("#frames iframe").count(), 0)
+        self.assertEqual(self.posts(), [])
+
+    def test_cached_result_requires_original_call_read_proof_without_reinvoke(self):
+        frame = self.launch()
+        self.send(frame)
+        self.assertTrue(self.responses(frame, 1)[0]["ok"])
+        self.assertEqual(len(self.posts()), 1)
+        self.deny_result = True
+        self.send(frame)
+        self.page.wait_for_function("states.some(item=>item[0]==='closed')")
+        self.assertEqual(len(self.posts()), 1, "a denied cached result never becomes a repeated business POST")
+        self.assertEqual(self.page.locator("#frames iframe").count(), 0)
+
+    def test_per_view_rate_limit_rejects_the_121st_request(self):
+        frame = self.launch()
+        for identifier in range(1, 121):
+            self.send(frame, "batch.get", {"binding_alias": "echo", "batch_id": INSTALLATION}, identifier)
+            self.assertEqual(self.responses(frame, identifier)[-1]["error"]["code"], "METHOD_NOT_ALLOWED")
+        self.send(frame, "batch.get", {"binding_alias": "echo", "batch_id": INSTALLATION}, 121)
+        self.assertEqual(self.responses(frame, 121)[-1]["error"]["code"], "RATE_LIMITED")
+        self.assertEqual(self.posts(), [])
+
+    def test_shared_reference_expansion_and_large_messages_are_bounded(self):
+        frame = self.launch()
+        frame.evaluate("""()=>{let value={leaf:'x'};for(let i=0;i<30;i++)value={a:value,b:value};emit('skill.call',{binding_alias:'echo',input:value,idempotency_key:'dag'},1)}""")
+        self.page.wait_for_function("states.some(item=>item[0]==='closed')", timeout=5000)
+        self.assertEqual(self.page.evaluate("21*2"), 42)
+        self.assertEqual(self.posts(), [])
+        frame = self.launch()
+        self.send(frame, params={"binding_alias": "echo", "input": "x" * 1048576, "idempotency_key": "large"})
+        self.page.wait_for_function("states.some(item=>item[0]==='closed')", timeout=5000)
+        self.assertEqual(self.posts(), [])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

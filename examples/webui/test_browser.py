@@ -8,6 +8,7 @@ import unittest
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from playwright.sync_api import sync_playwright
+from test_bridge import contribution, FRAME, PLUGIN
 
 PUBLIC = pathlib.Path(__file__).parent / "public"
 SHELL = "https://shell.example.test"
@@ -46,6 +47,9 @@ class DesktopBrowser(unittest.TestCase):
         self.calls = []
         self.saved = preferences()
         self.denied = set()
+        self.contributions = {}
+        self.call_result = None
+        self.status_overrides = {}
         self.errors = []
         self.expected_challenge = None
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
@@ -65,11 +69,14 @@ class DesktopBrowser(unittest.TestCase):
             if file == "runtime-config.js":
                 route.fulfill(status=200, content_type="text/javascript", body="export const runtimeConfig=" + json.dumps({"core_origin": CORE, "client_id": "browser-component", "max_open_windows": 16}) + ";")
                 return
-            if file not in {"index.html", "app.js", "styles.css", "api.js", "oauth.js"}:
+            if file not in {"index.html", "app.js", "styles.css", "api.js", "oauth.js", "bridge.js"}:
                 route.fulfill(status=404, body="not found")
                 return
             types = {".html": "text/html", ".css": "text/css", ".js": "text/javascript"}
             route.fulfill(status=200, content_type=types[pathlib.Path(file).suffix], body=(PUBLIC / file).read_bytes())
+            return
+        if f"{url.scheme}://{url.netloc}" == PLUGIN:
+            route.fulfill(status=200, content_type="text/html", headers={"content-security-policy": f"default-src 'none'; script-src 'unsafe-inline'; connect-src 'none'; frame-ancestors {SHELL}"}, body=FRAME)
             return
         if f"{url.scheme}://{url.netloc}" != CORE:
             route.abort()
@@ -98,6 +105,8 @@ class DesktopBrowser(unittest.TestCase):
             else:
                 data = {"access_token": "component-exchanged-token", "token_type": "Bearer", "expires_in": 900,
                         "scope": "client:browser-component"}
+        elif url.path in self.status_overrides:
+            status, data = self.status_overrides[url.path], {"error": {"code": "INVALID_CREDENTIAL", "message": "fixture credential rejected", "retryable": False}}
         elif url.path in self.denied:
             status, data = 403, {"error": {"code": "PERMISSION_DENIED", "message": "fixture denied", "retryable": False}}
         elif url.path.endswith("/sessions"):
@@ -106,8 +115,12 @@ class DesktopBrowser(unittest.TestCase):
             if request.method == "PUT":
                 self.saved["spec"] = json.loads(request.post_data)
                 self.saved["revision"] += 1
-                headers["etag"] = f'"rev-{self.saved["revision"]}"'
+            headers["etag"] = f'"rev-{self.saved["revision"]}"'
             data = self.saved
+        elif url.path == "/api/platform/v1/ui/contributions":
+            data = {"items": list(self.contributions.values()), "next_cursor": None}
+        elif "/ui/contributions/" in url.path and url.path.split("/")[-1] in self.contributions:
+            data = self.contributions[url.path.split("/")[-1]]
         elif url.path.endswith("/skills"):
             data = {"items": [{"id": SKILL, "revision": 1, "enabled": True,
                               "definition_digest": "sha256:" + "a" * 64,
@@ -119,6 +132,9 @@ class DesktopBrowser(unittest.TestCase):
                              "schema_digest": "sha256:" + "b" * 64}, "provider_instance_id": ACCOUNT,
                              "output": json.loads(request.post_data)["input"], "completed_at": NOW,
                              "skill_id": SKILL, "skill_definition_digest": "sha256:" + "a" * 64}}
+            self.call_result = data["call"]
+        elif url.path == f"/api/platform/v1/calls/{DEPLOYMENT}":
+            data = {"call_id": DEPLOYMENT, "state": "succeeded", "result": self.call_result, "error": None}
         elif url.path.endswith("/deployments"):
             data = {"items": [{"id": DEPLOYMENT, "revision": 1, "phase": "disabled", "conditions": [],
                               "spec": {"display_name": "fixture deployment", "enabled": False}}], "next_cursor": None}
@@ -282,6 +298,66 @@ class DesktopBrowser(unittest.TestCase):
         self.assertEqual(self.page.locator(".window").count(), 0)
         self.assertEqual(self.page.locator("#widgets").text_content(), "")
         self.assertEqual(self.page.evaluate("Object.keys(sessionStorage).filter(k=>k.startsWith('xelab.oauth:')).length"), 0)
+
+    def test_actual_desktop_opens_fixed_window_and_widget_bridge(self):
+        for identifier, kind in [("main", "window"), ("summary", "widget")]:
+            value = contribution(identifier, kind)
+            value["bindings"][0]["skill_id"] = SKILL
+            self.contributions[identifier] = value
+        self.open()
+        self.page.get_by_role("button", name="打开应用启动器", exact=True).click()
+        self.page.get_by_role("button", name="启动插件页面", exact=True).click()
+        listing = self.page.locator('.window[data-app="contributions"]')
+        with self.page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith(PLUGIN)) as navigated:
+            listing.get_by_role("button", name="打开隔离窗口", exact=True).click()
+        plugin_window = self.page.locator('.window[data-app^="plugin:"]')
+        plugin_window.locator("iframe").wait_for()
+        frame = navigated.value
+        frame.wait_for_function("messages.some(message=>message.type==='host.init')")
+        frame.evaluate("emit('skill.call',{binding_alias:'echo',input:{message:'actual desktop frame'},idempotency_key:'window-intent'},1)")
+        frame.wait_for_function("()=>responses().some(message=>message.ok===true)")
+        self.assertEqual(frame.evaluate("responses()[0].result.call.output.message"), "actual desktop frame")
+        plugin_window.get_by_role("button", name="最小化Independent fixture · org.xelab.fixture", exact=True).click()
+        frame.wait_for_function("messages.some(message=>message.event==='visibility.changed'&&message.params.visible===false)")
+        self.page.get_by_role("button", name="恢复Independent fixture · org.xelab.fixture", exact=True).click()
+        plugin_window.get_by_role("button", name="关闭Independent fixture · org.xelab.fixture", exact=True).click()
+        self.assertEqual(self.page.locator('.window[data-app^="plugin:"]').count(), 0)
+        with self.page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith(PLUGIN)) as navigated:
+            listing.get_by_role("button", name="添加桌面组件", exact=True).click()
+        self.page.locator("#widgets iframe").wait_for()
+        listing.get_by_role("button", name="关闭插件页面", exact=True).click()
+        widget = navigated.value
+        widget.wait_for_function("messages.some(message=>message.type==='host.init')")
+        widget.evaluate("emit('skill.call',{binding_alias:'echo',input:{message:'actual desktop widget'},idempotency_key:'widget-intent'},1)")
+        widget.wait_for_function("()=>responses().some(message=>message.ok===true)")
+        self.assertEqual(widget.evaluate("responses()[0].result.call.output.message"), "actual desktop widget")
+        self.assertEqual(len(self.saved["spec"]["widgets"]), 1)
+        self.assertEqual(self.saved["spec"]["widgets"][0]["contribution"]["contribution_id"], "summary")
+        self.page.get_by_role("button", name="打开设置", exact=True).click()
+        settings = self.page.locator('.window[data-app="settings"]')
+        count = len([call for call in self.calls if call["method"] == "POST"])
+        settings.get_by_label("主题模式", exact=True).select_option("dark")
+        widget.wait_for_function("messages.some(message=>message.event==='theme.changed')")
+        self.assertEqual(len([call for call in self.calls if call["method"] == "POST"]), count)
+        self.denied.add(f'/api/platform/v1/ui/contributions/{self.contributions["summary"]["deployment_id"]}/summary')
+        widget.evaluate("emit('skill.call',{binding_alias:'echo',input:{message:'revoked'},idempotency_key:'revoked-intent'},2)")
+        self.page.wait_for_function("document.querySelectorAll('#widgets iframe').length===0")
+        self.assertEqual(len([call for call in self.calls if call["method"] == "POST"]), count)
+        self.page.get_by_role("button", name="退出", exact=True).click()
+        self.assertEqual(self.page.locator("#widgets").text_content(), "")
+
+    def test_mutating_401_never_refreshes_or_retries_business_request(self):
+        self.open()
+        self.status_overrides[f"/api/platform/v1/skills/{SKILL}/calls"] = 401
+        skills = self.app("Skill")
+        skills.get_by_role("button", name="调用测试", exact=True).click()
+        editor = self.page.locator(".window").last
+        editor.get_by_label("请求 JSON", exact=True).fill(json.dumps({"input": {"message": "once"}, "idempotency_key": "once"}))
+        editor.get_by_role("button", name="提交", exact=True).click()
+        self.page.get_by_role("button", name="登录", exact=True).wait_for()
+        self.assertEqual(len([call for call in self.calls if call["method"] == "POST" and call["path"].endswith("/calls")]), 1)
+        self.assertEqual(len([call for call in self.calls if call["path"] == "/oauth/token"]), 0)
+        self.assertEqual(self.page.locator(".window").count(), 0)
 
 
 if __name__ == "__main__":

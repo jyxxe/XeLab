@@ -39,6 +39,8 @@ https://desktop.example.org/ui/org.xelab.webui/callback
 
 Allowed origins must include the same exact canonical shell origin. Choose an authorized maximum rule ceiling for that client; registration does not grant the current user those rules. The browser uses authorization code plus PKCE S256 and requests only registered scope handles. No client secret is generated or deployed.
 
+Include `session.read` for the current account so the host can establish a unique subject without a new identity endpoint. Fixed Skill bridge results also require `capability.call.read` for that subject's original Call, as well as `plugin.ui.open`, `skill.invoke` and the actual capability/HTTP target action. Preference persistence needs `ui.preferences.read/update`. These are ceilings: the core still intersects them with each user's actual current authority. An omitted permission produces an unavailable/denied state rather than a service-account fallback. Access-token rotation closes old iframe channels/results; a rejected or unknown mutation is never automatically refreshed and replayed under a new credential.
+
 Set the deployment config to these public values, using the actual public client identifier and trusted core origin:
 
 ```json
