@@ -56,6 +56,48 @@ async fn terminal(router: &Router, token: &str, operation_id: &str, expected: &s
     }
     panic!("upgrade operation did not settle");
 }
+async fn ready_capabilities(
+    c: &tokio_postgres::Client,
+    deployment: Uuid,
+    instance: Uuid,
+    generation: i64,
+    manifest: &Value,
+) {
+    let expected: std::collections::BTreeSet<_> = manifest["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|cap| {
+            (
+                cap["contract"]["name"].as_str().unwrap().to_owned(),
+                cap["contract"]["version"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    let providers = c
+        .query(
+            "SELECT name,version,availability,observed_generation FROM provider_records WHERE instance_id=$1",
+            &[&instance],
+        )
+        .await
+        .unwrap();
+    assert_eq!(providers.len(), expected.len());
+    let mut observed = std::collections::BTreeSet::new();
+    for provider in providers {
+        assert_eq!(provider.get::<_, String>("availability"), "ready");
+        assert_eq!(provider.get::<_, i64>("observed_generation"), generation);
+        observed.insert((
+            provider.get::<_, String>("name"),
+            provider.get::<_, String>("version"),
+        ));
+    }
+    assert_eq!(observed, expected, "every signed capability must be ready");
+    assert_eq!(
+        c.query_one("SELECT count(*) FROM provider_records p JOIN instances i ON i.id=p.instance_id WHERE i.deployment_id=$1 AND i.id<>$2 AND p.availability='ready'",&[&deployment,&instance]).await.unwrap().get::<_,i64>(0),
+        0,
+        "superseded instances must not retain ready capability routes"
+    );
+}
 pub async fn exercise(
     app: &Arc<App>,
     router: &Router,
@@ -150,12 +192,31 @@ pub async fn exercise(
             .get::<_, Uuid>(0),
             installation
         );
-        let rows=c.query("SELECT i.id,i.generation FROM instances i JOIN provider_records p ON p.instance_id=i.id WHERE i.deployment_id=$1 AND i.phase='ready' AND p.availability='ready'",&[&deployment_id]).await.unwrap();
+        let rows = c
+            .query(
+                "SELECT id,generation FROM instances WHERE deployment_id=$1 AND phase='ready'",
+                &[&deployment_id],
+            )
+            .await
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert!(app.runtime.running(rows[0].get("id")).await.unwrap());
-        let manifest: Value =
-            serde_json::from_slice(&fs::read("examples/generated/xelab/plugin.json").unwrap())
-                .unwrap();
+        let manifest: Value = c
+            .query_one(
+                "SELECT manifest FROM installations WHERE id=$1",
+                &[&installation],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        ready_capabilities(
+            &c,
+            deployment_id,
+            rows[0].get("id"),
+            rows[0].get("generation"),
+            &manifest,
+        )
+        .await;
         let input = json!({"contract":manifest["capabilities"][0]["contract"],"input":{"message":key},"provider_deployment_id":deployment,"timeout_ms":30000});
         let called = api(
             router,
@@ -250,6 +311,19 @@ pub async fn exercise(
         .unwrap();
     assert_eq!(restored_state.get::<_, String>(0), "ready");
     assert!(app.runtime.running(restored_instance).await.unwrap());
+    let manifest: Value = c
+        .query_one("SELECT manifest FROM installations WHERE id=$1", &[&source])
+        .await
+        .unwrap()
+        .get(0);
+    ready_capabilities(
+        &c,
+        deployment_id,
+        restored_instance,
+        restored_state.get("generation"),
+        &manifest,
+    )
+    .await;
     supervisor.abort();
     let _ = supervisor.await;
     println!("Upgrade: actual signed v1 -> v2 -> v1, mTLS health, capability routing, idempotent intent, failed candidate stopped/reservation released and original version recovered; stateless recreate only");

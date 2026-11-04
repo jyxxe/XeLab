@@ -307,6 +307,10 @@ async fn tick(app: &App, first: bool, state: &mut ControllerState) -> Result<()>
     Ok(())
 }
 
+// Cancellation is an intent whose physical outcome is still unknown. Keep it
+// stable across process fencing so the Broker can emit canceled(requested).
+const FENCE_EXPIRED_CALLS: &str = "UPDATE calls SET state='unknown',error=CASE WHEN error->>'code'='CANCELED' THEN error ELSE $2 END WHERE provider_instance_id=$1 AND (state IN ('accepted','running') OR (state='unknown' AND EXISTS(SELECT 1 FROM reservations WHERE id=calls.id AND kind='call' AND status<>'released'))) RETURNING id,owner_id";
+
 async fn recover_expired_calls(app: &App) -> Result<()> {
     let mut c = app.db.connect().await?;
     let rows=c.query("SELECT DISTINCT provider_instance_id FROM calls c JOIN reservations r ON r.id=c.id AND r.kind='call' AND r.status<>'released' WHERE (c.state='unknown' OR (c.state IN ('accepted','running') AND deadline_at<now()-interval '1 second')) AND provider_instance_id IS NOT NULL", &[]).await?;
@@ -337,7 +341,7 @@ async fn recover_expired_calls(app: &App) -> Result<()> {
             axum::http::StatusCode::CONFLICT,
         )
         .detail();
-        let calls=tx.query("UPDATE calls SET state='unknown',error=$2 WHERE provider_instance_id=$1 AND (state IN ('accepted','running') OR (state='unknown' AND EXISTS(SELECT 1 FROM reservations WHERE id=calls.id AND kind='call' AND status<>'released'))) RETURNING id,owner_id", &[&instance,&error]).await?;
+        let calls = tx.query(FENCE_EXPIRED_CALLS, &[&instance, &error]).await?;
         for call in calls {
             let id: Uuid = call.get(0);
             let owner: Uuid = call.get(1);
@@ -765,6 +769,100 @@ async fn finish_deployment_operations(
     // A concurrent intent/revision change leaves this operation for a new tick.
     c.execute("UPDATE operations SET state='succeeded',progress_percent=100,result=$2,updated_at=now(),revision=revision+1 WHERE resource_id=$1 AND kind IN ('createDeployment','setDeploymentEnabled') AND state IN ('pending','running') AND EXISTS(SELECT 1 FROM deployments d WHERE d.id=$3 AND (d.spec->>'enabled')::boolean=$4 AND to_jsonb(d)=$5)",&[&id.to_string(),&result,&id,&enabled,&raw]).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn fenced_call_journal_preserves_cancel_intent_and_only_changes_unsettled_instance_work()
+    {
+        let Some(f) = crate::backups::tests::Fixture::new().await else {
+            return;
+        };
+        let mut c = f.app.db.connect().await.unwrap();
+        let tx = c.transaction().await.unwrap();
+        let deployment = tx
+            .query_one("SELECT id,owner_id FROM deployments LIMIT 1", &[])
+            .await
+            .unwrap();
+        let owner: Uuid = deployment.get("owner_id");
+        let instance = Uuid::new_v4();
+        let unrelated = Uuid::new_v4();
+        for (ordinal, id) in [instance, unrelated].into_iter().enumerate() {
+            tx.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,created_at,updated_at) VALUES($1,$2,$3,0,'ready','alive','{}',now(),now())", &[&id,&deployment.get::<_, Uuid>("id"),&((ordinal+1) as i64)]).await.unwrap();
+        }
+        let canceled = Error::new(
+            "CANCELED",
+            "Call cancellation was requested; physical outcome remains unknown",
+            axum::http::StatusCode::CONFLICT,
+        )
+        .detail();
+        let previous = Error::unavailable("prior failure").detail();
+        let mut ids = Vec::new();
+        for (provider, state, error, reservation) in [
+            (instance, "unknown", Some(canceled.clone()), "active"),
+            (instance, "running", None, "active"),
+            (instance, "unknown", Some(previous.clone()), "active"),
+            (instance, "succeeded", None, "released"),
+            (instance, "unknown", Some(previous.clone()), "released"),
+            (unrelated, "running", None, "active"),
+        ] {
+            let id = Uuid::new_v4();
+            tx.execute("INSERT INTO calls(id,owner_id,provider_instance_id,contract,input_digest,state,error,deadline_at,created_at) VALUES($1,$2,$3,'{}',$4,$5,$6,now()+interval '1 minute',now())", &[&id,&owner,&provider,&digest(b"metadata-only recovery"),&state,&error]).await.unwrap();
+            tx.execute("INSERT INTO reservations(id,account_id,kind,status,created_at) VALUES($1,$2,'call',$3,now())", &[&id,&owner,&reservation]).await.unwrap();
+            ids.push(id);
+        }
+        let unknown = Error::new(
+            "OUTCOME_UNKNOWN",
+            "Physical process stopped before result confirmation",
+            axum::http::StatusCode::CONFLICT,
+        )
+        .detail();
+        let changed = tx
+            .query(FENCE_EXPIRED_CALLS, &[&instance, &unknown])
+            .await
+            .unwrap();
+        let changed: std::collections::BTreeSet<Uuid> =
+            changed.iter().map(|row| row.get("id")).collect();
+        assert_eq!(changed, ids[..3].iter().copied().collect());
+        for (index, id) in ids.iter().enumerate() {
+            let row = tx.query_one("SELECT c.state,c.error,r.status FROM calls c JOIN reservations r ON r.id=c.id WHERE c.id=$1", &[&id]).await.unwrap();
+            let error: Option<Value> = row.get("error");
+            match index {
+                0 => {
+                    assert_eq!(row.get::<_, String>("state"), "unknown");
+                    assert_eq!(error, Some(canceled.clone()));
+                }
+                1 | 2 => {
+                    assert_eq!(row.get::<_, String>("state"), "unknown");
+                    assert_eq!(error, Some(unknown.clone()));
+                }
+                3 => {
+                    assert_eq!(row.get::<_, String>("state"), "succeeded");
+                    assert!(error.is_none());
+                }
+                4 => assert_eq!(error, Some(previous.clone())),
+                5 => {
+                    assert_eq!(row.get::<_, String>("state"), "running");
+                    assert!(error.is_none());
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                row.get::<_, String>("status"),
+                if matches!(index, 3 | 4) {
+                    "released"
+                } else {
+                    "active"
+                }
+            );
+        }
+        // Metadata query evidence only. Physical stop, delegation revocation and
+        // slot release remain exercised by the actual OCI cancellation test.
+        tx.rollback().await.unwrap();
+    }
 }
 
 #[cfg(test)]

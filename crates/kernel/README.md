@@ -11,7 +11,7 @@
 | 制品 | 预导入固定 OCI manifest digest、Ed25519 信封、原始清单/契约摘要及实际内容校验、严格 JSON/Schema 校验、OCI 归档及冷内容库导入 | 在线拉取、image index 自动选平台、仓库登录、依赖安装、卸载；公开非 none 格式安装关闭 |
 | 控制器 | 安装/批准/启用/健康/排空停止、有界对账与重启、部署重建与同格式卷切换、内部初始化/格式迁移监督器 | 多副本、滚动升级、动态配置更新；完整格式升级/不兼容回退仍待正式备份验收 |
 | 执行 | containerd/runc 真容器、cgroups v2 CPU/内存/PID、只读根目录、受限 tmpfs、无 Linux capabilities、隔离网络、工作负载 mTLS | 外网/代理、尚未实现的 HostService 方法、GPU、微插件/MPR、Extension Plugin；组件预算不代替生产 RUN-03 |
-| 调用 | 直接非流式 Broker、固定契约/部署、有界并发、树配额/源链计费、幂等账本与 unknown 查询、异常调用停止后回收；内部已登记格式的幂等业务调用；固定安装的非流式 capability Skill 注册、管理与双层授权调用 | 等待队列、流、通用非纯调用/取消、HostService Skill 方法、HTTP Skill、Workflow、Batch、Schedule、Event |
+| 调用 | 直接非流式 Broker、固定契约/部署、有界并发、树配额/源链计费、幂等账本与 unknown 查询、异常调用停止后回收；内部已登记格式的幂等业务调用；固定安装的 capability Skill 注册、管理、双层授权和纯流 SSE；取消意图与进程围栏 | 等待队列、一般非纯调用、HostService Skill 方法、HTTP Skill、Workflow、Batch、Schedule、Event |
 | 持久卷 | 独立 XFS 硬配额、预留/扩容/回收、实际计数、单写者 fence、OCI 挂载、新私有卷恢复、同格式克隆/回退、内部格式证明 | 多副本应用行为、公开格式安装/迁移、正式独立宿主恢复验收 |
 | Blob | 不可变上传/下载、摘要/长度校验、pin/TTL、可恢复清理、HTTPS CLI、受限工作负载 RPC、整体离线备份/恢复 | 自动备份调度、正式 AWS/独立宿主演练 |
 | Secret | AES-256-GCM 托管、元数据 API、轮换/撤销、部署绑定、工作负载 mTLS 租约；恢复后旧 Secret/绑定撤销 | 主密钥轮换；恢复后需显式重建所需秘密及授权 |
@@ -20,7 +20,7 @@
 
 公开安装只接受单副本、无依赖、无宿主权限申请、无 UI/路由、无扩展点且 data_schema_version 为 none 的普通插件，允许受控持久卷及签名 capability Skill 候选。内部版本化格式的初始化、同格式切换和 Plan/Apply/Verify 见[格式监督器](../../docs/implementation/m2-format-transitions.md)；内部组件实现不等于公开准入或正式验收。业务 Schema 必须自包含；本版拒绝 $ref/$id 等引用，避免联网或读取宿主文件。并发池满时立即拒绝，未实现的管理操作返回明确错误。
 
-M3 首个 Skill 子集实现 `registerSkill/getSkill/listSkills/setSkillEnabled/archiveSkill/invokeSkill`，固定安装、不可变定义与 UUID，复用 Broker 的并发、配额、来源链和未知结果围栏。`streamSkill`、HostService Skill、OAuth、WebUI、声明式 HTTP 和 UI 桥仍待交付；这不是完整 M3-A 或 M3 完成声明。精确边界、规范化数字限制和测试入口见 [M3 Skill 实现](../../docs/implementation/m3-skills.md)。
+M3 Skill 子集实现 `registerSkill/getSkill/listSkills/setSkillEnabled/archiveSkill/invokeSkill/streamSkill`，固定安装、不可变定义与 UUID，复用 Broker 的并发、配额、来源链和未知结果围栏。HostService Skill、OAuth、WebUI、声明式 HTTP 和 UI 桥仍待交付；这不是完整 M3-A 或 M3 完成声明。精确边界、规范化数字限制和测试入口见 [M3 Skill 实现](../../docs/implementation/m3-skills.md)与[纯流 SSE](../../docs/implementation/m3-skill-streams.md)。
 
 配置仍使用现有 `kernel.toml`；`unix_socket` 和 UI Gateway 在此子集中不提供对应服务。备份 URI 的标准 AWS 后端还需独立凭证、主密钥及仓库注册，见 [备份任务](../../docs/implementation/m2-backup-jobs.md)。不要仅因配置被接受而认为相关能力已经启用。
 

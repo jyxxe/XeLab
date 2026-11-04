@@ -24,6 +24,7 @@ pub mod restores;
 pub mod runtime;
 pub mod schema_jobs;
 pub mod secrets;
+pub(crate) mod skill_streams;
 pub mod skills;
 pub mod storage;
 pub mod tls;
