@@ -67,8 +67,9 @@ pub(crate) async fn reset_rows(
     )
     .await?;
     c.execute("DELETE FROM recovery_owner_anchors", &[]).await?;
+    c.execute("UPDATE recovered_account_activations SET state='revoked',updated_at=now() WHERE state='pending'", &[]).await?;
     c.execute("UPDATE accounts SET status=CASE WHEN status='archived' THEN status ELSE 'disabled' END,password_hash=NULL,activation_digest=NULL,activation_expires_at=NULL,authz_revision=authz_revision+1,revision=revision+1,updated_at=now()",&[]).await?;
-    c.execute("UPDATE inheritance_grants SET mode='selected',maximum_rules='[]',issuer_credential_id=NULL,revision=revision+1,updated_at=now()",&[]).await?;
+    c.execute("UPDATE inheritance_grants SET mode='all_snapshot',maximum_rules='[]',issuer_credential_id=NULL,revision=revision+1,updated_at=now()",&[]).await?;
     c.execute("DELETE FROM grant_provenance", &[]).await?;
     c.execute(
         "UPDATE execution_delegations SET status='revoked' WHERE status='active'",

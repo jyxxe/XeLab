@@ -69,6 +69,7 @@ fi
 if [[ $# == 4 ]]; then
   restore_binary=$(realpath -- "$4")
   test -x "$restore_binary"
+  "$restore_binary" --ignored --nocapture --exact account_recovery::tests::actual_host_cli_reactivates_only_with_maintenance_and_current_owner_credential
   mkdir -m 700 "$work/restore-service" "$work/restore-service/volumes"
   truncate -s 512M "$work/restore.img"
   mkfs.xfs -q "$work/restore.img"

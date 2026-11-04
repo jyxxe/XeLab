@@ -142,6 +142,23 @@ async fn account_access(
     .await
 }
 
+pub(crate) async fn authorize_management_snapshot(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    account: Uuid,
+    rules: &Value,
+) -> Result<()> {
+    let resource = Resource::new("account", account, Some(account));
+    if auth::rules_allow(rules, "account.manage", &resource, ctx.peer)
+        || (descendant(c, ctx.subject, account, true).await?
+            && auth::rules_allow(rules, "account.child.manage", &resource, ctx.peer))
+    {
+        Ok(())
+    } else {
+        Err(Error::denied())
+    }
+}
+
 pub async fn authorize(
     c: &(impl GenericClient + Sync),
     ctx: &Context,
@@ -485,7 +502,7 @@ async fn bounded_expiry(
     }
     Ok(())
 }
-async fn changed(c: &impl GenericClient, account: Uuid) -> Result<()> {
+pub(crate) async fn changed(c: &impl GenericClient, account: Uuid) -> Result<()> {
     c.execute("UPDATE accounts SET authz_revision=authz_revision+1 WHERE id IN(SELECT descendant_id FROM account_closure WHERE ancestor_id=$1)", &[&account]).await?;
     db::outbox(c, "identity.changed", account, &json!({})).await
 }
@@ -531,19 +548,27 @@ pub async fn activate(
     request: Uuid,
 ) -> Result<Value> {
     let digest = auth.token_digest(string(body, "activation_token")?);
-    let row=c.query_opt("SELECT id,parent_id FROM accounts WHERE activation_digest=$1 AND activation_expires_at>now() AND status='pending' AND kind='user' FOR UPDATE", &[&digest]).await?.ok_or_else(Error::credential)?;
+    let row=c.query_opt("SELECT id,parent_id FROM accounts WHERE activation_digest=$1 AND activation_expires_at>now() AND status='pending' AND kind='user' AND (expires_at IS NULL OR expires_at>now()) FOR UPDATE", &[&digest]).await?.ok_or_else(Error::credential)?;
     let account: Uuid = row.get(0);
-    let parent: Uuid = row.get(1);
-    auth::validate_sources(c, None, Some(parent), peer).await?;
-    if let Some(key) = c
-        .query_one(
-            "SELECT issuer_credential_id FROM inheritance_grants WHERE account_id=$1",
-            &[&account],
-        )
-        .await?
-        .get::<_, Option<Uuid>>(0)
-    {
-        auth::validate_sources(c, Some(key), None, peer).await?;
+    let recovered =
+        crate::account_recovery::authorize_activation(c, auth, account, &digest).await?;
+    let parent: Option<Uuid> = row.get(1);
+    if let Some(parent) = parent {
+        auth::validate_sources(c, None, Some(parent), peer).await?;
+    } else if !recovered {
+        return Err(Error::credential());
+    }
+    if !recovered {
+        if let Some(key) = c
+            .query_one(
+                "SELECT issuer_credential_id FROM inheritance_grants WHERE account_id=$1",
+                &[&account],
+            )
+            .await?
+            .get::<_, Option<Uuid>>(0)
+        {
+            auth::validate_sources(c, Some(key), None, peer).await?;
+        }
     }
     let password = string(body, "password")?.to_owned();
     let hash = tokio::task::spawn_blocking(move || auth::password_hash(&password))
@@ -551,6 +576,7 @@ pub async fn activate(
         .map_err(|_| Error::unavailable("Password hashing failed"))??;
     c.execute("UPDATE accounts SET status='active',password_hash=$2,activation_digest=NULL,activation_expires_at=NULL,revision=revision+1,updated_at=now() WHERE id=$1", &[&account,&hash]).await?;
     changed(c, account).await?;
+    crate::account_recovery::consume(c, account, &digest).await?;
     db::audit(
         c,
         account,

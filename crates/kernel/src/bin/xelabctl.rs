@@ -20,6 +20,23 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Cmd {
+    /// Issue one-time activation for a password-cleared historical user.
+    RecoverAccount {
+        #[arg(long)]
+        config: PathBuf,
+        /// Root-owned file containing a current recovery-Owner credential.
+        #[arg(long)]
+        token_file: PathBuf,
+        #[arg(long)]
+        account_id: uuid::Uuid,
+        #[arg(long)]
+        confirm_account_id: uuid::Uuid,
+        /// Preserve this UUID when inspecting an uncertain one-time response.
+        #[arg(long)]
+        operation_id: uuid::Uuid,
+        #[arg(long)]
+        revision: i64,
+    },
     ValidateConfig {
         #[arg(long)]
         config: PathBuf,
@@ -127,6 +144,32 @@ fn read_body(path: &str, limit: usize) -> Result<Vec<u8>> {
 }
 async fn run(args: Args) -> Result<()> {
     match args.command {
+        Cmd::RecoverAccount {
+            config,
+            token_file,
+            account_id,
+            confirm_account_id,
+            operation_id,
+            revision,
+        } => {
+            require_host_admin()?;
+            let token = zeroize::Zeroizing::new(
+                String::from_utf8(read_private(&token_file, 16384)?)
+                    .map_err(|_| Error::invalid("Credential file is not UTF-8"))?,
+            );
+            let result = xelab_kernel::account_recovery::issue(
+                Config::load(&config)?,
+                token.trim(),
+                xelab_kernel::account_recovery::Request {
+                    account: account_id,
+                    confirm_account: confirm_account_id,
+                    operation: operation_id,
+                    revision,
+                },
+            )
+            .await?;
+            println!("{}", serde_json::to_string(&result)?);
+        }
         Cmd::ValidateConfig { config } => {
             Config::load(&config)?;
             println!(

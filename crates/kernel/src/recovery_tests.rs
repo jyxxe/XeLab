@@ -150,8 +150,13 @@ async fn actual_postgres_reset_rejects_old_authority_and_anchors_only_fresh_owne
             .get::<_, String>(0),
         "archived"
     );
-    let inherited: Value = c.query_one("SELECT maximum_rules FROM inheritance_grants WHERE account_id=$1 AND mode='selected' AND issuer_credential_id IS NULL", &[&child]).await.unwrap().get(0);
+    let inherited: Value = c.query_one("SELECT maximum_rules FROM inheritance_grants WHERE account_id=$1 AND mode='all_snapshot' AND issuer_credential_id IS NULL", &[&child]).await.unwrap().get(0);
     assert_eq!(inherited, json!([]));
+    crate::contracts::validate(
+        "Account",
+        &identity::account_value(&c, child).await.unwrap(),
+    )
+    .unwrap();
     assert!(!Policy::new(&c, peer)
         .account(child, 0)
         .await
