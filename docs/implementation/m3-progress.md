@@ -8,14 +8,15 @@
 后续阶段须更新实际提交、PR、测试命令及结果，不能用本页代替运行证据。
 当前 main 为 `201fb5a92854cbcefe7e547dca121b89796f1506`：
 [PR #39](https://github.com/jyxxe/XeLab/pull/39)、
-[PR #40](https://github.com/jyxxe/XeLab/pull/40) 与
+[PR #40](https://github.com/jyxxe/XeLab/pull/40)、
 [PR #41](https://github.com/jyxxe/XeLab/pull/41) 与
 [PR #42](https://github.com/jyxxe/XeLab/pull/42) 已合并，交付普通 OCI capability
 Skill 的七项公开操作，包括纯流 SSE，以及并发授权复核的撤权活性修复。
 #41、#42 精确提交 CI 成功；#42 保留实际容量诊断并清理已消费的精确传输 tar，
 不能据此断言已证明旧容量失败的根因。新 main 自身 CI 仍须单独确认。
 HTTP 已在开发分支接入源码并进行本地验证，尚未交付 main；
-OAuth、官方 WebUI 与 UI 桥尚未交付 main。开发分支 Schema 15 不等于 main 已迁移。
+OAuth、官方 WebUI 与 UI 桥尚未交付 main。HTTP 分支追加 Schema 15，OAuth 分支追加 Schema 16；
+开发分支迁移不等于 main 已迁移。
 
 ## 范围与协作
 
@@ -78,6 +79,24 @@ OAuth、官方 WebUI 与 UI 桥尚未交付 main。开发分支 Schema 15 不等
 - [ ] M3-F：必需 PR 均合并，main 最终 CI 成功，功能/接口/迁移/文档一致。
 
 ## 已执行证据与待验收项
+
+当前开放 [HTTP #43](https://github.com/jyxxe/XeLab/pull/43) 与
+[OAuth/UI 控制面 #44](https://github.com/jyxxe/XeLab/pull/44) 均为 Draft，
+最终精确 CI 未通过前不合并。#43 修正恢复测试的旧 Host，使请求使用各自实际 Config；
+生产 Host 校验保持。#44 旧 CI 已通过真实 OAuth 浏览器、HTTP OCI、旧 OCI 生命周期和 Clippy，
+随后同一旧 Host 夹具在 private restore 返回 404；失败记录保留，后续跳过项不算成功。
+新 head `f427b4c…` 已合并该修正；其
+[CI 41851424259](https://github.com/jyxxe/XeLab/actions/runs/41851424259) 仍待完成。
+CI DWARF/incremental 产物优化和 90 分钟总作业预算只改变测试构建占用/作业预算，
+不修改业务 deadline、并发、资源限额或安全断言。
+
+官方独立 OCI WebUI、第三方 UI 参考插件和宿主消息桥已实现于集成分支，
+Node 21、WebUI mTLS 9、reference HTTP 7、Chromium 桌面 11/桥 8/reference 4
+项组件测试已执行通过；独立打包 Docker 探针也通过。rootless Docker 不证明实际 cgroup 限制。
+真实签名两镜像、公开安装/Client 引导、Owner/子账户 OAuth、iframe Skill、攻击账本、
+撤权、停止 WebUI 后 CLI 及组件重启的 `m3_ui` 测试已接入 CI，尚未执行通过。
+[实现与复现入口](m3-webui.md)明确组件、真实 OCI 与生产验收的证据边界。
+
 
 | 证据 | 结果及边界 |
 |---|---|

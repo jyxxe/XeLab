@@ -26,11 +26,23 @@ python3 examples/echo/sign_artifact.py \
   --key /secure/publisher-ed25519.pem
 ```
 
+Before installation, also tag the imported platform image with this same
+`docker.io/example/xelab-webui@sha256:...` reference using
+`sudo ctr -n xelab images tag docker.io/example/xelab-webui:1.0.0 "$WEBUI_IMAGE"`,
+where `WEBUI_IMAGE` is that actual immutable reference. Installation verifies
+the locally available immutable reference, rather than resolving a mutable tag.
+
 The signing helper rejects the placeholder digest. Keep the publisher private key outside the image and repository. Submit the actual signature through the ordinary publisher/installation APIs, approve the signed manifest, create a disabled deployment, and explicitly enable it with the existing management API or CLI. The normal lifecycle, admission, approval, image, identity and resource checks remain required; this example does not introduce an installation shortcut.
 
 ## Public configuration and OAuth registration
 
 Create the deployment **disabled** first, using the known `core_origin`, the shell defaults below and `client_id:null`. The manifest configuration schema permits null for this setup step; the running service's Initialize rejects it and cannot become ready with a null client.
+
+The checked-in deployment template and defaults include this disabled bootstrap
+configuration. Replace the example `core_origin` and `installation_id` with
+the actual values before submitting them. For complete public CLI bodies,
+ETag/Operation handling, wildcard DNS/TLS, and the signed two-image browser test,
+see [M3 WebUI integration](../../docs/implementation/m3-webui.md).
 
 Use the resulting deployment UUID to obtain the platform-assigned isolated origin through the core/CLI configuration. Register a public OAuth Client for that exact origin. For an allocated origin represented below as `https://desktop.example.org`, its exact redirect URI is:
 

@@ -20,15 +20,6 @@ def build(root, publisher, webui_origin=None, platform="linux/amd64", plugin_ver
     manifest["version"] = plugin_version
     manifest["entrypoint"] = ["/usr/bin/python3", "/opt/webui/server.py"]
     manifest["webui"]["origin"] = origin
-    schema = manifest["config_schema"]
-    schema["properties"].update({
-        "core_origin": {"type": "string", "minLength": 1, "maxLength": 2048,
-                        "description": "Exact trusted HTTPS core origin; public configuration, never a credential"},
-        "client_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 128,
-                      "pattern": "^[A-Za-z0-9._~-]+$", "default": None,
-                      "description": "Null only for initial disabled deployment; Initialize requires the registered public Client identifier"},
-    })
-    schema["required"] += ["core_origin", "client_id"]
     # Queueing belongs to the existing Broker. This UI workload does not add a
     # second application queue, and its HTTP worker pool is fixed at32.
     manifest["concurrency"] = {"max_active_requests": 32, "max_queue_requests": 0, "queue_timeout_ms": 100}
