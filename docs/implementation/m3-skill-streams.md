@@ -91,6 +91,9 @@ PostgreSQL 测试需要独立的 `XELAB_TEST_DATABASE_URL`。
 真实 `signed_oci_plugin_runs_through_the_management_api_and_recovers` 场景执行：
 注册启用、实际 item/完成结果及来源、重复请求拒绝、协议错误的真实实例围栏重启、
 明确取消、API Key 撤销后停止交付、恢复后新调用，以及原有非流式和离线恢复回归。
+故障扫查同时保留实际 OCI PID/启动时间的退出证据；现有重启预算耗尽时，
+先验证拒绝新调用且不计费，再通过公开停用/启用创建新实例与 generation。
+测试不直接清零计数或提高预算，也不把预约释放与重新 Ready 混为同一断言。
 该入口须在独占 cgroups v2、containerd/runc、网络及 XFS 环境实际运行并保存 CI 日志。
 本地无这些宿主权限时只记编译及已执行的 PostgreSQL/单元证据，真实 OCI 保持待验收。
 
