@@ -160,6 +160,7 @@ pub(super) async fn register(
     publisher: Uuid,
     variant: &str,
     variable: &str,
+    expected_schema: &str,
 ) -> (Uuid, Value, String) {
     assert_eq!(unsafe { libc::geteuid() }, 0);
     assert_eq!(std::env::var("XELAB_XFS_TEST").unwrap(), "1");
@@ -167,7 +168,7 @@ pub(super) async fn register(
     let image = std::env::var(variable).expect("CI-imported versioned reference image");
     let raw = fs::read(format!("examples/generated-{variant}/xelab/plugin.json")).unwrap();
     let manifest: Value = serde_json::from_slice(&raw).unwrap();
-    assert_eq!(manifest["data_schema_version"], "1");
+    assert_eq!(manifest["data_schema_version"], expected_schema);
     assert_eq!(manifest["publisher_id"], publisher.to_string());
     let digest = artifact::image_ref(&image).unwrap();
     let trusted = c
@@ -246,7 +247,7 @@ pub(super) async fn register(
 pub async fn exercise(f: &Fixture, publisher: Uuid) {
     let c = f.app.db.connect().await.unwrap();
     let (installation, manifest, manifest_digest) =
-        register(f, publisher, "schema", "XELAB_TEST_SCHEMA_IMAGE").await;
+        register(f, publisher, "schema", "XELAB_TEST_SCHEMA_IMAGE", "1").await;
     f.app.shutdown.store(false, Ordering::SeqCst);
     f.app.ready.store(false, Ordering::SeqCst);
     let controller = tokio::spawn(controller::run(f.app.clone()));
@@ -414,6 +415,80 @@ pub async fn exercise(f: &Fixture, publisher: Uuid) {
     assert_eq!(actual["items"][0]["id"], called.1["call_id"]);
     let upgrade_supervisor =
         super::schema_same_format::exercise(f, publisher, installation, deployment, business).await;
+    let (changing, changing_manifest, _) = register(
+        f,
+        publisher,
+        "schema-transition",
+        "XELAB_TEST_SCHEMA_TRANSITION_IMAGE",
+        "2",
+    )
+    .await;
+    assert_eq!(changing_manifest["data_schema_version"], "2");
+    let before = current(f, deployment).await;
+    let selected: Uuid = before["spec"]["volume_ids"][0]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let selected_path = data_path(f, selected).await;
+    let original_bytes = fs::read(selected_path.join("store.json")).unwrap();
+    let allocation_count: i64 = c
+        .query_one("SELECT count(*) FROM volume_allocations", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let rejected = f
+        .api(
+            "upgradeDeployment",
+            Some(deployment),
+            json!({"installation_id":changing,"strategy":"recreate","allow_downtime":true}),
+            "schema-missing-backup",
+            before["revision"].as_i64(),
+            None,
+        )
+        .await;
+    assert_eq!(rejected.0, 409, "{}", rejected.1);
+    assert_eq!(
+        rejected.1["error"]["message"],
+        "Format transition requires an explicit available backup"
+    );
+    assert_eq!(current(f, deployment).await["spec"], before["spec"]);
+    assert_eq!(
+        fs::read(selected_path.join("store.json")).unwrap(),
+        original_bytes
+    );
+    assert_eq!(
+        c.query_one("SELECT count(*) FROM volume_allocations", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        allocation_count
+    );
+    assert!(c
+        .query_opt(
+            "SELECT operation_id FROM deployment_storage_holds WHERE deployment_id=$1",
+            &[&deployment]
+        )
+        .await
+        .unwrap()
+        .is_none());
+    let writer: Uuid = c
+        .query_one(
+            "SELECT writer_instance_id FROM volumes WHERE id=$1",
+            &[&selected],
+        )
+        .await
+        .unwrap()
+        .get::<_, Option<Uuid>>(0)
+        .unwrap();
+    assert!(f.app.runtime.running(writer).await.unwrap());
+    let still_serving = f.api("invokeCapability", None, json!({"contract":manifest["capabilities"][0]["contract"],"input":{"message":"source still serves after refusing an unbacked format change"},"provider_deployment_id":deployment,"timeout_ms":30000}), "schema-after-unbacked-rejection", None, None).await;
+    assert_eq!(still_serving.0, 200, "{}", still_serving.1);
+    let served: Value =
+        serde_json::from_slice(&fs::read(selected_path.join("store.json")).unwrap()).unwrap();
+    assert_eq!(served["schema"], "1");
+    assert_eq!(served["items"].as_array().unwrap().len(), 3);
+    println!("Format admission: actual signed schema 2 target without an available backup rejected before allocation/hold/write; schema 1 source bytes, writer and deployment retained");
     let before = current(f, deployment).await;
     let disabled = f
         .api(

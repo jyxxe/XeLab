@@ -325,7 +325,13 @@ async fn probe(app: &App, row: &Row, artifact: &Artifact) -> Result<Option<rpc::
     }
 }
 
-async fn publish(app: &App, row: &Row, health: Option<rpc::HealthResponse>) -> Result<()> {
+async fn publish(
+    app: &App,
+    row: &Row,
+    health: Option<rpc::HealthResponse>,
+    ready: Option<&crate::schema_jobs::UpgradeReady>,
+    fence: &db::DeploymentFence,
+) -> Result<()> {
     let enabled = row.get::<_, Value>("target_spec")["enabled"] == true;
     let candidate: Uuid = row.get("candidate_id");
     if enabled && (health.is_none() || !app.runtime.running(candidate).await?) {
@@ -359,6 +365,7 @@ async fn publish(app: &App, row: &Row, health: Option<rpc::HealthResponse>) -> R
     if !matches!(current.as_str(), "stopped" | "probing") {
         return Err(Error::conflict("Upgrade publication phase changed"));
     }
+    crate::schema_jobs::commit_upgrade(&tx, app, row, ready, fence).await?;
     volume_group::publish(&tx, &ctx, row, publication).await?;
     if enabled {
         if tx.query_opt("SELECT instance_id FROM reservations WHERE instance_id=$1 AND status IN ('reserved','active')",&[&candidate]).await?.is_none(){return Err(Error::conflict("Upgrade candidate lacks its resource reservation"));}
@@ -409,7 +416,7 @@ async fn publish(app: &App, row: &Row, health: Option<rpc::HealthResponse>) -> R
         "UPGRADE_VERIFIED",
     )
     .await?;
-    if app.leader.is_closed() {
+    if app.leader.is_closed() || !fence.protects(deployment) {
         return Err(Error::unavailable("Upgrade leadership is lost"));
     }
     tx.commit().await?;
@@ -435,14 +442,46 @@ async fn process(app: &App, operation: Uuid, fence: &db::DeploymentFence) -> Res
         return Err(Error::conflict("Unsupported upgrade execution phase"));
     }
     let artifact = artifact(app, &row.get("target_metadata")).await?;
-    volume_group::clone_group(app, &row).await?;
+    let transitioning = app
+        .db
+        .connect()
+        .await?
+        .query_opt(
+            "SELECT kind FROM volume_schema_jobs WHERE operation_id=$1 AND kind<>'bootstrap'",
+            &[&operation],
+        )
+        .await?;
+    if transitioning
+        .as_ref()
+        .is_some_and(|child| child.get::<_, String>("kind") == "rollback")
+    {
+        schema_transition::restore_group(app, &row, fence).await?;
+    } else {
+        volume_group::clone_group(app, &row).await?;
+    }
     check(app, operation).await?;
-    let health = probe(app, &row, &artifact).await?;
+    let ready = if transitioning.is_some() {
+        let mut c = app.db.connect().await?;
+        let tx = c.transaction().await?;
+        db::auth_lock(&tx, false).await?;
+        revalidate(&tx, app, &row).await?;
+        admission::reserve(&tx, row.get("candidate_id")).await?;
+        tx.execute("UPDATE deployment_upgrade_jobs SET state='probing',updated_at=now() WHERE operation_id=$1 AND state IN ('stopped','probing')", &[&operation]).await?;
+        tx.execute("UPDATE instances SET phase='starting',revision=revision+1,updated_at=now() WHERE id=$1", &[&row.get::<_,Uuid>("candidate_id")]).await?;
+        tx.commit().await?;
+        Some(crate::schema_jobs::run_upgrade(app, operation, fence).await?)
+    } else {
+        None
+    };
+    let health = match &ready {
+        Some(ready) => Some(ready.health()),
+        None => probe(app, &row, &artifact).await?,
+    };
     if !fence.protects(row.get("deployment_id")) {
         return Err(Error::conflict("Upgrade runtime fence was lost"));
     }
     let row = check(app, operation).await?;
-    publish(app, &row, health).await
+    publish(app, &row, health, ready.as_ref(), fence).await
 }
 pub(super) enum SourceRecovery {
     NotRequired,
@@ -610,6 +649,7 @@ async fn fail_stopped(
         crate::volumes::release_stopped(&tx, Some(*instance)).await?;
     }
     volume_group::failed(&tx, operation).await?;
+    tx.execute("UPDATE volume_schema_jobs SET state='failed',failure=coalesce(failure,$2),updated_at=now() WHERE operation_id=$1 AND kind<>'bootstrap' AND state NOT IN ('verified','failed')", &[&operation,&error.detail()]).await?;
     let recovery = recover_source(&tx, app, &row).await?;
     let (recovery_state, instance) = match recovery {
         SourceRecovery::NotRequired => ("not_required", None),

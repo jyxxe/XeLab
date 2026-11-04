@@ -14,3 +14,4 @@ __pycache__/
 
 /examples/generated-schema/
 /examples/generated-schema-upgrade/
+/examples/generated-schema-transition/

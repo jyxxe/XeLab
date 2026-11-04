@@ -167,7 +167,8 @@ v12 格式初始化见[初始化监督器](../../docs/implementation/m2-schema-b
 v13 格式备份登记见[登记组件](../../docs/implementation/m2-format-backups.md)。
 v14 为恢复后的历史用户提供[维护窗口重新激活](../../docs/implementation/m2-recovered-accounts.md)，
 需要实际宿主 root、当前恢复 Owner 凭证和明确的目标修订；不恢复旧授权。
-格式变更执行器尚未接通，公开版本化制品安装入口仍关闭。
+内部[格式变更执行器](../../docs/implementation/m2-format-transitions.md)已经接通，
+正式备份下的完整迁移与故障验收尚未完成，公开版本化制品安装入口仍关闭。
 
 ## M2 存储后端预检
 

@@ -22,10 +22,16 @@ pub(super) async fn plan(
     app: &App,
     ctx: &Context,
     original: &Value,
+    source: &Value,
     target: &Value,
 ) -> Result<Option<Admission>> {
     let selected = ids(&original["volume_ids"])?;
-    volumes::validate_selection(c, ctx, original, &target["manifest"]).await?;
+    volumes::validate_selection(c, ctx, original, &source["manifest"]).await?;
+    // Check target aliases/access/minimum capacity against the current group.
+    // This temporary view checks selection geometry, never proves conversion.
+    let mut geometry = target["manifest"].clone();
+    geometry["data_schema_version"] = source["manifest"]["data_schema_version"].clone();
+    volumes::validate_selection(c, ctx, original, &geometry).await?;
     if selected.is_empty() {
         return Ok(None);
     }
@@ -70,7 +76,7 @@ pub(super) async fn plan(
         .await?;
         let spec: Value = row.get("spec");
         let schema: Option<String> = row.get("data_schema_version");
-        let binding = schema_binding(c, source, &target["manifest"]).await?;
+        let binding = schema_binding(c, source, &geometry).await?;
         reserved.push((fresh, spec.clone(), schema.clone()));
         items.push(Item {
             source,
@@ -447,6 +453,7 @@ pub(super) async fn freeze(c: &(impl GenericClient + Sync), operation: Uuid) -> 
         &[&operation, &target],
     )
     .await?;
+    c.execute("UPDATE volume_schema_jobs SET volume_fence=$2,updated_at=now() WHERE operation_id=$1 AND kind<>'bootstrap' AND state='planning'", &[&operation,&target]).await?;
     Ok(())
 }
 
@@ -456,6 +463,13 @@ pub(super) async fn clone_group(app: &App, job: &Row) -> Result<()> {
     let operation: Uuid = job.get("operation_id");
     let rows = mappings(&app.db.connect().await?, operation).await?;
     if rows.is_empty() {
+        return Ok(());
+    }
+    if rows.iter().all(|r| r.get::<_,String>("state") == "cloned")
+        && app.db.connect().await?.query_opt("SELECT operation_id FROM volume_schema_jobs WHERE operation_id=$1 AND kind='upgrade' AND state IN ('planning','planned','applying','verifying')", &[&operation]).await?.is_some()
+    {
+        // A durable format job resumes its original private bytes. In
+        // particular, never clone schema 1 over an already converted schema 2.
         return Ok(());
     }
     if job.get::<_, String>("state") != "stopped"
@@ -563,18 +577,23 @@ async fn inherit_schema(
     let Some(binding) = schema_binding(c, source, &source_metadata["manifest"]).await? else {
         return Ok(());
     };
-    if source_metadata["manifest"]["data_schema_version"]
-        != target_metadata["manifest"]["data_schema_version"]
-    {
-        return Err(Error::conflict(
-            "A clone cannot prove a different target schema",
-        ));
+    let changing = source_metadata["manifest"]["data_schema_version"]
+        != target_metadata["manifest"]["data_schema_version"];
+    if changing && c.query_opt("SELECT operation_id FROM volume_schema_jobs WHERE operation_id=$1 AND kind='upgrade' AND state='planning' AND installation_metadata=$2", &[&job.get::<_,Uuid>("operation_id"),&target_metadata]).await?.is_none() {
+        return Err(Error::conflict("A clone cannot prove a different target schema"));
     }
-    let proof = json!({"kind":"same_schema_clone","source_volume_id":source,"source_binding":binding,"copy":copy,"operation_id":job.get::<_,Uuid>("operation_id"),"instance_id":job.get::<_,Uuid>("candidate_id"),"generation":job.get::<_,i64>("candidate_generation"),"manifest_digest":target_metadata["manifest_digest"]});
+    // A changing-format clone still proves SOURCE format only. The separate
+    // worker must Apply/Verify before it can publish a target-format binding.
+    let metadata = if changing {
+        &source_metadata
+    } else {
+        &target_metadata
+    };
+    let proof = json!({"kind":if changing {"migration_source_clone"} else {"same_schema_clone"},"source_volume_id":source,"source_binding":binding,"copy":copy,"operation_id":job.get::<_,Uuid>("operation_id"),"instance_id":job.get::<_,Uuid>("candidate_id"),"generation":job.get::<_,i64>("candidate_generation"),"manifest_digest":metadata["manifest_digest"]});
     if serde_json::to_vec(&proof)?.len() > 65536 {
         return Err(Error::exhausted());
     }
-    let changed = c.execute("UPDATE volume_allocations SET schema_state='verified',data_schema_version=$3,schema_deployment_id=$4,schema_plugin_id=$5,schema_publisher_id=$6,schema_manifest_digest=$7,schema_operation_id=$2,schema_proof=$8,updated_at=now() WHERE volume_id=$1 AND operation_id=$2 AND state='restoring' AND NOT EXISTS(SELECT 1 FROM volumes WHERE id=$1)", &[&target,&job.get::<_,Uuid>("operation_id"),&target_metadata["manifest"]["data_schema_version"].as_str().unwrap(),&job.get::<_,Uuid>("deployment_id"),&target_metadata["plugin_id"].as_str().unwrap(),&id(&target_metadata,"publisher_id")?,&target_metadata["manifest_digest"].as_str().unwrap(),&proof]).await?;
+    let changed = c.execute("UPDATE volume_allocations SET schema_state='verified',data_schema_version=$3,schema_deployment_id=$4,schema_plugin_id=$5,schema_publisher_id=$6,schema_manifest_digest=$7,schema_operation_id=$2,schema_proof=$8,updated_at=now() WHERE volume_id=$1 AND operation_id=$2 AND state='restoring' AND NOT EXISTS(SELECT 1 FROM volumes WHERE id=$1)", &[&target,&job.get::<_,Uuid>("operation_id"),&metadata["manifest"]["data_schema_version"].as_str().unwrap(),&job.get::<_,Uuid>("deployment_id"),&metadata["plugin_id"].as_str().unwrap(),&id(metadata,"publisher_id")?,&metadata["manifest_digest"].as_str().unwrap(),&proof]).await?;
     if changed != 1 {
         return Err(Error::conflict("Verified schema clone is not private"));
     }

@@ -509,7 +509,8 @@ async fn dispatch(
             let id = Uuid::new_v4();
             tx.execute("INSERT INTO deployments(id,owner_id,installation_id,spec,phase,created_at,updated_at) VALUES($1,$2,$3,$4,'disabled',now(),now())",&[&id,&ctx.subject,&installation,&spec]).await?;
             let op = db::operation(&tx, ctx.subject, name, Some(id.to_string())).await?;
-            db::complete(&tx, op, Ok(json!({"deployment_id":id}))).await?;
+            let deployment = read_object(&tx, "deployments", id, "Deployment").await?;
+            db::complete(&tx, op, Ok(deployment)).await?;
             (db::operation_value(&tx, op).await?, 202)
         }
         "approvePlugin" => {
@@ -923,6 +924,10 @@ pub(crate) async fn read_object(
         .await?
         .ok_or_else(Error::not_found)?;
     let raw: Value = row.get(0);
+    object_value(&raw, model)
+}
+
+pub(crate) fn object_value(raw: &Value, model: &str) -> Result<Value> {
     let mut result = json!({});
     for key in openapi()["components"]["schemas"][model]["required"]
         .as_array()

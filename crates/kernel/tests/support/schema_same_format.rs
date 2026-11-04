@@ -71,6 +71,7 @@ pub async fn exercise(
         publisher,
         "schema-upgrade",
         "XELAB_TEST_SCHEMA_UPGRADE_IMAGE",
+        "1",
     )
     .await;
     assert_eq!(manifest["version"], "2.0.0");

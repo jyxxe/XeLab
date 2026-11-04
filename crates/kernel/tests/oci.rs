@@ -107,12 +107,66 @@ async fn operation(router: &Router, id: &str, token: &str) -> Value {
         .await;
         assert_eq!(status, 200, "{value}");
         if value["state"] == "succeeded" {
+            if matches!(
+                value["kind"].as_str(),
+                Some("createDeployment" | "setDeploymentEnabled")
+            ) {
+                contracts::validate("Deployment", &value["result"]).unwrap();
+                assert_eq!(value["result"]["id"], value["resource_id"]);
+            }
             return value["result"].clone();
         }
         assert_ne!(value["state"], "failed", "{value}");
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     panic!("operation {id} did not finish");
+}
+
+// Controlled process restarts can change observation revisions between GET and
+// PUT. Retry only a confirmed precondition rejection with unchanged intent;
+// never replay an accepted or uncertain mutation with a new fingerprint.
+async fn disable_after_observation(
+    router: &Router,
+    params: &[(&str, String)],
+    token: &str,
+    key: &str,
+) -> (u16, Value) {
+    let mut expected = None;
+    for _ in 0..10 {
+        let current = api(
+            router,
+            "getDeployment",
+            params,
+            Some(token),
+            Value::Null,
+            "read-before-disable",
+            None,
+        )
+        .await;
+        assert_eq!(current.0, 200, "{}", current.1);
+        match &expected {
+            Some(spec) => assert_eq!(
+                spec, &current.1["spec"],
+                "do not retry over a changed deployment intent"
+            ),
+            None => expected = Some(current.1["spec"].clone()),
+        }
+        let response = api(
+            router,
+            "setDeploymentEnabled",
+            params,
+            Some(token),
+            json!({"enabled":false}),
+            key,
+            current.1["revision"].as_i64(),
+        )
+        .await;
+        if response.0 == 412 && response.1["error"]["code"] == "ETAG_MISMATCH" {
+            continue;
+        }
+        return response;
+    }
+    panic!("observation revisions did not settle for a fenced disable request");
 }
 
 #[tokio::test]
@@ -259,8 +313,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         json!({"cpu_millis":500,"memory_bytes":134217728,"ephemeral_bytes":1048576,"pids":64});
     let (status,created)=api(&router,"createDeployment",&[],Some(token),json!({"installation_id":installed["installation_id"],"display_name":"echo","enabled":false,"limits":limits,"config":{},"volume_ids":[]}),"deploy-1",None).await;
     assert_eq!(status, 202, "{created}");
-    let deployment = operation(&router, created["id"].as_str().unwrap(), token).await
-        ["deployment_id"]
+    let deployment = operation(&router, created["id"].as_str().unwrap(), token).await["id"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -467,7 +520,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     let created=api(&router,"createDeployment",&[],Some(token),json!({"installation_id":installed["installation_id"],"display_name":"independent Python","enabled":false,"limits":limits,"config":{},"volume_ids":[]}),"deploy-python",None).await;
     assert_eq!(created.0, 202, "{}", created.1);
     let python_deployment: Uuid = operation(&router, created.1["id"].as_str().unwrap(), token)
-        .await["deployment_id"]
+        .await["id"]
         .as_str()
         .unwrap()
         .parse()
@@ -946,50 +999,11 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         String::from_utf8_lossy(&component.stderr)
     );
     println!("{}", String::from_utf8_lossy(&component.stdout));
-    let python_value = api(
-        &router,
-        "getDeployment",
-        &python_params,
-        Some(token),
-        Value::Null,
-        "read-python",
-        None,
-    )
-    .await
-    .1;
-    let disabled = api(
-        &router,
-        "setDeploymentEnabled",
-        &python_params,
-        Some(token),
-        json!({"enabled":false}),
-        "disable-python",
-        python_value["revision"].as_i64(),
-    )
-    .await;
+    let disabled =
+        disable_after_observation(&router, &python_params, token, "disable-python").await;
     assert_eq!(disabled.0, 202, "{}", disabled.1);
     operation(&router, disabled.1["id"].as_str().unwrap(), token).await;
-    let deployment_value = api(
-        &router,
-        "getDeployment",
-        &params,
-        Some(token),
-        Value::Null,
-        "read",
-        None,
-    )
-    .await
-    .1;
-    let disabled = api(
-        &router,
-        "setDeploymentEnabled",
-        &params,
-        Some(token),
-        json!({"enabled":false}),
-        "disable-1",
-        deployment_value["revision"].as_i64(),
-    )
-    .await;
+    let disabled = disable_after_observation(&router, &params, token, "disable-1").await;
     assert_eq!(disabled.0, 202, "{}", disabled.1);
     operation(&router, disabled.1["id"].as_str().unwrap(), token).await;
     assert!(!app.runtime.running(instance).await.unwrap());
@@ -1623,8 +1637,7 @@ async fn host_blob_component(
     let installed = operation(router, install.1["id"].as_str().unwrap(), token).await;
     let created=api(router,"createDeployment",&[],Some(token),json!({"installation_id":installed["installation_id"],"display_name":"Host Blob component","enabled":false,"limits":{"cpu_millis":100,"memory_bytes":67108864,"ephemeral_bytes":1048576,"pids":64},"config":{},"volume_ids":[]}),"host-blob-deploy",None).await;
     assert_eq!(created.0, 202, "{}", created.1);
-    let deployment = operation(router, created.1["id"].as_str().unwrap(), token).await
-        ["deployment_id"]
+    let deployment = operation(router, created.1["id"].as_str().unwrap(), token).await["id"]
         .as_str()
         .unwrap()
         .to_owned();

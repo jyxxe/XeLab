@@ -16,6 +16,11 @@ use uuid::Uuid;
 
 #[path = "upgrades_backups.rs"]
 pub mod migration_backup;
+#[path = "upgrades_schema.rs"]
+mod schema_transition;
+pub(crate) use schema_transition::{
+    registration as schema_registration, revalidate as revalidate_schema_child,
+};
 #[path = "upgrades_volumes.rs"]
 mod volume_group;
 #[path = "upgrades_worker.rs"]
@@ -42,14 +47,6 @@ pub(crate) async fn installation(
         ));
     }
     Ok(value)
-}
-fn same_schema(source: &Value, target: &Value) -> Result<()> {
-    if source["manifest"]["data_schema_version"] != target["manifest"]["data_schema_version"] {
-        return Err(Error::conflict(
-            "Schema-changing upgrade requires the durable DataMigration worker",
-        ));
-    }
-    Ok(())
 }
 /// Shared by new requests AND idempotent replay. Replaying a stored Operation
 /// does not bypass any of the original composite resource permissions.
@@ -252,8 +249,20 @@ pub async fn create(
         manifest_digest: target["manifest_digest"].as_str().unwrap().into(),
     }
     .validate_deployment(&next)?;
-    same_schema(&source, &target)?;
-    let volumes = volume_group::plan(c, app, ctx, &original, &target).await?;
+    schema_transition::precheck(&row, body, &source, &target)?;
+    let volumes = volume_group::plan(c, app, ctx, &original, &source, &target).await?;
+    let transition = schema_transition::plan(
+        c,
+        app,
+        ctx,
+        &row,
+        action,
+        body,
+        &source,
+        &target,
+        volumes.as_ref(),
+    )
+    .await?;
     if let Some(group) = &volumes {
         next["volume_ids"] = json!(group
             .items
@@ -341,6 +350,9 @@ pub async fn create(
         &[&deployment, &operation],
     )
     .await?;
+    if let Some(transition) = transition {
+        schema_transition::reserve(c, ctx, operation, transition).await?;
+    }
     c.execute("UPDATE provider_records SET availability='unavailable' WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)",&[&deployment]).await?;
     c.execute(
         "UPDATE deployments SET phase='draining',revision=revision+1,updated_at=now() WHERE id=$1",
@@ -421,6 +433,18 @@ pub async fn revalidate(c: &(impl GenericClient + Sync), app: &App, row: &Row) -
         ) {
             return Err(Error::denied());
         }
+    }
+    if let Some(child) = c
+        .query_opt(
+            "SELECT * FROM volume_schema_jobs WHERE operation_id=$1 AND kind<>'bootstrap'",
+            &[&operation],
+        )
+        .await?
+    {
+        crate::schema_jobs::authorize_child(c, &ctx, &child).await?;
+        schema_transition::registration(&child)?
+            .revalidate(c, &ctx, &saved)
+            .await?;
     }
     Ok(ctx)
 }
