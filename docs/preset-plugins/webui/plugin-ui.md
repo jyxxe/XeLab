@@ -25,6 +25,8 @@ sequenceDiagram
 
 宿主用getUiContribution核对安装/贡献摘要后加载frame_url；只信任bindings中的精确Skill UUID/digest/modes，不按页面自报的名称“查最新”。白名单缺失时返回BINDING_UNAVAILABLE，页面显示原因。
 
+frame_url可以包含核心保留的单一 `xelab_frame=v1.<selector>.<mac>` 查询参数；宿主只接受[贡献规范](../../plugins/ui-contributions.md)规定的规范字段、编码和长度，不自行拼接、替换或添加查询。证明只控制公开页面CSP，业务与管理仍使用宿主当前OAuth和核心授权。非默认的获准动态壳依靠精确父源政策加载贡献；不能为隐藏部署目录而删除该能力，也不能用frame-ancestors通配绕过可信父源。
+
 每个挂载生成新view_id与256bit channel_nonce，fragment只含桥路由元数据和parent_origin，不包含身份令牌。iframe加载后10s内握手，核心令牌永远由壳/BFF持有，不发送给页面。
 
 核心身份/授权、Skill注册/调用、batch和UI发现/偏好由核心实现；菜单、Dock、窗口、组件调度、消息适配与主题渲染由WebUI实现；插件负责页面内容、声明的Skill和按令牌更新自身样式。父页面桥白名单不能代替后端授权。

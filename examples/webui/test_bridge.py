@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real cross-origin Chromium frames with explicit core fixtures, not M3 E2E."""
 import copy
+import base64
 import hashlib
 import json
 import os
@@ -33,6 +34,13 @@ def contribution(identifier="main", kind="window"):
     return {"deployment_id": DEPLOYMENT, "installation_id": INSTALLATION, "plugin_id": "org.xelab.fixture", "manifest_digest": "sha256:" + "b" * 64, "contribution_digest": spec_digest,
             "spec": spec, "frame_url": PLUGIN + "/ui/org.xelab.fixture/index.html", "frame_origin": PLUGIN, "availability": "ready", "reason_codes": [],
             "bindings": [{"alias": "echo", "skill_id": SKILL, "definition_digest": DIGEST, "modes": ["call", "batch"]}]}
+
+
+def framing_query(identifier, client_id="bridge-component"):
+    # Structural fixture only: real HMAC validation belongs to Core tests.
+    selector = {"client_id": client_id, "contribution_id": identifier, "origin_index": 0}
+    encoded = base64.urlsafe_b64encode(json.dumps(selector, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).rstrip(b"=").decode()
+    return "?xelab_frame=v1." + encoded + "." + "A" * 43
 
 
 FRAME = """<!doctype html><meta charset=utf-8><p>Independent test plugin</p><script>
@@ -154,6 +162,74 @@ window.bridge=new BridgeHost({{iframe:frame,api,contribution,subjectId:{json.dum
 
     def posts(self):
         return [call for call in self.calls if call["method"] == "POST"]
+
+    def test_fixed_framing_query_keeps_real_cross_origin_handshake_and_skill_call(self):
+        query = framing_query(self.current["spec"]["id"])
+        self.current["frame_url"] += query
+        frame = self.launch()
+        self.assertEqual(urlparse(frame.url).query, query.removeprefix("?"))
+        self.assertEqual(frame.evaluate("meta.parent_origin"), SHELL)
+        self.assertEqual(len(frame.evaluate("meta.channel_nonce")), 64)
+        self.send(frame)
+        self.assertTrue(self.responses(frame, 1)[0]["ok"])
+        self.assertEqual(len(self.posts()), 1)
+
+    def test_framing_query_rejects_ambiguous_encoding_unknown_fields_and_wrong_contribution(self):
+        self.page.goto(SHELL + "/")
+        self.page.wait_for_function("typeof launch === 'function'")
+        selector = {"client_id": "bridge-component", "contribution_id": "main", "origin_index": 0}
+        def encoded(raw):
+            return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+        def query(value=None, raw=None, mac="A" * 43):
+            raw = raw if raw is not None else json.dumps(selector if value is None else value, sort_keys=True, separators=(",", ":")).encode()
+            return "?xelab_frame=v1." + encoded(raw) + "." + mac
+        valid = query()
+        unicode_value = copy.deepcopy(self.current)
+        unicode_value["frame_url"] += framing_query("main", "界" * 128)
+        self.assertTrue(self.page.evaluate("""async value => {
+          const {validateContribution}=await import('/bridge.js');
+          return validateContribution(value,{parentOrigin:location.origin,coreOrigin:'https://core.example.test'}).spec.id==='main';
+        }""", unicode_value))
+        cases = {
+            "unknown_query": "?url=arbitrary",
+            "empty_query": "?",
+            "duplicate_query": valid + "&xelab_frame=again",
+            "extra_query": valid + "&other=1",
+            "wrong_contribution": query({**selector, "contribution_id": "detail"}),
+            "unknown_selector_field": query({**selector, "subject_id": SUBJECT}),
+            "duplicate_selector_field": query(raw=b'{"client_id":"bridge-component","client_id":"bridge-component","contribution_id":"main","origin_index":0}'),
+            "noncanonical_order": query(raw=b'{"origin_index":0,"contribution_id":"main","client_id":"bridge-component"}'),
+            "noncanonical_whitespace": query(raw=json.dumps(selector, sort_keys=True).encode()),
+            "invalid_utf8": query(raw=b"\xff"),
+            "byte_order_mark": query(raw=b"\xef\xbb\xbf" + json.dumps(selector, sort_keys=True, separators=(",", ":")).encode()),
+            "origin_string": query({**selector, "origin_index": "0"}),
+            "origin_out_of_range": query({**selector, "origin_index": 8}),
+            "noncanonical_number": query(raw=b'{"client_id":"bridge-component","contribution_id":"main","origin_index":0.0}'),
+            "empty_client": query({**selector, "client_id": ""}),
+            "oversize_client": query({**selector, "client_id": "x" * 129}),
+            "client_control": query({**selector, "client_id": "client\nname"}),
+            "client_unicode_control": query({**selector, "client_id": "client\u0085name"}),
+            "wrong_version": valid.replace("=v1.", "=v2."),
+            "selector_padding": valid.replace(".AAA", "=.AAA"),
+            "percent_encoding": valid.replace("v1", "%761"),
+            "plus_encoding": valid + "+",
+            "short_mac": query(mac="A" * 42),
+            "noncanonical_mac_bits": query(mac="A" * 42 + "B"),
+            "oversize_selector": "?xelab_frame=v1." + "A" * 769 + "." + "A" * 43,
+            "fragment": valid + "#unexpected",
+        }
+        for label, suffix in cases.items():
+            with self.subTest(case=label):
+                invalid = copy.deepcopy(self.current)
+                invalid["frame_url"] += suffix
+                code = self.page.evaluate("""async value => {
+                  const {validateContribution}=await import('/bridge.js');
+                  try {validateContribution(value,{parentOrigin:location.origin,coreOrigin:'https://core.example.test'});return 'accepted';}
+                  catch(error){return error.bridge?.code??'unexpected_error';}
+                }""", invalid)
+                self.assertEqual(code, "PERMISSION_DENIED")
+        self.assertEqual(self.page.locator("iframe").count(), 0)
+        self.assertEqual(self.calls, [])
 
     def test_handshake_budget_begins_after_real_reference_document_load(self):
         self.reference_assets = True

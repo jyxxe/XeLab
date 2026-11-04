@@ -2,7 +2,7 @@
 
 [实施索引](README.md) · [目标 Issue #38](https://github.com/jyxxe/XeLab/issues/38) · [里程碑](roadmap.md)
 
-状态快照：2026-11-04 21:23 UTC；本页保留该时刻的阶段证据，不自动代表后续分支状态。
+状态快照：2026-11-04 23:07 UTC；本页保留该时刻的阶段证据，不自动代表后续分支状态。
 GitHub 状态会继续变化，最终完成清单以[目标 #38](https://github.com/jyxxe/XeLab/issues/38)持续维护的实际证据为准。
 初始基线为 main
 `dbb35cbc7c2c110c88de7ba16dc2d4569fad3ad2`，内部 Schema 14。
@@ -20,7 +20,7 @@ GitHub 状态会继续变化，最终完成清单以[目标 #38](https://github.
 [Draft #45](https://github.com/jyxxe/XeLab/pull/45) 的独立 WebUI/桥、
 [#46](https://github.com/jyxxe/XeLab/pull/46) 的普通四类副作用/QueryResult 和
 [Draft #47](https://github.com/jyxxe/XeLab/pull/47) 的 HTTP Skill 六方法/SSE 均已有源码，
-最终合并及 main 门禁未完成；#46 的历史精确提交两个 job 已完整通过，#45/#47 仍有真实浏览器失败，M3 仍未完成。#42 的严格容量诊断与精确 tar 清理保持，
+最终合并及 main 门禁未完成；三个最新 focus 均已通过，full #45 发生登录前静态资源504，full #47 发生崩溃恢复夹具的后台锁冲突，#46 full/focus 已全部通过。新发现的两项 UI 元数据泄露已在本地实现修复并完成定向测试，最终树尚未验收，M3 仍未完成。#42 的严格容量诊断与精确 tar 清理保持，
 其成功不能倒推旧容量失败的根因已被证明。
 
 ## 范围与协作
@@ -91,9 +91,24 @@ GitHub 状态会继续变化，最终完成清单以[目标 #38](https://github.
 |---|---|
 | [#43](https://github.com/jyxxe/XeLab/pull/43) `68522810…` | [41850322061](https://github.com/jyxxe/XeLab/actions/runs/41850322061) 成功；已合并为 `a285c4ba…` |
 | [#44](https://github.com/jyxxe/XeLab/pull/44) `f427b4c5…` | [41851424259](https://github.com/jyxxe/XeLab/actions/runs/41851424259) 成功；已合并为 main `e9ad62b8…` |
-| [Draft #45](https://github.com/jyxxe/XeLab/pull/45) `10988924…` | [41906534772](https://github.com/jyxxe/XeLab/actions/runs/41906534772) focus 成功；full 在第2个实际成功 UI 动作的正文审计失败，只有1个已验证正文/2次POST。旧 CheckFailed/Other 未细分原因，不能放行或推断唯一根因 |
-| [#46](https://github.com/jyxxe/XeLab/pull/46) `4e8a42c2…` | [41906679990](https://github.com/jyxxe/XeLab/actions/runs/41906679990) full/focus 全部成功：各53 browser+11 Core、5 unique/6 POST、隐私flags=false/errors={}；workspace 256 passed/0 failed/12 ignored，11项前置真实组件另行执行，仅AWS未执行。已 ready，依赖 #45，未合并；后续修改仍须新精确CI |
-| [Draft #47](https://github.com/jyxxe/XeLab/pull/47) `6cc1e268…` | [41910926152](https://github.com/jyxxe/XeLab/actions/runs/41910926152) 真实HTTP/ordinary/XFS/恢复通过；focus在WebUI根200后、可信登录前Timeout。full第3次合法UI echo/text为真，但浏览器记录 SelectedRequestFailed，finished=false，故仅2个实际正文/3次POST；身份/重复校验尚未读取，不推断Core泄漏或CDP串正文。后续workspace/docs/protocol未执行，失败继续定位 |
+| [Draft #45](https://github.com/jyxxe/XeLab/pull/45) `3a3e0479…` | [41922158262](https://github.com/jyxxe/XeLab/actions/runs/41922158262) focus 成功：53 browser+11 Core、5 unique/6 POST、隐私flags=false/errors={}。full 的 api.js 返回504，可信登录和Skill调用尚未发生；观察到 static_unknown=1 的物理围栏，具体未完成阶段待固定枚举诊断，不能称整体通过 |
+| [#46](https://github.com/jyxxe/XeLab/pull/46) `7249b969…` | [41922164310](https://github.com/jyxxe/XeLab/actions/runs/41922164310) full/focus 全部成功：均为53 browser+11 Core，workspace/docs/protocol/lints/tracked-clean全部成功。历史 `4e8a42c2…` 的 [41906679990](https://github.com/jyxxe/XeLab/actions/runs/41906679990) 和 `0306352c…` 的 [41918457925](https://github.com/jyxxe/XeLab/actions/runs/41918457925) 也曾 full/focus 全绿；这些不替代新隐私修复验证。已 ready，依赖 #45，未合并 |
+| [Draft #47](https://github.com/jyxxe/XeLab/pull/47) `0cd93c72…` | [41922172107](https://github.com/jyxxe/XeLab/actions/runs/41922172107) focus 成功：53 browser+11 Core、5 unique/6 POST。full 的真实HTTP/ordinary通过，随后 XFS 进程崩溃夹具在 initializing 阶段收到后台锁冲突；未到真实崩溃检查点，F/workspace/docs/protocol未执行。测试观察竞态修复待新真实CI |
+
+本地尚未发布的稳定化包括公开 CSP 与 UI 游标的两个 P1 元数据泄露修复：
+CSP 不再枚举其他账户的部署来源，非默认动态壳使用仅限 framing 的固定政策证明；
+游标使用目的隔离 AES-GCM，并在 LIMIT 前按现 Policy 和实际 owner 预选。
+固定 ID 与 owned_by 的交集由可选只读候选收集器补全，再以原 Policy 逐对核实，
+不改变授权结果或把 owner 限定权限扩大到全局 ID。
+4项新增真实 PostgreSQL/独立 mTLS 回归已通过（80.88秒），覆盖非默认壳、
+Client/审批变化、query/凭证不转发、208个私有贡献不产生数量桶、合法翻页、
+跨来源游标拒绝及合法共享/错误 owner；这不是最终树全回归或真实 OCI 验收。
+
+前端严格 framing 参数及非默认壳实际 F 场景已提交 `d3515a9…`；
+XFS 夹具观察竞态修复已提交 `3f2be5b…`。后者仅把启动轮询改为逐层
+O_NOFOLLOW 的无锁只读观察，实际标记出现后仍执行原完整 XFS 校验并比对 inode/检查点，
+没有修改生产存储锁或放宽崩溃恢复断言。临时文件 flock 对照40轮通过，
+旧现场的实际 errno/持锁者仍未知；必须由新真实 XFS CI 验证。
 
 
 目录缺口与实际网络证据分别记录：早期缺少列表实现的503是源码分析，

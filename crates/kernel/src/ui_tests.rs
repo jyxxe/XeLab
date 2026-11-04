@@ -853,3 +853,6 @@ async fn actual_postgres_ui_snapshot_validates_structure_without_restoring_live_
         .unwrap();
     validate_snapshot(&c).await.unwrap();
 }
+
+#[path = "ui_frame_policy_tests.rs"]
+mod frame_policy;

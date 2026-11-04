@@ -2,7 +2,7 @@
 
 [实施目录](README.md) · [M3 进度](m3-progress.md) · [核心 OAuth/UI](m3-oauth-ui.md) · [WebUI 部署](../../examples/webui/DEPLOYMENT.md) · [独立 UI 插件](../../examples/ui-reference/README.md)
 
-记录日期：2026-11-04。D/E 的执行代码和 F 的真实集成测试已存在于开发分支；M3 尚未完成。main `e9ad62b83708e46569ca47f74413f6890950cdb5` 的 [CI 41860893005](https://github.com/jyxxe/XeLab/actions/runs/41860893005) 已成功，包含合并的 #39–44，尚不包含 #45–47。#46 的历史精确提交 `4e8a42c2…` 已在 [CI 41906679990](https://github.com/jyxxe/XeLab/actions/runs/41906679990) 的 full 和 focus 两个 job 完成真实 F、53 项浏览器检查与11项 Core 检查；这不替代后续修改、依赖 PR 或最终 main 的完整门禁。
+证据快照：2026-11-04 23:07 UTC。D/E 的执行代码和 F 的真实集成测试已存在，最终集成和新隐私修复门禁尚未完成；本快照不自动代表后续分支状态，最新状态见[目标 #38](https://github.com/jyxxe/XeLab/issues/38)。该时刻 main `e9ad62b83708e46569ca47f74413f6890950cdb5` 的 [CI 41860893005](https://github.com/jyxxe/XeLab/actions/runs/41860893005) 已成功，包含合并的 #39–44，尚不包含 #45–47。#46 的精确提交 `7249b969…` 已在 [CI 41922164310](https://github.com/jyxxe/XeLab/actions/runs/41922164310) 的 full 和 focus 两个 job 完成真实 F、53 项浏览器检查与11项 Core 检查，workspace/契约/lint全部通过；这不替代新隐私修复、依赖 PR 或最终 main 的完整门禁。
 ## 已实现路径
 
 - `examples/webui/server.py`、`Dockerfile`、`build_artifact.py`：独立 `org.xelab.webui`，UID/GID 65532，已有 mTLS Lifecycle、签名静态路由及公开运行配置；没有数据库或管理代理后门。
@@ -18,7 +18,7 @@
 
 | 检查 | 2026-11-04 已执行结果 | 不能据此证明的内容 |
 |---|---|---|
-| WebUI Node / 回环 mTLS / Chromium 桌面 / 隔离桥 | 17 / 9 / 20+12 / 10 项通过，无跳过 | 浏览器使用明确核心响应夹具，非真实 Owner/OCI 整体授权 |
+| WebUI Node / 回环 mTLS / Chromium 桌面 / 隔离桥 | 17 / 9 / 20+12 / 12 项通过，无跳过 | 浏览器使用明确核心响应夹具，非真实 Owner/OCI 整体授权；最新桥12项包含严格 framing 参数，真实非默认OCI壳场景待新CI |
 | 真实 HTTP/2 TLS / Chromium151 | 6 项通过：40 个不同 Call 正文与完成事件、10 次完成后取消；真实字节边界、UTF-8、超时与取消负向 | 本地 JSON 服务与 token provider 是明确适配器，不是 Core/OCI/OAuth 验收；204 的无正文语义与 Inspector 事件单独记录 |
 | 独立 UI 插件 Python / Node / Chromium | 7 / 5 / 4 项通过，无跳过 | 组件适配器不实现核心授权、OAuth、签名准入或 Runtime |
 | WebUI 打包组件 | `68e50b22…` 镜像，真实生成的 Lifecycle RPC、mTLS 静态服务通过 | 非签名安装，也不是生产镜像的整体核心调用 |
@@ -29,6 +29,10 @@
 HTTP/2 读取回归直接服务生产 `api.js`，不拦截或伪造浏览器响应。原实现同一回归中40次真实UI读取成功，但6次被Inspector报告取消，只有34份独立正文完成证据；修正后40份及10次完成后取消均通过。修正先在clone分支严格计数，不存第二份JavaScript块数组，合法正文才用原Response的native消费者读取并复核字节数；并行取消两分支，保留原上限、Content-Type、严格UTF-8、JSON和调用取消/超时。原tee分支仍缓存合法正文，不是常量内存。残留timer、releaseLock和简单TransformStream的单一根因均被对照反证，未据此修改预算或采用不合格候选。
 
 独立的#45真实OCI失败现场还发现reference在第三次POST之前进入draining/unhealthy；仅有成功Call不能排除独立静态租约围栏，cgroup删除也不能推导退出原因。新增固定Controller事件分别记录健康检查阶段与未知工作围栏，在停止前保留32条有界证据；测试只输出角色、枚举、计数与相对时间。健康阈值、原needed谓词、资源与物理围栏不变，真实最终CI仍须验证，不能称整体故障已修复。
+
+后续 `3a3e0479…` 的 full CI 明确发生在登录前：api.js 504、static_unknown=1、WebUI被物理围栏重启；没有发生OAuth或Skill POST。为区分等待位置，新增成功时静默的 `STATIC_UNSETTLED` 诊断，仅在未结算租约释放时输出 transport_setup/fetch/authority_monitor/lease_complete 枚举及耗时；phase_ms是当前阶段停留时间，不是累计fetch时间。收集器仍限32条、只映射内部部署到角色，不输出路径、query、凭据或原始错误。具体超时根因仍待真实阶段证据；不修改原deadline、授权监视或unknown围栏，缺失事件也不能作为没有失败的证明。
+
+公开 CSP 原先枚举无关账户的部署来源，UI游标原先明文携带被过滤部署标识并暴露全局候选数量桶；两者均是阻断合并的P1元数据泄露。现实现专用UI namespace的固定frame-src、公开默认/配置父源和经过真实OAuth Client绑定的framing-only精确父源，另以不透明游标和分页前Policy预选修复目录泄露。详见[贡献规范](../plugins/ui-contributions.md)。最新4项真实PostgreSQL/独立mTLS回归通过，但最终Core/UI全回归与真实OCI门禁仍待执行；不能把该证明当用户授权或把组件通过当整体通过。
 
 打包 QA 保留 `packaged-ui-qa-20261104/evidence.json`、源文件 SHA-256、探针及日志； 实际观察到 UID 65532、只读根、零有效 capability 和 NoNewPrivs。 该本地 Docker 的 `CgroupDriver=none`，CPU/内存/PID 标志仅已配置，**没有逐容器资源限额执行证据**。 临时容器、QA 镜像标签和测试私钥已删除；镜像短摘要是本次执行标识，不是发布/签名引用。
 
@@ -48,7 +52,7 @@ node --test examples/webui/test_api.mjs examples/ui-reference/test_bridge.mjs
 
 ## 实际部署与 CLI 恢复
 
-生产宿主需满足内核 **4C16G 加系统预留及插件预算**，不能套用下面测试的合成元数据池。 按[部署说明](../../examples/webui/DEPLOYMENT.md)构建、签名并通过真实 Publisher/安装 API 准入。 DNS 的核心域名和 `*.plugins.example.org` 应指向同一核心 HTTPS 监听器；证书须覆盖核心名和该通配符。 例如核心 `https://core.example.org:8443`，`server.listen=0.0.0.0:8443`， `ui_gateway.base_domain=plugins.example.org`、`public_port=8443`；各来源保留不同 Host，不能把全部 Host 改成核心 Host。 443 时使用无显式默认端口的规范 origin。`shell_origins=[]` 可由当前有效、已批准且健康的固定 WebUI Client 动态识别；不能把第三方任意源加入可信壳。 为部署分配的页面源是 `https://d-<部署 UUID 去连字符>.plugins.example.org:8443`，OAuth 回调固定在其 `/ui/org.xelab.webui/callback`。
+生产宿主需满足内核 **4C16G 加系统预留及插件预算**，不能套用下面测试的合成元数据池。 按[部署说明](../../examples/webui/DEPLOYMENT.md)构建、签名并通过真实 Publisher/安装 API 准入。 DNS 的核心域名和 `*.plugins.example.org` 应指向同一核心 HTTPS 监听器；证书须覆盖核心名和该通配符。 例如核心 `https://core.example.org:8443`，`server.listen=0.0.0.0:8443`， `ui_gateway.base_domain=plugins.example.org`、`public_port=8443`；各来源保留不同 Host，不能把全部 Host 改成核心 Host。 核心域名必须位于专用UI命名空间之外。443 时使用无显式默认端口的规范 origin。`shell_origins=[]` 时，裸静态页面只允许公开默认WebUI；非默认壳须有当前有效、已批准且健康的固定WebUI Client及Core生成的framing-only证明，不能把第三方任意源加入可信壳。 为部署分配的页面源是 `https://d-<部署 UUID 去连字符>.plugins.example.org:8443`，OAuth 回调固定在其 `/ui/org.xelab.webui/callback`。
 
 以下从仓库根目录运行，前提是已有有效核心、受信安装及私有 Owner token 文件。 设置真实的 `CORE_ORIGIN`、`CORE_CA_FILE`、`OWNER_TOKEN_FILE`、`OWNER_ID`、`INSTALLATION_ID` 和 `GATEWAY_AUTHORITY`（示例 `plugins.example.org:8443`）；不把密码/令牌写进命令或请求 JSON。 所有请求文件从仓库模板/契约样例和实际响应生成；检查 Client 规则并按对象范围收窄后再提交。
 

@@ -203,30 +203,27 @@ pub(crate) async fn frame_ancestors(
         .filter(|value| *value != own)
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let rows=c.query("SELECT d.id FROM deployments d JOIN installations n ON n.id=d.installation_id WHERE d.archived_at IS NULL AND d.spec->>'enabled'='true' AND d.phase='ready' AND n.state='installed' AND n.manifest ? 'webui' ORDER BY d.id LIMIT 513",&[]).await?;
-    if rows.len() > 512 {
-        return Err(Error::exhausted());
-    }
-    for row in rows {
-        let deployment: Uuid = row.get("id");
-        if deployment == contribution {
-            continue;
-        }
-        match check_deployment(c, app, deployment).await {
-            Ok(shell) => origins.push(shell.origin),
-            Err(error)
-                if matches!(
-                    error.code,
-                    "PERMISSION_DENIED"
-                        | "INVALID_CREDENTIAL"
-                        | "NOT_READY"
-                        | "RESOURCE_NOT_FOUND"
-                        | "INVALID_ARGUMENT"
-                ) =>
-            {
-                continue
+    if let Some(row) = c
+        .query_opt("SELECT deployment_id FROM default_ui WHERE singleton", &[])
+        .await?
+    {
+        if let Some(deployment) = row
+            .get::<_, Option<Uuid>>(0)
+            .filter(|id| *id != contribution)
+        {
+            match check_deployment(c, app, deployment).await {
+                Ok(shell) => origins.push(shell.origin),
+                Err(error)
+                    if matches!(
+                        error.code,
+                        "PERMISSION_DENIED"
+                            | "INVALID_CREDENTIAL"
+                            | "NOT_READY"
+                            | "RESOURCE_NOT_FOUND"
+                            | "INVALID_ARGUMENT"
+                    ) => {}
+                Err(error) => return Err(error),
             }
-            Err(error) => return Err(error),
         }
     }
     origins.sort_unstable();
@@ -333,6 +330,11 @@ pub(crate) async fn validate_callback(
     plugin_http::canonical_path(path)?;
     let selected = check_deployment(c, app, deployment).await?;
     let items = crate::contracts::strict_urlencoded(query.as_bytes(), 8192, 32)?;
+    if items.contains_key(frame_policy::QUERY) {
+        return Err(Error::invalid(
+            "Reserved framing query is not an OAuth callback",
+        ));
+    }
     let success = items
         .get("code")
         .and_then(Value::as_str)
@@ -412,44 +414,25 @@ pub(crate) async fn csp(
     if selected.manifest != *manifest {
         return Err(Error::conflict("WebUI binding changed"));
     }
-    let rows=c.query("SELECT d.id,n.manifest FROM deployments d JOIN installations n ON n.id=d.installation_id JOIN publishers p ON p.id=n.publisher_id WHERE d.archived_at IS NULL AND d.spec->>'enabled'='true' AND d.phase='ready' AND n.state='installed' AND p.status='trusted' AND n.manifest ? 'ui' AND (SELECT count(*) FROM instances i WHERE i.deployment_id=d.id AND i.phase='ready' AND i.health='alive' AND i.generation=d.observed_generation AND i.last_heartbeat_at>now()-interval '1 millisecond'*((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint+(n.manifest->'health'->>'timeout_ms')::bigint))=1 ORDER BY d.id LIMIT 513", &[]).await?;
-    if rows.len() > 512 {
-        return Err(Error::exhausted());
-    }
-    let mut origins = Vec::new();
-    for row in rows {
-        let id: Uuid = row.get("id");
-        let contribution: Value = row.get("manifest");
-        if id == deployment {
-            continue;
-        }
-        match crate::plugin_http_gateway::check_approval(c, app, id, &contribution).await {
-            Ok(()) => origins.push(
-                StaticOrigin::for_deployment(&app.config, id, None)?
-                    .origin()
-                    .to_owned(),
-            ),
-            Err(error)
-                if matches!(
-                    error.code,
-                    "PERMISSION_DENIED" | "INVALID_CREDENTIAL" | "NOT_READY" | "RESOURCE_NOT_FOUND"
-                ) =>
-            {
-                continue
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    if origins.iter().map(String::len).sum::<usize>() > 16384 {
-        return Err(Error::exhausted());
-    }
-    let frames = if origins.is_empty() {
-        "'none'".into()
+    // A dedicated allocation namespace discloses no individual deployment.
+    // Exact Host, signed static routes, current approval and Bridge authority
+    // remain mandatory; this source expression grants no core API access.
+    let base = app.config.text("ui_gateway", "base_domain");
+    let port = app.config.value["ui_gateway"]["public_port"]
+        .as_u64()
+        .ok_or_else(Error::denied)?;
+    let suffix = if port == 443 {
+        String::new()
     } else {
-        origins.join(" ")
+        format!(":{port}")
     };
+    let frames = format!("https://*.{base}{suffix}");
     Ok(format!("default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' blob:; media-src 'self' blob:; connect-src {}; frame-src {frames}; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",app.config.text("server","public_origin")))
 }
+
+#[path = "webui_frame_policy.rs"]
+mod frame_policy;
+pub(crate) use frame_policy::{framing_query, validate_framing_query};
 
 #[cfg(test)]
 #[path = "webui_tests.rs"]
