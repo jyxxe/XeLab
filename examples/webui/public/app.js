@@ -103,7 +103,14 @@ function clearPrivateViews() {
 }
 oauth.addEventListener('logout', clearPrivateViews);
 oauth.addEventListener('credentialchange',()=>{
-  for(const win of windows.values())win.bridge?.close('unavailable');
+  for(const win of windows.values()){
+    win.bridge?.close('unavailable');
+    if(win.app.id.startsWith('editor-')){
+      win.credentialChanged=true;win.controller?.abort();
+      for(const submit of win.content.querySelectorAll('[data-intent-submit]'))submit.disabled=true;
+      win.content.prepend(state('unavailable','原请求已锁定','访问凭证已轮换；请先核实原 Call/Operation，保留原请求键，再明确创建新的意图。'));
+    }
+  }
   for(const widget of widgetViews.values())widget.bridge?.close('unavailable');
   toast('访问凭证已轮换；旧插件页面通道已关闭，请先核实未完成的原调用，再明确打开。');
 });
@@ -254,6 +261,7 @@ function editor(title, operation, {params={}, initial={}, etag, body=true, note=
     const input = node('textarea',{'aria-label':'请求 JSON',spellcheck:false},JSON.stringify(initial,null,2));
     const outcome = node('div',{'aria-live':'polite'});
     const submit = button('提交',async()=> {
+      if(win.credentialChanged){toast('原请求来源已改变，请先核实结果。');return;}
       let value;
       try { value = body ? JSON.parse(input.value) : undefined; } catch { outcome.replaceChildren(state('error','JSON 格式错误','请修正后再提交。'));return; }
       submit.disabled = true;
@@ -262,8 +270,8 @@ function editor(title, operation, {params={}, initial={}, etag, body=true, note=
         const result = await request(operation,{params,body:value,etag,idempotencyKey:key,signal:win.controller.signal});
         outcome.replaceChildren(node('p',{},'核心已返回以下实际结果；异步 Operation 尚需检查其终态。'),raw(result.data));
       } catch (error) { outcome.replaceChildren(failure(error)); }
-      finally { submit.disabled = false; }
-    },{class:'primary'});
+      finally { submit.disabled = Boolean(win.credentialChanged); }
+    },{class:'primary','data-intent-submit':true});
     win.content.replaceChildren(node('div',{class:'editor-form'},node('p',{class:'muted'},note),...(body?[node('label',{},'请求 JSON',input)]:[]),node('p',{class:'code'},`幂等键：${key}`),submit,outcome));
   }},{ephemeral:true});
 }
@@ -298,7 +306,7 @@ async function plugins(win) {
       button('详情',()=>details('部署详情',item)),
       button(spec.enabled?'停用':'启用',()=>editor('改变部署启停','setDeploymentEnabled',{params:{deployment_id:item.id},initial:{enabled:!spec.enabled},etag:revision(item),note:'停用会撤销新路由。核心 API 与 CLI 仍可独立使用。'})),
       button('审批',()=>editor('审批插件版本','approvePlugin',{params:{deployment_id:item.id},initial:{rules:[],egress:[]},etag:revision(item)})),
-      button('配置',()=>editor('修改部署','updateDeployment',{params:{deployment_id:item.id},initial:spec,etag:revision(item)})));
+      button('配置',()=>editor('修改部署','updateDeployment',{params:{deployment_id:item.id},initial:{spec},etag:revision(item),note:'先停用部署并等待实例排空，才能修改配置。安装制品和卷绑定不可在此替换；升级、卷变更或启用应使用各自的工作流。'})));
     list.append(node('article',{class:'card'},node('h3',{},spec.display_name),node('p',{},node('span',{class:'badge'},item.phase),` · ${spec.enabled?'已启用':'已停用'}`),node('p',{class:'code'},item.id),node('p',{},(item.conditions||[]).join(' · ')),actions));
   }
   for (const item of rows(installations.data)) list.append(node('article',{class:'card'},node('h3',{},item.plugin_id),node('p',{},`版本 ${item.version} · ${item.state}`),node('p',{class:'code'},item.image_digest),node('div',{class:'toolbar'},button('安装详情',()=>details('固定安装制品',item)))));
