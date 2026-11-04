@@ -1,0 +1,281 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "XeLab independent UI contribution echo",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/plugins/org.xelab.ui-reference/echo": {
+      "post": {
+        "operationId": "echoUiReference",
+        "x-permission": "plugin.http.invoke",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "message": {
+                    "type": "string",
+                    "maxLength": 1024
+                  }
+                },
+                "required": [
+                  "message"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The submitted message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "maxLength": 1024
+                    }
+                  },
+                  "required": [
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Structured request failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_REQUEST",
+                        "DELEGATION_REQUIRED",
+                        "NOT_FOUND",
+                        "METHOD_NOT_ALLOWED",
+                        "BODY_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "UNAVAILABLE"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
