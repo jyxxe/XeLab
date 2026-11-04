@@ -1,7 +1,12 @@
 //! Root-only isolated containerd content-store recovery. Source image references
 //! are read only; a second daemon owns a newly created empty root and socket.
 use serde_json::json;
-use std::{fs, os::unix::fs::PermissionsExt, process::Stdio, time::Duration};
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    process::Stdio,
+    time::{Duration, Instant},
+};
 use tokio::{fs::File, process::Command};
 use xelab_kernel::{
     artifact,
@@ -81,6 +86,7 @@ async fn real_oci_archive_recovers_into_an_empty_independent_content_store() {
     let config = root.path().join("containerd.toml");
     fs::write(&config,format!("version = 2\nroot = \"{}\"\nstate = \"{}\"\ndisabled_plugins = [\"io.containerd.grpc.v1.cri\"]\n[grpc]\naddress = \"{}\"\n",root.path().join("content-root").display(),root.path().join("daemon-state").display(),socket.display())).unwrap();
     fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+    let daemon_log = tempfile::NamedTempFile::new_in(root.path()).unwrap();
     let mut daemon = Command::new("/usr/bin/containerd")
         .arg("--config")
         .arg(&config)
@@ -90,13 +96,15 @@ async fn real_oci_archive_recovers_into_an_empty_independent_content_store() {
         .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(daemon_log.reopen().unwrap()))
         .kill_on_drop(true)
         .spawn()
         .unwrap();
     value["runtime"]["socket"] = json!(socket);
     value["runtime"]["namespace"] = json!("xelab-cold-image-recovery");
     let target = Runtime::new(Config::from_value(value).unwrap());
+    let started_at = Instant::now();
+    let mut stage = "isolated daemon readiness";
     let result: Result<()> = async {
         let mut started = false;
         for _ in 0..100 {
@@ -112,6 +120,7 @@ async fn real_oci_archive_recovers_into_an_empty_independent_content_store() {
         if !started {
             return Err(Error::unavailable("Isolated containerd did not start"));
         }
+        archive_stage(&mut stage, started_at, "create cold namespace");
         target
             .ctr(&[
                 "namespaces".into(),
@@ -119,6 +128,7 @@ async fn real_oci_archive_recovers_into_an_empty_independent_content_store() {
                 "xelab-cold-image-recovery".into(),
             ])
             .await?;
+        archive_stage(&mut stage, started_at, "reject wrong archive digest");
         let mut wrong = saved.clone();
         wrong.sha256 = format!("sha256:{}", "0".repeat(64));
         if target.import_images(&mut archive, &wrong).await.is_ok() {
@@ -130,23 +140,30 @@ async fn real_oci_archive_recovers_into_an_empty_independent_content_store() {
         if !empty.is_empty() {
             return Err(Error::conflict("Failed archive check imported content"));
         }
+        archive_stage(&mut stage, started_at, "cold import");
         target.import_images(&mut archive, &saved).await?;
+        archive_stage(&mut stage, started_at, "verify cold image manifests");
         for image in &images {
             target
                 .verify_image(image, artifact::image_ref(image)?)
                 .await?;
         }
+        archive_stage(&mut stage, started_at, "reject second import");
         if target.import_images(&mut archive, &saved).await.is_ok() {
             return Err(Error::conflict(
                 "Nonempty namespace accepted a second import",
             ));
         }
+        archive_stage(&mut stage, started_at, "resume cold import");
         target.resume_images(&mut archive,&saved).await?;
+        archive_stage(&mut stage, started_at, "verify retained cold archive");
         target.verify_restored_images(&mut archive,&saved).await?;
         // Export two admitted names for the same manifest. A distinct empty
         // namespace then shares this daemon's already populated CAS.
+        archive_stage(&mut stage, started_at, "tag permitted alias");
         let alias = format!("docker.io/xelab-ci/permitted-alias@{}", artifact::image_ref(&images[0])?);
         target.ctr(&["images".into(), "tag".into(), images[0].clone(), alias.clone()]).await?;
+        archive_stage(&mut stage, started_at, "reject unrequested alias resume");
         if target.resume_images(&mut archive,&saved).await.is_ok() {return Err(Error::conflict("Resume accepted an unrequested existing image alias"));}
         let mut alias_names = images.clone();
         alias_names.push(alias);
@@ -154,15 +171,19 @@ async fn real_oci_archive_recovers_into_an_empty_independent_content_store() {
         let alias_file = tempfile::NamedTempFile::new()?;
         fs::set_permissions(alias_file.path(), fs::Permissions::from_mode(0o600))?;
         let mut alias_archive = tokio::fs::File::from_std(alias_file.reopen()?);
+        archive_stage(&mut stage, started_at, "export permitted aliases");
         let alias_saved = target.export_images(&alias_names, &mut alias_archive, 1024 * 1024 * 1024).await?;
         let mut shared_value=target.config.value.clone();shared_value["runtime"]["namespace"]=json!("xelab-shared-content-recovery");let shared=Runtime::new(Config::from_value(shared_value.clone())?);
+        archive_stage(&mut stage, started_at, "import into shared intact CAS");
         target.ctr(&["namespaces".into(),"create".into(),"xelab-shared-content-recovery".into()]).await?;shared.import_images(&mut alias_archive,&alias_saved).await?;
         // Simulate damaged media in this test daemon's private CAS only. The
         // source daemon and every other root remain untouched.
+        archive_stage(&mut stage, started_at, "corrupt private CAS layer");
         let manifest:serde_json::Value=serde_json::from_slice(&target.ctr(&["content".into(),"get".into(),artifact::image_ref(&images[0])?.into()]).await?)?;
         let layer=manifest["layers"][0]["digest"].as_str().ok_or_else(||Error::invalid("Fixture image has no layer"))?;
         let path=find_owned_blob(&root.path().join("content-root"),&layer[7..])?;
         corrupt_owned_blob(&path)?;
+        archive_stage(&mut stage, started_at, "reject or independently verify repaired CAS");
         shared_value["runtime"]["namespace"]=json!("xelab-damaged-content-recovery");let damaged=Runtime::new(Config::from_value(shared_value)?);target.ctr(&["namespaces".into(),"create".into(),"xelab-damaged-content-recovery".into()]).await?;
         let restored=damaged.import_images(&mut archive,&saved).await;
         // Upstream may repair a blob in a future version. Successful import is
@@ -174,7 +195,70 @@ async fn real_oci_archive_recovers_into_an_empty_independent_content_store() {
     .await;
     let _ = daemon.kill().await;
     let _ = daemon.wait().await;
+    if result.is_err() {
+        eprintln!(
+            "OCI archive recovery failed: stage={stage}, elapsed={:.3}s, result={result:?}",
+            started_at.elapsed().as_secs_f64()
+        );
+        archive_failure_diagnostics(root.path(), &daemon_log);
+    }
     result.unwrap();
+}
+
+fn archive_stage(stage: &mut &'static str, started: Instant, next: &'static str) {
+    *stage = next;
+    println!(
+        "OCI archive recovery stage={next}, elapsed={:.3}s",
+        started.elapsed().as_secs_f64()
+    );
+}
+
+fn archive_failure_diagnostics(root: &std::path::Path, daemon_log: &tempfile::NamedTempFile) {
+    use std::{
+        io::{Read, Seek, SeekFrom},
+        os::fd::AsRawFd,
+    };
+    let capacity = (|| -> std::io::Result<()> {
+        let directory = fs::File::open(root)?;
+        let mut info = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        if unsafe { libc::fstatvfs(directory.as_raw_fd(), info.as_mut_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: fstatvfs returned zero and initialized the complete output.
+        let info = unsafe { info.assume_init() };
+        eprintln!(
+            "Private recovery filesystem: blocks={}, free_blocks={}, available_blocks={}, fragment_bytes={}, free_inodes={}",
+            info.f_blocks, info.f_bfree, info.f_bavail, info.f_frsize, info.f_favail
+        );
+        Ok(())
+    })();
+    if let Err(error) = capacity {
+        eprintln!(
+            "Recovery capacity diagnostic unavailable: kind={:?}, os_error={:?}",
+            error.kind(),
+            error.raw_os_error()
+        );
+    }
+    let tail = (|| -> std::io::Result<Vec<u8>> {
+        let mut file = daemon_log.reopen()?;
+        let bytes = file.metadata()?.len().min(65536);
+        file.seek(SeekFrom::End(-(bytes as i64)))?;
+        let mut tail = Vec::new();
+        file.take(65536).read_to_end(&mut tail)?;
+        Ok(tail)
+    })();
+    match tail {
+        Ok(tail) => eprintln!(
+            "Isolated recovery containerd stderr (last {} bytes):\n{}",
+            tail.len(),
+            String::from_utf8_lossy(&tail)
+        ),
+        Err(error) => eprintln!(
+            "Recovery daemon diagnostic unavailable: kind={:?}, os_error={:?}",
+            error.kind(),
+            error.raw_os_error()
+        ),
+    }
 }
 
 fn find_owned_blob(root: &std::path::Path, name: &str) -> Result<std::path::PathBuf> {
