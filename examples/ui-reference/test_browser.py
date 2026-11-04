@@ -156,7 +156,7 @@ window.bridge=new BridgeHost({{iframe,api,contribution,subjectId:{json.dumps(SUB
             self.page.evaluate("value=>launch(value)", self.current)
         self.page.wait_for_function("states.some(state=>state[0]==='active')")
         frame = navigation.value
-        frame.wait_for_function("document.querySelector('#state').textContent.includes('ready') || document.querySelector('#state').textContent.includes('not granted')")
+        frame.wait_for_function("() => document.querySelector('#state').textContent.includes('ready') || document.querySelector('#state').textContent.includes('not granted')")
         return frame
 
     def test_real_frame_calls_real_independent_process_and_renders_text_only(self):

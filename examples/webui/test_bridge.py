@@ -130,7 +130,7 @@ window.bridge=new BridgeHost({{iframe:frame,api,contribution,subjectId:{json.dum
             self.page.evaluate("value=>launch(value)", self.current)
         self.page.wait_for_function("states.some(item=>item[0]==='active')")
         frame = navigated.value
-        frame.wait_for_function("messages.some(message=>message.type==='host.init')")
+        frame.wait_for_function("()=>messages.some(message=>message.type==='host.init')")
         return frame
 
     def send(self, frame, method="skill.call", params=None, identifier=1, overrides=None):
@@ -148,10 +148,10 @@ window.bridge=new BridgeHost({{iframe:frame,api,contribution,subjectId:{json.dum
         self.current = contribution("summary", "widget")
         frame = self.launch()
         self.page.evaluate("bridge.setVisible(false); bridge.setVisible(true)")
-        frame.wait_for_function("messages.some(message=>message.event==='visibility.changed'&&message.params.visible===true)")
+        frame.locator('html[data-visible="true"]').wait_for(state="attached")
         self.assertEqual(frame.evaluate("messages.filter(message=>message.event==='widget.refresh').length"), 0)
         self.page.evaluate("bridge.refresh()")
-        frame.wait_for_function("messages.some(message=>message.event==='widget.refresh')")
+        frame.wait_for_function("()=>messages.some(message=>message.event==='widget.refresh')")
         self.assertEqual(len(self.posts()), 0)
 
     def test_fixed_call_handshake_dom_isolation_and_stable_derived_key(self):
