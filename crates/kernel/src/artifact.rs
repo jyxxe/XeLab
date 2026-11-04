@@ -117,11 +117,20 @@ pub fn verify_signature(
 }
 
 pub fn validate_profile(manifest: &Value) -> Result<()> {
+    validate_profile_inner(manifest, false)
+}
+
+/// Internal execution validation for durable schema jobs. Public installation
+/// stays closed until format upgrades, restores and physical acceptance finish.
+pub(crate) fn validate_runtime_profile(manifest: &Value) -> Result<()> {
+    validate_profile_inner(manifest, true)
+}
+
+fn validate_profile_inner(manifest: &Value, allow_versioned: bool) -> Result<()> {
     validate("Manifest", manifest)?;
+    let versioned = manifest["data_schema_version"] != "none";
     for field in [
         "dependencies",
-        "requested_rules",
-        "volumes",
         "routes",
         "event_topics",
         "skills",
@@ -131,10 +140,34 @@ pub fn validate_profile(manifest: &Value) -> Result<()> {
             .get(field)
             .is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))
         {
-            return Err(Error::invalid("This M1 profile supports only stateless ordinary plugins without dependencies, proxy rules, UI, volumes or extensions"));
+            return Err(Error::invalid("This ordinary-plugin profile does not support dependencies, proxy rules, UI or extensions"));
         }
     }
-    if manifest["data_schema_version"] != "none"
+    if manifest
+        .get("requested_rules")
+        .and_then(Value::as_array)
+        .is_some_and(|rules| {
+            rules.iter().any(|r| {
+                r["required"] != false
+                    || !((r["rule"]["action"] == "secret.use"
+                        && r["rule"]["resource"]["kind"] == "secret")
+                        || (matches!(
+                            r["rule"]["action"].as_str(),
+                            Some("blob.read" | "blob.create")
+                        ) && r["rule"]["resource"]
+                            == serde_json::json!({"kind":"blob","match":"all"})))
+                    || r["rule"]
+                        .get("conditions")
+                        .is_some_and(|v| !v.as_object().is_some_and(serde_json::Map::is_empty))
+            })
+        })
+    {
+        return Err(Error::invalid(
+            "This profile permits only optional unconditional secret.use and Blob proxy requests",
+        ));
+    }
+    crate::volumes::validate_mounts(manifest)?;
+    if (versioned && !allow_versioned)
         || manifest
             .get("business_entry")
             .is_some_and(|v| v != "direct")
@@ -144,6 +177,31 @@ pub fn validate_profile(manifest: &Value) -> Result<()> {
         || manifest.get("extension_host").is_some()
     {
         return Err(Error::invalid("Unsupported plugin profile"));
+    }
+    if versioned {
+        let schema = manifest["data_schema_version"].as_str().unwrap();
+        let requests = manifest.get("requested_rules").and_then(Value::as_array);
+        let volumes = manifest["volumes"].as_array().unwrap();
+        if schema.len() > 64
+            || schema.chars().any(char::is_control)
+            || requests.is_some_and(|r| !r.is_empty())
+            || manifest["upgrade_strategy"] != "recreate"
+            || volumes.is_empty()
+            || volumes.len() > 16
+            || volumes.iter().any(|v| {
+                v["access"] != "rw"
+                    || v["scope"] != "deployment"
+                    || v["mount_path"].as_str().is_some_and(|path| {
+                        path == "/xelab-migration"
+                            || path.starts_with("/xelab-migration/")
+                            || "/xelab-migration".starts_with(&format!("{path}/"))
+                    })
+            })
+        {
+            return Err(Error::invalid(
+                "Versioned data requires an exclusive recreate volume group without proxy requests",
+            ));
+        }
     }
     let platform = if cfg!(target_arch = "x86_64") {
         "linux/amd64"
@@ -170,9 +228,11 @@ pub fn validate_profile(manifest: &Value) -> Result<()> {
     }
     crate::contracts::compile_business(&manifest["config_schema"])?;
     for cap in manifest["capabilities"].as_array().unwrap() {
-        if cap["side_effect"] != "none" || !cap["stream_item_schema"].is_null() {
+        if !(cap["side_effect"] == "none" || (versioned && cap["side_effect"] == "idempotent"))
+            || !cap["stream_item_schema"].is_null()
+        {
             return Err(Error::invalid(
-                "M1 accepts only non-streaming side_effect=none capabilities",
+                "This profile requires non-streaming capabilities with supported side effects",
             ));
         }
         for key in ["input_schema", "output_schema"] {
@@ -245,12 +305,8 @@ impl Artifact {
     }
     pub fn validate_deployment(&self, spec: &Value) -> Result<()> {
         validate("DeploymentSpec", spec)?;
-        if spec["replicas"].as_u64().unwrap_or(1) != 1
-            || !spec["volume_ids"].as_array().unwrap().is_empty()
-        {
-            return Err(Error::invalid(
-                "M1 requires one stateless replica without volumes",
-            ));
+        if spec["replicas"].as_u64().unwrap_or(1) != 1 {
+            return Err(Error::invalid("This runtime profile requires one replica"));
         }
         for field in ["cpu_millis", "memory_bytes", "ephemeral_bytes", "pids"] {
             if spec["limits"][field].as_u64() < self.manifest["minimum_resources"][field].as_u64() {
@@ -265,6 +321,65 @@ impl Artifact {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn versioned_execution_profile_keeps_public_installation_closed() {
+        let mut manifest: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/secret-manifest.json")).unwrap();
+        manifest["requested_rules"] = json!([]);
+        manifest["data_schema_version"] = json!("1");
+        manifest["capabilities"][0]["side_effect"] = json!("idempotent");
+        manifest["volumes"] = json!([{"name":"data","mount_path":"/data","access":"rw","scope":"deployment","minimum_bytes":1048576}]);
+        validate_runtime_profile(&manifest).unwrap();
+        assert!(validate_profile(&manifest).is_err());
+        for variant in [
+            "none_idempotent",
+            "no_volumes",
+            "read_only",
+            "scratch",
+            "parallel",
+            "proxy",
+            "non_idempotent",
+            "invalid_schema",
+        ] {
+            let mut wrong = manifest.clone();
+            match variant {
+                "none_idempotent" => wrong["data_schema_version"] = json!("none"),
+                "no_volumes" => wrong["volumes"] = json!([]),
+                "read_only" => wrong["volumes"][0]["access"] = json!("ro"),
+                "scratch" => wrong["volumes"][0]["mount_path"] = json!("/xelab-migration/nested"),
+                "parallel" => wrong["upgrade_strategy"] = json!("parallel_compatible"),
+                "proxy" => {
+                    wrong["requested_rules"] = json!([{"rule":{"action":"secret.use","resource":{"kind":"secret","match":"all"}},"required":false}])
+                }
+                "non_idempotent" => {
+                    wrong["capabilities"][0]["side_effect"] = json!("non_idempotent")
+                }
+                "invalid_schema" => wrong["data_schema_version"] = json!("a\nb"),
+                _ => unreachable!(),
+            }
+            assert!(validate_runtime_profile(&wrong).is_err(), "{variant}");
+        }
+    }
+
+    #[test]
+    fn optional_secret_requests_use_the_manifest_permission_request_contract() {
+        let manifest: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/secret-manifest.json")).unwrap();
+        validate_profile(&manifest).unwrap();
+        let mut required = manifest.clone();
+        required["requested_rules"][0]["required"] = json!(true);
+        assert!(
+            validate_profile(&required).is_err(),
+            "required requests cannot bypass explicit binding readiness"
+        );
+        let mut malformed = manifest.clone();
+        malformed["requested_rules"][0] = manifest["requested_rules"][0]["rule"].clone();
+        assert!(validate_profile(&malformed).is_err());
+        let mut broader = manifest.clone();
+        broader["requested_rules"][0]["rule"]["action"] = json!("blob.read");
+        assert!(validate_profile(&broader).is_err());
+    }
+
     use super::*;
     use serde_json::json;
     #[test]

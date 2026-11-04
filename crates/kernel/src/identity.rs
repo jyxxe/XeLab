@@ -69,6 +69,10 @@ pub fn audit_resource(
         "createChildAccount" => Some(("account", &response["account"]["id"])),
         "createApiKey" | "rotateApiKey" => Some(("credential", &response["credential"]["id"])),
         "createGroup" => Some(("group", &response["id"])),
+        "createVolume" => Some(("volume", &response["resource_id"])),
+        "createBackup" => Some(("backup", &response["resource_id"])),
+        "createSecret" => Some(("secret", &response["id"])),
+        "bindSecret" => Some(("secret", &response["spec"]["secret_id"])),
         _ => None,
     };
     if let Some((kind, id)) = created {
@@ -85,6 +89,9 @@ pub fn audit_resource(
         ("publisher_id", "publisher"),
         ("instance_id", "instance"),
         ("operation_id", "operation"),
+        ("secret_id", "secret"),
+        ("volume_id", "volume"),
+        ("backup_id", "backup"),
     ] {
         if let Some(id) = p.get(parameter) {
             return Resource::new(kind, id, None).json();
@@ -1258,7 +1265,7 @@ async fn create_grant(
 
 // Signed cursors bind the actor, credential, operation, filters and creation
 // watermark. Every page re-evaluates visibility; a cursor conveys no authority.
-async fn list(
+pub(crate) async fn list(
     c: &(impl GenericClient + Sync),
     auth: &Auth,
     ctx: &Context,
@@ -1328,6 +1335,10 @@ async fn list(
         "listAuditEvents" => ("audit_events", "AuditEvent", "audit.read", "audit"),
         "listRoles" => ("role_definitions", "Role", "", ""),
         "listPermissions" => ("permission_definitions", "PermissionDefinition", "", ""),
+        "listVolumes" => ("kernel_volumes", "Volume", "volume.read", "volume"),
+        "listBackups" => ("backups", "Backup", "backup.read", "backup"),
+        "listSecrets" => ("secrets", "Secret", "secret.metadata.read", "secret"),
+        "listSecretBindings" => ("secret_bindings", "SecretBinding", "secret.bind", "secret"),
         _ => return Err(Error::not_found()),
     };
     if name == "listRoles" || name == "listPermissions" {
@@ -1428,6 +1439,20 @@ async fn list(
                 object,
                 v["subject_id"].as_str().and_then(|v| v.parse().ok()),
             ),
+            "listSecretBindings" => {
+                let secret = id(&v, "secret_id")?;
+                let row = c
+                    .query_one("SELECT owner_id FROM secrets WHERE id=$1", &[&secret])
+                    .await?;
+                if crate::secrets::deployment_access(c, ctx, id(&v, "deployment_id")?)
+                    .await
+                    .is_err()
+                {
+                    continue;
+                }
+                Resource::new("secret", secret, Some(row.get(0)))
+            }
+            "listBackups" => Resource::new(kind, object, Some(id(&v, "created_by")?)),
             _ => Resource::new(kind, object, Some(id(&v, "owner_id")?)),
         };
         let visible = auth::rules_allow(&available, action, &resource, ctx.peer)
@@ -1441,6 +1466,8 @@ async fn list(
             "listAccounts" => account_value(c, object).await?,
             "listApiKeys" => key_value(c, object).await?,
             "listGrants" => grant_value(c, object).await?,
+            "listSecretBindings" => crate::secrets::binding_value(c, object).await?,
+            "listSecrets" => crate::secrets::metadata(c, object).await?,
             "listSessions" => {
                 v["account_id"] = v["owner_id"].clone();
                 v["last_seen_at"] = v["last_used_at"].clone();

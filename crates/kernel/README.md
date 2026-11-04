@@ -1,6 +1,6 @@
 # XeLab Kernel：M1 单节点内核与身份闭环
 
-这是基于现有 **2.8.0 契约**的 Rust 实现增量，crate 版本为 `0.1.0`。交付范围对应实施路线图的 **M1**：普通插件运行、身份继承、授权与管理闭环。现有 OpenAPI、Proto、Schema、SQL 基线保持原样。它不覆盖 M2–M6；合规容量宿主的生产发布验收仍须单独完成，见 [M1 验收记录](../../docs/implementation/m1-acceptance.md)。
+这是基于现有 **2.8.0 契约**的 Rust 实现增量，crate 版本为 `0.1.0`。交付范围对应实施路线图的 **M1**：普通插件运行、身份继承、授权与管理闭环。现有 OpenAPI、Proto、Schema、SQL 基线保持原样。本轮补充 [M2 Secret 托管与租约](../../docs/implementation/m2-secrets.md)、[Blob](../../docs/implementation/m2-blobs.md) 和 [持久卷](../../docs/implementation/m2-volumes.md)，其余 M2–M6 能力仍独立交付；合规容量宿主的生产发布验收仍须单独完成，见 [M1 验收记录](../../docs/implementation/m1-acceptance.md)。
 
 ## 已实现与边界
 
@@ -10,13 +10,19 @@
 | 身份与授权 | Owner 引导、五种内置角色、Guest 自助、固定父级子账户与激活、三种继承模式、不可变权限组版本/授权、API Key 签发/轮换/源链撤销、会话/密码管理、树配额、审计与签名分页 | OAuth、Skill/Workflow 执行委托与缓存式授权优化；OAuth 凭证拒绝认证 |
 | 制品 | 预导入的固定 OCI manifest digest；Ed25519 信封；原始清单摘要；契约文件摘要及内容一致性；严格 JSON/Schema 校验 | 在线拉取、image index 自动选平台、仓库登录、依赖安装、卸载及升级 |
 | 控制器 | 安装 → 创建停用部署 → 显式批准 → 启用 → Describe/Initialize/Health → Ready → 排空停止；持久意图和有限重启 | 多副本、滚动升级、有状态数据迁移、动态配置更新 |
-| 执行 | containerd/runc 真容器；cgroups v2 CPU/内存/PID；只读根目录、受限 tmpfs、无 Linux capabilities、隔离网络、工作负载 mTLS | 持久卷、外网/代理、HostService、GPU、微插件/MPR、Extension Plugin |
+| 执行 | containerd/runc 真容器；cgroups v2 CPU/内存/PID；只读根目录、受限 tmpfs、无 Linux capabilities、隔离网络、工作负载 mTLS | 外网/代理、HostService 其他方法、GPU、微插件/MPR、Extension Plugin |
 | 调用 | 普通插件直接、非流式、`side_effect=none` 调用；固定契约/可选固定部署；有界并发；树配额及密钥链累计调用上限；幂等记录；未知结果查询；异常调用停止确认后回收 | 等待队列、流、非纯调用、调用取消、Skill、Workflow、Batch、Schedule、Event |
+| 持久卷 | 独立 XFS 硬配额、容量预留、恢复 worker、实际计数、单写者 fence、OCI 挂载 | 多副本应用行为、数据 Schema 迁移、全平台恢复 |
+| Blob | 不可变二进制上传/下载、摘要/长度校验、pin/TTL、可恢复清理、HTTPS CLI | 全平台备份恢复 |
+| Secret | AES-256-GCM 托管、元数据 API、轮换/撤销、部署绑定、工作负载 mTLS 租约 | 主密钥轮换、备份恢复 |
+| 备份/恢复 | 部署级备份任务、验证后新卷切换；离线元数据数据流、空库导入与权限重置组件 | 全平台离线协调入口、Blob/镜像/卷整体重建、DataMigration、正式异机演练 |
 | 运维 | HTTPS 管理 API、通用 CLI、探针、结构化错误日志、数据库审计、故障恢复测试 | WebUI、UDS 控制通道、指标/Tracing 导出、自动备份、数据与 AI 平台 |
 
-只接受单副本、无状态、无依赖、无宿主权限申请、无卷、无 UI/路由、无扩展点的普通插件。业务 Schema 必须自包含；本版拒绝 `$ref/$id` 等引用，避免联网或读取宿主文件。并发池满时立即拒绝，不静默排队。未实现的管理操作返回明确错误，不返回模拟成功。
+只接受单副本、无依赖、无宿主权限申请、无 UI/路由、无扩展点的普通插件；允许受控持久卷，但 data_schema_version 仍须为 none，数据迁移单独交付。业务 Schema 必须自包含；本版拒绝 `$ref/$id` 等引用，避免联网或读取宿主文件。并发池满时立即拒绝，不静默排队。未实现的管理操作返回明确错误，不返回模拟成功。
 
-配置仍使用现有 `kernel.toml`；`unix_socket`、HostService 监听、持久存储配额后端、备份 URI 和 UI Gateway 在此子集中不提供对应服务。不要仅因配置被接受而认为这些能力已经启用。
+配置仍使用现有 `kernel.toml`；`unix_socket` 和 UI Gateway 在此子集中不提供对应服务。备份 URI 的标准 AWS 后端还需独立凭证、主密钥及仓库注册，见 [备份任务](../../docs/implementation/m2-backup-jobs.md)。不要仅因配置被接受而认为相关能力已经启用。
+
+工作负载 Blob 代理、显式批准与固定输入白名单见 [M2 Host Blob](../../docs/implementation/m2-host-blobs.md)。
 
 ## 构建与主机要求
 
@@ -44,12 +50,15 @@ cargo fmt --all -- --check
 
 ```bash
 xelabctl validate-config --config /etc/xelab/kernel.toml
-xelabctl migrate --config /etc/xelab/kernel.toml --target 2
+xelabctl migrate --config /etc/xelab/kernel.toml --target 13
 xelabctl bootstrap --config /etc/xelab/kernel.toml --owner-name admin
 xelabd --config /etc/xelab/kernel.toml
 ```
 
-`validate-config` 只验证结构和本地约束；不宣称宿主检查已经通过。迁移目标 2 在空库建立原始基线，或将已校验的 v1 数据库升级，随后创建调用来源计费表；重复执行只校验版本与校验和；bootstrap 只允许空账户库，须在启动守护进程前执行。守护进程不会隐式迁移数据库。
+`validate-config` 只验证结构和本地约束；不宣称宿主检查已经通过。当前迁移目标为 13：
+空库先建立原始基线，已有库先检查已应用的版本和校验和，再顺序执行追加迁移；
+重复执行仍核对布局与校验和。bootstrap 只允许空账户库，须在启动守护进程前执行。
+守护进程不会隐式迁移数据库。
 
 ## 管理与插件示例
 
@@ -148,6 +157,24 @@ CI 另在一次性 Linux 主机运行 `tests/oci.rs`：真实 containerd + Rust/
 
 - 调用准入在授权/调用事务锁内选择一个可用的真实来源路径，将请求凭证链与该路径全部 Grant 的来源凭证链合并检查 `max_calls`。独立来源取并集；耗尽的 Key 不阻断其他合法来源。`call_credential_charges` 与 Call 原子写入，幂等成功重放不重复计费，撤销 Grant/Key 不退还已用额度。轮换仍扣除已使用预算。
 - 自授 Grant 证明签发权限时，忽略同账户其他非引导自授绑定，只使用独立来源（外部 Grant、父级继承或初始 Owner）。这些自授绑定仍在最外层保留权限/来源记录；撤销独立来源后不能互相维持权限。此优化针对同账户自授，其他来源图仍受现有深度/路径边界限制。
-- 控制器每轮固定 `(created_at,id)` 上界，按每页 1000 条扫描全部未归档部署。禁用部署不再遮住尾部，扫描期间新增的后续部署交由下一轮处理。
+- 控制器启用与停用清理分别保存 `(created_at,id)` 游标与上界，每轮各最多 16 项，并在项间检查 250 ms 时间片。Probe 按实例代次复用、分批回收；已清理禁用记录不反复协调。完整行为、回归与单项延迟限制见 [Controller 稳定化](../../docs/implementation/m1-acceptance.md#controller-稳定化pr-4-遗留项)。
 
-升级前备份并停机，执行上面的 `--target 2` 后再启动。旧二进制拒绝 v2 元数据，不能直接回退。v1 已有的凭证/账户派生调用继续计入预算；旧版本未记录的实际 Grant 来源无法事后精确重建，因此已有受此漏洞影响的限次来源 Key 应在升级时撤销后重新签发，不把旧账本当成完整历史计费证据。
+升级前备份并停机，确认没有未完成任务，执行上面的 `--target 13` 后再启动。
+旧二进制拒绝不匹配的元数据版本，不能直接回退；原生快照恢复同样要求精确布局。
+v1 已有的凭证/账户派生调用继续计入预算；旧版本未记录的实际 Grant 来源无法事后精确重建，因此已有受此漏洞影响的限次来源 Key 应在升级时撤销后重新签发，不把旧账本当成完整历史计费证据。v7 持久备份任务见 [备份任务记录](../../docs/implementation/m2-backup-jobs.md)，v8 新卷恢复和切换见 [恢复实现](../../docs/implementation/m2-restores.md)，v9 元数据快照、启动门禁与权限重置见 [离线恢复组件](../../docs/implementation/m2-platform-recovery.md)。
+v10–11 部署重建与卷克隆见[部署重建实现](../../docs/implementation/m2-deployment-upgrades.md)，
+v12 格式初始化见[初始化监督器](../../docs/implementation/m2-schema-bootstrap.md)，
+v13 格式备份登记见[登记组件](../../docs/implementation/m2-format-backups.md)。
+格式变更执行器尚未接通，公开版本化制品安装入口仍关闭。
+
+## M2 存储后端预检
+
+`xelabctl storage-check --config /etc/xelab/kernel.toml` 只读验证平台卷目录的
+XFS project quota 强制执行条件。后端创建/扩容原语和真实文件系统测试见
+[M2-A 操作说明](../../docs/implementation/m2-storage.md)。公开 Volume API、
+异步恢复、挂载与内部 v5 迁移见 [M2 卷实现](../../docs/implementation/m2-volumes.md)；
+仅通过 capability 预检不代表整个卷服务已就绪。
+启动 readiness 等待 active/inactive 两条队列各自完成首轮固定水位扫描；
+首批成功不表示恢复完成。全局旧进程围栏完成后不因后续批次错误重复执行。
+
+Blob 的接口、容量边界、清理与 v4 升级说明见 [M2 Blob 实现记录](../../docs/implementation/m2-blobs.md)。

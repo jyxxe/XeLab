@@ -32,6 +32,11 @@ use xelab_kernel::{
     runtime::Runtime,
     tls,
 };
+#[path = "support/platform_source.rs"]
+mod platform_source;
+
+#[path = "support/upgrades.rs"]
+mod upgrade_acceptance;
 
 #[allow(clippy::too_many_arguments)] // Test request envelope.
 async fn api(
@@ -125,7 +130,12 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         .unwrap();
     let db = Db::new(format!("{base} dbname=xelab_oci")).unwrap();
     db.migrate().await.unwrap();
-    let directory = tempfile::tempdir().unwrap().keep();
+    let directory = tempfile::Builder::new()
+        .prefix("xelab-oci-source-")
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir_in("/mnt")
+        .unwrap()
+        .keep();
     let root = directory.as_path();
     let key = KeyPair::generate().unwrap();
     let mut ca = CertificateParams::new(vec!["xelab-test-ca".into()]).unwrap();
@@ -140,6 +150,9 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     value["storage"]["root_path"] = json!(root.join("state"));
     value["security"]["workload_ca_cert_file"] = json!(root.join("ca.crt"));
     value["security"]["workload_ca_key_file"] = json!(root.join("ca.key"));
+    value["security"]["master_key_file"] = json!(root.join("master.key"));
+    fs::write(root.join("master.key"), [42; 32]).unwrap();
+    fs::set_permissions(root.join("master.key"), fs::Permissions::from_mode(0o600)).unwrap();
     value["runtime"]["namespace"] = json!("xelab-ci");
     value["runtime"]["network_cidr"] = json!("172.29.240.0/24");
     value["server"]["host_rpc_listen"] = json!("172.29.240.1:7443");
@@ -159,6 +172,8 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     fs::write("/sys/fs/cgroup/xelab/plugins/memory.max", "1073741824").unwrap();
     fs::write("/sys/fs/cgroup/xelab/plugins/cpu.max", "200000 100000").unwrap();
     fs::create_dir_all(config.root()).unwrap();
+    fs::set_permissions(config.root(), fs::Permissions::from_mode(0o700)).unwrap();
+    runtime.prepare_host_service_network().await.unwrap();
     tls::issue(&config, None, &config.root().join("kernel-identity")).unwrap();
     let mut c = db.connect().await.unwrap();
     let tx = c.transaction().await.unwrap();
@@ -201,6 +216,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         leader: Arc::new(db.leader().await.unwrap()),
         ready: AtomicBool::new(false),
         shutdown: AtomicBool::new(false),
+        blob_uploads: tokio::sync::Semaphore::new(4),
     });
     let mut worker = tokio::spawn(controller::run(app.clone()));
     let router = router(app.clone());
@@ -504,6 +520,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
             &python_image,
             python_digest,
             &limits,
+            &[],
         )
         .await
         .unwrap();
@@ -626,6 +643,94 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         python_result.1["provider_instance_id"],
         python_instance.to_string()
     );
+    // Real plugin -> HostService mTLS path, with a signed requested secret.use
+    // rule, approved binding, rotation, and immediate binding revocation.
+    let host_worker = tokio::spawn(xelab_kernel::host::serve(app.clone()));
+    let secret = api(
+        &router,
+        "createSecret",
+        &[],
+        Some(token),
+        json!({"name":"oci-provider","value_base64":STANDARD.encode(b"oci-initial-secret")}),
+        "oci-secret",
+        None,
+    )
+    .await;
+    assert_eq!(secret.0, 201, "{}", secret.1);
+    let secret_id = secret.1["id"].as_str().unwrap();
+    let bound = api(
+        &router,
+        "bindSecret",
+        &[],
+        Some(token),
+        json!({"secret_id":secret_id,"deployment_id":python_deployment,"maximum_lease_seconds":60}),
+        "oci-bind-secret",
+        None,
+    )
+    .await;
+    assert_eq!(bound.0, 201, "{}", bound.1);
+    let binding = bound.1["id"].as_str().unwrap();
+    let probe = |expected: String, version: &str| {
+        vec![
+            "tasks".into(),
+            "exec".into(),
+            "--exec-id".into(),
+            format!("secret-{}", Uuid::new_v4()),
+            python_instance.to_string(),
+            "/usr/bin/python3".into(),
+            "/opt/plugin/lease_probe.py".into(),
+            binding.to_string(),
+            expected,
+            version.to_string(),
+        ]
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let initial = app
+        .runtime
+        .ctr(&probe(
+            contracts::digest(b"oci-initial-secret")[7..].to_string(),
+            "1",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(initial, b"lease-verified\n");
+    let rotated = api(
+        &router,
+        "rotateSecret",
+        &[("secret_id", secret_id.to_string())],
+        Some(token),
+        json!({"name":"oci-provider","value_base64":STANDARD.encode(b"oci-rotated-secret")}),
+        "oci-rotate-secret",
+        Some(1),
+    )
+    .await;
+    assert_eq!(rotated.0, 200, "{}", rotated.1);
+    let rotation = app
+        .runtime
+        .ctr(&probe(
+            contracts::digest(b"oci-rotated-secret")[7..].to_string(),
+            "2",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(rotation, b"lease-verified\n");
+    let revoked = api(
+        &router,
+        "revokeSecretBinding",
+        &[("binding_id", binding.to_string())],
+        Some(token),
+        Value::Null,
+        "oci-revoke-binding",
+        Some(1),
+    )
+    .await;
+    assert_eq!(revoked.0, 204, "{}", revoked.1);
+    assert_eq!(
+        app.runtime.ctr(&probe("denied".into(), "2")).await.unwrap(),
+        b"lease-denied\n"
+    );
+    host_worker.abort();
+    let _ = host_worker.await;
     // Real per-key lifetime accounting, including replay without another charge.
     let key_body = json!({"name":"one call","inheritance":{"mode":"selected","rules":[{"action":"capability.invoke","resource":{"kind":"capability","match":"ids","ids":["org.xelab.echo@1.0.0"]}}]},"conditions":{"expires_at":chrono::Utc::now()+chrono::Duration::hours(1),"max_calls":1}});
     let issued = api(
@@ -723,6 +828,10 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     );
     // A dropped HTTP task can leave a durable running call without a finalizer.
     // Recovery must fence the old process before returning its slot, then restart.
+    // Keep an unsettled disabled backlog larger than the old 1000-row page.
+    // Recovery and health work must proceed before this cleanup sweep finishes.
+    c.execute("INSERT INTO deployments(id,owner_id,installation_id,spec,phase,created_at,updated_at) SELECT gen_random_uuid(),owner_id,installation_id,'{\"enabled\":false}'::jsonb,'reconciling',created_at-interval '1 day',now() FROM deployments CROSS JOIN generate_series(1,1200) WHERE id=$1", &[&deployment.parse::<Uuid>().unwrap()]).await.unwrap();
+    let recovery_started = tokio::time::Instant::now();
     let abandoned = Uuid::new_v4();
     let prior: Uuid = called.1["call_id"].as_str().unwrap().parse().unwrap();
     let tx = c.transaction().await.unwrap();
@@ -754,6 +863,20 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         recovered,
         "abandoned call slot is reclaimed and stable provider recovers"
     );
+    assert!(recovery_started.elapsed() < Duration::from_secs(60));
+    let backlog: i64 = c.query_one("SELECT count(*) FROM deployments WHERE spec->'enabled'='false'::jsonb AND phase='reconciling'", &[]).await.unwrap().get(0);
+    assert!(
+        backlog > 0,
+        "call recovery must not wait for the disabled sweep"
+    );
+    // Clean just the fixture rows (they have no instances/operations) so the
+    // subsequent explicit disable operations retain their own latency budget.
+    c.execute(
+        "DELETE FROM deployments WHERE spec=$1",
+        &[&json!({"enabled":false})],
+    )
+    .await
+    .unwrap();
     // RUN-07: execute the shipped CLI over HTTPS against the same API, without WebUI.
     let leaf = KeyPair::generate().unwrap();
     let server_cert = CertificateParams::new(vec!["127.0.0.1".into()])
@@ -806,6 +929,23 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     let cli_value: Value = serde_json::from_slice(&cli.stdout).unwrap();
     assert_eq!(cli_value["output"], called.1["output"]);
     serve.abort();
+    // Component-only: verify the actual RUN-03 exec gate / cgroup cleanup on
+    // the disposable CI plugin. This does not satisfy production host admission.
+    let component = tokio::process::Command::new("python3")
+        .args([
+            "tools/acceptance/oci_stress_component.py",
+            &python_instance.to_string(),
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        component.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&component.stdout),
+        String::from_utf8_lossy(&component.stderr)
+    );
+    println!("{}", String::from_utf8_lossy(&component.stdout));
     let python_value = api(
         &router,
         "getDeployment",
@@ -853,6 +993,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     assert_eq!(disabled.0, 202, "{}", disabled.1);
     operation(&router, disabled.1["id"].as_str().unwrap(), token).await;
     assert!(!app.runtime.running(instance).await.unwrap());
+    host_blob_component(&app, &router, token, publisher, &signing).await;
     assert_eq!(
         c.query_one("SELECT reserved_cpu_millis FROM node_budget", &[])
             .await
@@ -860,6 +1001,31 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
             .get::<_, i64>(0),
         0
     );
+    // Leave one real signed, initialized workload running for the host-admin
+    // offline freeze after the normal controller has relinquished leadership.
+    let current = api(
+        &router,
+        "getDeployment",
+        &params,
+        Some(token),
+        Value::Null,
+        "offline-source-current",
+        None,
+    )
+    .await;
+    let enable = api(
+        &router,
+        "setDeploymentEnabled",
+        &params,
+        Some(token),
+        json!({"enabled":true}),
+        "offline-source-enable",
+        current.1["revision"].as_i64(),
+    )
+    .await;
+    assert_eq!(enable.0, 202, "{}", enable.1);
+    operation(&router, enable.1["id"].as_str().unwrap(), token).await;
+    upgrade_acceptance::exercise(&app, &router, token, publisher, &signing, &deployment).await;
     let revoke = api(
         &router,
         "revokeSession",
@@ -890,6 +1056,259 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     );
     app.shutdown.store(true, Ordering::SeqCst);
     worker.abort();
+    let _ = worker.await;
+    // The test's API App is deliberately still held by Router clones. Terminate
+    // its old leader only after stopping the controller, then exercise normal
+    // offline host/database lease acquisition with root-private credentials.
+    let pid: i32 = app
+        .leader
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    c.query_one("SELECT pg_terminate_backend($1)", &[&pid])
+        .await
+        .unwrap();
+    let mut offline_value = app.config.value.clone();
+    for (section, key, name, bytes) in [
+        (
+            "database",
+            "dsn_file",
+            "offline.dsn",
+            format!("{base} dbname=xelab_oci").into_bytes(),
+        ),
+        (
+            "security",
+            "token_hmac_key_file",
+            "offline.hmac",
+            vec![42; 32],
+        ),
+        (
+            "server",
+            "tls_key_file",
+            "offline-server.key",
+            leaf.serialize_pem().into_bytes(),
+        ),
+    ] {
+        let path = root.join(name);
+        fs::write(&path, bytes).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        offline_value[section][key] = json!(path);
+    }
+    let offline_config = Config::from_value(offline_value).unwrap();
+    match xelab_kernel::offline::Session::open(offline_config.clone(), false).await {
+        Err(error) => assert_eq!(error.status.as_u16(), 400),
+        Ok(_) => panic!("offline session accepted missing downtime authorization"),
+    }
+    assert!(
+        !app.runtime.inventory().await.unwrap().is_empty(),
+        "a rejected maintenance request must leave the live source alone"
+    );
+    let offline = Arc::new(
+        xelab_kernel::offline::Session::open(offline_config, true)
+            .await
+            .unwrap(),
+    );
+    assert!(
+        db.leader().await.is_err(),
+        "offline session owns the database"
+    );
+    let frozen = offline.freeze_source().await.unwrap();
+    assert!(!frozen.images().is_empty());
+    assert!(!frozen.stopped_lsn().is_empty());
+    assert!(frozen.volume_sources().await.unwrap().is_empty());
+    assert!(app.runtime.inventory().await.unwrap().is_empty());
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM instances WHERE phase<>'stopped' OR runtime_id IS NOT NULL",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        0
+    );
+    let mut metadata = Vec::new();
+    let summary = frozen.export_metadata(&mut metadata).await.unwrap();
+    assert_eq!(summary.bytes, metadata.len() as u64);
+    assert!(summary.rows > 0);
+    println!("Offline source: real signed OCI Drain/stop, exclusive leases, image-index verification and consistent metadata export passed (not off-host acceptance)");
+    drop(frozen);
+    let source_volume = platform_source::SourceVolume::create(
+        root,
+        &app.config.root(),
+        &db,
+        owner,
+        session["session"]["id"].as_str().unwrap().parse().unwrap(),
+    )
+    .await;
+    // Exercise the complete capture driver against the CI's real local S3
+    // fixture. Its evidence remains false; no production endpoint override.
+    use xelab_kernel::{
+        backup_repository::Repository,
+        storage::{
+            backup_transfer::{self, raw},
+            metadata_snapshot, s3,
+        },
+    };
+    let endpoint =
+        std::env::var("XELAB_TEST_S3_ENDPOINT").expect("real isolated test object store");
+    let bucket = format!("xelab-platform-capture-{}", Uuid::new_v4().simple());
+    let location = s3::Location::aws(&format!("s3://{bucket}/source/"), "us-east-1")
+        .unwrap()
+        .compatible(&endpoint)
+        .unwrap();
+    let credentials = root.join("offline-s3.json");
+    fs::write(
+        &credentials,
+        b"{\"access_key_id\":\"xelab-test\",\"secret_access_key\":\"test-only-backup-password\"}",
+    )
+    .unwrap();
+    fs::set_permissions(&credentials, fs::Permissions::from_mode(0o600)).unwrap();
+    let client =
+        Arc::new(s3::Client::new(location, s3::Credentials::load(&credentials).unwrap()).unwrap());
+    client.create_bucket().await.unwrap();
+    let repository = Uuid::new_v4();
+    let uri = format!("s3://{bucket}/source/");
+    c.execute("INSERT INTO backup_repositories(id,location,region,state) VALUES($1,$2,'us-east-1','ready')",&[&repository,&uri]).await.unwrap();
+    client
+        .put(
+            "xelab-repository.identity",
+            serde_json::to_vec(&json!({"format":1,"repository_id":repository})).unwrap(),
+        )
+        .await
+        .unwrap();
+    let objects = Arc::new(
+        client
+            .scoped(&format!("repositories/{repository}"))
+            .unwrap(),
+    );
+    let repo = Repository {
+        id: repository,
+        objects: objects.clone(),
+    };
+    let receipt = xelab_kernel::offline::backup::capture(
+        offline.clone(),
+        repo,
+        zeroize::Zeroizing::new([42; 32]),
+    )
+    .await
+    .unwrap();
+    assert!(!receipt.off_host);
+    let report =
+        std::env::var("XELAB_PLATFORM_SOURCE_RECEIPT").expect("private source report path");
+    fs::write(&report,serde_json::to_vec(&json!({"receipt":receipt,"owner_id":owner,"location":uri,"volume_id":source_volume.volume,"source_filesystem":source_volume.filesystem})).unwrap()).unwrap();
+    fs::set_permissions(&report, fs::Permissions::from_mode(0o600)).unwrap();
+    source_volume.destroy();
+    let repo = Repository {
+        id: receipt.repository_id,
+        objects: objects.clone(),
+    };
+    let value = repo
+        .read_manifest(
+            receipt.backup_id,
+            receipt.manifest_object,
+            &[42; 32],
+            &receipt.manifest_digest,
+        )
+        .await
+        .unwrap();
+    let manifest: xelab_kernel::offline::backup::Manifest = serde_json::from_value(value).unwrap();
+    assert_eq!(
+        manifest.metadata_summary.schema_version,
+        xelab_kernel::db::SCHEMA_VERSION
+    );
+    assert!(manifest.metadata_summary.rows > 0);
+    assert!(!manifest.installations.is_empty());
+    assert!(manifest.images.is_some());
+    assert!(!manifest.off_host);
+    assert_eq!(manifest.volumes.len(), 1);
+    assert!(manifest.blob_count > 0);
+    // Verify the actual encrypted native stream again on a fresh private file.
+    let private = tempfile::NamedTempFile::new_in(root).unwrap();
+    let target = raw::Target::new(private.reopen().unwrap()).unwrap();
+    let pool = backup_transfer::Pool::default().raw(None);
+    let restored = pool
+        .download_file(
+            objects.clone(),
+            target,
+            raw::Object {
+                backup: receipt.backup_id,
+                object: manifest.metadata.object,
+                maximum_bytes: manifest.metadata.plaintext.bytes,
+            },
+            zeroize::Zeroizing::new([42; 32]),
+            raw::Expected {
+                plaintext: manifest.metadata.plaintext.clone(),
+                ciphertext: manifest.metadata.ciphertext.clone(),
+            },
+            Duration::from_secs(300),
+        )
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    assert!(!restored.verified.off_host);
+    admin
+        .batch_execute("CREATE DATABASE xelab_oci_metadata_readback")
+        .await
+        .unwrap();
+    let recovered = Db::new(format!("{base} dbname=xelab_oci_metadata_readback")).unwrap();
+    recovered.migrate().await.unwrap();
+    let mut restored_client = recovered.connect().await.unwrap();
+    let recovery = Uuid::new_v4();
+    restored_client.execute("INSERT INTO platform_recovery_state(recovery_id,backup_id,phase) VALUES($1,$2,'importing')",&[&recovery,&receipt.backup_id]).await.unwrap();
+    let mut metadata_file = tokio::fs::File::from_std(restored.file);
+    metadata_snapshot::import(
+        &mut restored_client,
+        &mut metadata_file,
+        &manifest.metadata_summary,
+        recovery,
+        owner,
+        "new offline recovery acceptance password",
+    )
+    .await
+    .unwrap();
+    assert!(
+        recovered.check().await.is_err(),
+        "physical recovery is still incomplete; metadata import must not open the gate"
+    );
+    let rows = restored_client
+        .query("SELECT id,size_bytes,digest FROM blobs ORDER BY id", &[])
+        .await
+        .unwrap();
+    assert_eq!(rows.len() as u64, manifest.blob_count);
+    for row in rows {
+        let id: Uuid = row.get("id");
+        let bytes: i64 = row.get("size_bytes");
+        let digest: String = row.get("digest");
+        let private = tempfile::NamedTempFile::new_in(root).unwrap();
+        let restored = pool
+            .download_file(
+                objects.clone(),
+                raw::Target::new(private.reopen().unwrap()).unwrap(),
+                raw::Object {
+                    backup: receipt.backup_id,
+                    object: id,
+                    maximum_bytes: bytes as u64,
+                },
+                zeroize::Zeroizing::new([42; 32]),
+                raw::Expected {
+                    plaintext: xelab_kernel::storage::backup_crypto::Summary {
+                        bytes: bytes as u64,
+                        digest,
+                    },
+                    ciphertext: None,
+                },
+                Duration::from_secs(300),
+            )
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert!(!restored.verified.off_host);
+    }
+    println!("Platform source capture: native metadata, actual OCI and exact Blob objects uploaded and remotely verified; compatible fixture off_host=false (not whole-host restore acceptance)");
 }
 
 fn counter(path: &std::path::Path, name: &str) -> u64 {
@@ -1142,4 +1561,178 @@ async fn grant_source_budget(router: &Router, db: &Db, owner: Uuid, token: &str,
         1,
         "revocation never refunds used budget"
     );
+}
+
+async fn blob_http(
+    router: &Router,
+    operation: &str,
+    token: &str,
+    id: Option<&str>,
+    data: &[u8],
+) -> (u16, Vec<u8>) {
+    let (mut path, method) = contracts::openapi()["paths"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .flat_map(|(p, ms)| ms.as_object().unwrap().iter().map(move |(m, s)| (p, m, s)))
+        .find(|(_, _, s)| s["operationId"] == operation)
+        .map(|(p, m, _)| (p.clone(), m.to_uppercase()))
+        .unwrap();
+    if let Some(id) = id {
+        path = path.replace("{blob_id}", id);
+    }
+    let mut request = Request::builder()
+        .method(method.as_str())
+        .header("authorization", format!("Bearer {token}"));
+    if operation == "uploadBlob" {
+        path.push_str("?content_type=application%2Foctet-stream");
+        request = request
+            .header("content-type", "application/octet-stream")
+            .header("content-length", data.len())
+            .header("x-content-sha256", contracts::digest(data))
+            .header("idempotency-key", Uuid::new_v4().to_string());
+    }
+    let mut request = request.uri(path).body(Body::from(data.to_vec())).unwrap();
+    request.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:30000".parse::<SocketAddr>().unwrap(),
+    ));
+    let response = router.clone().oneshot(request).await.unwrap();
+    (
+        response.status().as_u16(),
+        to_bytes(response.into_body(), 67108865)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+}
+async fn host_blob_component(
+    app: &Arc<App>,
+    router: &Router,
+    token: &str,
+    publisher: Uuid,
+    signing: &SigningKey,
+) {
+    let raw = fs::read("examples/generated-host-blob/xelab/plugin.json").unwrap();
+    let manifest: Value = serde_json::from_slice(&raw).unwrap();
+    let image = std::env::var("XELAB_TEST_HOST_BLOB_IMAGE").unwrap();
+    let envelope =
+        artifact::signature_envelope(&manifest, artifact::image_ref(&image).unwrap(), &raw)
+            .unwrap();
+    let install=api(router,"installPlugin",&[],Some(token),json!({"publisher_id":publisher,"image":image,"signature":STANDARD.encode(signing.sign(envelope.as_bytes()).to_bytes())}),"host-blob-install",None).await;
+    assert_eq!(install.0, 202, "{}", install.1);
+    let installed = operation(router, install.1["id"].as_str().unwrap(), token).await;
+    let created=api(router,"createDeployment",&[],Some(token),json!({"installation_id":installed["installation_id"],"display_name":"Host Blob component","enabled":false,"limits":{"cpu_millis":100,"memory_bytes":67108864,"ephemeral_bytes":1048576,"pids":64},"config":{},"volume_ids":[]}),"host-blob-deploy",None).await;
+    assert_eq!(created.0, 202, "{}", created.1);
+    let deployment = operation(router, created.1["id"].as_str().unwrap(), token).await
+        ["deployment_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let params = [("deployment_id", deployment.clone())];
+    let approval = json!({"rules":[{"action":"blob.read","resource":{"kind":"blob","match":"all"}},{"action":"blob.create","resource":{"kind":"blob","match":"all"}}],"egress":[]});
+    let approved = api(
+        router,
+        "approvePlugin",
+        &params,
+        Some(token),
+        approval,
+        "host-blob-approve",
+        Some(1),
+    )
+    .await;
+    assert_eq!(approved.0, 200, "{}", approved.1);
+    let enabled = api(
+        router,
+        "setDeploymentEnabled",
+        &params,
+        Some(token),
+        json!({"enabled":true}),
+        "host-blob-enable",
+        Some(2),
+    )
+    .await;
+    assert_eq!(enabled.0, 202, "{}", enabled.1);
+    operation(router, enabled.1["id"].as_str().unwrap(), token).await;
+    let source = b"source bytes for the actual OCI Blob proxy";
+    let uploaded = blob_http(router, "uploadBlob", token, None, source).await;
+    assert_eq!(uploaded.0, 201, "{}", String::from_utf8_lossy(&uploaded.1));
+    let source_meta: Value = serde_json::from_slice(&uploaded.1).unwrap();
+    let host = tokio::spawn(xelab_kernel::host::serve(app.clone()));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let input = json!({"contract":manifest["capabilities"][0]["contract"],"input":{"message":"OCI-created Blob","blob_id":source_meta["id"],"export":true},"provider_deployment_id":deployment,"timeout_ms":10000});
+    let invoked = api(
+        router,
+        "invokeCapability",
+        &[],
+        Some(token),
+        input.clone(),
+        "host-blob-invoke",
+        None,
+    )
+    .await;
+    assert_eq!(invoked.0, 200, "{}", invoked.1);
+    let output = &invoked.1["output"];
+    assert_eq!(output["source_digest"], contracts::digest(source));
+    assert_eq!(
+        output["blob"]["digest"],
+        contracts::digest(b"OCI-created Blob")
+    );
+    let downloaded = blob_http(
+        router,
+        "downloadBlob",
+        token,
+        output["blob"]["blob_id"].as_str(),
+        b"",
+    )
+    .await;
+    assert_eq!(downloaded.0, 200);
+    assert_eq!(downloaded.1, b"OCI-created Blob");
+    let replay = api(
+        router,
+        "invokeCapability",
+        &[],
+        Some(token),
+        input,
+        "host-blob-invoke",
+        None,
+    )
+    .await;
+    assert_eq!(replay.1, invoked.1);
+    let c = app.db.connect().await.unwrap();
+    let call: Uuid = invoked.1["call_id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM host_blob_outputs WHERE call_id=$1",
+            &[&call]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        1
+    );
+    host.abort();
+    let _ = host.await;
+    let current = api(
+        router,
+        "getDeployment",
+        &params,
+        Some(token),
+        Value::Null,
+        "host-blob-read",
+        None,
+    )
+    .await;
+    let disabled = api(
+        router,
+        "setDeploymentEnabled",
+        &params,
+        Some(token),
+        json!({"enabled":false}),
+        "host-blob-disable",
+        current.1["revision"].as_i64(),
+    )
+    .await;
+    assert_eq!(disabled.0, 202, "{}", disabled.1);
+    operation(router, disabled.1["id"].as_str().unwrap(), token).await;
+    println!("Host Blob: actual signed OCI -> delegated ReadBlob/WriteBlob -> verified HTTP download and call replay passed");
 }

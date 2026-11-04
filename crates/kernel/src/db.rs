@@ -9,7 +9,156 @@ use uuid::Uuid;
 
 pub const BASELINE: &str = include_str!("../../../docs/contracts/metadata.sql");
 const CALL_CHARGES: &str = include_str!("../migrations/0002_call_credential_charges.sql");
+const SECRET_AUTHORITY: &str = include_str!("../migrations/0003_secret_authority.sql");
+const BLOB_DELETIONS: &str = include_str!("../migrations/0004_blob_deletions.sql");
+const VOLUME_SERVICE: &str = include_str!("../migrations/0005_volume_service.sql");
+const HOST_BLOB: &str = include_str!("../migrations/0006_host_blob.sql");
+const BACKUP_JOBS: &str = include_str!("../migrations/0007_backup_jobs.sql");
+const RESTORE_VOLUMES: &str = include_str!("../migrations/0008_restore_volumes.sql");
+const PLATFORM_RECOVERY: &str = include_str!("../migrations/0009_platform_recovery.sql");
+const DEPLOYMENT_UPGRADES: &str = include_str!("../migrations/0010_deployment_upgrades.sql");
+const UPGRADE_VOLUME_CLONES: &str = include_str!("../migrations/0011_upgrade_volume_clones.sql");
+const VOLUME_SCHEMA_JOBS: &str = include_str!("../migrations/0012_volume_schema_jobs.sql");
+const SCHEMA_BACKUP_REGISTRATION: &str =
+    include_str!("../migrations/0013_schema_backup_registration.sql");
+const MIGRATIONS: [&str; 13] = [
+    BASELINE,
+    CALL_CHARGES,
+    SECRET_AUTHORITY,
+    BLOB_DELETIONS,
+    VOLUME_SERVICE,
+    HOST_BLOB,
+    BACKUP_JOBS,
+    RESTORE_VOLUMES,
+    PLATFORM_RECOVERY,
+    DEPLOYMENT_UPGRADES,
+    UPGRADE_VOLUME_CLONES,
+    VOLUME_SCHEMA_JOBS,
+    SCHEMA_BACKUP_REGISTRATION,
+];
+pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 pub const LEADER_LOCK: i64 = 0x58454c41424d3101;
+
+/// Only code-owned base tables can enter an offline metadata snapshot. Views,
+/// migration history and the target's recovery gate are never imported.
+pub(crate) fn snapshot_tables() -> Vec<&'static str> {
+    let mut tables: Vec<_> = MIGRATIONS
+        .iter()
+        .flat_map(|sql| sql.lines())
+        .filter_map(|line| line.trim_start().strip_prefix("CREATE TABLE "))
+        .filter_map(|line| line.split([' ', '(']).next())
+        .filter(|name| {
+            !matches!(
+                *name,
+                "schema_migrations" | "platform_recovery_state" | "recovery_owner_anchors"
+            )
+        })
+        .collect();
+    tables.sort_unstable();
+    tables
+}
+pub(crate) fn migration_fingerprints() -> Vec<String> {
+    MIGRATIONS
+        .iter()
+        .map(|sql| digest(sql.as_bytes()))
+        .collect()
+}
+
+/// Serialize a deployment's OCI mutations without holding an authorization
+/// transaction across RPC/disk work. Keep the owning connection until all
+/// mutations settle; dropping it releases this session lock.
+pub(crate) struct DeploymentFence {
+    _connection: Client,
+    _local: tokio::sync::OwnedMutexGuard<()>,
+    deployment: Uuid,
+}
+impl DeploymentFence {
+    pub(crate) fn protects(&self, deployment: Uuid) -> bool {
+        self.deployment == deployment && !self._connection.is_closed()
+    }
+}
+pub(crate) async fn deployment_fence(db: &Db, deployment: Uuid) -> Result<Option<DeploymentFence>> {
+    type LocalFences = std::collections::BTreeMap<Uuid, std::sync::Weak<tokio::sync::Mutex<()>>>;
+    static LOCAL: std::sync::OnceLock<std::sync::Mutex<LocalFences>> = std::sync::OnceLock::new();
+    let local = {
+        let mut guards = LOCAL
+            .get_or_init(Default::default)
+            .lock()
+            .map_err(|_| Error::unavailable("Runtime fence is unavailable"))?;
+        guards.retain(|_, guard| guard.strong_count() > 0);
+        match guards.get(&deployment).and_then(std::sync::Weak::upgrade) {
+            Some(guard) => guard,
+            None => {
+                let guard = Arc::new(tokio::sync::Mutex::new(()));
+                guards.insert(deployment, Arc::downgrade(&guard));
+                guard
+            }
+        }
+    };
+    let Ok(local) = local.try_lock_owned() else {
+        return Ok(None);
+    };
+    let c = db.connect().await?;
+    let name = format!("xelab/deployment-runtime/{deployment}");
+    let held: bool = c
+        .query_one(
+            "SELECT pg_try_advisory_lock(hashtextextended($1,0))",
+            &[&name],
+        )
+        .await?
+        .get(0);
+    Ok(held.then_some(DeploymentFence {
+        _connection: c,
+        _local: local,
+        deployment,
+    }))
+}
+
+#[cfg(test)]
+mod runtime_fence_tests {
+    use super::*;
+    #[tokio::test]
+    async fn actual_postgres_runtime_mutations_serialize_until_connection_release() {
+        let Ok(dsn) = std::env::var("XELAB_TEST_DATABASE_URL") else {
+            eprintln!("SKIPPED: runtime fence requires PostgreSQL");
+            return;
+        };
+        let db = Db::new(dsn).unwrap();
+        let deployment = Uuid::new_v4();
+        let first = deployment_fence(&db, deployment).await.unwrap().unwrap();
+        assert!(deployment_fence(&db, deployment).await.unwrap().is_none());
+        let unrelated = deployment_fence(&db, Uuid::new_v4())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!unrelated._connection.is_closed());
+        // PostgreSQL restarting must not unlock another task in this process
+        // while the old task is still completing an OCI mutation.
+        let pid: i32 = first
+            ._connection
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        let admin = db.connect().await.unwrap();
+        admin
+            .query_one("SELECT pg_terminate_backend($1)", &[&pid])
+            .await
+            .unwrap();
+        assert!(deployment_fence(&db, deployment).await.unwrap().is_none());
+        drop(first);
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                if deployment_fence(&db, deployment).await.unwrap().is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+}
 
 #[derive(Clone)]
 pub struct Db {
@@ -46,7 +195,19 @@ impl Db {
     }
     pub async fn check(&self) -> Result<()> {
         let c = self.connect().await?;
-        verify_migration(&c).await
+        verify_migration(&c).await?;
+        if c.query_one(
+            "SELECT EXISTS(SELECT 1 FROM platform_recovery_state WHERE phase<>'ready')",
+            &[],
+        )
+        .await?
+        .get::<_, bool>(0)
+        {
+            return Err(Error::unavailable(
+                "Offline platform recovery has not completed",
+            ));
+        }
+        Ok(())
     }
     pub async fn migrate(&self) -> Result<()> {
         let mut c = self.connect().await?;
@@ -76,11 +237,11 @@ impl Db {
             .query_one("SELECT max(version) FROM schema_migrations", &[])
             .await?
             .get(0);
-        if version == 1 {
-            tx.batch_execute(CALL_CHARGES).await?;
+        for (offset, sql) in MIGRATIONS.iter().enumerate().skip(version as usize) {
+            tx.batch_execute(sql).await?;
             tx.execute(
-                "INSERT INTO schema_migrations(version,checksum,applied_at) VALUES(2,$1,now())",
-                &[&digest(CALL_CHARGES.as_bytes())],
+                "INSERT INTO schema_migrations(version,checksum,applied_at) VALUES($1,$2,now())",
+                &[&((offset + 1) as i64), &digest(sql.as_bytes())],
             )
             .await?;
         }
@@ -114,13 +275,12 @@ async fn verify_migrations(c: &impl GenericClient, latest: bool) -> Result<()> {
         )
         .await?;
     if r.is_empty()
-        || r.len() > 2
-        || (latest && r.len() != 2)
-        || r[0].get::<_, i64>(0) != 1
-        || r[0].get::<_, String>(1) != digest(BASELINE.as_bytes())
-        || (r.len() == 2
-            && (r[1].get::<_, i64>(0) != 2
-                || r[1].get::<_, String>(1) != digest(CALL_CHARGES.as_bytes())))
+        || r.len() > MIGRATIONS.len()
+        || (latest && r.len() != MIGRATIONS.len())
+        || r.iter().enumerate().any(|(i, row)| {
+            row.get::<_, i64>(0) != (i + 1) as i64
+                || row.get::<_, String>(1) != digest(MIGRATIONS[i].as_bytes())
+        })
     {
         return Err(Error::conflict(
             "Metadata migration version or checksum differs",

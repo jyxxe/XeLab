@@ -9,6 +9,7 @@ use crate::{
     error::{Error, Result},
     identity,
     runtime::Runtime,
+    secrets,
 };
 use axum::{
     body::{to_bytes, Body},
@@ -38,12 +39,16 @@ pub struct App {
     pub leader: Arc<tokio_postgres::Client>,
     pub ready: AtomicBool,
     pub shutdown: AtomicBool,
+    pub blob_uploads: tokio::sync::Semaphore,
 }
 pub fn router(app: Arc<App>) -> Router {
     Router::new().fallback(handle).with_state(app)
 }
 
-fn operation(method: &str, path: &str) -> Option<(&'static Value, HashMap<String, String>)> {
+pub(crate) fn operation(
+    method: &str,
+    path: &str,
+) -> Option<(&'static Value, HashMap<String, String>)> {
     for (template, item) in openapi()["paths"].as_object()? {
         let Some(op) = item.get(method.to_ascii_lowercase()) else {
             continue;
@@ -69,7 +74,7 @@ fn operation(method: &str, path: &str) -> Option<(&'static Value, HashMap<String
     }
     None
 }
-fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
+pub(crate) fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
     if headers.get_all(name).iter().count() != 1 {
         return Err(Error::invalid("Required header must occur exactly once"));
     }
@@ -78,7 +83,7 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
         .and_then(|s| s.to_str().ok())
         .ok_or_else(|| Error::invalid("Missing or invalid required header"))
 }
-fn bearer(headers: &HeaderMap) -> Result<&str> {
+pub(crate) fn bearer(headers: &HeaderMap) -> Result<&str> {
     if headers.contains_key("authorization") {
         return header(headers, "authorization")
             .map_err(|_| Error::credential())?
@@ -122,7 +127,7 @@ pub(crate) fn etag(headers: &HeaderMap, revision: i64) -> Result<()> {
     }
     Ok(())
 }
-fn response(value: Value, code: u16, request: Uuid) -> Response {
+pub(crate) fn response(value: Value, code: u16, request: Uuid) -> Response {
     let mut r = if code == 204 {
         StatusCode::NO_CONTENT.into_response()
     } else {
@@ -145,6 +150,20 @@ async fn handle(
     request: Request<Body>,
 ) -> Response {
     let request_id = Uuid::new_v4();
+    let blob = operation(request.method().as_str(), request.uri().path())
+        .is_some_and(|(op, _)| crate::blobs::handles(op["operationId"].as_str().unwrap_or("")));
+    if blob {
+        match crate::blobs::handle(app.clone(), peer, request_id, request).await {
+            Ok(response) => return response,
+            Err(error) => {
+                return response(
+                    json!({"error":error.detail(),"request_id":request_id}),
+                    error.status.as_u16(),
+                    request_id,
+                )
+            }
+        }
+    }
     match dispatch(&app, peer, request_id, request).await {
         Ok((v, s)) => {
             let cookie=v.get("access_token").and_then(Value::as_str).map(|token|format!("__Host-xelab_auth={token}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=3600"));
@@ -254,6 +273,9 @@ async fn dispatch(
             contracts::validate_business(&parameter["schema"], &json!(value))?;
         }
     }
+    if name == "deleteVolume" {
+        crate::volumes::confirm_delete(&params, uri.query().unwrap_or(""))?;
+    }
     if name == "activateAccount" {
         let mut c = app.db.connect().await?;
         let tx = c.transaction().await?;
@@ -310,7 +332,8 @@ async fn dispatch(
     let mutating = matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
     db::auth_lock(
         &tx,
-        (mutating && identity::handles(name)) || name == "getQuota",
+        (mutating && (identity::handles(name) || secrets::handles(name)))
+            || matches!(name, "getQuota" | "trustPublisher" | "revokePublisher"),
     )
     .await?;
     let ctx = app
@@ -325,7 +348,10 @@ async fn dispatch(
     let canonical = serde_json::to_vec(
         &json!({"body":body,"if_match":headers.get("if-match").and_then(|v|v.to_str().ok())}),
     )?;
-    let fingerprint = if identity::sensitive(name) || name == "changePassword" {
+    let fingerprint = if identity::sensitive(name)
+        || name == "changePassword"
+        || secrets::writes_value(name)
+    {
         contracts::digest(&app.auth.token_digest(
             std::str::from_utf8(&canonical).map_err(|_| Error::invalid("Invalid fingerprint"))?,
         ))
@@ -346,7 +372,22 @@ async fn dispatch(
                 return Err(Error::new("ONE_TIME_RESPONSE_UNAVAILABLE","The one-time secret is unavailable; inspect the existing resource",StatusCode::CONFLICT).with_resource(row.get::<_,String>("resource_id")));
             }
             // Authentication has been rechecked; resource authorization is checked by the same dispatch before any replay below.
-            let response:Option<Value>=row.get("safe_response");if let Some(value)=response{authorize_operation(&tx,&ctx,name,&params,&body).await?;return Ok((value,row.get::<_,i32>("response_status") as u16));}return Err(Error::conflict("Operation has no replayable response"));
+            let response: Option<Value> = row.get("safe_response");
+            if let Some(value) = response {
+                if name == "trustPublisher" && row.get::<_,i32>("response_status") == 201 {
+                    auth::authorize(&tx, &ctx, "publisher.trust", &Resource::new("publisher", "new", Some(ctx.subject))).await?;
+                } else {
+                    authorize_operation(&tx, &ctx, name, &params, &body).await?;
+                }
+                if matches!(name, "upgradeDeployment" | "rollbackDeployment") {
+                    crate::upgrades::authorize_replay(&tx, &ctx, id(&value, "id")?).await?;
+                }
+                if matches!(name,"setDeploymentEnabled"|"upgradeDeployment"|"rollbackDeployment") {
+                    crate::schema_jobs::authorize_replay(&tx, &ctx, id(&value, "id")?).await?;
+                }
+                return Ok((value, row.get::<_,i32>("response_status") as u16));
+            }
+            return Err(Error::conflict("Operation has no replayable response"));
         }
     }
     if let Err(error) = authorize_operation(&tx, &ctx, name, &params, &body).await {
@@ -368,7 +409,17 @@ async fn dispatch(
     let execution=async {
     let result = if identity::handles(name) {
         identity::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
+    } else if crate::volumes::handles(name) {
+        crate::volumes::execute(&tx,app,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("" )).await?
+    } else if crate::backups::handles(name) {
+        crate::backups::execute(&tx,app,&ctx,name,&params,&body,uri.query().unwrap_or("")).await?
+    } else if secrets::handles(name) {
+        secrets::execute(&tx,&app.config,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
     } else {match name {
+        "upgradeDeployment" | "rollbackDeployment" => {
+            let action=if name=="upgradeDeployment"{"plugin.upgrade"}else{"plugin.rollback"};
+            crate::upgrades::create(&tx,app,&ctx,path_id(&params,"deployment_id")?,action,&body,&headers).await?
+        }
         "getCall" => {
             let call = path_id(&params, "call_id")?;
             let r = tx
@@ -385,11 +436,25 @@ async fn dispatch(
             200,
         ),
         "trustPublisher" => {
-            ed25519_dalek::VerifyingKey::from_public_key_pem(string(&body, "public_key_pem")?)
+            let submitted = ed25519_dalek::VerifyingKey::from_public_key_pem(string(&body, "public_key_pem")?)
                 .map_err(|_| Error::invalid("Expected an Ed25519 public key"))?;
-            let id = Uuid::new_v4();
-            tx.execute("INSERT INTO publishers(id,name,key_id,public_key_pem,status,created_at,updated_at) VALUES($1,$2,$3,$4,'trusted',now(),now())",&[&id,&string(&body,"name")?,&string(&body,"key_id")?,&string(&body,"public_key_pem")?]).await?;
-            (read_object(&tx, "publishers", id, "Publisher").await?, 201)
+            let (publisher, status) = if let Some(existing) = tx.query_opt("SELECT * FROM publishers WHERE key_id=$1 FOR UPDATE", &[&string(&body,"key_id")?]).await? {
+                let registered = ed25519_dalek::VerifyingKey::from_public_key_pem(&existing.get::<_,String>("public_key_pem"))
+                    .map_err(|_| Error::conflict("Registered publisher key is invalid"))?;
+                if registered != submitted || existing.get::<_,String>("name") != string(&body,"name")? {
+                    return Err(Error::conflict("Existing publisher identity or key differs; key rotation requires a new key_id"));
+                }
+                let publisher: Uuid = existing.get("id");
+                if existing.get::<_,String>("status") == "revoked" {
+                    tx.execute("UPDATE publishers SET status='trusted',revision=revision+1,updated_at=now() WHERE id=$1", &[&publisher]).await?;
+                }
+                (publisher, 200)
+            } else {
+                let publisher = Uuid::new_v4();
+                tx.execute("INSERT INTO publishers(id,name,key_id,public_key_pem,status,created_at,updated_at) VALUES($1,$2,$3,$4,'trusted',now(),now())",&[&publisher,&string(&body,"name")?,&string(&body,"key_id")?,&string(&body,"public_key_pem")?]).await?;
+                (publisher, 201)
+            };
+            (read_object(&tx, "publishers", publisher, "Publisher").await?, status)
         }
         "installPlugin" => {
             let publisher = id(&body, "publisher_id")?;
@@ -435,6 +500,7 @@ async fn dispatch(
                 manifest_digest: r.get("manifest_digest"),
             };
             artifact.validate_deployment(&body)?;
+            crate::volumes::validate_selection(&tx,&ctx,&body,&artifact.manifest).await?;
             let mut spec = body.clone();
             spec["enabled"] = json!(false);
             if spec.get("replicas").is_none() {
@@ -447,52 +513,72 @@ async fn dispatch(
             (db::operation_value(&tx, op).await?, 202)
         }
         "approvePlugin" => {
-            if body != json!({"rules":[],"egress":[]}) {
-                return Err(Error::invalid(
-                    "M1 only approves empty proxy and egress permissions",
-                ));
-            }
             let id = path_id(&params, "deployment_id")?;
             let r = tx
                 .query_one(
-                    "SELECT spec,revision FROM deployments WHERE id=$1 FOR UPDATE",
+                    "SELECT spec,revision,owner_id,installation_id FROM deployments WHERE id=$1 FOR UPDATE",
                     &[&id],
                 )
                 .await?;
+            crate::backups::ensure_unheld(&tx,id).await?;
             etag(&headers, r.get("revision"))?;
             if r.get::<_, Value>("spec")["enabled"] == true {
                 return Err(Error::conflict(
                     "Approval changes require a disabled deployment",
                 ));
             }
+            let manifest:Value=tx.query_one("SELECT manifest FROM installations WHERE id=$1",&[&r.get::<_,Uuid>("installation_id")]).await?.get(0);
+            crate::host_blobs::approve(&tx,&ctx,id,&manifest,&body,r.get("owner_id")).await?;
             tx.execute("UPDATE deployments SET approval=$2,revision=revision+1,updated_at=now() WHERE id=$1",&[&id,&body]).await?;
             (body.clone(), 200)
         }
         "setDeploymentEnabled" => {
             let id = path_id(&params, "deployment_id")?;
+            let bootstrap = if body["enabled"] == true {
+                crate::schema_jobs::preflight(&tx,app,&ctx,id).await?
+            } else { None };
+            let bootstrapping = bootstrap.is_some();
+            tx.query_one("SELECT id FROM node_budget FOR UPDATE",&[]).await?;
             let row = tx
                 .query_one("SELECT * FROM deployments WHERE id=$1 FOR UPDATE", &[&id])
                 .await?;
+            crate::backups::ensure_unheld(&tx,id).await?;
             etag(&headers, row.get("revision"))?;
             tx.execute("UPDATE operations SET state='failed',error=$2,revision=revision+1,updated_at=now() WHERE resource_id=$1 AND kind='setDeploymentEnabled' AND state IN ('pending','running')", &[&id.to_string(),&Error::conflict("Superseded by a newer deployment intent").detail()]).await?;
             let enabled = body["enabled"].as_bool().unwrap();
             let mut spec: Value = row.get("spec");
-            if enabled && row.get::<_, Value>("approval") != json!({"rules":[],"egress":[]}) {
-                return Err(Error::denied());
+            if enabled {
+                let manifest:Value=tx.query_one("SELECT manifest FROM installations WHERE id=$1",&[&row.get::<_,Uuid>("installation_id")]).await?.get(0);
+                crate::host_blobs::check_approval(&tx,app,id,&manifest).await?;
             }
+            if bootstrap.is_some() && (!enabled || spec["enabled"] == true) {
+                return Err(Error::conflict("Schema bootstrap intent changed during preflight"));
+            }
+            let op = db::operation(&tx, ctx.subject, name, Some(id.to_string())).await?;
             if enabled && spec["enabled"] != true {
                 if tx.query_one("SELECT count(*) FROM instances WHERE deployment_id=$1 AND phase<>'stopped'",&[&id]).await?.get::<_,i64>(0)>0{return Err(Error::conflict("Previous instances have not drained"));}
                 let instance = Uuid::new_v4();
                 let generation = row.get::<_, i64>("revision") + 1;
+                let manifest:Value=tx.query_one("SELECT manifest FROM installations WHERE id=$1",&[&row.get::<_,Uuid>("installation_id")]).await?.get(0);
+                crate::volumes::approve_mounts(&tx,&ctx,id,generation,&spec,&manifest).await?;
                 tx.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,created_at,updated_at) VALUES($1,$2,$3,0,'pending','unknown',$4,now(),now())",&[&instance,&id,&generation,&spec["limits"]]).await?;
+                if let Some(admitted) = bootstrap {
+                    crate::schema_jobs::reserve(&tx,&ctx,id,op,instance,generation,admitted).await?;
+                }
             }
             spec["enabled"] = json!(enabled);
             let phase = if enabled { "reconciling" } else { "draining" };
             tx.execute("UPDATE deployments SET spec=$2,phase=$3,revision=revision+1,updated_at=now() WHERE id=$1",&[&id,&spec,&phase]).await?;
+            if bootstrapping {
+                let admitted = tx.query_one("SELECT j.*,host(j.peer) AS approved_peer FROM volume_schema_jobs j WHERE operation_id=$1", &[&op]).await?;
+                // The same budget transaction first publishes the enabled
+                // intent; reserve() rejects an instance of a disabled intent.
+                crate::admission::reserve(&tx,admitted.get("instance_id")).await?;
+                crate::schema_jobs::revalidate(&tx,app,&admitted).await?;
+            }
             if !enabled {
                 tx.execute("UPDATE provider_records SET availability='unavailable' WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)",&[&id]).await?;
             }
-            let op = db::operation(&tx, ctx.subject, name, Some(id.to_string())).await?;
             db::outbox(&tx, "deployment.changed", id, &json!({})).await?;
             (db::operation_value(&tx, op).await?, 202)
         }
@@ -653,6 +739,24 @@ async fn authorize_operation(
     if identity::handles(name) {
         return identity::authorize(c, ctx, name, params, body).await;
     }
+    if secrets::handles(name) {
+        return secrets::authorize(c, ctx, name, params, body).await;
+    }
+    if crate::volumes::handles(name) {
+        return crate::volumes::authorize(c, ctx, name, params).await;
+    }
+    if crate::backups::handles(name) {
+        return crate::backups::authorize(c, ctx, name, params, body).await;
+    }
+    if matches!(name, "upgradeDeployment" | "rollbackDeployment") {
+        let action = if name == "upgradeDeployment" {
+            "plugin.upgrade"
+        } else {
+            "plugin.rollback"
+        };
+        return crate::upgrades::authorize(c, ctx, path_id(params, "deployment_id")?, action, body)
+            .await;
+    }
     if name == "installPlugin" {
         // Stage/verify the signed artifact first. Only its verified manifest can
         // supply plugin_id; the worker authorizes that actual ID before commit.
@@ -683,10 +787,21 @@ async fn authorize_operation(
             )
         }
         "getNode" => ("platform.read", Resource::new("platform", "node", None)),
-        "trustPublisher" => (
-            "publisher.trust",
-            Resource::new("publisher", "new", Some(ctx.subject)),
-        ),
+        "trustPublisher" => {
+            let existing = c
+                .query_opt(
+                    "SELECT id FROM publishers WHERE key_id=$1",
+                    &[&string(body, "key_id")?],
+                )
+                .await?;
+            (
+                "publisher.trust",
+                existing.map_or_else(
+                    || Resource::new("publisher", "new", Some(ctx.subject)),
+                    |row| Resource::new("publisher", row.get::<_, Uuid>(0), None),
+                ),
+            )
+        }
         "installPlugin" => (
             "plugin.install",
             Resource::new(

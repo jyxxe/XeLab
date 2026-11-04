@@ -11,30 +11,56 @@ def encoded(value):
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
-def build(root, publisher, platform="linux/amd64", implementation="rust"):
+def build(root, publisher, platform="linux/amd64", implementation="rust", request_secret=False, volume_access=None, request_blob=False, plugin_version="1.0.0", failed_startup=False, data_schema=None, migration_fail_after_write=False):
+    if data_schema not in (None, "1", "2"):
+        raise ValueError("Unsupported reference business schema")
+    if data_schema is not None and (implementation != "python" or volume_access != "rw" or request_blob or request_secret):
+        raise ValueError("The reference business schema requires Python and its dedicated writable data volume")
+    if migration_fail_after_write and data_schema != "2":
+        raise ValueError("The migration outcome fault requires the explicit version 2 business format")
     publisher = str(uuid.UUID(publisher))
     schema = {"type": "object", "properties": {"message": {"type": "string", "maxLength": 1024}}, "required": ["message"], "additionalProperties": False}
-    name, version = "org.xelab.echo", "1.0.0"
+    input_schema = json.loads(json.dumps(schema))
+    output_schema = json.loads(json.dumps(schema))
+    name, version = ("org.xelab.echo-blobs" if request_blob else "org.xelab.echo"), "1.0.0"
+    if data_schema is not None:
+        name = "org.xelab.migrating-store"
+    side_effect = "idempotent" if data_schema is not None else "none"
+    if request_blob:
+        input_schema["properties"].update({"blob_id": {"type": "string", "format": "uuid", "x-xelab-resource-kind": "blob"}, "export": {"type": "boolean"}})
+        output_schema["properties"].update({"source_digest": {"type": "string", "maxLength": 71}, "blob": {"type": "object", "properties": {"blob_id": {"type": "string", "format": "uuid"}, "size_bytes": {"type": "integer", "minimum": 0, "maximum": 67108864}, "digest": {"type": "string", "maxLength": 71}}, "required": ["blob_id", "size_bytes", "digest"], "additionalProperties": False}})
     directory = root / "xelab" / "contracts" / name / version
     directory.mkdir(parents=True, exist_ok=True)
     checks = []
-    for file, value in [("input.schema.json", schema), ("output.schema.json", schema), ("stream.schema.json", None), ("semantics.json", {"side_effect": "none"})]:
+    for file, value in [("input.schema.json", input_schema), ("output.schema.json", output_schema), ("stream.schema.json", None), ("semantics.json", {"side_effect": side_effect})]:
         raw = encoded(value)
         (directory / file).write_bytes(raw)
         checks.append(f"{file} {hashlib.sha256(raw).hexdigest()}\n")
     contract = {"name": name, "version": version, "schema_digest": "sha256:" + hashlib.sha256("".join(checks).encode()).hexdigest()}
     manifest = {
-        "manifest_version": "1", "plugin_id": name if implementation == "rust" else "org.xelab.echo-python", "version": version,
+        "manifest_version": "1", "plugin_id": name if implementation == "rust" or data_schema is not None else "org.xelab.echo-python", "version": plugin_version,
         "publisher_id": publisher, "host_api_major": 1, "platforms": [platform],
         "entrypoint": ["/usr/local/bin/xelab-echo"] if implementation == "rust" else ["/usr/bin/python3", "/opt/plugin/server.py"],
-        "capabilities": [{"contract": contract, "input_schema": schema, "output_schema": schema, "stream_item_schema": None, "side_effect": "none", "maximum_input_bytes": 65536, "maximum_output_bytes": 65536}],
+        "capabilities": [{"contract": contract, "input_schema": input_schema, "output_schema": output_schema, "stream_item_schema": None, "side_effect": side_effect, "maximum_input_bytes": 65536, "maximum_output_bytes": 65536}],
         "dependencies": [], "requested_rules": [], "volumes": [], "routes": [],
         "minimum_resources": {"cpu_millis": 100, "memory_bytes": 67108864, "ephemeral_bytes": 1048576, "pids": 64},
         "health": {"startup_timeout_ms": 60000, "interval_ms": 5000, "timeout_ms": 2000, "failure_threshold": 3},
         "config_schema": {"type": "object", "additionalProperties": False},
-        "data_schema_version": "none", "upgrade_strategy": "recreate", "business_entry": "direct",
+        "data_schema_version": data_schema or "none", "upgrade_strategy": "recreate", "business_entry": "direct",
         "concurrency": {"max_active_requests": 4, "max_queue_requests": 0, "queue_timeout_ms": 100},
     }
+    if request_secret:
+        manifest["requested_rules"] = [{"rule": {"action": "secret.use", "resource": {"kind": "secret", "match": "all"}}, "required": False}]
+    if request_blob:
+        manifest["plugin_id"] = "org.xelab.echo-blobs"
+        manifest["requested_rules"].extend({"rule": {"action": action, "resource": {"kind": "blob", "match": "all"}}, "required": False} for action in ["blob.read", "blob.create"])
+    if volume_access:
+        manifest["volumes"] = [{"name": "data", "mount_path": "/data", "access": volume_access, "scope": "deployment", "minimum_bytes": 1048576}]
+    if failed_startup:
+        manifest["entrypoint"] = ["/bin/false"]
+        manifest["health"]["startup_timeout_ms"] = 2000
+    if migration_fail_after_write:
+        manifest["entrypoint"].append("--migration-fail-after-write")
     (root / "xelab" / "plugin.json").write_bytes(encoded(manifest))
     return manifest
 
@@ -45,6 +71,13 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=pathlib.Path, default=pathlib.Path("examples/generated"))
     parser.add_argument("--platform", choices=["linux/amd64", "linux/arm64"], default="linux/amd64")
     parser.add_argument("--implementation", choices=["rust", "python"], default="rust")
+    parser.add_argument("--request-secret", action="store_true", help="Enable the explicit Secret lease acceptance probe")
+    parser.add_argument("--volume-access", choices=["ro", "rw"], help="Enable explicit persistent-volume acceptance")
+    parser.add_argument("--request-blob", action="store_true", help="Enable explicit Blob proxy acceptance with a separate contract")
+    parser.add_argument("--plugin-version", choices=["1.0.0", "2.0.0", "3.0.0"], default="1.0.0", help="Plugin release version; capability contract stays at 1.0.0")
+    parser.add_argument("--failed-startup", action="store_true", help="Build an explicit failing startup acceptance artifact")
+    parser.add_argument("--data-schema", choices=["1", "2"], help="Reference DataMigration format; kernel admission remains disabled until its durable coordinator is complete")
+    parser.add_argument("--migration-fail-after-write", action="store_true", help="Explicit acceptance artifact returning an ambiguous RPC outcome after a real committed write")
     args = parser.parse_args()
-    build(args.output, args.publisher_id, args.platform, args.implementation)
+    build(args.output, args.publisher_id, args.platform, args.implementation, args.request_secret, args.volume_access, args.request_blob, args.plugin_version, args.failed_startup, args.data_schema, args.migration_fail_after_write)
 

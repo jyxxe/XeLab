@@ -6,7 +6,7 @@
 
 `POST /api/platform/v1/publishers`
 
-信任发布者公钥
+新 key_id 创建发布者并返回 201。已有 key_id 只接受相同名称和同一 Ed25519 公钥；当前 publisher.trust 必须覆盖已有 UUID。显式重新信任返回 200 并保留 UUID、安装引用和创建时间，撤销状态转为 trusted 时增加修订及当前更新时间；不自动启用部署、恢复其他权限或替换密钥。
 
 | 项目 | 定义 |
 |---|---|
@@ -49,6 +49,7 @@ Content-Type：`application/json`；请求体必需。
 
 | HTTP | 内容 | 语义 |
 |---|---|---|
+| 200 | `application/json` → [Publisher](../../models/Publisher.md) | 已有发布者信任已确认；UUID 与安装引用保持不变 |
 | 201 | `application/json` → [Publisher](../../models/Publisher.md) | 成功 |
 | 400 | `application/json` → [ErrorEnvelope](../../models/ErrorEnvelope.md) | 请求或字段非法 |
 | 401 | `application/json` → [ErrorEnvelope](../../models/ErrorEnvelope.md) | 未认证、凭证失效或来源链失效 |

@@ -75,9 +75,12 @@ pub async fn invoke(
         return Err(Error::conflict("Capability digest differs"));
     }
     let definition: Value = cap.get("spec");
-    if definition["side_effect"] != "none" {
+    if !matches!(
+        definition["side_effect"].as_str(),
+        Some("none" | "idempotent")
+    ) {
         return Err(Error::invalid(
-            "Side-effecting capabilities are not enabled in M1",
+            "This call profile requires supported idempotent semantics",
         ));
     }
     let bytes = serde_json::to_vec(&input["input"])?;
@@ -96,6 +99,26 @@ pub async fn invoke(
     let instance: Uuid = row.get("id");
     let generation: i64 = row.get("generation");
     let manifest: Value = row.get("manifest");
+    if definition["side_effect"] == "idempotent" {
+        crate::artifact::validate_runtime_profile(&manifest)?;
+        if manifest["data_schema_version"] == "none"
+            || !manifest["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|cap| {
+                    cap["contract"] == *contract
+                        && cap["side_effect"] == "idempotent"
+                        && ["input_schema", "output_schema", "stream_item_schema"]
+                            .iter()
+                            .all(|field| cap[*field] == definition[*field])
+                })
+        {
+            return Err(Error::invalid(
+                "Idempotent data writes require the verified versioned plugin profile",
+            ));
+        }
+    }
     if manifest["business_entry"] == "skill_required" {
         return Err(Error::denied());
     }
@@ -151,6 +174,17 @@ pub async fn invoke(
         .auth
         .issue_rpc(&tx, &ctx, call, instance, generation, deadline)
         .await?;
+    crate::host_blobs::grant_call(
+        &tx,
+        app,
+        &ctx,
+        call,
+        row.get("deployment_id"),
+        &manifest,
+        &definition,
+        &input["input"],
+    )
+    .await?;
     tx.execute("DELETE FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method='POST' AND path='/api/platform/v1/calls' AND key=$3 AND expires_at<=now()",&[&ctx.subject,&ctx.credential,&key]).await?;
     tx.execute("INSERT INTO idempotency_records(subject_id,credential_id,method,path,key,fingerprint,resource_id,expires_at,created_at) VALUES($1,$2,'POST','/api/platform/v1/calls',$3,$4,$5,now()+interval '24 hours',now())",&[&ctx.subject,&ctx.credential,&key,&fingerprint,&call.to_string()]).await?;
     tx.commit().await?;
@@ -274,3 +308,7 @@ pub async fn invoke(
     tx.commit().await?;
     result.map_err(|e| e.with_resource(call))
 }
+
+#[cfg(test)]
+#[path = "broker_schema_tests.rs"]
+mod schema_tests;

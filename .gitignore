@@ -7,3 +7,10 @@ __pycache__/
 
 
 /examples/generated-python/
+
+/examples/generated-volume/
+
+/examples/generated-host-blob/
+
+/examples/generated-schema/
+/examples/generated-schema-upgrade/

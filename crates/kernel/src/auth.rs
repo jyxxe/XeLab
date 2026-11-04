@@ -174,7 +174,8 @@ impl Auth {
         deadline: DateTime<Utc>,
     ) -> Result<String> {
         let execution = Uuid::new_v4();
-        // The supported pure profile grants no HostService authority.
+        // Start with no HostService authority; an explicitly approved proxy may
+        // narrow this to fixed input resources in the same call transaction.
         c.execute("INSERT INTO execution_delegations(id,subject_id,issuer_credential_id,maximum_rules,run_as,expires_at,status,created_at) VALUES($1,$2,$3,'[]','user',$4,'active',now())", &[&execution,&ctx.subject,&ctx.credential,&deadline]).await?;
         c.execute(
             "UPDATE calls SET delegation_id=$2 WHERE id=$1",

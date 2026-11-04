@@ -12,7 +12,13 @@ async fn real_postgres_enforces_authentication_and_atomic_admission() {
         eprintln!("Set XELAB_TEST_DATABASE_URL to run PostgreSQL integration tests");
         return;
     };
-    let db = Db::new(dsn).unwrap();
+    let admin = Db::new(dsn.clone()).unwrap().connect().await.unwrap();
+    let name = format!("admission_{}", Uuid::new_v4().simple());
+    admin
+        .batch_execute(&format!("CREATE DATABASE {name}"))
+        .await
+        .unwrap();
+    let db = Db::new(format!("{dsn} dbname={name}")).unwrap();
     db.migrate().await.unwrap();
     db.migrate().await.unwrap();
     db.check().await.unwrap();
@@ -203,7 +209,7 @@ async fn call_charges_migrate_from_v1_without_rewriting_baseline() {
             .await
             .unwrap()
             .get::<_, i64>(0),
-        2
+        xelab_kernel::db::SCHEMA_VERSION as i64
     );
     c.query("SELECT * FROM call_credential_charges", &[])
         .await

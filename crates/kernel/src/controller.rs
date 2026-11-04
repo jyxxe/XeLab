@@ -11,6 +11,8 @@ use crate::{
 };
 use serde_json::{json, Value};
 use std::{
+    collections::BTreeMap,
+    ops::Bound::{Excluded, Unbounded},
     sync::{atomic::Ordering, Arc},
     time::Duration,
 };
@@ -28,8 +30,7 @@ pub fn context(subject: Option<Uuid>) -> rpc::RpcContext {
 }
 
 pub async fn run(app: Arc<App>) {
-    let mut first = true;
-    let mut probes = std::collections::HashMap::new();
+    let mut state = ControllerState::default();
     let mut rotate = tokio::time::Instant::now();
     loop {
         if app.shutdown.load(Ordering::SeqCst) {
@@ -50,11 +51,8 @@ pub async fn run(app: Arc<App>) {
         {
             rotate = tokio::time::Instant::now();
         }
-        match tick(&app, first, &mut probes).await {
-            Ok(()) => {
-                first = false;
-                app.ready.store(true, Ordering::SeqCst);
-            }
+        match reconcile_tick(&app, &mut state).await {
+            Ok(()) => {}
             Err(e) => {
                 app.ready.store(false, Ordering::SeqCst);
                 tracing::error!(
@@ -71,15 +69,128 @@ pub async fn run(app: Arc<App>) {
 
 #[derive(Default)]
 struct Probe {
+    instance: Option<(Uuid, i64)>,
     next: Option<tokio::time::Instant>,
     started: Option<tokio::time::Instant>,
     failures: u64,
 }
-async fn tick(
-    app: &App,
-    first: bool,
-    probes: &mut std::collections::HashMap<Uuid, Probe>,
+impl Probe {
+    fn bind(&mut self, id: Uuid, generation: i64) {
+        if self.instance != Some((id, generation)) {
+            *self = Self {
+                instance: Some((id, generation)),
+                ..Self::default()
+            };
+        }
+    }
+}
+
+// Separate lanes prevent an arbitrarily large disabled prefix from delaying
+// healthy providers. Budgets are checked BETWEEN reconciliations: cancelling a
+// runtime mutation at a wall-clock deadline would leave ambiguous side effects.
+const DEPLOYMENTS_PER_LANE: usize = 16;
+const LANE_TIME_SLICE: Duration = Duration::from_millis(250);
+const PROBES_PER_TICK: usize = 64;
+
+type DeploymentPosition = (chrono::DateTime<chrono::Utc>, Uuid);
+
+#[derive(Default)]
+struct Sweep {
+    after: Option<DeploymentPosition>,
+    through: Option<DeploymentPosition>,
+    initial_complete: bool,
+}
+impl Sweep {
+    fn finish(&mut self) {
+        self.after = None;
+        self.through = None;
+        self.initial_complete = true;
+    }
+}
+
+#[derive(Default)]
+struct ControllerState {
+    startup_fenced: bool,
+    active: Sweep,
+    inactive: Sweep,
+    probes: BTreeMap<Uuid, Probe>,
+    probe_after: Option<Uuid>,
+}
+
+// The cursor contains values, not a reference to a row that may be deleted.
+// A fixed upper watermark gives every sweep an end despite concurrent inserts.
+async fn deployment_page(
+    c: &impl tokio_postgres::GenericClient,
+    sweep: &mut Sweep,
+    active: bool,
+) -> Result<Vec<tokio_postgres::Row>> {
+    // Settled disabled/archived records need no recurring runtime work. Pending
+    // operations and live instances still force cleanup, including after archive.
+    let predicate = if active {
+        "d.archived_at IS NULL AND d.spec->'enabled'='true'::jsonb"
+    } else {
+        "(d.archived_at IS NOT NULL OR d.spec->'enabled' IS DISTINCT FROM 'true'::jsonb) AND (d.phase<>'disabled' OR EXISTS(SELECT 1 FROM instances i WHERE i.deployment_id=d.id AND i.phase<>'stopped') OR EXISTS(SELECT 1 FROM operations o WHERE o.resource_id=d.id::text AND o.kind IN ('createDeployment','setDeploymentEnabled') AND o.state IN ('pending','running')))"
+    };
+    if sweep.through.is_none() {
+        let end = c.query_opt(&format!("SELECT d.created_at,d.id FROM deployments d WHERE {predicate} ORDER BY d.created_at DESC,d.id DESC LIMIT 1"), &[]).await?;
+        sweep.through = end.map(|r| (r.get(0), r.get(1)));
+    }
+    let Some(through) = sweep.through else {
+        sweep.finish();
+        return Ok(Vec::new());
+    };
+    let (created, id) = sweep
+        .after
+        .map(|(created, id)| (Some(created), Some(id)))
+        .unwrap_or((None, None));
+    let rows = c.query(&format!("SELECT d.created_at,d.id FROM deployments d WHERE {predicate} AND ($1::timestamptz IS NULL OR (d.created_at,d.id)>($1,$2)) AND (d.created_at,d.id)<=($3,$4) ORDER BY d.created_at,d.id LIMIT $5"), &[&created, &id, &through.0, &through.1, &(DEPLOYMENTS_PER_LANE as i64)]).await?;
+    if rows.is_empty() {
+        sweep.finish();
+    }
+    Ok(rows)
+}
+
+async fn prune_probes(
+    c: &impl tokio_postgres::GenericClient,
+    state: &mut ControllerState,
 ) -> Result<()> {
+    let start = state.probe_after.map(Excluded).unwrap_or(Unbounded);
+    let ids: Vec<Uuid> = state
+        .probes
+        .range((start, Unbounded))
+        .take(PROBES_PER_TICK)
+        .map(|(id, _)| *id)
+        .collect();
+    if ids.is_empty() {
+        state.probe_after = None;
+        return Ok(());
+    }
+    let rows = c.query("SELECT id FROM deployments WHERE id=ANY($1) AND archived_at IS NULL AND spec->'enabled'='true'::jsonb", &[&ids]).await?;
+    let keep: std::collections::HashSet<Uuid> = rows.iter().map(|r| r.get(0)).collect();
+    for id in &ids {
+        if !keep.contains(id) {
+            state.probes.remove(id);
+        }
+    }
+    state.probe_after = ids.last().copied();
+    Ok(())
+}
+
+// A successful bounded batch does not mean startup recovery has caught up.
+// Keep this transition shared by the daemon and the HTTP readiness regression.
+async fn reconcile_tick(app: &App, state: &mut ControllerState) -> Result<()> {
+    let result = tick(app, !state.startup_fenced, state).await;
+    app.ready.store(
+        result.is_ok()
+            && state.startup_fenced
+            && state.active.initial_complete
+            && state.inactive.initial_complete,
+        Ordering::SeqCst,
+    );
+    result
+}
+
+async fn tick(app: &App, first: bool, state: &mut ControllerState) -> Result<()> {
     let mut c = app.db.connect().await?;
     if first {
         c.execute("UPDATE node_budget SET admission_enabled=false", &[])
@@ -91,11 +202,22 @@ async fn tick(
         .await?;
         // A new controller must fence every old process before returning call slots.
         // Stable instance IDs and their resource reservations survive this restart.
-        for id in app.runtime.inventory().await? {
+        let mut old: std::collections::BTreeSet<Uuid> =
+            app.runtime.inventory().await?.into_iter().collect();
+        // A lost container record does not prove that its old cgroup is empty.
+        // Every durable attachment also needs an explicit stop proof.
+        old.extend(
+            c.query("SELECT DISTINCT instance_id FROM volume_attachments", &[])
+                .await?
+                .into_iter()
+                .map(|r| r.get::<_, Uuid>(0)),
+        );
+        for id in old {
             app.runtime.stop(id).await?;
         }
         let tx = c.transaction().await?;
         db::call_lock(&tx).await?;
+        crate::volumes::release_stopped(&tx, None).await?;
         tx.execute(
             "UPDATE calls SET state='unknown',error=$1 WHERE state IN ('accepted','running')",
             &[&Error::new(
@@ -131,28 +253,31 @@ async fn tick(
         )
         .await?;
     }
-    process_installations(app).await?;
+    // Do not repeat global fencing after a later maintenance/page failure: it
+    // would invalidate work already covered by the initial sweep markers.
+    state.startup_fenced = true;
+    // Maintenance is revisited every bounded batch, rather than once per full
+    // deployment sweep. Recovery precedes potentially slow image installation.
     recover_expired_calls(app).await?;
-    // A fixed upper watermark makes each sweep finite even while deployments
-    // are created. Keyset pages include disabled rows without starving the tail.
-    let end = c.query_opt("SELECT created_at,id FROM deployments WHERE archived_at IS NULL ORDER BY created_at DESC,id DESC LIMIT 1", &[]).await?;
-    let Some(end) = end else {
-        return Ok(());
-    };
-    let through = (end.get(0), end.get(1));
-    let mut after = None;
-    loop {
-        if app.shutdown.load(Ordering::SeqCst) || app.leader.is_closed() {
-            return Err(Error::unavailable("Controller is stopping"));
-        }
-        let rows = deployment_page(&c, after, through).await?;
-        if rows.is_empty() {
-            break;
-        }
+    process_installations(app).await?;
+    prune_probes(&c, state).await?;
+    for active in [true, false] {
+        let sweep = if active {
+            &mut state.active
+        } else {
+            &mut state.inactive
+        };
+        let rows = deployment_page(&c, sweep, active).await?;
+        let started = tokio::time::Instant::now();
         for r in rows {
-            after = Some((r.get("created_at"), r.get("id")));
+            if app.shutdown.load(Ordering::SeqCst) || app.leader.is_closed() {
+                return Err(Error::unavailable("Controller is stopping"));
+            }
             let id: Uuid = r.get("id");
-            if let Err(e) = reconcile(app, id, probes.entry(id).or_default()).await {
+            // Advance even after an individual failure, so one unhealthy row
+            // cannot starve its successors. Re-read current state in reconcile.
+            sweep.after = Some((r.get("created_at"), id));
+            if let Err(e) = reconcile(app, id, &mut state.probes).await {
                 tracing::warn!(deployment_id=%id,reason_code=e.code,message=e.message,"Deployment is not ready");
                 c.execute("UPDATE provider_records SET availability='unavailable' WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)", &[&id]).await?;
                 let failed:bool=c.query_one("SELECT EXISTS(SELECT 1 FROM instances WHERE deployment_id=$1 AND phase='failed')", &[&id]).await?.get(0);
@@ -167,26 +292,19 @@ async fn tick(
                     c.execute("UPDATE operations SET state='failed',error=$2,revision=revision+1,updated_at=now() WHERE resource_id=$1 AND state IN ('pending','running')", &[&id.to_string(),&e.detail()]).await?;
                 }
                 c.execute(
-                "UPDATE deployments SET revision=revision+CASE WHEN phase<>$2 OR conditions<>$3 THEN 1 ELSE 0 END,phase=$2,conditions=$3,updated_at=now() WHERE id=$1",
-                &[&id, &phase, &json!([e.code])],
-            )
-            .await?;
+                    "UPDATE deployments SET revision=revision+CASE WHEN phase<>$2 OR conditions<>$3 THEN 1 ELSE 0 END,phase=$2,conditions=$3,updated_at=now() WHERE id=$1",
+                    &[&id, &phase, &json!([e.code])],
+                ).await?;
             }
+            if started.elapsed() >= LANE_TIME_SLICE {
+                break;
+            }
+        }
+        if sweep.after.is_some() && sweep.after == sweep.through {
+            sweep.finish();
         }
     }
     Ok(())
-}
-
-type DeploymentPosition = (chrono::DateTime<chrono::Utc>, Uuid);
-async fn deployment_page(
-    c: &impl tokio_postgres::GenericClient,
-    after: Option<DeploymentPosition>,
-    through: DeploymentPosition,
-) -> Result<Vec<tokio_postgres::Row>> {
-    let (created, id) = after
-        .map(|(created, id)| (Some(created), Some(id)))
-        .unwrap_or((None, None));
-    Ok(c.query("SELECT created_at,id FROM deployments WHERE archived_at IS NULL AND ($1::timestamptz IS NULL OR (created_at,id)>($1,$2)) AND (created_at,id)<=($3,$4) ORDER BY created_at,id LIMIT 1000", &[&created, &id, &through.0, &through.1]).await?)
 }
 
 async fn recover_expired_calls(app: &App) -> Result<()> {
@@ -368,13 +486,35 @@ async fn install(app: &App, request: &Value, operation: Uuid, payload: &Value) -
     Ok(json!({"installation_id":id}))
 }
 
-async fn reconcile(app: &App, deployment: Uuid, probe: &mut Probe) -> Result<()> {
+async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Probe>) -> Result<()> {
+    // Check holds after taking the runtime fence. A previous reconciliation
+    // cannot create a writer after a backup worker has proved it stopped.
+    let Some(_runtime_fence) = db::deployment_fence(&app.db, deployment).await? else {
+        return Ok(());
+    };
     let c = app.db.connect().await?;
-    let d=c.query_one("SELECT d.*,i.manifest,i.manifest_digest,i.image_digest FROM deployments d JOIN installations i ON i.id=d.installation_id WHERE d.id=$1",&[&deployment]).await?;
+    if c.query_opt(
+        "SELECT deployment_id FROM deployment_storage_holds WHERE deployment_id=$1",
+        &[&deployment],
+    )
+    .await?
+    .is_some()
+    {
+        probes.remove(&deployment);
+        return Ok(());
+    }
+    let Some(d)=c.query_opt("SELECT d.*,i.manifest,i.manifest_digest,i.image_digest FROM deployments d JOIN installations i ON i.id=d.installation_id WHERE d.id=$1",&[&deployment]).await? else {
+        probes.remove(&deployment);
+        return Ok(());
+    };
     let spec: Value = d.get("spec");
     let manifest: Value = d.get("manifest");
     let instances=c.query("SELECT * FROM instances WHERE deployment_id=$1 AND phase<>'stopped' ORDER BY generation",&[&deployment]).await?;
-    if spec["enabled"] != true {
+    let archived = d
+        .get::<_, Option<chrono::DateTime<chrono::Utc>>>("archived_at")
+        .is_some();
+    if spec["enabled"] != true || archived {
+        probes.remove(&deployment);
         c.execute("UPDATE provider_records SET availability='unavailable' WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)",&[&deployment]).await?;
         for i in instances {
             let id: Uuid = i.get("id");
@@ -397,6 +537,7 @@ async fn reconcile(app: &App, deployment: Uuid, probe: &mut Probe) -> Result<()>
             tx.query_one("SELECT id FROM node_budget FOR UPDATE", &[])
                 .await?;
             tx.execute("UPDATE instances SET phase='stopped',health='unknown',updated_at=now(),revision=revision+1 WHERE id=$1",&[&id]).await?;
+            crate::volumes::release_stopped(&tx, Some(id)).await?;
             admission::release_stopped(&tx, id).await?;
             tx.commit().await?;
         }
@@ -405,19 +546,42 @@ async fn reconcile(app: &App, deployment: Uuid, probe: &mut Probe) -> Result<()>
             &[&deployment],
         )
         .await?;
-        finish_deployment_operations(&c, deployment, false).await?;
+        if archived {
+            c.execute("UPDATE operations SET state='failed',error=$2,revision=revision+1,updated_at=now() WHERE resource_id=$1 AND kind IN ('createDeployment','setDeploymentEnabled') AND state IN ('pending','running')", &[&deployment.to_string(), &Error::conflict("Deployment was archived").detail()]).await?;
+        } else {
+            finish_deployment_operations(&c, deployment, false).await?;
+        }
         return Ok(());
     }
-    if d.get::<_, Value>("approval") != json!({"rules":[],"egress":[]}) {
-        return Err(Error::denied());
-    }
-    let i = instances
-        .last()
-        .ok_or_else(|| Error::conflict("Enabled deployment has no admitted instance intent"))?;
+    crate::host_blobs::check_approval(&c, app, deployment, &manifest).await?;
+    let Some(i) = instances.last() else {
+        probes.remove(&deployment);
+        return Err(Error::conflict(
+            "Enabled deployment has no admitted instance intent",
+        ));
+    };
     let id: Uuid = i.get("id");
     let generation: i64 = i.get("generation");
+    let probe = probes.entry(deployment).or_default();
+    probe.bind(id, generation);
     let limits: Value = i.get("limits");
     let running = app.runtime.running(id).await?;
+    let mounts = match crate::volumes::mounts(app, deployment, id, generation, &manifest).await {
+        Ok(mounts) => mounts,
+        Err(error) => {
+            app.runtime.stop(id).await?;
+            let mut dbc = app.db.connect().await?;
+            let tx = dbc.transaction().await?;
+            crate::volumes::release_stopped(&tx, Some(id)).await?;
+            tx.execute(
+                "UPDATE provider_records SET availability='unavailable' WHERE instance_id=$1",
+                &[&id],
+            )
+            .await?;
+            tx.commit().await?;
+            return Err(error);
+        }
+    };
     if running
         && probe
             .next
@@ -461,7 +625,9 @@ async fn reconcile(app: &App, deployment: Uuid, probe: &mut Probe) -> Result<()>
     }
     let obs = app
         .runtime
-        .ensure(id, deployment, generation, &manifest, &image, &sha, &limits)
+        .ensure(
+            id, deployment, generation, &manifest, &image, &sha, &limits, &mounts,
+        )
         .await?;
     if !obs.running {
         return Err(Error::unavailable("OCI task is not running"));
@@ -540,14 +706,20 @@ async fn reconcile(app: &App, deployment: Uuid, probe: &mut Probe) -> Result<()>
     };
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
+    db::auth_lock(&tx, false).await?;
+    crate::volumes::check_approval(&tx, app, deployment, generation, &spec, &manifest).await?;
+    crate::host_blobs::check_approval(&tx, app, deployment, &manifest).await?;
     let current = tx
         .query_one(
-            "SELECT spec,approval FROM deployments WHERE id=$1 FOR UPDATE",
+            "SELECT spec,approval,archived_at FROM deployments WHERE id=$1 FOR UPDATE",
             &[&deployment],
         )
         .await?;
-    if current.get::<_, Value>("spec") != spec
-        || current.get::<_, Value>("approval") != json!({"rules":[],"egress":[]})
+    if current
+        .get::<_, Option<chrono::DateTime<chrono::Utc>>>("archived_at")
+        .is_some()
+        || current.get::<_, Value>("spec") != spec
+        || current.get::<_, Value>("approval") != d.get::<_, Value>("approval")
     {
         return Err(Error::conflict(
             "Deployment changed while runtime was starting",
@@ -594,6 +766,24 @@ async fn finish_deployment_operations(
 mod pagination_tests {
     use super::*;
 
+    #[test]
+    fn probe_rebind_preserves_same_instance_and_resets_redeployment() {
+        let id = Uuid::new_v4();
+        let mut probe = Probe::default();
+        probe.bind(id, 1);
+        let now = tokio::time::Instant::now();
+        probe.next = Some(now + Duration::from_secs(30));
+        probe.started = Some(now);
+        probe.failures = 3;
+        probe.bind(id, 1);
+        assert_eq!(probe.failures, 3);
+        assert_eq!(probe.started, Some(now));
+        assert_eq!(probe.next, Some(now + Duration::from_secs(30)));
+        probe.bind(Uuid::new_v4(), 2);
+        assert_eq!(probe.failures, 0);
+        assert!(probe.started.is_none() && probe.next.is_none());
+    }
+
     #[tokio::test]
     async fn controller_reconciles_deployment_1001_after_disabled_prefix() {
         let Ok(base) = std::env::var("XELAB_TEST_DATABASE_URL") else {
@@ -629,9 +819,14 @@ mod pagination_tests {
             leader: Arc::new(db.leader().await.unwrap()),
             ready: std::sync::atomic::AtomicBool::new(false),
             shutdown: std::sync::atomic::AtomicBool::new(false),
+            blob_uploads: tokio::sync::Semaphore::new(4),
         };
-        tick(&app, false, &mut std::collections::HashMap::new())
+        let mut state = ControllerState::default();
+        // Losing an instance intent must also discard its obsolete probe.
+        state.probes.insert(Uuid::from_u128(1001), Probe::default());
+        tokio::time::timeout(Duration::from_secs(10), tick(&app, false, &mut state))
             .await
+            .unwrap()
             .unwrap();
         let tail = c
             .query_one(
@@ -652,7 +847,131 @@ mod pagination_tests {
             .await
             .unwrap()
             .get(0);
-        assert_eq!(disabled, 1000);
+        assert!(disabled > 0 && disabled <= DEPLOYMENTS_PER_LANE as i64);
+        assert!(
+            state.probes.is_empty(),
+            "inactive/missing-instance rows need no probe"
+        );
+        // The continuation is retained across ticks, and every disabled row
+        // eventually settles even though active errors keep being retried.
+        for _ in 0..1002 {
+            if c.query_one(
+                "SELECT count(*) FROM deployments WHERE phase='disabled'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0)
+                == 1000
+            {
+                break;
+            }
+            tick(&app, false, &mut state).await.unwrap();
+        }
+        assert_eq!(
+            c.query_one(
+                "SELECT count(*) FROM deployments WHERE phase='disabled'",
+                &[]
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+            1000
+        );
+        // Simulate the post-fencing state of a controller restart with a large
+        // active backlog. The global fencing path itself is covered by OCI.
+        c.execute(
+            r#"UPDATE deployments SET spec='{"enabled":true}',phase='reconciling'"#,
+            &[],
+        )
+        .await
+        .unwrap();
+        c.execute(r#"INSERT INTO deployments(id,owner_id,installation_id,spec,approval,phase,created_at,updated_at) SELECT md5(n::text)::uuid,$1,$2,'{"enabled":true}',$3,'reconciling',now(),now() FROM generate_series(2000,2598) n"#, &[&owner,&installation,&json!({"rules":[],"egress":[]})]).await.unwrap();
+        // The inactive lane must also complete before readiness can open.
+        let inactive = Uuid::new_v4();
+        c.execute(r#"INSERT INTO deployments(id,owner_id,installation_id,spec,approval,phase,created_at,updated_at) VALUES($1,$2,$3,'{"enabled":false}',$4,'reconciling',now(),now())"#, &[&inactive,&owner,&installation,&json!({"rules":[],"egress":[]})]).await.unwrap();
+        let app = Arc::new(app);
+        let router = crate::api::router(app.clone());
+        use tower::ServiceExt;
+        let path = crate::contracts::openapi()["paths"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .find(|(_, methods)| methods["get"]["operationId"] == "getReadiness")
+            .unwrap()
+            .0
+            .clone();
+        let mut restart = ControllerState {
+            startup_fenced: true,
+            ..Default::default()
+        };
+        let mut rounds = 0;
+        loop {
+            reconcile_tick(&app, &mut restart).await.unwrap();
+            rounds += 1;
+            let pending: i64 = c
+                .query_one(
+                    "SELECT count(*) FROM deployments WHERE phase='reconciling'",
+                    &[],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            let mut request = axum::http::Request::builder()
+                .uri(&path)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            request.extensions_mut().insert(axum::extract::ConnectInfo(
+                "127.0.0.1:30000".parse::<std::net::SocketAddr>().unwrap(),
+            ));
+            let response = router.clone().oneshot(request).await.unwrap();
+            if pending > 0 {
+                assert_eq!(
+                    response.status(),
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE
+                );
+            } else if response.status() == axum::http::StatusCode::OK {
+                break;
+            }
+            assert!(rounds <= 1602, "initial recovery never completes");
+        }
+        assert!(
+            rounds >= 100,
+            "readiness must wait for all 1600 active rows"
+        );
+        assert!(restart.active.initial_complete && restart.inactive.initial_complete);
+        // Subsequent sweeps never reset the initial-completion barrier.
+        reconcile_tick(&app, &mut restart).await.unwrap();
+        assert!(app.ready.load(Ordering::SeqCst));
+        c.batch_execute("ALTER TABLE outbox RENAME TO outbox_unavailable")
+            .await
+            .unwrap();
+        assert!(reconcile_tick(&app, &mut restart).await.is_err());
+        assert!(!app.ready.load(Ordering::SeqCst));
+        assert!(restart.startup_fenced && restart.active.initial_complete);
+        c.batch_execute("ALTER TABLE outbox_unavailable RENAME TO outbox")
+            .await
+            .unwrap();
+        reconcile_tick(&app, &mut restart).await.unwrap();
+        assert!(app.ready.load(Ordering::SeqCst));
+        // A selected row may disappear or become archived before reconcile.
+        // Both paths release the probe without needing a runtime adapter.
+        let tail = Uuid::from_u128(1001);
+        c.execute(
+            "UPDATE deployments SET archived_at=now() WHERE id=$1",
+            &[&tail],
+        )
+        .await
+        .unwrap();
+        state.probes.insert(tail, Probe::default());
+        reconcile(&app, tail, &mut state.probes).await.unwrap();
+        assert!(!state.probes.contains_key(&tail));
+        c.execute("DELETE FROM deployments WHERE id=$1", &[&tail])
+            .await
+            .unwrap();
+        state.probes.insert(tail, Probe::default());
+        reconcile(&app, tail, &mut state.probes).await.unwrap();
+        assert!(!state.probes.contains_key(&tail));
     }
 
     #[tokio::test]
@@ -663,55 +982,165 @@ mod pagination_tests {
         let db = db::Db::new(dsn).unwrap();
         let mut c = db.connect().await.unwrap();
         let tx = c.transaction().await.unwrap();
-        // Shadow only this query's relation so the pagination test is isolated
-        // from concurrently running database/OCI fixtures.
         tx.batch_execute("CREATE TEMP TABLE deployments(id uuid PRIMARY KEY,created_at timestamptz NOT NULL,archived_at timestamptz,spec jsonb) ON COMMIT DROP").await.unwrap();
         let at = chrono::Utc::now();
-        for n in 1..=1002u128 {
+        for n in 1..=1100u128 {
             tx.execute(
                 "INSERT INTO deployments VALUES($1,$2,NULL,$3)",
-                &[&Uuid::from_u128(n), &at, &json!({"enabled":n>1000})],
+                &[&Uuid::from_u128(n), &at, &json!({"enabled":true})],
             )
             .await
             .unwrap();
         }
-        let end = (at, Uuid::from_u128(1002));
-        let first = deployment_page(&tx, None, end).await.unwrap();
-        assert_eq!(first.len(), 1000);
-        let last = first.last().unwrap();
-        let cursor = Some((last.get(0), last.get(1)));
+        let mut sweep = Sweep::default();
+        assert!(!sweep.initial_complete);
+        let first = deployment_page(&tx, &mut sweep, true).await.unwrap();
+        assert_eq!(first.len(), DEPLOYMENTS_PER_LANE);
+        // Consume just one item (a slow reconciliation exhausted the time slice).
+        // The other fetched items MUST be returned again in the following tick.
+        sweep.after = Some((first[0].get(0), first[0].get(1)));
+        let page = deployment_page(&tx, &mut sweep, true).await.unwrap();
+        assert_eq!(page[0].get::<_, Uuid>(1), Uuid::from_u128(2));
         tx.execute(
             "DELETE FROM deployments WHERE id=$1",
-            &[&Uuid::from_u128(1000)],
+            &[&Uuid::from_u128(1)],
         )
         .await
         .unwrap();
         tx.execute(
             "UPDATE deployments SET archived_at=now() WHERE id=$1",
-            &[&Uuid::from_u128(1001)],
+            &[&Uuid::from_u128(2)],
         )
         .await
         .unwrap();
         tx.execute(
-            "INSERT INTO deployments VALUES($1,$2,NULL,'{}')",
-            &[&Uuid::from_u128(1003), &at],
+            "UPDATE deployments SET spec=$2 WHERE id=$1",
+            &[&Uuid::from_u128(3), &json!({"enabled":false})],
         )
         .await
         .unwrap();
-        let second = deployment_page(&tx, cursor, end).await.unwrap();
-        assert_eq!(second.len(), 1);
-        assert_eq!(second[0].get::<_, Uuid>(1), Uuid::from_u128(1002));
-        assert!(deployment_page(&tx, Some(end), end)
+        let mut seen = std::collections::HashSet::new();
+        for n in 0..100u128 {
+            // A continuously growing tail must not move the captured watermark.
+            tx.execute(
+                "INSERT INTO deployments VALUES($1,$2,NULL,$3)",
+                &[&Uuid::from_u128(1200 + n), &at, &json!({"enabled":true})],
+            )
+            .await
+            .unwrap();
+            let page = deployment_page(&tx, &mut sweep, true).await.unwrap();
+            assert!(page.len() <= DEPLOYMENTS_PER_LANE);
+            if page.is_empty() {
+                break;
+            }
+            for row in page {
+                let id: Uuid = row.get(1);
+                assert!(seen.insert(id));
+                assert!(id <= Uuid::from_u128(1100));
+                sweep.after = Some((row.get(0), id));
+            }
+        }
+        assert_eq!(seen.len(), 1097);
+        assert!(sweep.through.is_none());
+        assert!(sweep.initial_complete);
+        // Enable a row behind the old cursor; it is visible on the next sweep.
+        tx.execute(
+            "UPDATE deployments SET spec=$2 WHERE id=$1",
+            &[&Uuid::from_u128(3), &json!({"enabled":true})],
+        )
+        .await
+        .unwrap();
+        let next = deployment_page(&tx, &mut sweep, true).await.unwrap();
+        assert_eq!(next[0].get::<_, Uuid>(1), Uuid::from_u128(3));
+        assert!(sweep.through.unwrap().1 > Uuid::from_u128(1100));
+        tx.execute("DELETE FROM deployments", &[]).await.unwrap();
+        // Deleted watermark ends the old sweep; an empty initial sweep is done.
+        assert!(deployment_page(&tx, &mut sweep, true)
             .await
             .unwrap()
             .is_empty());
-        assert_eq!(
-            deployment_page(&tx, Some(end), (at, Uuid::from_u128(1003)))
-                .await
-                .unwrap()
-                .len(),
-            1
+        let mut empty = Sweep::default();
+        assert!(deployment_page(&tx, &mut empty, true)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(empty.initial_complete);
+        tx.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn probe_churn_is_reclaimed_without_resetting_active_health_state() {
+        let Ok(dsn) = std::env::var("XELAB_TEST_DATABASE_URL") else {
+            return;
+        };
+        let db = db::Db::new(dsn).unwrap();
+        let mut c = db.connect().await.unwrap();
+        let tx = c.transaction().await.unwrap();
+        tx.batch_execute("CREATE TEMP TABLE deployments(id uuid PRIMARY KEY,archived_at timestamptz,spec jsonb) ON COMMIT DROP").await.unwrap();
+        let mut state = ControllerState::default();
+        let stable = Uuid::from_u128(1);
+        let now = tokio::time::Instant::now();
+        state.probes.insert(
+            stable,
+            Probe {
+                instance: Some((stable, 7)),
+                next: Some(now + Duration::from_secs(30)),
+                started: Some(now),
+                failures: 2,
+            },
         );
+        tx.execute(
+            "INSERT INTO deployments VALUES($1,NULL,$2)",
+            &[&stable, &json!({"enabled":true})],
+        )
+        .await
+        .unwrap();
+        for round in 0..40u128 {
+            // Each cycle exceeds one GC batch, mixing disabled, archived and
+            // deleted rows, followed by re-deployment under new instance IDs.
+            for n in 0..130u128 {
+                let id = Uuid::from_u128(2 + round * 130 + n);
+                tx.execute(
+                    "INSERT INTO deployments VALUES($1,NULL,$2)",
+                    &[&id, &json!({"enabled":true})],
+                )
+                .await
+                .unwrap();
+                state.probes.insert(id, Probe::default());
+                match n % 3 {
+                    0 => {
+                        tx.execute(
+                            "UPDATE deployments SET archived_at=now() WHERE id=$1",
+                            &[&id],
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    1 => {
+                        tx.execute(
+                            "UPDATE deployments SET spec=$2 WHERE id=$1",
+                            &[&id, &json!({"enabled":false})],
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    _ => {
+                        tx.execute("DELETE FROM deployments WHERE id=$1", &[&id])
+                            .await
+                            .unwrap();
+                    }
+                }
+            }
+            for _ in 0..5 {
+                prune_probes(&tx, &mut state).await.unwrap();
+            }
+            assert_eq!(state.probes.len(), 1);
+            let probe = &state.probes[&stable];
+            assert_eq!(probe.instance, Some((stable, 7)));
+            assert_eq!(probe.failures, 2);
+            assert_eq!(probe.started, Some(now));
+            assert_eq!(probe.next, Some(now + Duration::from_secs(30)));
+        }
         tx.rollback().await.unwrap();
     }
 }

@@ -26,6 +26,10 @@ pub struct Observation {
     pub address: String,
 }
 
+#[path = "runtime_images.rs"]
+mod images;
+pub use images::ImageArchive;
+
 fn binary(name: &str) -> Result<PathBuf> {
     for root in ["/usr/sbin", "/usr/bin", "/sbin", "/bin", "/usr/local/bin"] {
         let p = Path::new(root).join(name);
@@ -119,6 +123,16 @@ impl Runtime {
         }
         Ok(file)
     }
+    /// A Tokio runtime can still be joining filesystem workers after async main
+    /// returns. Keep the daemon's lease until process exit, so another kernel
+    /// cannot enter that shutdown window and reuse its storage namespace.
+    pub fn retain_daemon_host_lease(&self) -> Result<()> {
+        static LEASE: std::sync::OnceLock<fs::File> = std::sync::OnceLock::new();
+        let lease = self.host_lease()?;
+        LEASE
+            .set(lease)
+            .map_err(|_| Error::conflict("Daemon host lease was already retained"))
+    }
     pub async fn preflight(&self, cpu: i64, memory: i64) -> Result<()> {
         require_host_admin()?;
         admission::pool(&self.config.value["resources"], cpu, memory)?;
@@ -197,7 +211,97 @@ impl Runtime {
             root.join("plugins/cgroup.subtree_control"),
             "+cpu +memory +pids",
         )?;
-        // No writable persistent volumes are admitted in M1; temporary writes use bounded tmpfs.
+        self.prepare_host_service_network().await?;
+        // Temporary writes use bounded tmpfs.
+        Ok(())
+    }
+    pub async fn prepare_host_service_network(&self) -> Result<()> {
+        let rpc: std::net::SocketAddr = self
+            .config
+            .text("server", "host_rpc_listen")
+            .parse()
+            .map_err(|_| Error::invalid("Invalid HostService address"))?;
+        let net: ipnet::Ipv4Net = self
+            .config
+            .text("runtime", "network_cidr")
+            .parse()
+            .map_err(|_| Error::invalid("Invalid plugin network"))?;
+        if rpc.ip() != std::net::IpAddr::V4(Ipv4Addr::from(u32::from(net.network()) + 1)) {
+            return Err(Error::invalid(
+                "HostService must use the first plugin network host address",
+            ));
+        }
+        let links = strict_json(
+            &command(
+                "ip",
+                &strs(&["-j", "-d", "link", "show"]),
+                Duration::from_secs(10),
+            )
+            .await?,
+            2097152,
+        )?;
+        if let Some(link) = links
+            .as_array()
+            .and_then(|links| links.iter().find(|link| link["ifname"] == "xh-rpc"))
+        {
+            if link["linkinfo"]["info_kind"] != "dummy"
+                || link["ifalias"] != "xelab-host-service-v1"
+            {
+                return Err(Error::conflict(
+                    "HostService network interface is not managed by XeLab",
+                ));
+            }
+        } else {
+            command(
+                "ip",
+                &strs(&["link", "add", "xh-rpc", "type", "dummy"]),
+                Duration::from_secs(10),
+            )
+            .await?;
+            command(
+                "ip",
+                &strs(&["link", "set", "xh-rpc", "alias", "xelab-host-service-v1"]),
+                Duration::from_secs(10),
+            )
+            .await?;
+        }
+        let addresses = strict_json(
+            &command(
+                "ip",
+                &strs(&["-j", "address", "show", "dev", "xh-rpc"]),
+                Duration::from_secs(10),
+            )
+            .await?,
+            2097152,
+        )?;
+        let addresses = addresses[0]["addr_info"]
+            .as_array()
+            .ok_or_else(|| Error::unavailable("Invalid HostService network"))?;
+        if addresses.iter().any(|a| {
+            a["family"] == "inet" && (a["local"] != rpc.ip().to_string() || a["prefixlen"] != 32)
+        }) {
+            return Err(Error::conflict("HostService network address differs"));
+        }
+        if !addresses.iter().any(|a| a["local"] == rpc.ip().to_string()) {
+            command(
+                "ip",
+                &strs(&[
+                    "address",
+                    "add",
+                    &format!("{}/32", rpc.ip()),
+                    "dev",
+                    "xh-rpc",
+                ]),
+                Duration::from_secs(10),
+            )
+            .await?;
+        }
+        command(
+            "ip",
+            &strs(&["link", "set", "xh-rpc", "up"]),
+            Duration::from_secs(10),
+        )
+        .await?;
         Ok(())
     }
     pub async fn verify_image(&self, image: &str, expected: &str) -> Result<()> {
@@ -286,7 +390,7 @@ impl Runtime {
                     }
                 }
             }
-            let slot = (0..slots)
+            let slot = (1..slots)
                 .find(|n| !used.contains(n))
                 .ok_or_else(Error::exhausted)?;
             let hostip = Ipv4Addr::from(base + slot * 4 + 1).to_string();
@@ -339,7 +443,7 @@ impl Runtime {
             .text("server", "host_rpc_listen")
             .parse()
             .unwrap();
-        let nft=format!("table inet xl_{} {{\n chain ingress {{ type filter hook input priority -20; policy accept; iifname \"{host}\" ct state established,related accept; iifname \"{host}\" drop; }}\n chain transit {{ type filter hook forward priority -20; policy accept; iifname \"{host}\" drop; oifname \"{host}\" drop; }}\n}}\n",&short[..16]);
+        let nft=format!("table inet xl_{} {{\n chain ingress {{ type filter hook input priority -20; policy accept; iifname \"{host}\" ct state established,related accept; iifname \"{host}\" ip saddr {p} ip daddr {} tcp dport {} accept; iifname \"{host}\" drop; }}\n chain transit {{ type filter hook forward priority -20; policy accept; iifname \"{host}\" drop; oifname \"{host}\" drop; }}\n}}\n",&short[..16],rpc.ip(),rpc.port());
         let nftfile = dir.join("network.nft");
         tls::atomic_file(&nftfile, nft.as_bytes(), 0o600)?;
         command(
@@ -428,6 +532,7 @@ impl Runtime {
         image: &str,
         sha: &str,
         limits: &Value,
+        mounts: &[crate::volumes::Mount],
     ) -> Result<Observation> {
         let dir = self.dir(id);
         fs::create_dir_all(&dir)?;
@@ -447,7 +552,7 @@ impl Runtime {
         {
             tls::issue(&self.config, Some((id, generation)), &identity)?;
         }
-        let spec = oci_spec(
+        let mut spec = oci_spec(
             &self.config,
             id,
             deployment,
@@ -457,6 +562,7 @@ impl Runtime {
             &identity,
             limits,
         )?;
+        add_volume_mounts(&mut spec, &root, mounts)?;
         let config = dir.join("config.json");
         if !self.inventory().await?.contains(&id) {
             tls::atomic_file(&config, &serde_json::to_vec(&spec)?, 0o600)?;
@@ -511,17 +617,48 @@ impl Runtime {
             address: net["peer"].as_str().unwrap().to_owned(),
         })
     }
+    async fn task_present(&self, id: Uuid) -> Result<bool> {
+        let raw = self.ctr(&strs(&["tasks", "list"])).await?;
+        let text =
+            std::str::from_utf8(&raw).map_err(|_| Error::unavailable("Invalid task inventory"))?;
+        let mut lines = text.lines().filter(|s| !s.trim().is_empty());
+        let header: Vec<_> = lines
+            .next()
+            .ok_or_else(|| Error::unavailable("Missing task inventory header"))?
+            .split_whitespace()
+            .collect();
+        if header.len() < 3 || header[..3] != ["TASK", "PID", "STATUS"] {
+            return Err(Error::unavailable("Invalid task inventory header"));
+        }
+        let mut found = false;
+        for line in lines {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            if fields.len() < 3 {
+                return Err(Error::unavailable("Invalid task inventory"));
+            }
+            let current: Uuid = fields[0]
+                .parse()
+                .map_err(|_| Error::unavailable("Invalid task identity"))?;
+            found |= current == id;
+        }
+        Ok(found)
+    }
     pub async fn stop(&self, id: Uuid) -> Result<()> {
-        if self.running(id).await? {
-            self.ctr(&strs(&[
-                "tasks",
-                "kill",
-                "--signal",
-                "SIGKILL",
-                "--all",
-                &id.to_string(),
-            ]))
-            .await?;
+        if self.running(id).await?
+            && self
+                .ctr(&strs(&[
+                    "tasks",
+                    "kill",
+                    "--signal",
+                    "SIGKILL",
+                    "--all",
+                    &id.to_string(),
+                ]))
+                .await
+                .is_err()
+            && self.running(id).await?
+        {
+            return Err(Error::unavailable("OCI stop signal is unconfirmed"));
         }
         for _ in 0..40 {
             if !self.running(id).await? {
@@ -532,39 +669,81 @@ impl Runtime {
         if self.running(id).await? {
             return Err(Error::unavailable("Runtime task has not stopped"));
         }
-        let _ = self.ctr(&strs(&["tasks", "delete", &id.to_string()])).await;
-        if self.inventory().await?.contains(&id) {
-            self.ctr(&strs(&["containers", "delete", &id.to_string()]))
-                .await?;
+        for _ in 0..20 {
+            if !self.task_present(id).await? {
+                break;
+            }
+            let _ = self.ctr(&strs(&["tasks", "delete", &id.to_string()])).await;
+            if !self.task_present(id).await? {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if self.task_present(id).await? {
+            return Err(Error::unavailable("OCI task removal is unconfirmed"));
+        }
+        if self.inventory().await?.contains(&id)
+            && self
+                .ctr(&strs(&["containers", "delete", &id.to_string()]))
+                .await
+                .is_err()
+            && self.inventory().await?.contains(&id)
+        {
+            return Err(Error::unavailable("OCI container removal is unconfirmed"));
+        }
+        if self.inventory().await?.contains(&id) || self.task_present(id).await? {
+            return Err(Error::unavailable("OCI task or container remains"));
         }
         let cg = Path::new("/sys/fs/cgroup/xelab/plugins").join(id.to_string());
-        if cg.exists()
-            && !fs::read_to_string(cg.join("cgroup.procs"))?
-                .trim()
-                .is_empty()
-        {
-            return Err(Error::unavailable(
-                "Runtime cgroup still contains processes",
-            ));
+        if cg.try_exists()? {
+            let proof = (|| -> Result<bool> {
+                let procs = fs::read_to_string(cg.join("cgroup.procs"))?;
+                let events = fs::read_to_string(cg.join("cgroup.events"))?;
+                Ok(procs.trim().is_empty()
+                    && events.lines().any(|line| {
+                        line.split_whitespace().collect::<Vec<_>>() == ["populated", "0"]
+                    }))
+            })();
+            match proof {
+                Ok(true) => (),
+                Ok(false) => {
+                    return Err(Error::unavailable(
+                        "Runtime cgroup still contains processes",
+                    ))
+                }
+                Err(error) if cg.try_exists()? => return Err(error),
+                Err(_) => (), // runc concurrently removed the now-empty group.
+            }
         }
         let short = id.simple().to_string();
         let ns = format!("xelab-{id}");
-        if Path::new("/run/netns").join(&ns).exists() {
-            command(
+        let namespace_path = Path::new("/run/netns").join(&ns);
+        if namespace_path.try_exists()? {
+            let _ = command(
                 "ip",
                 &strs(&["netns", "delete", &ns]),
                 Duration::from_secs(10),
             )
-            .await?;
+            .await;
         }
         let host = format!("xh{}", &short[..10]);
-        if Path::new("/sys/class/net").join(&host).exists() {
-            command(
+        let host_path = Path::new("/sys/class/net").join(&host);
+        if host_path.try_exists()? {
+            let _ = command(
                 "ip",
                 &strs(&["link", "delete", &host]),
                 Duration::from_secs(10),
             )
-            .await?;
+            .await;
+        }
+        for _ in 0..20 {
+            if !namespace_path.try_exists()? && !host_path.try_exists()? {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        if namespace_path.try_exists()? || host_path.try_exists()? {
+            return Err(Error::unavailable("OCI network cleanup is unconfirmed"));
         }
         let _ = command(
             "nft",
@@ -659,9 +838,39 @@ pub fn oci_spec(
         "XELAB_PLUGIN_RPC_LISTEN=0.0.0.0:7000".into(),
     ];
     let tmp = format!("size={},mode=1777", limits["ephemeral_bytes"]);
-    Ok(
-        json!({"ociVersion":"1.0.2","hostname":"xelab-plugin","root":{"path":root,"readonly":true},"process":{"terminal":false,"user":{"uid":65532,"gid":65532},"args":manifest["entrypoint"],"env":env,"cwd":"/","noNewPrivileges":true,"capabilities":{"bounding":[],"effective":[],"inheritable":[],"permitted":[],"ambient":[]},"rlimits":[{"type":"RLIMIT_NOFILE","hard":1024,"soft":1024}]},"mounts":[{"destination":"/proc","type":"proc","source":"proc","options":["nosuid","noexec","nodev"]},{"destination":"/dev","type":"tmpfs","source":"tmpfs","options":["nosuid","strictatime","mode=755","size=65536k"]},{"destination":"/tmp","type":"tmpfs","source":"tmpfs","options":["nosuid","nodev","noexec",tmp]},{"destination":"/run","type":"tmpfs","source":"tmpfs","options":["nosuid","nodev","noexec","size=1048576","mode=755"]},{"destination":"/run/xelab/identity","type":"bind","source":identity,"options":["rbind","ro","nosuid","nodev","noexec"]}],"annotations":{"org.xelab.instance":id.to_string(),"org.xelab.deployment":deployment.to_string(),"org.xelab.generation":generation.to_string()},"linux":{"cgroupsPath":format!("/xelab/plugins/{id}"),"namespaces":[{"type":"pid"},{"type":"ipc"},{"type":"uts"},{"type":"mount"},{"type":"cgroup"},{"type":"network","path":format!("/run/netns/xelab-{id}")}],"resources":{"cpu":{"period":100000,"quota":limits["cpu_millis"].as_u64().unwrap()*100},"memory":{"limit":limits["memory_bytes"],"swap":limits["memory_bytes"]},"pids":{"limit":limits["pids"]},"devices":[{"allow":false,"access":"rwm"},{"allow":true,"type":"c","major":1,"minor":3,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":5,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":8,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":9,"access":"rw"}]},"devices":[{"path":"/dev/null","type":"c","major":1,"minor":3,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/zero","type":"c","major":1,"minor":5,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/random","type":"c","major":1,"minor":8,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/urandom","type":"c","major":1,"minor":9,"fileMode":438,"uid":0,"gid":0}],"maskedPaths":["/proc/kcore","/proc/keys","/proc/timer_list","/proc/sched_debug","/sys/firmware"],"readonlyPaths":["/proc/asound","/proc/bus","/proc/fs","/proc/irq","/proc/sys","/proc/sysrq-trigger"],"seccomp":{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{"names":["mount","umount2","pivot_root","ptrace","process_vm_readv","process_vm_writev","bpf","perf_event_open","kexec_load","kexec_file_load","init_module","finit_module","delete_module","reboot","swapon","swapoff","open_by_handle_at","name_to_handle_at","setns","unshare","keyctl","add_key","request_key","userfaultfd","io_uring_setup"],"action":"SCMP_ACT_ERRNO","errnoRet":1},{"names":["clone3"],"action":"SCMP_ACT_ERRNO","errnoRet":38},{"names":["clone"],"action":"SCMP_ACT_ERRNO","errnoRet":1,"args":[{"index":0,"value":268435456,"valueTwo":268435456,"op":"SCMP_CMP_MASKED_EQ"}]}]}}}),
-    )
+    let mut spec = json!({"ociVersion":"1.0.2","hostname":"xelab-plugin","root":{"path":root,"readonly":true},"process":{"terminal":false,"user":{"uid":65532,"gid":65532},"args":manifest["entrypoint"],"env":env,"cwd":"/","noNewPrivileges":true,"capabilities":{"bounding":[],"effective":[],"inheritable":[],"permitted":[],"ambient":[]},"rlimits":[{"type":"RLIMIT_NOFILE","hard":1024,"soft":1024}]},"mounts":[{"destination":"/proc","type":"proc","source":"proc","options":["nosuid","noexec","nodev"]},{"destination":"/dev","type":"tmpfs","source":"tmpfs","options":["nosuid","strictatime","mode=755","size=65536k"]},{"destination":"/tmp","type":"tmpfs","source":"tmpfs","options":["nosuid","nodev","noexec",tmp]},{"destination":"/run","type":"tmpfs","source":"tmpfs","options":["nosuid","nodev","noexec","size=1048576","mode=755"]},{"destination":"/run/xelab/identity","type":"bind","source":identity,"options":["rbind","ro","nosuid","nodev","noexec"]}],"annotations":{"org.xelab.instance":id.to_string(),"org.xelab.deployment":deployment.to_string(),"org.xelab.generation":generation.to_string()},"linux":{"cgroupsPath":format!("/xelab/plugins/{id}"),"namespaces":[{"type":"pid"},{"type":"ipc"},{"type":"uts"},{"type":"mount"},{"type":"cgroup"},{"type":"network","path":format!("/run/netns/xelab-{id}")}],"resources":{"cpu":{"period":100000,"quota":limits["cpu_millis"].as_u64().unwrap()*100},"memory":{"limit":limits["memory_bytes"],"swap":limits["memory_bytes"]},"pids":{"limit":limits["pids"]},"devices":[{"allow":false,"access":"rwm"},{"allow":true,"type":"c","major":1,"minor":3,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":5,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":8,"access":"rw"},{"allow":true,"type":"c","major":1,"minor":9,"access":"rw"}]},"devices":[{"path":"/dev/null","type":"c","major":1,"minor":3,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/zero","type":"c","major":1,"minor":5,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/random","type":"c","major":1,"minor":8,"fileMode":438,"uid":0,"gid":0},{"path":"/dev/urandom","type":"c","major":1,"minor":9,"fileMode":438,"uid":0,"gid":0}],"maskedPaths":["/proc/kcore","/proc/keys","/proc/timer_list","/proc/sched_debug","/sys/firmware"],"readonlyPaths":["/proc/asound","/proc/bus","/proc/fs","/proc/irq","/proc/sys","/proc/sysrq-trigger"],"seccomp":{"defaultAction":"SCMP_ACT_ALLOW","syscalls":[{"names":["mount","umount2","pivot_root","ptrace","process_vm_readv","process_vm_writev","bpf","perf_event_open","kexec_load","kexec_file_load","init_module","finit_module","delete_module","reboot","swapon","swapoff","open_by_handle_at","name_to_handle_at","setns","unshare","keyctl","add_key","request_key","userfaultfd","io_uring_setup","quotactl","quotactl_fd"],"action":"SCMP_ACT_ERRNO","errnoRet":1},{"names":["clone3"],"action":"SCMP_ACT_ERRNO","errnoRet":38},{"names":["clone"],"action":"SCMP_ACT_ERRNO","errnoRet":1,"args":[{"index":0,"value":268435456,"valueTwo":268435456,"op":"SCMP_CMP_MASKED_EQ"}]}]}}});
+    for command in [0x401c5820u64, 0x40086602, 0x40046602] {
+        spec["linux"]["seccomp"]["syscalls"].as_array_mut().unwrap().push(json!({"names":["ioctl"],"action":"SCMP_ACT_ERRNO","errnoRet":1,"args":[{"index":1,"value":4294967295u64,"valueTwo":command,"op":"SCMP_CMP_MASKED_EQ"}]}));
+    }
+    Ok(spec)
+}
+
+fn add_volume_mounts(
+    spec: &mut Value,
+    root: &Path,
+    mounts: &[crate::volumes::Mount],
+) -> Result<()> {
+    for mount in mounts {
+        // Signed images are immutable. Reject every symlink component before
+        // allowing the OCI runtime to resolve a destination in that image.
+        let mut destination = root.to_path_buf();
+        for component in mount.destination.trim_start_matches('/').split('/') {
+            if component.is_empty() || component == "." || component == ".." {
+                return Err(Error::invalid("Invalid volume destination"));
+            }
+            destination.push(component);
+            let meta = fs::symlink_metadata(&destination)?;
+            if !meta.is_dir() || meta.file_type().is_symlink() {
+                return Err(Error::invalid(
+                    "Volume destination must be an existing image directory without symlinks",
+                ));
+            }
+        }
+        spec["mounts"].as_array_mut().unwrap().push(json!({"destination":mount.destination,"type":"bind","source":mount.source,"options":["bind",mount.access,"nosuid","nodev","noexec"]}));
+        spec["annotations"][format!("org.xelab.volume.{}", mount.volume)] =
+            json!(mount.fence.to_string());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
