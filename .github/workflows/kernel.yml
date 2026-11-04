@@ -91,7 +91,7 @@ jobs:
           test -n "$digest"
           sudo ctr -n xelab-ci images tag docker.io/xelab-ci/schema:test "docker.io/xelab-ci/schema@$digest"
           echo "XELAB_TEST_SCHEMA_IMAGE=docker.io/xelab-ci/schema@$digest" >> "$GITHUB_ENV"
-          python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output examples/generated-platform-schema --implementation python --volume-access rw --data-schema 1 --plugin-version 4.0.0
+          python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output examples/generated-platform-schema --implementation python --volume-access rw --data-schema 1 --plugin-version 1.0.0
           docker build -t docker.io/xelab-ci/platform-schema:test --build-arg ARTIFACT_DIR=examples/generated-platform-schema -f examples/echo-python/Dockerfile .
           docker save docker.io/xelab-ci/platform-schema:test -o examples/generated-platform-schema/image.tar
           sudo ctr -n xelab-ci images import examples/generated-platform-schema/image.tar
