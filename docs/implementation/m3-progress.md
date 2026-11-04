@@ -92,14 +92,14 @@ OAuth、官方 WebUI 与 UI 桥尚未实现。开发分支 Schema 15 不等于 m
 | Draft #41 `1399b619…` | [执行 41819988198](https://github.com/jyxxe/XeLab/actions/runs/41819988198) 在 image_archive 的宿主 I/O 阶段失败，尚未执行到 OCI/撤权回归；追加诊断不改变验证/限制，不能记为修复通过 |
 | Draft #41 `3ed37c67…` | [执行 41823170948](https://github.com/jyxxe/XeLab/actions/runs/41823170948) 实际 OCI 再现撤权等待到 deadline：执行未来持有共享授权事务时，监视分支等待排在独占撤权写入者后的新共享事务，却暂停轮询执行未来；并发 guard 修复及真实 PostgreSQL 屏障回归尚在验证 |
 | Draft #41 `20e09827…` | 独立并发 guard 修复、真实 PostgreSQL 排队屏障回归已在开发分支验证，并由 HTTP 分支正常合并；[执行 41827862054](https://github.com/jyxxe/XeLab/actions/runs/41827862054) 结果仍待确认，未计为 main 已修复 |
-| HTTP 开发分支 | [实现及命令](m3-http.md)、[持久化](m3-http-provenance.md)与[参考制品](../../examples/http/README.md)已存在；5 项契约 PostgreSQL、12 项 Python 及两个实际打包探针通过；核心/PG/独立 mTLS 两槽组件及 11 项安全回归通过；issuer-account 夹具修正、缓存/快照新测试、真实内核 OCI、workspace 与最终 CI 待确认 |
+| HTTP 开发分支 | [实现及命令](m3-http.md)、[持久化](m3-http-provenance.md)与[参考制品](../../examples/http/README.md)已存在；5 项契约 PostgreSQL、12 项 Python 及两个实际打包探针通过；核心/PG/独立 mTLS 两槽组件与 13 项安全场景、6 项契约、16 项网关/HTTP、4 项快照、Broker/API 回归和全-target Clippy 通过；真实内核 OCI、完整 workspace 执行与最终 CI 待确认 |
 
 流式实现保留单调时钟 deadline、请求作用域数据库取消和实际后端退出断言；
 [流式说明](m3-skill-streams.md)记录其已交付 profile。main 的失败与后续修复单独跟踪，
-不以历史绿灯覆盖最新失败。HTTP 核心组件的完整两槽运行及 11 项安全回归已通过，
+不以历史绿灯覆盖最新失败。HTTP 核心组件的完整两槽运行及 13 项安全场景已分别通过，
 包含原 5 秒 Skill、同键重放、双层拒绝、实际 SSE、精确撤权、跨 owner 和冻结上下文拒绝。
 此前四路 debug 试验保留失败记录；签名制品/真实 OCI 四槽混合场景并未修改，仍待 CI。
-新增 issuer-account 到期夹具修正及缓存/快照最终回归另列待确认。
+issuer-account 到期、缓存/快照与当前来源/计费回归通过，完整 workspace 与真实 OCI 仍待最终验证。
 这不构成完整 M3-B 验收，也不替代真实内核 OCI 或浏览器测试。
 
 本地检查命令为 `python3 tools/issues/validate.py`、

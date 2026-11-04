@@ -109,7 +109,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test -p xelab-kernel --lib http_contracts --locked
 cargo test -p xelab-kernel --lib plugin_http --locked
-cargo test -p xelab-kernel --lib http_component_tests --locked -- --nocapture
+cargo test -p xelab-kernel --lib http_component_tests --locked -- --nocapture --test-threads=1
 cargo test -p xelab-kernel --test postgres --locked
 python3 -m unittest discover -s examples/http -p 'test_*.py' -v
 python3 docs/tools/validate_docs.py --strict
@@ -120,16 +120,18 @@ PostgreSQL 组件需要隔离的 XELAB_TEST_DATABASE_URL。
 [Kernel 工作流](../../.github/workflows/kernel.yml)，要求独占 containerd/runc、
 cgroups v2、网络及显式 XELAB_HTTP_OCI_TEST=1；不能用 Docker 组件探针代替。
 
-记录时，5 项不可变契约 PostgreSQL 测试通过，新增缓存回归待最终批次；
+记录时，6 项不可变契约 PostgreSQL 测试（含缓存/篡改）、16 项 HTTP/网关、
+4 项元数据快照（含完整 4 MiB 原始契约）、3 项 Broker 监控/Schema 与 2 项 API 回归通过。
 Python 参考插件 12 项测试及 HTTP-only/混合两个实际打包探针通过。
 核心/PG/独立真实 mTLS 插件组件已完整通过：原 5 秒 Skill 调用、同键重放、
 双层授权拒绝、JSON/SSE、精确撤权失败、跨部署 owner 隔离、缺少冻结上下文拒绝，
 以及声明两槽的两路实际请求、第三路核心 503 且无新增 Call/计费、成功后槽释放。
 此前四路 debug 组件试验有实际 deadline 失败，不能计为压力或容量通过；
 签名参考制品与真实 OCI 四槽混合 HTTP/RPC 场景保持不变，尚待 CI 执行。
-串行安全批次 11 项通过，包括真实 PG 排队授权写入者与 Grant 跨账本等待到期；
-新增 issuer-account 到期两项的夹具被既有 require_subset 正确拒绝，
-已使组规则保留签发 Key 的原始到期上限，修正后结果待确认。
-新增缓存/快照、完整 workspace、Clippy、真实内核 OCI、正式 PR/最终 main CI
-仍待最终验证。这些组件结果不替代真实 OCI、浏览器或生产验收。
+13 项安全/组件场景已分别实际通过（串行 11 项与修正夹具后的 2 项），
+包括 PG 排队授权写入者、Grant/签发账户跨账本等待到期、原始有效替代来源继续计费，
+以及冻结上下文排除过期未计费来源。测试组规则保留签发 Key 的原始到期上限，
+未放松 require_subset。fmt 和全 workspace/all-target Clippy（-D warnings）通过。
+完整 workspace 测试、真实内核 OCI、正式 PR/最终 main CI 仍待最终验证。
+这些组件结果不替代真实 OCI、浏览器或生产验收。
 AWS/独立宿主与 RUN-03 继续按[持续进度](m3-progress.md)单独待验收。

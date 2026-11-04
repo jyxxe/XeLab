@@ -47,6 +47,7 @@ impl Provider {
         self.registry.resolve(&self.method, &self.path)
     }
 }
+#[allow(clippy::too_many_arguments)] // Preserve the authenticated request and monotonic deadline independently.
 pub(super) async fn execute_skill(
     app: &App,
     token: &str,

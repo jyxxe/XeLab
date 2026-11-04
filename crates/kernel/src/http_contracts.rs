@@ -187,10 +187,7 @@ pub async fn verify_image(
     match (raw.as_ref(), stored.as_ref()) {
         (Some(raw), Some(row))
             if row.get::<_, String>("digest") == digest(raw)
-                && row.get::<_, Vec<u8>>("raw") == *raw =>
-        {
-            ()
-        }
+                && row.get::<_, Vec<u8>>("raw") == *raw => {}
         (None, None) => (),
         _ => {
             return Err(Error::conflict(
