@@ -113,7 +113,7 @@ def run(config, report):
     hosts = [urllib.parse.urlsplit(value).hostname for value in (core, ui, reference)]
     resolver = ",".join(f"MAP {host} {config['connect_ip']}" for host in hosts)
     report["playwright_version"] = importlib.metadata.version("playwright")
-    report["http"] = {"oauth_token_successes": 0, "callback_successes": 0, "actual_skill_successes": 0, "skill_post_attempts": 0, "node_reads": 0, "preference_writes": 0, "contribution_reads": 0, "read_statuses": {}}
+    report["http"] = {"oauth_token_successes": 0, "callback_successes": 0, "actual_skill_successes": 0, "skill_post_attempts": 0, "node_reads": 0, "preference_writes": 0, "contribution_reads": 0, "read_statuses": {}, "preflight_statuses": {}}
     reads = {"/api/platform/v1/installations": "installation_list",
              "/api/platform/v1/deployments": "deployment_list",
              "/api/platform/v1/skills": "skill_list",
@@ -147,12 +147,13 @@ def run(config, report):
                 report["http"]["callback_successes"] += 1
             if url_origin(response.url) != core:
                 return
-            if response.request.method == "GET" and parsed.path in reads:
+            if response.request.method in ("GET", "OPTIONS") and parsed.path in reads:
                 try:
                     value = response.json()
                 except Exception:
                     value = None
-                entries = report["http"]["read_statuses"].setdefault(reads[parsed.path], [])
+                bucket = "preflight_statuses" if response.request.method == "OPTIONS" else "read_statuses"
+                entries = report["http"][bucket].setdefault(reads[parsed.path], [])
                 entries.append(safe_read_summary(response.status, value))
                 del entries[:-8]
             if parsed.path == "/oauth/token" and response.status == 200:

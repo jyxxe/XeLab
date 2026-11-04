@@ -397,6 +397,161 @@ async fn real_http_login_continuation_native_consent_pkce_and_secret_free_idempo
 }
 
 #[tokio::test]
+async fn main_router_queried_preflight_preserves_declared_routes_and_auth_query_rejection() {
+    let Some(f) = Fixture::new("https://kernel.example.org:8443", "https://ui.example.org").await
+    else {
+        return;
+    };
+    for path in [
+        "/api/platform/v1/installations?limit=200",
+        "/api/platform/v1/deployments?limit=200",
+        "/api/platform/v1/sessions?limit=100",
+        "/api/platform/v1/skills?limit=50",
+    ] {
+        let response = f
+            .call(
+                f.request("OPTIONS", path)
+                    .header("origin", &f.ui)
+                    .header("access-control-request-method", "GET")
+                    .header("access-control-request-headers", "authorization")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(response.status(), 204, "Declared queried preflight: {path}");
+        assert_eq!(response.headers()["access-control-allow-origin"], f.ui);
+        assert_eq!(response.headers()["access-control-allow-methods"], "GET");
+        assert!(!response
+            .headers()
+            .contains_key("access-control-allow-credentials"));
+        assert!(!response.headers().contains_key("set-cookie"));
+    }
+    for (path, method, origin, headers) in [
+        (
+            "/oauth/token?unexpected=1",
+            "POST",
+            f.ui.as_str(),
+            "content-type",
+        ),
+        (
+            "/auth/ui/login?unexpected=1",
+            "GET",
+            f.ui.as_str(),
+            "authorization",
+        ),
+        (
+            "/api/platform/v1/auth/login?unexpected=1",
+            "POST",
+            f.ui.as_str(),
+            "content-type",
+        ),
+        (
+            "/api/platform/v1/unknown?limit=1",
+            "GET",
+            f.ui.as_str(),
+            "authorization",
+        ),
+        (
+            "/plugins/org.xelab.undeclared/path?limit=1",
+            "GET",
+            f.ui.as_str(),
+            "authorization",
+        ),
+        (
+            "/api/platform/v1/installations?limit=1",
+            "DELETE",
+            f.ui.as_str(),
+            "authorization",
+        ),
+        (
+            "/api/platform/v1/installations?limit=1",
+            "GET",
+            "https://evil.example.org",
+            "authorization",
+        ),
+        (
+            "/api/platform/v1/installations?limit=1",
+            "GET",
+            f.ui.as_str(),
+            "x-user-id",
+        ),
+    ] {
+        let response = f
+            .call(
+                f.request("OPTIONS", path)
+                    .header("origin", origin)
+                    .header("access-control-request-method", method)
+                    .header("access-control-request-headers", headers)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert!(
+            !response.status().is_success(),
+            "Forbidden queried preflight: {path}"
+        );
+    }
+    for (header, value) in [
+        ("authorization", "Bearer forged"),
+        ("cookie", "__Host-xelab_auth=forged"),
+    ] {
+        let response = f
+            .call(
+                f.request("OPTIONS", "/api/platform/v1/installations?limit=1")
+                    .header("origin", &f.ui)
+                    .header("access-control-request-method", "GET")
+                    .header("access-control-request-headers", "authorization")
+                    .header(header, value)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(response.status(), 403);
+    }
+    let login = f
+        .call(
+            f.request("GET", "/auth/ui/login?unexpected=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(login.status(), 400);
+    let token = f
+        .call(
+            f.request("POST", "/oauth/token?unexpected=1")
+                .header("origin", &f.ui)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(token.status(), 400);
+
+    // Preflight grants no authority and does not replace the actual operation's
+    // strict query schema or its client-bound OAuth permission checks.
+    let tokens = f.tokens().await;
+    for (query, expected) in [("limit=1", 200), ("limit=0", 400), ("unknown=1", 400)] {
+        let response = f
+            .call(
+                f.request("GET", &format!("/api/platform/v1/accounts?{query}"))
+                    .header("origin", &f.ui)
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", tokens["access_token"].as_str().unwrap()),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(response.status(), expected, "Actual queried GET: {query}");
+        assert_eq!(response.headers()["access-control-allow-origin"], f.ui);
+        if expected == 200 {
+            validate("AccountPage", &value(response).await).unwrap();
+        }
+    }
+}
+
+#[tokio::test]
 async fn real_http_cors_requires_direct_client_bound_access_and_rechecks_refresh_reuse() {
     let Some(f) = Fixture::new("https://kernel.example.org:8443", "https://ui.example.org").await
     else {
