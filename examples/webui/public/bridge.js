@@ -255,7 +255,7 @@ export class BridgeHost {
   #schedule(event,params){if(!this.#initialized||this.#closed)return;this.#events.set(event,params);if(this.#animation)return;this.#animation=requestAnimationFrame(()=>{this.#animation=null;for(const[event,params]of this.#events)this.#send('event',{event,params});this.#events.clear();});}
   themeChanged(){this.#schedule('theme.changed',this.#theme());}
   viewportChanged(){this.#schedule('viewport.changed',this.#viewport());}
-  setVisible(visible){if(this.#visible===visible)return;this.#visible=visible;if(this.#initialized){this.#send('event',{event:'visibility.changed',params:{visible}});if(visible&&this.#fixed.spec.kind==='widget')this.refresh().catch(()=>this.close('unavailable'));}}
+  setVisible(visible){if(this.#visible===visible)return;this.#visible=visible;if(this.#initialized)this.#send('event',{event:'visibility.changed',params:{visible}});}
   async refresh(){if(this.#initialized&&this.#visible&&this.#fixed.spec.kind==='widget'){await this.#verify();if(!this.#closed)this.#send('event',{event:'widget.refresh',params:{}});}}
   close(reason='close'){
     if(this.#closed)return;

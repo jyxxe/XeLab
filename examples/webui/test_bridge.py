@@ -35,7 +35,7 @@ def contribution(identifier="main", kind="window"):
 FRAME = """<!doctype html><meta charset=utf-8><p>Independent test plugin</p><script>
 const metadata=Object.fromEntries(new URLSearchParams(location.hash.slice(1)));
 window.messages=[];window.sequence=0;window.responses=()=>messages.filter(m=>m.type==='response');
-addEventListener('message',e=>{if(e.source!==parent||e.origin!==metadata.parent_origin)return;messages.push(e.data);});
+addEventListener('message',e=>{if(e.source!==parent||e.origin!==metadata.parent_origin)return;messages.push(e.data);if(e.data.event==='visibility.changed')document.documentElement.dataset.visible=String(e.data.params.visible);});
 window.emit=(method,params,id,overrides={})=>parent.postMessage({protocol:metadata.protocol,view_id:metadata.view_id,channel_nonce:metadata.channel_nonce,seq:++sequence,type:'request',request_id:id,method,params,...overrides},metadata.parent_origin);
 window.meta=metadata;
 window.domBlocked=false;try{parent.document.body}catch{domBlocked=true}
@@ -142,6 +142,16 @@ window.bridge=new BridgeHost({{iframe:frame,api,contribution,subjectId:{json.dum
 
     def posts(self):
         return [call for call in self.calls if call["method"] == "POST"]
+
+    def test_widget_visibility_is_not_implicit_refresh_without_shell_read_proof(self):
+        self.current = contribution("summary", "widget")
+        frame = self.launch()
+        self.page.evaluate("bridge.setVisible(false); bridge.setVisible(true)")
+        frame.wait_for_function("messages.some(message=>message.event==='visibility.changed'&&message.params.visible===true)")
+        self.assertEqual(frame.evaluate("messages.filter(message=>message.event==='widget.refresh').length"), 0)
+        self.page.evaluate("bridge.refresh()")
+        frame.wait_for_function("messages.some(message=>message.event==='widget.refresh')")
+        self.assertEqual(len(self.posts()), 0)
 
     def test_fixed_call_handshake_dom_isolation_and_stable_derived_key(self):
         frame = self.launch()
