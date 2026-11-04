@@ -34,6 +34,8 @@ use xelab_kernel::{
 };
 #[path = "support/platform_source.rs"]
 mod platform_source;
+#[path = "support/platform_versioned.rs"]
+mod platform_versioned;
 
 #[path = "support/upgrades.rs"]
 mod upgrade_acceptance;
@@ -1040,6 +1042,21 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     assert_eq!(enable.0, 202, "{}", enable.1);
     operation(&router, enable.1["id"].as_str().unwrap(), token).await;
     upgrade_acceptance::exercise(&app, &router, token, publisher, &signing, &deployment).await;
+    let source_volume = platform_source::SourceVolume::create(
+        root,
+        &app.config.root(),
+        &db,
+        owner,
+        session["session"]["id"].as_str().unwrap().parse().unwrap(),
+    )
+    .await;
+    let versioned_worker = tokio::spawn(xelab_kernel::schema_jobs::run(app.clone()));
+    let mut versioned_sources = Vec::new();
+    for schema in ["1", "2"] {
+        versioned_sources.push(
+            platform_versioned::create(&app, &router, token, publisher, &signing, schema).await,
+        );
+    }
     let revoke = api(
         &router,
         "revokeSession",
@@ -1069,6 +1086,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         401
     );
     app.shutdown.store(true, Ordering::SeqCst);
+    versioned_worker.await.unwrap();
     worker.abort();
     let _ = worker.await;
     // The test's API App is deliberately still held by Router clones. Terminate
@@ -1130,7 +1148,37 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     let frozen = offline.freeze_source().await.unwrap();
     assert!(!frozen.images().is_empty());
     assert!(!frozen.stopped_lsn().is_empty());
-    assert!(frozen.volume_sources().await.unwrap().is_empty());
+    let frozen_sources = frozen.volume_sources().await.unwrap();
+    let expected = std::iter::once(source_volume.volume)
+        .chain(versioned_sources.iter().map(|s| s.volume))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        frozen_sources
+            .iter()
+            .map(|s| s.id)
+            .collect::<std::collections::BTreeSet<_>>(),
+        expected
+    );
+    for source in &versioned_sources {
+        assert_eq!(
+            frozen_sources
+                .iter()
+                .find(|s| s.id == source.volume)
+                .unwrap()
+                .data_schema_version
+                .as_deref(),
+            Some(source.schema.as_str())
+        );
+    }
+    assert!(matches!(
+        frozen_sources
+            .iter()
+            .find(|s| s.id == source_volume.volume)
+            .unwrap()
+            .data_schema_version
+            .as_deref(),
+        None | Some("none")
+    ));
     assert!(app.runtime.inventory().await.unwrap().is_empty());
     assert_eq!(
         c.query_one(
@@ -1148,14 +1196,6 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     assert!(summary.rows > 0);
     println!("Offline source: real signed OCI Drain/stop, exclusive leases, image-index verification and consistent metadata export passed (not off-host acceptance)");
     drop(frozen);
-    let source_volume = platform_source::SourceVolume::create(
-        root,
-        &app.config.root(),
-        &db,
-        owner,
-        session["session"]["id"].as_str().unwrap().parse().unwrap(),
-    )
-    .await;
     // Exercise the complete capture driver against the CI's real local S3
     // fixture. Its evidence remains false; no production endpoint override.
     use xelab_kernel::{
@@ -1211,7 +1251,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     assert!(!receipt.off_host);
     let report =
         std::env::var("XELAB_PLATFORM_SOURCE_RECEIPT").expect("private source report path");
-    fs::write(&report,serde_json::to_vec(&json!({"receipt":receipt,"owner_id":owner,"location":uri,"volume_id":source_volume.volume,"source_filesystem":source_volume.filesystem})).unwrap()).unwrap();
+    fs::write(&report,serde_json::to_vec(&json!({"receipt":receipt,"owner_id":owner,"location":uri,"volume_id":source_volume.volume,"source_filesystem":source_volume.filesystem,"versioned_sources":versioned_sources.iter().map(|s|s.report()).collect::<Vec<_>>()})).unwrap()).unwrap();
     fs::set_permissions(&report, fs::Permissions::from_mode(0o600)).unwrap();
     source_volume.destroy();
     let repo = Repository {
@@ -1236,7 +1276,15 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     assert!(!manifest.installations.is_empty());
     assert!(manifest.images.is_some());
     assert!(!manifest.off_host);
-    assert_eq!(manifest.volumes.len(), 1);
+    assert_eq!(manifest.volumes.len(), 3);
+    for source in &versioned_sources {
+        assert!(manifest
+            .volumes
+            .iter()
+            .any(|v| v.object.volume == source.volume
+                && v.data_schema_version.as_deref() == Some(source.schema.as_str())
+                && v.format_binding.is_some()));
+    }
     assert!(manifest.blob_count > 0);
     // Verify the actual encrypted native stream again on a fresh private file.
     let private = tempfile::NamedTempFile::new_in(root).unwrap();

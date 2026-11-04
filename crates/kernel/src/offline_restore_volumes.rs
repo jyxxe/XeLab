@@ -16,6 +16,8 @@ pub(super) struct Item {
     pub capacity: u64,
     pub inodes: u64,
     pub metadata: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format_binding: Option<crate::offline::backup::FormatBinding>,
 }
 impl Item {
     fn limits(&self) -> Limits {
@@ -89,6 +91,7 @@ async fn make_plan(target: &Target) -> Result<Option<Plan>> {
             .find(|v| v.object.volume == id)
             .ok_or_else(|| Error::conflict("Unexpected imported volume"))?;
         let owner: Uuid = row.get("owner_id");
+        super::super::formats::check(&c, id, &v.format_binding).await?;
         let spec: Value = row.get("spec");
         let source_project: i32 = row.get("project_id");
         if row.get::<_, String>("state") != "ready"
@@ -122,6 +125,7 @@ async fn make_plan(target: &Target) -> Result<Option<Plan>> {
             capacity: v.object.maximum_data,
             inodes: 0,
             metadata: 0,
+            format_binding: v.format_binding.clone(),
         });
     }
     let tombstones: i64 = c
@@ -218,6 +222,7 @@ fn check_plan(target: &Target, plan: &Plan) -> Result<()> {
             || item.owner.is_nil()
             || item.spec != source.spec
             || item.capacity != source.object.maximum_data
+            || item.format_binding != source.format_binding
             || item.inodes == 0
             || item.inodes > 9_007_199_254_740_991
             || item.metadata < 65536
@@ -243,6 +248,9 @@ async fn reserve(target: &Target, plan: &Plan) -> Result<()> {
     let mut c = target.session.db.connect().await?;
     let tx = c.transaction().await?;
     db::auth_lock(&tx, true).await?;
+    for item in &plan.items {
+        super::super::formats::check(&tx, item.volume, &item.format_binding).await?;
+    }
     let tombstones: i64 = tx
         .query_one(
             "SELECT count(*) FROM volume_allocations WHERE state='deleted'",
@@ -427,10 +435,12 @@ pub(super) async fn verify(target: &Target) -> Result<Publication> {
     }
     let plan: Option<Plan> = serde_json::from_value(header.context["volume_plan"].clone())?;
     let mut status = Vec::new();
+    let c = target.session.db.connect().await?;
     if let Some(plan) = &plan {
         check_plan(target, plan)?;
         for item in &plan.items {
             target.session.check_leader()?;
+            super::super::formats::check(&c, item.volume, &item.format_binding).await?;
             let path = target.session.runtime.config.root().join("volumes");
             let volume = item.volume;
             let item = item.clone();
@@ -486,6 +496,7 @@ pub(super) async fn publish(
         let live:i64=tx.query_one("SELECT count(*) FROM volumes WHERE state<>'deleted'",&[]).await?.get(0);
         if live!=plan.items.len()as i64 || proof.status.len()!=plan.items.len() {return Err(Error::conflict("Recovery volume publication set differs"));}
         for item in plan.items {
+            super::super::formats::check(tx, item.volume, &item.format_binding).await?;
             let observed=&proof.status.iter().find(|(id,_)|*id==item.volume).ok_or_else(||Error::conflict("Restored volume proof is missing"))?.1;
             let updated=tx.execute("UPDATE volume_allocations SET state='ready',observed_at=now(),updated_at=now() WHERE volume_id=$1 AND root_id=$2 AND project_id=$3 AND owner_id=$4 AND spec=$5 AND capacity_bytes=$6 AND inode_limit=$7 AND metadata_charge=$8 AND state='restored'",&[&item.volume,&plan.root,&item.project,&item.owner,&item.spec,&(item.capacity as i64),&(item.inodes as i64),&(item.metadata as i64)]).await?;
             if updated!=1 {return Err(Error::conflict("Restored allocation changed before publication"));}
@@ -554,6 +565,7 @@ mod tests {
                 capacity: 1048576,
                 inodes: 128,
                 metadata: 65536,
+                format_binding: None,
             });
             volumes.push(VolumeReference {
                 object: backup_transfer::Object {
@@ -565,6 +577,7 @@ mod tests {
                 },
                 spec,
                 data_schema_version: None,
+                format_binding: None,
                 filesystem_uuid: filesystem,
                 source_project_id: source_project as u32,
                 verified: None,

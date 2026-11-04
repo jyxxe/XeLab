@@ -36,6 +36,8 @@ pub mod workspace;
 #[path = "offline_backup.rs"]
 pub mod backup;
 
+#[path = "offline_formats.rs"]
+mod formats;
 #[path = "offline_restore.rs"]
 pub mod restore;
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -327,7 +329,7 @@ impl Session {
                     "Installed image does not match its metadata",
                 ));
             }
-            artifact::validate_profile(&manifest)?;
+            artifact::validate_runtime_profile(&manifest)?;
             images.push(InstallationImage {
                 installation: row.get("id"),
                 image,
@@ -441,7 +443,13 @@ async fn source_preflight(c: &(impl GenericClient + Sync)) -> Result<()> {
     if volumes > MAX_VOLUMES {
         return Err(Error::exhausted());
     }
-    if c.query_one("SELECT EXISTS(SELECT 1 FROM volumes v LEFT JOIN volume_allocations a ON a.volume_id=v.id LEFT JOIN volume_storage_root r ON r.id=a.root_id WHERE v.state<>'deleted' AND (a.volume_id IS NULL OR a.state<>'ready' OR r.state<>'ready' OR a.owner_id<>v.owner_id OR a.spec<>v.spec OR a.capacity_bytes<>v.capacity_bytes OR v.capacity_bytes>67645734912 OR coalesce(a.data_schema_version,'none')<>'none'))",&[]).await?.get::<_,bool>(0){return Err(Error::conflict("Offline source volumes are incomplete, too large or require data migration"));}
+    if c.query_one("SELECT EXISTS(SELECT 1 FROM volumes v LEFT JOIN volume_allocations a ON a.volume_id=v.id LEFT JOIN volume_storage_root r ON r.id=a.root_id WHERE v.state<>'deleted' AND (a.volume_id IS NULL OR a.state<>'ready' OR r.state<>'ready' OR a.owner_id<>v.owner_id OR a.spec<>v.spec OR a.capacity_bytes<>v.capacity_bytes OR v.capacity_bytes>67645734912))",&[]).await?.get::<_,bool>(0){return Err(Error::conflict("Offline source volumes are incomplete or too large"));}
+    if c.query_one("SELECT EXISTS(SELECT 1 FROM volume_allocations a LEFT JOIN volumes v ON v.id=a.volume_id WHERE a.state<>'deleted' AND (v.id IS NULL OR v.state='deleted'))", &[]).await?.get::<_,bool>(0) {
+        return Err(Error::conflict("Offline allocation has no live logical volume"));
+    }
+    for row in c.query("SELECT volume_id FROM volume_allocations WHERE state<>'deleted' ORDER BY volume_id LIMIT 17", &[]).await? {
+        formats::binding(c, row.get("volume_id")).await?;
+    }
     for name in [
         "skills",
         "workflows",
@@ -537,6 +545,37 @@ fn cgroup_ids() -> Result<Vec<Uuid>> {
 mod tests {
     use super::*;
     use crate::backups::tests::Fixture;
+    #[tokio::test]
+    async fn actual_postgres_source_rejects_a_ready_allocation_for_a_deleted_volume() {
+        // Metadata-only orphan regression, never a physical source proof.
+        let Some(f) = Fixture::new().await else {
+            return;
+        };
+        let c = f.app.db.connect().await.unwrap();
+        c.batch_execute("UPDATE storage_recovery_jobs SET state='failed'; UPDATE backups SET state='failed'; DELETE FROM deployment_storage_holds; DELETE FROM volume_holds; UPDATE volumes SET state='deleted'").await.unwrap();
+        source_preflight(&c).await.unwrap();
+        let volume = c
+            .query_one(
+                "SELECT id,owner_id,spec FROM volumes ORDER BY id LIMIT 1",
+                &[],
+            )
+            .await
+            .unwrap();
+        let job = c
+            .query_one(
+                "SELECT operation_id,credential_id FROM storage_recovery_jobs LIMIT 1",
+                &[],
+            )
+            .await
+            .unwrap();
+        let root = Uuid::new_v4();
+        c.execute("INSERT INTO volume_storage_root(id,filesystem_uuid,state,capacity_bytes,reserved_bytes) VALUES($1,$2,'ready',134217728,1114112)", &[&root,&Uuid::new_v4()]).await.unwrap();
+        c.execute("INSERT INTO volume_allocations(volume_id,root_id,project_id,owner_id,spec,capacity_bytes,inode_limit,metadata_charge,desired_capacity,desired_inodes,desired_metadata_charge,state,operation_id,credential_id,peer) VALUES($1,$2,41,$3,$4,1048576,128,65536,1048576,128,65536,'ready',$5,$6,'127.0.0.1')", &[&volume.get::<_,Uuid>("id"),&root,&volume.get::<_,Uuid>("owner_id"),&volume.get::<_,Value>("spec"),&job.get::<_,Uuid>("operation_id"),&job.get::<_,Uuid>("credential_id")]).await.unwrap();
+        assert!(
+            source_preflight(&c).await.is_err(),
+            "an orphan allocation would be omitted from the archive but imported from metadata"
+        );
+    }
     #[tokio::test]
     async fn actual_postgres_source_preflight_requires_settled_supported_metadata() {
         let Some(f) = Fixture::new().await else {

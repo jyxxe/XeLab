@@ -32,12 +32,26 @@ pub struct ImageReference {
     pub data: RawReference,
     pub archive: crate::runtime::ImageArchive,
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FormatBinding {
+    pub schema: String,
+    pub deployment: Uuid,
+    pub plugin: String,
+    pub publisher: Uuid,
+    pub manifest_digest: String,
+    pub operation: Uuid,
+    pub proof_digest: String,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VolumeReference {
     pub object: backup_transfer::Object,
     pub spec: Value,
     pub data_schema_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format_binding: Option<FormatBinding>,
     pub filesystem_uuid: Uuid,
     pub source_project_id: u32,
     pub verified: Option<backup_transfer::Verified>,
@@ -229,6 +243,7 @@ impl State {
         let mut filesystem = None;
         for volume in &m.volumes {
             crate::contracts::validate("VolumeSpec", &volume.spec)?;
+            super::formats::reference(volume)?;
             let object = &volume.object;
             if object.backup != m.backup_id
                 || object.object.is_nil()
@@ -242,10 +257,6 @@ impl State {
                 || filesystem
                     .replace(volume.filesystem_uuid)
                     .is_some_and(|old| old != volume.filesystem_uuid)
-                || volume
-                    .data_schema_version
-                    .as_deref()
-                    .is_some_and(|v| v != "none")
                 || object.maximum_archive != MAX_OBJECT
                 || object.maximum_data == 0
                 || object.maximum_data > 63 * 1024 * 1024 * 1024
@@ -472,7 +483,7 @@ pub async fn capture(
         let metadata=RawReference{object:fresh(&mut used),plaintext:backup_crypto::Summary{bytes:metadata_summary.bytes,digest:format!("sha256:{}",metadata_summary.sha256)},ciphertext:None};
         let images=if let Some(file)=image_file{let mut refs:Vec<String>=frozen.images().iter().map(|i|i.image.clone()).collect();refs.sort();refs.dedup();let mut file=tokio::fs::File::from_std(file);let archive=session.runtime.export_images(&refs,&mut file,image_bytes).await?;Some(ImageReference{data:RawReference{object:fresh(&mut used),plaintext:backup_crypto::Summary{bytes:archive.bytes,digest:archive.sha256.clone()},ciphertext:None},archive})}else{None};
         let mut volumes=Vec::new();
-        for source in &sources{volumes.push(VolumeReference{object:backup_transfer::Object{backup,object:fresh(&mut used),volume:source.id,maximum_data:source.capacity_bytes,maximum_archive:64*1024*1024*1024},spec:source.spec.clone(),data_schema_version:source.data_schema_version.clone(),filesystem_uuid:source.filesystem_uuid,source_project_id:source.project_id,verified:None});}
+        for source in &sources{volumes.push(VolumeReference{object:backup_transfer::Object{backup,object:fresh(&mut used),volume:source.id,maximum_data:source.capacity_bytes,maximum_archive:64*1024*1024*1024},spec:source.spec.clone(),data_schema_version:source.data_schema_version.clone(),format_binding:super::formats::binding(&c,source.id).await?,filesystem_uuid:source.filesystem_uuid,source_project_id:source.project_id,verified:None});}
         let owners=c.query("SELECT id FROM accounts WHERE kind='user' AND parent_id IS NULL AND independent_owner AND status<>'archived' ORDER BY id LIMIT 129",&[]).await?;
         if owners.is_empty()||owners.len()>128{return Err(Error::conflict("Recovery Owner candidate set exceeds its bound"));}
         let state=State{manifest:Manifest{format:1,kind:"platform".into(),backup_id:backup,repository_id:repo.id,master_key_reference:key_ref.clone(),created_at:chrono::Utc::now(),stopped_lsn:frozen.stopped_lsn().to_owned(),metadata,metadata_summary,installations:frozen.images().to_vec(),images,volumes,blob_count:blobs.len()as u64,blob_root,recovery_owners:owners.into_iter().map(|r|r.get(0)).collect(),off_host:repo.objects.off_host()},manifest_object:fresh(&mut used),manifest_digest:None};
