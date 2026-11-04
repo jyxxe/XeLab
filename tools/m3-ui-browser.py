@@ -34,7 +34,8 @@ def url_origin(value):
 
 def fixture(path):
     metadata = path.lstat()
-    if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) & 0o077:
+    if (not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_uid != os.geteuid() or metadata.st_nlink != 1):
         raise CheckFailed("private_fixture_required")
     value = json.loads(path.read_text())
     required = {"core_origin", "ui_origin", "reference_origin", "client_id", "owner_id", "owner_password", "child_id", "child_password", "skill_id", "reference_deployment_id", "tls_spki_sha256", "connect_ip", "chromium_path", "progress_file", "control_file"}
@@ -299,7 +300,8 @@ def run(config, report):
             path = pathlib.Path(config["control_file"])
             if path.exists():
                 control_metadata = path.lstat()
-                require(stat.S_ISREG(control_metadata.st_mode) and not stat.S_IMODE(control_metadata.st_mode) & 0o077, "private_revocation_control")
+                require(stat.S_ISREG(control_metadata.st_mode) and stat.S_IMODE(control_metadata.st_mode) == 0o600
+                        and control_metadata.st_uid == os.geteuid() and control_metadata.st_nlink == 1, "private_revocation_control")
                 if json.loads(path.read_text()).get("revoked") is True:
                     break
             page.wait_for_timeout(100)

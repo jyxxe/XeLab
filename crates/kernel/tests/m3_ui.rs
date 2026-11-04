@@ -502,8 +502,11 @@ async fn signed_oci_webui_oauth_iframe_skill_revocation_and_kernel_restart() {
         "Only the isolated test namespace is permitted"
     );
     value["runtime"]["namespace"] = json!(namespace);
-    value["runtime"]["network_cidr"] = json!("172.29.242.0/24");
-    value["server"]["host_rpc_listen"] = json!("172.29.242.1:7443");
+    // The host-wide managed xh-rpc interface is immutable across sequential
+    // OCI test processes. Reuse its approved CIDR; isolation is provided by
+    // this test's separate namespace/root/DB and real per-instance netns.
+    value["runtime"]["network_cidr"] = json!("172.29.240.0/24");
+    value["server"]["host_rpc_listen"] = json!("172.29.240.1:7443");
     value["server"]["listen"] = json!(address.to_string());
     value["server"]["public_origin"] = json!(core);
     value["ui_gateway"] =
