@@ -369,7 +369,11 @@ async fn invoke_inner(
         if let Some(skill) = &skill {
             validate_business(&skill.definition["output_schema"], &output)?;
         }
-        let out = json!({"call_id":call,"contract":contract,"provider_instance_id":instance,"output":output,"completed_at":chrono::Utc::now()});
+        let mut out = json!({"call_id":call,"contract":contract,"provider_instance_id":instance,"output":output,"completed_at":chrono::Utc::now()});
+        if let Some(skill) = &skill {
+            out["skill_id"] = json!(skill.id);
+            out["skill_definition_digest"] = json!(skill.definition_digest);
+        }
         validate("CallResult", &out)?;
         Ok(out)
     };

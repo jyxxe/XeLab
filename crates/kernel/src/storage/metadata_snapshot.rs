@@ -402,6 +402,7 @@ async fn import_inner(
         ))
         .await?;
     }
+    crate::skills::validate_snapshot_bindings(&tx).await?;
     recovery::reset_rows(&tx, owner, password, recovery).await?;
     tx.execute(
         "UPDATE platform_recovery_state SET metadata_summary=$2 WHERE recovery_id=$1",

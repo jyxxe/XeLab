@@ -72,6 +72,7 @@ pub fn audit_resource(
         "createVolume" => Some(("volume", &response["resource_id"])),
         "createBackup" => Some(("backup", &response["resource_id"])),
         "createSecret" => Some(("secret", &response["id"])),
+        "registerSkill" => Some(("skill", &response["id"])),
         "bindSecret" => Some(("secret", &response["spec"]["secret_id"])),
         _ => None,
     };
@@ -80,7 +81,11 @@ pub fn audit_resource(
             return Resource::new(kind, id, None).json();
         }
     }
+    if name == "registerSkill" {
+        return Resource::new("skill", "new", None).json();
+    }
     for (parameter, kind) in [
+        ("skill_id", "skill"),
         ("credential_id", "credential"),
         ("session_id", "credential"),
         ("group_id", "group"),

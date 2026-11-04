@@ -148,7 +148,15 @@ async fn installed_candidate(
         &[&installation],
     ).await?.ok_or_else(|| Error::unavailable("Skill source installation is unavailable"))?;
     let manifest: Value = row.get(0);
-    validate_candidate(&manifest, definition)?;
+    candidate_binding(c, &manifest, definition).await
+}
+
+async fn candidate_binding(
+    c: &(impl GenericClient + Sync),
+    manifest: &Value,
+    definition: &Value,
+) -> Result<()> {
+    validate_candidate(manifest, definition)?;
     if !manifest["skills"]
         .as_array()
         .is_some_and(|skills| skills.iter().any(|candidate| candidate == definition))
@@ -170,6 +178,88 @@ async fn installed_candidate(
             .any(|field| cap[*field] != definition[*field])
     {
         return Err(conflict());
+    }
+    Ok(())
+}
+
+/// Validate persisted ordinary Skill identity before freezing or importing a
+/// snapshot. Historical definitions remain data even when disabled, archived or
+/// published by a now-revoked publisher. This does not restore live authority.
+pub(crate) async fn validate_snapshot_bindings(c: &(impl GenericClient + Sync)) -> Result<()> {
+    let mut after: Option<Uuid> = None;
+    loop {
+        let rows = c.query(
+            "SELECT s.*,n.manifest AS source_manifest,n.plugin_id AS source_plugin,n.version AS source_version,n.publisher_id AS source_publisher,n.image_digest,n.manifest_digest FROM skills s LEFT JOIN installations n ON n.id=s.installation_id WHERE ($1::uuid IS NULL OR s.id>$1) ORDER BY s.id LIMIT 200",
+            &[&after],
+        ).await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            after = Some(row.get("id"));
+            if row.get::<_, String>("source_kind") != "oci"
+                || [
+                    "micro_version_id",
+                    "micro_deployment_id",
+                    "extension_version_id",
+                    "extension_deployment_id",
+                ]
+                .iter()
+                .any(|field| row.get::<_, Option<Uuid>>(*field).is_some())
+                || row
+                    .get::<_, Option<String>>("extension_host_chain_digest")
+                    .is_some()
+            {
+                return Err(Error::conflict(
+                    "Snapshot contains an unsupported Skill source",
+                ));
+            }
+            let manifest = row
+                .get::<_, Option<Value>>("source_manifest")
+                .ok_or_else(conflict)?;
+            let plugin = row
+                .get::<_, Option<String>>("source_plugin")
+                .ok_or_else(conflict)?;
+            let version = row
+                .get::<_, Option<String>>("source_version")
+                .ok_or_else(conflict)?;
+            let publisher = row
+                .get::<_, Option<Uuid>>("source_publisher")
+                .ok_or_else(conflict)?;
+            if manifest["plugin_id"] != plugin
+                || manifest["version"] != version
+                || manifest["publisher_id"] != publisher.to_string()
+                || ["image_digest", "manifest_digest"].iter().any(|field| {
+                    !row.get::<_, Option<String>>(*field).is_some_and(|hash| {
+                        hash.len() == 71
+                            && hash.starts_with("sha256:")
+                            && hash[7..]
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    })
+                })
+            {
+                return Err(conflict());
+            }
+            crate::artifact::validate_runtime_profile(&manifest)?;
+            let definition: Value = row.get("definition");
+            if definition["name"] != row.get::<_, String>("name")
+                || definition["version"] != row.get::<_, String>("version")
+                || definition_digest(&definition)? != row.get::<_, String>("definition_digest")
+            {
+                return Err(conflict());
+            }
+            candidate_binding(c, &manifest, &definition).await?;
+        }
+    }
+    // Deployments can change installation after a historical call. Their
+    // current installation is not evidence of that call's original provider.
+    // The immutable Skill/call binding and the normal provider FKs survive.
+    if c.query_one(
+        "SELECT EXISTS(SELECT 1 FROM calls c LEFT JOIN skills s ON s.id=c.skill_id WHERE (c.skill_id IS NULL AND c.skill_definition_digest IS NOT NULL) OR (c.skill_id IS NOT NULL AND (s.id IS NULL OR c.skill_definition_digest IS DISTINCT FROM s.definition_digest OR c.contract IS DISTINCT FROM s.definition->'target'->'contract')))",
+        &[],
+    ).await?.get::<_,bool>(0) {
+        return Err(Error::conflict("Snapshot Call does not match its immutable Skill"));
     }
     Ok(())
 }
@@ -862,5 +952,141 @@ mod tests {
         .await
         .is_err());
         tx.commit().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn actual_postgres_snapshot_preserves_history_and_rejects_changed_skill_bindings() {
+        let Some(f) = crate::backups::tests::Fixture::new().await else {
+            return;
+        };
+        let mut c = f.app.db.connect().await.unwrap();
+        let tx = c.transaction().await.unwrap();
+        let ctx = f
+            .app
+            .auth
+            .authenticate(&tx, &f.token, "127.0.0.1".parse().unwrap(), Uuid::new_v4())
+            .await
+            .unwrap();
+        let (mut manifest, definition) = fixture();
+        let publisher: Uuid = tx
+            .query_one("SELECT id FROM publishers LIMIT 1", &[])
+            .await
+            .unwrap()
+            .get(0);
+        manifest["publisher_id"] = json!(publisher);
+        let installation = Uuid::new_v4();
+        let installation_hash = digest(&serde_json::to_vec(&manifest).unwrap());
+        tx.execute("INSERT INTO installations(id,plugin_id,version,publisher_id,image_digest,manifest_digest,manifest,state,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$5,$6,'installed',now(),now())",&[&installation,&string(&manifest,"plugin_id").unwrap(),&string(&manifest,"version").unwrap(),&publisher,&installation_hash,&manifest]).await.unwrap();
+        let cap = &manifest["capabilities"][0];
+        let contract = &cap["contract"];
+        tx.execute(
+            "INSERT INTO capability_contracts(name,version,schema_digest,spec) VALUES($1,$2,$3,$4)",
+            &[
+                &string(contract, "name").unwrap(),
+                &string(contract, "version").unwrap(),
+                &string(contract, "schema_digest").unwrap(),
+                &cap,
+            ],
+        )
+        .await
+        .unwrap();
+        let skill = Uuid::new_v4();
+        let hash = definition_digest(&definition).unwrap();
+        tx.execute("INSERT INTO skills(id,name,version,installation_id,created_by,definition,definition_digest,enabled,archived_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,false,now(),now(),now())",&[&skill,&string(&definition,"name").unwrap(),&string(&definition,"version").unwrap(),&installation,&ctx.subject,&definition,&hash]).await.unwrap();
+        tx.execute(
+            "UPDATE publishers SET status='revoked' WHERE id=$1",
+            &[&publisher],
+        )
+        .await
+        .unwrap();
+        validate_snapshot_bindings(&tx).await.unwrap();
+        assert!(resolve_for_invoke(&tx, &ctx, skill).await.is_err());
+        let other_installation: Uuid = tx
+            .query_one(
+                "SELECT id FROM installations WHERE id<>$1 LIMIT 1",
+                &[&installation],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        for statement in [
+            "UPDATE skills SET definition=jsonb_set(definition,'{description}','\"tampered description\"') WHERE id=$1",
+            "UPDATE skills SET definition_digest='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' WHERE id=$1",
+            "UPDATE skills SET name='org.other.skill' WHERE id=$1",
+            "UPDATE skills SET version='9.0.0' WHERE id=$1",
+            "UPDATE skills SET definition=jsonb_set(definition,'{target,kind}','\"http\"') WHERE id=$1",
+        ] {
+            tx.batch_execute("SAVEPOINT tamper").await.unwrap();
+            tx.execute(statement,&[&skill]).await.unwrap();
+            assert!(validate_snapshot_bindings(&tx).await.is_err(),"{statement}");
+            tx.batch_execute("ROLLBACK TO SAVEPOINT tamper").await.unwrap();
+        }
+        tx.batch_execute("SAVEPOINT tamper").await.unwrap();
+        tx.execute(
+            "UPDATE skills SET installation_id=$2 WHERE id=$1",
+            &[&skill, &other_installation],
+        )
+        .await
+        .unwrap();
+        assert!(validate_snapshot_bindings(&tx).await.is_err());
+        tx.batch_execute("ROLLBACK TO SAVEPOINT tamper")
+            .await
+            .unwrap();
+        tx.batch_execute("SAVEPOINT tamper").await.unwrap();
+        tx.execute(
+            "UPDATE capability_contracts SET schema_digest=$1 WHERE name=$2 AND version=$3",
+            &[
+                &digest(b"wrong target contract"),
+                &string(contract, "name").unwrap(),
+                &string(contract, "version").unwrap(),
+            ],
+        )
+        .await
+        .unwrap();
+        assert!(validate_snapshot_bindings(&tx).await.is_err());
+        tx.batch_execute("ROLLBACK TO SAVEPOINT tamper")
+            .await
+            .unwrap();
+        // Unsupported source_kind cannot be represented in the published OCI
+        // source constraint, even before the additional snapshot validation.
+        tx.batch_execute("SAVEPOINT tamper").await.unwrap();
+        assert!(tx
+            .execute(
+                "UPDATE skills SET source_kind='micro' WHERE id=$1",
+                &[&skill]
+            )
+            .await
+            .is_err());
+        tx.batch_execute("ROLLBACK TO SAVEPOINT tamper")
+            .await
+            .unwrap();
+        let call = Uuid::new_v4();
+        tx.execute("INSERT INTO calls(id,owner_id,credential_id,skill_id,skill_definition_digest,contract,input_digest,state,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,'unknown',now(),now())",&[&call,&ctx.subject,&ctx.credential,&skill,&hash,&contract,&digest(b"historical input")]).await.unwrap();
+        validate_snapshot_bindings(&tx).await.unwrap();
+        for statement in [
+            "UPDATE calls SET skill_definition_digest='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' WHERE id=$1",
+            "UPDATE calls SET contract=jsonb_set(contract,'{version}','\"9.0.0\"') WHERE id=$1",
+            "UPDATE calls SET skill_id=NULL WHERE id=$1",
+        ] {
+            tx.batch_execute("SAVEPOINT tamper").await.unwrap();
+            tx.execute(statement,&[&call]).await.unwrap();
+            assert!(validate_snapshot_bindings(&tx).await.is_err(),"{statement}");
+            tx.batch_execute("ROLLBACK TO SAVEPOINT tamper").await.unwrap();
+        }
+        validate_snapshot_bindings(&tx).await.unwrap();
+        let kept = tx
+            .query_one(
+                "SELECT enabled,archived_at,definition,definition_digest FROM skills WHERE id=$1",
+                &[&skill],
+            )
+            .await
+            .unwrap();
+        assert!(!kept.get::<_, bool>("enabled"));
+        assert!(kept
+            .get::<_, Option<DateTime<Utc>>>("archived_at")
+            .is_some());
+        assert_eq!(kept.get::<_, Value>("definition"), definition);
+        assert_eq!(kept.get::<_, String>("definition_digest"), hash);
+        tx.rollback().await.unwrap();
     }
 }
