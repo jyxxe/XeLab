@@ -217,9 +217,13 @@ class ShellBrowser(unittest.TestCase):
         self.page.locator("#launcher-close").click()
         self.page.get_by_role("button", name="打开固定贡献 " + second["spec"]["title"], exact=True).click()
         window = self.page.locator('.window[data-app="plugin:' + second["deployment_id"] + ':second"]')
-        window.locator("iframe").wait_for()
-        self.assertEqual(window.locator("iframe").get_attribute("sandbox"), "allow-scripts allow-same-origin")
-        self.assertTrue(window.locator("iframe").get_attribute("src").startswith(second["frame_url"] + "#protocol=xelab.ui%2F1"))
+        expected_src = second["frame_url"] + "#protocol=xelab.ui%2F1"
+        # The mount verifies current permissions asynchronously after creating
+        # the iframe. Wait for the authorized target under the same timeout.
+        frame = window.locator("iframe[src^=" + json.dumps(expected_src) + "]")
+        frame.wait_for()
+        self.assertEqual(frame.get_attribute("sandbox"), "allow-scripts allow-same-origin")
+        self.assertTrue(frame.get_attribute("src").startswith(expected_src))
         self.page.get_by_role("button", name="取消固定 " + second["spec"]["title"], exact=True).click()
         self.page.wait_for_function("() => !document.querySelector('.dock-pin')")
         self.assertEqual(self.fixture.saved["spec"]["dock"]["pinned"], [])
