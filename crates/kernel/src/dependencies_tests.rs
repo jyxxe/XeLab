@@ -1261,6 +1261,9 @@ async fn postgres_dynamic_strong_request_edges_survive_base_replacement_until_ex
         b_state, "running",
         "unrelated future request scopes retain their independent parent Call"
     );
+    graph(&tx, b, &[json!({"required":true,"deployment_id":a})])
+        .await
+        .unwrap();
     tx.rollback().await.unwrap();
     assert_eq!(
         c.query_one(
