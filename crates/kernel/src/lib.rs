@@ -12,6 +12,7 @@ pub mod config;
 pub mod contracts;
 pub mod controller;
 pub mod db;
+pub mod dependencies;
 pub mod deployments;
 pub mod error;
 pub mod host;

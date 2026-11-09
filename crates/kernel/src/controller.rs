@@ -617,6 +617,39 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
         }
         return Ok(());
     }
+    let dependency_state = {
+        let mut connection = app.db.connect().await?;
+        let tx = connection.transaction().await?;
+        db::auth_lock(&tx, false).await?;
+        let result = crate::dependencies::check_ready(&tx, app, deployment).await;
+        // Preserve a fail-policy latch even when readiness was rejected.
+        tx.commit().await?;
+        result
+    };
+    if let Err(error) = dependency_state {
+        probes.remove(&deployment);
+        for instance in &instances {
+            let instance_id: Uuid = instance.get("id");
+            mark_stopping(app, instance_id).await?;
+            app.runtime.stop(instance_id).await?;
+            // Keep the original generation intent for wait-policy recovery.
+            // Stop proof precedes any storage/resource release or new startup.
+            let mut connection = app.db.connect().await?;
+            let tx = connection.transaction().await?;
+            tx.query_one("SELECT id FROM node_budget FOR UPDATE", &[])
+                .await?;
+            tx.execute("UPDATE instances SET phase='pending',runtime_id=NULL,health='unknown',updated_at=now() WHERE id=$1", &[&instance_id]).await?;
+            tx.execute(
+                "DELETE FROM plugin_http_requests WHERE instance_id=$1",
+                &[&instance_id],
+            )
+            .await?;
+            crate::volumes::release_stopped(&tx, Some(instance_id)).await?;
+            // The reservation remains held while dependency recovery is pending.
+            tx.commit().await?;
+        }
+        return Err(error);
+    }
     crate::host_blobs::check_approval(&c, app, deployment, &manifest).await?;
     crate::plugin_http_gateway::check_approval(&c, app, deployment, &manifest).await?;
     let Some(i) = instances.last() else {
@@ -813,6 +846,7 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
     crate::volumes::check_approval(&tx, app, deployment, generation, &spec, &manifest).await?;
     crate::host_blobs::check_approval(&tx, app, deployment, &manifest).await?;
     crate::plugin_http_gateway::check_approval(&tx, app, deployment, &manifest).await?;
+    crate::dependencies::check_ready(&tx, app, deployment).await?;
     let current = tx
         .query_one(
             "SELECT spec,approval,archived_at FROM deployments WHERE id=$1 FOR UPDATE",
@@ -841,12 +875,36 @@ async fn reconcile(app: &App, deployment: Uuid, probes: &mut BTreeMap<Uuid, Prob
                 })
         });
         all_ready &= ready;
+        let features = health
+            .capabilities
+            .iter()
+            .find(|h| {
+                h.contract.as_ref().is_some_and(|c| {
+                    c.name == name && c.version == version && c.schema_digest == digest
+                })
+            })
+            .map(|h| h.features.clone())
+            .unwrap_or_default();
+        if features.len() > 256
+            || features
+                .iter()
+                .any(|s| s.is_empty() || s.len() > 128 || s.chars().any(char::is_control))
+            || features
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != features.len()
+        {
+            return Err(Error::invalid("Invalid provider feature observation"));
+        }
         let state = if ready { "ready" } else { "unavailable" };
-        tx.execute("INSERT INTO provider_records(instance_id,name,version,availability,features,observed_generation,observed_at) VALUES($1,$2,$3,$4,'[]',$5,now()) ON CONFLICT(instance_id,name,version) DO UPDATE SET availability=excluded.availability,observed_generation=excluded.observed_generation,observed_at=now()",&[&id,&name,&version,&state,&generation]).await?;
+        tx.execute("INSERT INTO provider_records(instance_id,name,version,availability,features,observed_generation,observed_at) VALUES($1,$2,$3,$4,$6,$5,now()) ON CONFLICT(instance_id,name,version) DO UPDATE SET availability=excluded.availability,features=excluded.features,observed_generation=excluded.observed_generation,observed_at=now()",&[&id,&name,&version,&state,&generation,&json!(features)]).await?;
     }
     let phase = if all_ready { "ready" } else { "degraded" };
     tx.execute("UPDATE instances SET phase=$2,health='alive',runtime_id=$3,last_heartbeat_at=now(),updated_at=now(),revision=revision+1 WHERE id=$1",&[&id,&phase,&id.to_string()]).await?;
-    tx.execute("UPDATE deployments SET revision=revision+CASE WHEN phase<>$2 OR observed_generation<>$3 OR conditions<>'[]'::jsonb THEN 1 ELSE 0 END,phase=$2,observed_generation=$3,conditions='[]',updated_at=now() WHERE id=$1",&[&deployment,&phase,&generation]).await?;
+    let dependency_conditions =
+        json!(crate::dependencies::optional_conditions(&tx, deployment).await?);
+    tx.execute("UPDATE deployments SET revision=revision+CASE WHEN phase<>$2 OR observed_generation<>$3 OR conditions<>$4 THEN 1 ELSE 0 END,phase=$2,observed_generation=$3,conditions=$4,updated_at=now() WHERE id=$1",&[&deployment,&phase,&generation,&dependency_conditions]).await?;
     if app.leader.is_closed() {
         return Err(Error::unavailable("Controller leadership is lost"));
     }

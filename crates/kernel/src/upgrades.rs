@@ -154,6 +154,7 @@ pub async fn create(
     body: &Value,
     headers: &HeaderMap,
 ) -> Result<(Value, u16)> {
+    crate::dependencies::dependency_lock(c).await?;
     validate("UpgradeRequest", body)?;
     if !matches!(action, "plugin.upgrade" | "plugin.rollback") {
         return Err(Error::invalid("Invalid upgrade action"));
@@ -343,6 +344,7 @@ pub async fn create(
     let candidate = Uuid::new_v4();
     c.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,created_at,updated_at) VALUES($1,$2,$3,0,'pending','unknown',$4,now(),now())",&[&candidate,&deployment,&generation,&next["limits"]]).await?;
     c.execute("INSERT INTO deployment_upgrade_jobs(operation_id,deployment_id,action,credential_id,subject_id,peer,authority,source_installation_id,target_installation_id,source_metadata,target_metadata,original_spec,target_spec,instances,candidate_id,candidate_generation,strategy,state,backup_id,source_revision) VALUES($1,$2,$3,$4,$5,$6::text::inet,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'recreate','freezing',$17,$18)",&[&operation,&deployment,&action,&ctx.credential,&ctx.subject,&ctx.peer.to_string(),&authority,&source_id,&target_id,&source,&target,&original,&next,&json!(instances),&candidate,&generation,&backup,&revision]).await?;
+    crate::dependencies::stage_upgrade(c, ctx, deployment, target_id, operation).await?;
     if let Some(group) = volumes {
         volume_group::reserve(c, ctx, deployment, operation, group).await?;
     }
@@ -379,6 +381,7 @@ pub async fn revalidate(c: &(impl GenericClient + Sync), app: &App, row: &Row) -
     if ctx.subject != row.get::<_, Uuid>("subject_id") {
         return Err(Error::denied());
     }
+    crate::dependencies::check_upgrade(c, app, &ctx, operation).await?;
     let current=c.query_opt("SELECT d.owner_id,d.spec,d.installation_id,d.revision,d.archived_at FROM deployments d JOIN deployment_storage_holds h ON h.deployment_id=d.id AND h.operation_id=$2 WHERE d.id=$1",&[&deployment,&operation]).await?.ok_or_else(||Error::conflict("Upgrade deployment hold is missing"))?;
     if current.get::<_, Uuid>("owner_id") != ctx.subject
         || current.get::<_, Uuid>("installation_id") != row.get::<_, Uuid>("source_installation_id")

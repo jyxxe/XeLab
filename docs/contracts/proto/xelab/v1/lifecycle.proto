@@ -32,6 +32,8 @@ message CapabilityHealth {
   ContractRef contract = 1;
   bool ready = 2;
   string reason_code = 3;
+  // Optional runtime features; <=256 unique nonempty strings, each <=128 bytes.
+  repeated string features = 4;
 }
 message HealthResponse {
   bool alive = 1;
