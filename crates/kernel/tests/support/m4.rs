@@ -159,7 +159,7 @@ async fn failure_diagnostic(scope: &ConsumerScope<'_>, instance: Uuid) {
         println!("M4 OCI failure diagnostic: database_unavailable");
         return;
     };
-    let outer = c.query_opt("SELECT q.id,q.owner_id,q.idempotency_key,i.generation,q.state FROM calls q JOIN instances i ON i.id=q.provider_instance_id WHERE q.provider_instance_id=$1 AND q.parent_call_id IS NULL ORDER BY q.created_at DESC,q.id DESC LIMIT 1", &[&instance]).await;
+    let outer = c.query_opt("SELECT q.id,q.owner_id,q.idempotency_key,i.generation,q.state FROM calls q JOIN instances i ON i.id=q.provider_instance_id WHERE q.provider_instance_id=$1 AND NOT EXISTS(SELECT 1 FROM host_child_calls h WHERE h.child_call_id=q.id) ORDER BY q.created_at DESC,q.id DESC LIMIT 1", &[&instance]).await;
     let Ok(Some(outer)) = outer else {
         println!("M4 OCI failure diagnostic: outer_call_unavailable");
         return;
@@ -177,7 +177,7 @@ async fn failure_diagnostic(scope: &ConsumerScope<'_>, instance: Uuid) {
             println!("M4 OCI failure ticket: {}",json!({"ticket":row.get::<_,Uuid>(0),"original_consumer_instance":row.get::<_,bool>(1),"skill":row.get::<_,bool>(2),"original_provider_deployment":row.get::<_,Option<bool>>(3),"dependency_binding_present":row.get::<_,bool>(4),"ticket_live":row.get::<_,bool>(5),"delegation_proof_shape":row.get::<_,bool>(6),"verification_proof_shape":row.get::<_,bool>(7),"fingerprint_present":row.get::<_,bool>(8),"input_proof_present":row.get::<_,bool>(9),"requested_call_present":row.get::<_,bool>(10)}));
         }
     }
-    if let Ok(rows) = c.query("SELECT q.id,q.state,q.provider_instance_id=$2,d.installation_id=$3,q.skill_id IS NOT NULL,t.id IS NOT NULL,t.dependency_binding_id IS NOT NULL,t.expires_at>clock_timestamp(),octet_length(t.delegation_digest)=32,octet_length(t.verification_digest)=32,length(t.fingerprint)>0,length(t.input_digest)>0 FROM calls q JOIN instances i ON i.id=q.provider_instance_id JOIN deployments d ON d.id=i.deployment_id LEFT JOIN host_child_calls h ON h.child_call_id=q.id LEFT JOIN host_call_tickets t ON t.id=h.ticket_id WHERE q.parent_call_id=$1 ORDER BY q.created_at,q.id LIMIT 8", &[&call,&scope.provider_instance,&scope.provider_installation]).await {
+    if let Ok(rows) = c.query("SELECT q.id,q.state,q.provider_instance_id=$2,d.installation_id=$3,q.skill_id IS NOT NULL,t.id IS NOT NULL,t.dependency_binding_id IS NOT NULL,t.expires_at>clock_timestamp(),octet_length(t.delegation_digest)=32,octet_length(t.verification_digest)=32,length(t.fingerprint)>0,length(t.input_digest)>0 FROM calls q JOIN instances i ON i.id=q.provider_instance_id JOIN deployments d ON d.id=i.deployment_id JOIN host_child_calls h ON h.child_call_id=q.id LEFT JOIN host_call_tickets t ON t.id=h.ticket_id WHERE h.parent_call_id=$1 ORDER BY q.created_at,q.id LIMIT 8", &[&call,&scope.provider_instance,&scope.provider_installation]).await {
         for row in rows {
             println!("M4 OCI failure child: {}",json!({"call":row.get::<_,Uuid>(0),"state":row.get::<_,String>(1),"original_provider_instance":row.get::<_,bool>(2),"original_provider_installation":row.get::<_,bool>(3),"skill":row.get::<_,bool>(4),"ticket_present":row.get::<_,bool>(5),"dependency_binding_present":row.get::<_,Option<bool>>(6),"ticket_live":row.get::<_,Option<bool>>(7),"delegation_proof_shape":row.get::<_,Option<bool>>(8),"verification_proof_shape":row.get::<_,Option<bool>>(9),"fingerprint_present":row.get::<_,Option<bool>>(10),"input_proof_present":row.get::<_,Option<bool>>(11)}));
         }
@@ -394,7 +394,7 @@ async fn invoke_consumer(
     ];
     assert_ne!(children[0], children[1]);
     let c = scope.app.db.connect().await.unwrap();
-    let rows = c.query("SELECT q.id,q.skill_id,q.provider_instance_id,q.state,d.installation_id,i.deployment_id,q.parent_call_id,t.expected_contract,t.instance_id,t.provider_deployment_id,t.dependency_binding_id FROM host_child_calls h JOIN calls q ON q.id=h.child_call_id JOIN instances i ON i.id=q.provider_instance_id JOIN deployments d ON d.id=i.deployment_id JOIN host_call_tickets t ON t.id=h.ticket_id WHERE h.parent_call_id=$1 ORDER BY q.id", &[&call]).await.unwrap();
+    let rows = c.query("SELECT q.id,q.skill_id,q.provider_instance_id,q.state,d.installation_id,i.deployment_id,h.parent_call_id,t.expected_contract,t.instance_id,t.provider_deployment_id,t.dependency_binding_id,t.parent_call_id FROM host_child_calls h JOIN calls q ON q.id=h.child_call_id JOIN instances i ON i.id=q.provider_instance_id JOIN deployments d ON d.id=i.deployment_id JOIN host_call_tickets t ON t.id=h.ticket_id WHERE h.parent_call_id=$1 ORDER BY q.id", &[&call]).await.unwrap();
     assert_eq!(
         rows.len(),
         2,
@@ -407,7 +407,10 @@ async fn invoke_consumer(
         assert_eq!(row.get::<_, String>(3), "succeeded");
         assert_eq!(row.get::<_, Uuid>(4), scope.provider_installation);
         assert_eq!(row.get::<_, Uuid>(5), scope.provider);
-        assert_eq!(row.get::<_, Option<Uuid>>(6), Some(call));
+        // Host ancestry is the constrained relation and its issuing ticket;
+        // the generic nullable calls.parent_call_id is not this M4 contract.
+        assert_eq!(row.get::<_, Uuid>(6), call);
+        assert_eq!(row.get::<_, Uuid>(11), call);
         assert_eq!(
             row.get::<_, Option<Value>>(7).as_ref(),
             Some(scope.dependency_contract)
@@ -438,7 +441,7 @@ async fn invoke_consumer(
     }
     assert_eq!(replay, invoked, "confirmed outer replay must not republish");
     assert_event(scope, event, message, total).await;
-    let counts = c.query_one("SELECT (SELECT count(*) FROM calls WHERE provider_instance_id=$1 AND parent_call_id IS NULL),(SELECT count(*) FROM host_child_calls WHERE parent_call_id=$2)", &[&instance,&call]).await.unwrap();
+    let counts = c.query_one("SELECT (SELECT count(*) FROM calls q WHERE q.provider_instance_id=$1 AND NOT EXISTS(SELECT 1 FROM host_child_calls h WHERE h.child_call_id=q.id)),(SELECT count(*) FROM host_child_calls WHERE parent_call_id=$2)", &[&instance,&call]).await.unwrap();
     assert_eq!(
         counts.get::<_, i64>(0),
         1,
