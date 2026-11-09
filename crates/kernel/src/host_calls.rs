@@ -32,7 +32,16 @@ pub(crate) async fn authority(
     resource: &Resource,
 ) -> Result<Authority> {
     let hash = app.auth.token_digest(&context.delegation_token);
-    let authority = authority_digest(c, app, workload, context, &hash, 0).await?;
+    let authority = authority_digest(
+        c,
+        app,
+        workload,
+        context,
+        &hash,
+        0,
+        &mut ProofCache::default(),
+    )
+    .await?;
     if !authority.ctx.proxy_allows(action, resource)
         || !auth::rules_allow(
             &policy::rules(
@@ -58,6 +67,7 @@ async fn authority_digest(
     context: &rpc::RpcContext,
     hash: &[u8],
     depth: usize,
+    cache: &mut ProofCache,
 ) -> Result<Authority> {
     let timing = std::time::Instant::now();
     if depth >= 16 {
@@ -124,9 +134,10 @@ async fn authority_digest(
     }
     stage(timing, "resume");
     let (target_action, target) = crate::broker::business_target(c, row.get("call_id")).await?;
+    let business_current = cache.current(c, &ctx, Some(&target)).await?;
     let live = Policy::for_context(c, &ctx)
         .with_resource_owner(&target)
-        .revalidate(&saved(row.get("source_paths"))?, ctx.credential)
+        .revalidate_current(&saved(row.get("source_paths"))?, &business_current)
         .await?;
     stage(timing, "business_sources");
     let rules = policy::rules(&live);
@@ -181,8 +192,9 @@ async fn authority_digest(
         return Err(Error::denied());
     }
     stage(timing, "business_binding");
+    let proxy_current = cache.current(c, &ctx, None).await?;
     let mut live = Policy::for_context(c, &ctx)
-        .revalidate(&saved(row.get("proxy_source_paths"))?, ctx.credential)
+        .revalidate_current(&saved(row.get("proxy_source_paths"))?, &proxy_current)
         .await?;
     stage(timing, "proxy_sources");
     let mut ceilings: Vec<Value> =
@@ -206,7 +218,7 @@ async fn authority_digest(
         if expiry<=chrono::Utc::now().timestamp_millis(){return Err(Error::denied());}
         let original:Value=parent.get("rpc_context");
         let ancestor=rpc::RpcContext{request_id:context.request_id.clone(),deadline_unix_ms:original["deadline"].as_i64().ok_or_else(Error::denied)?,..Default::default()};
-        let ancestor=Box::pin(authority_digest(c,app,Workload{instance:parent.get("instance_id"),generation:parent.get("generation")},&ancestor,&parent.get::<_,Vec<u8>>("delegation_digest"),depth+1)).await?;
+        let ancestor=Box::pin(authority_digest(c,app,Workload{instance:parent.get("instance_id"),generation:parent.get("generation")},&ancestor,&parent.get::<_,Vec<u8>>("delegation_digest"),depth+1,cache)).await?;
         if let Some(binding)=parent.get::<_,Option<Uuid>>("dependency_binding_id"){
             let provider=crate::dependencies::check_host(c,&ancestor.ctx,ancestor.deployment,ancestor.call,binding,&parent.get::<_,Option<Value>>("expected_contract").ok_or_else(Error::denied)?).await?;
             if Some(provider)!=parent.get::<_,Option<Uuid>>("provider_deployment_id"){return Err(Error::denied());}
@@ -228,9 +240,14 @@ async fn authority_digest(
         extend_ceilings(&mut ceilings,&serde_json::from_value::<Vec<Value>>(parent.get("ceilings")).map_err(|_|Error::denied())?)?;
     }
     stage(timing, "ancestors");
-    let (approval, approver, approved_peer) =
-        crate::host_blobs::approval_sources(c, app, row.get("deployment_id"), &row.get("manifest"))
-            .await?;
+    let (approval, approver, approved_peer) = crate::host_blobs::approval_sources_current(
+        c,
+        app,
+        row.get("deployment_id"),
+        &row.get("manifest"),
+        Some((&ctx, &proxy_current)),
+    )
+    .await?;
     extend_ceilings(
         &mut ceilings,
         &[
@@ -239,6 +256,14 @@ async fn authority_digest(
             scopes_at_peer(&approver, approved_peer),
         ],
     )?;
+    auth::validate_sources(c, Some(ctx.credential), Some(ctx.subject), ctx.peer).await?;
+    if until_ms <= chrono::Utc::now().timestamp_millis() {
+        return Err(Error::new(
+            "DEADLINE_EXCEEDED",
+            "Ancestor call deadline elapsed",
+            axum::http::StatusCode::GATEWAY_TIMEOUT,
+        ));
+    }
     stage(timing, "approval");
     ctx.proxy_ceilings = ceilings;
     ctx.proxy_paths = Some(live);
@@ -290,6 +315,7 @@ pub(crate) async fn authenticate(
         &context,
         &row.get::<_, Vec<u8>>("delegation_digest"),
         0,
+        &mut ProofCache::default(),
     )
     .await?;
     if authority.call != row.get::<_, Uuid>("parent_call_id") || authority.ctx.peer != peer {
@@ -716,7 +742,16 @@ pub(crate) async fn list_skill_candidates(
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
     let hash = app.auth.token_digest(&context.delegation_token);
-    let base = authority_digest(&tx, app, workload, context, &hash, 0).await?;
+    let base = authority_digest(
+        &tx,
+        app,
+        workload,
+        context,
+        &hash,
+        0,
+        &mut ProofCache::default(),
+    )
+    .await?;
     let rows=tx.query("SELECT s.id,s.definition_digest,s.installation_id,s.created_by,n.plugin_id,s.revision,n.state,p.status FROM skills s JOIN installations n ON n.id=s.installation_id JOIN publishers p ON p.id=n.publisher_id WHERE n.plugin_id=ANY($1) AND s.definition->'target'->>'kind'='capability' AND s.definition->'target'->'contract'->>'name'=ANY($2) AND s.archived_at IS NULL ORDER BY n.plugin_id,s.definition->>'name',s.definition->>'version',s.id LIMIT 10001",&[&request.plugin_ids,&request.capability_names]).await?;
     if rows.len() > 10000 {
         return Err(Error::exhausted());
@@ -1351,4 +1386,44 @@ fn stage(start: std::time::Instant, name: &str) {
     }
     #[cfg(not(test))]
     let _ = (start, name);
+}
+
+#[derive(Default)]
+struct ProofCache {
+    current: std::collections::HashMap<String, Vec<crate::policy::Path>>,
+    paths: usize,
+}
+impl ProofCache {
+    async fn current(
+        &mut self,
+        c: &(impl GenericClient + Sync),
+        ctx: &Context,
+        resource: Option<&Resource>,
+    ) -> Result<Vec<crate::policy::Path>> {
+        // Private to a single Host authority walk under its shared auth fence.
+        // Contexts are freshly resumed; no body or prior request supplies proof.
+        if ctx.proxy_paths.is_some() || !ctx.proxy_ceilings.is_empty() {
+            return Err(Error::denied());
+        }
+        let owner = resource.filter(|r| r.kind == "plugin");
+        let key = serde_json::to_string(&json!([
+            ctx.credential,
+            ctx.peer.to_string(),
+            ctx.browser_origin,
+            owner.map(|r| (&r.kind, &r.id, r.owner))
+        ]))?;
+        if let Some(paths) = self.current.get(&key) {
+            return Ok(paths.clone());
+        }
+        let mut policy = Policy::for_context(c, ctx);
+        if let Some(resource) = owner {
+            policy = policy.with_resource_owner(resource);
+        }
+        let paths = policy.credential(ctx.credential, 0).await?;
+        if self.paths + paths.len() <= 8192 {
+            self.paths += paths.len();
+            self.current.insert(key, paths.clone());
+        }
+        Ok(paths)
+    }
 }

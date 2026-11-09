@@ -155,6 +155,15 @@ pub(crate) async fn approval_sources(
     deployment: Uuid,
     manifest: &Value,
 ) -> Result<(Value, Value, IpAddr)> {
+    approval_sources_current(c, app, deployment, manifest, None).await
+}
+pub(crate) async fn approval_sources_current(
+    c: &(impl GenericClient + Sync),
+    app: &App,
+    deployment: Uuid,
+    manifest: &Value,
+    current: Option<(&Context, &[Path])>,
+) -> Result<(Value, Value, IpAddr)> {
     let row=c.query_opt("SELECT d.approval,d.owner_id,a.credential_id,host(a.peer) AS peer,a.approval_digest,a.source_paths,a.browser_origin FROM deployments d JOIN host_proxy_approvals a ON a.deployment_id=d.id WHERE d.id=$1",&[&deployment]).await?.ok_or_else(Error::denied)?;
     let approval: Value = row.get("approval");
     if contracts::digest(&serde_json::to_vec(&approval)?) != row.get::<_, String>("approval_digest")
@@ -172,9 +181,21 @@ pub(crate) async fn approval_sources(
         .resume(c, row.get("credential_id"), peer, Uuid::new_v4())
         .await?;
     ctx.browser_origin = row.get("browser_origin");
-    let paths = Policy::for_context(c, &ctx)
-        .revalidate(&saved(row.get("source_paths"))?, ctx.credential)
-        .await?;
+    let mut policy = Policy::for_context(c, &ctx);
+    let original = saved(row.get("source_paths"))?;
+    let paths = if let Some((proof, paths)) = current.filter(|(proof, _)| {
+        proof.credential == ctx.credential
+            && proof.subject == ctx.subject
+            && proof.peer == ctx.peer
+            && proof.browser_origin == ctx.browser_origin
+            && proof.proxy_paths.is_none()
+            && proof.proxy_ceilings.is_empty()
+    }) {
+        let _ = proof;
+        policy.revalidate_current(&original, paths).await?
+    } else {
+        policy.revalidate(&original, ctx.credential).await?
+    };
     let live = policy::rules(&paths);
     if !auth::rules_allow(
         &live,
