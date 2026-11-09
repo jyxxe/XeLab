@@ -28,6 +28,7 @@ struct Echo {
     effects: Arc<AtomicU64>,
     cells: Arc<RwLock<std::collections::BTreeMap<String, String>>>,
     active_streams: Arc<RwLock<std::collections::HashMap<String, watch::Sender<bool>>>>,
+    health_observed: watch::Sender<u64>,
 }
 #[derive(Clone)]
 struct SavedResult {
@@ -37,6 +38,28 @@ struct SavedResult {
 }
 
 impl Echo {
+    async fn next_health(&self, deadline: i64) -> Result<(), Status> {
+        // Subscribe after the result is committed. watch retains a subsequent
+        // real Health observation even if it arrives before changed() is polled.
+        let mut health = self.health_observed.subscribe();
+        let expired = || Status::deadline_exceeded("No subsequent Health before call deadline");
+        if chrono::Utc::now().timestamp_millis() >= deadline {
+            return Err(expired());
+        }
+        let remaining = std::time::Duration::from_millis(
+            deadline
+                .saturating_sub(chrono::Utc::now().timestamp_millis())
+                .clamp(0, 300000) as u64,
+        );
+        tokio::time::timeout(remaining, health.changed())
+            .await
+            .map_err(|_| expired())?
+            .map_err(|_| Status::unavailable("Health observation channel closed"))?;
+        if chrono::Utc::now().timestamp_millis() >= deadline {
+            return Err(expired());
+        }
+        Ok(())
+    }
     fn execution_count(&self, effect: &str) -> Option<u64> {
         match effect {
             "queryable" | "non_repeatable" => Some(self.effects.fetch_add(1, Ordering::SeqCst) + 1),
@@ -92,6 +115,14 @@ impl PluginLifecycle for Echo {
     ) -> Result<Response<rpc::HealthResponse>, Status> {
         let m = strict_json(&self.manifest, 1048576)
             .map_err(|_| Status::internal("Invalid manifest"))?;
+        // This service is exposed only through the existing require_kernel
+        // interceptor. Signal genuine ready probes, never synthetic freshness.
+        let ready =
+            self.initialized.load(Ordering::SeqCst) && !self.draining.load(Ordering::SeqCst);
+        if ready {
+            self.health_observed
+                .send_modify(|epoch| *epoch = epoch.wrapping_add(1));
+        }
         Ok(Response::new(rpc::HealthResponse {
             alive: true,
             observed_generation: self.generation,
@@ -106,8 +137,7 @@ impl PluginLifecycle for Echo {
                         version: cap["contract"]["version"].as_str().unwrap().into(),
                         schema_digest: cap["contract"]["schema_digest"].as_str().unwrap().into(),
                     }),
-                    ready: self.initialized.load(Ordering::SeqCst)
-                        && !self.draining.load(Ordering::SeqCst),
+                    ready,
                     reason_code: String::new(),
                 })
                 .collect(),
@@ -218,7 +248,14 @@ impl CapabilityService for Echo {
                 response: response.clone(),
             },
         );
-        if input["fault"] == "after-commit" {
+        drop(results);
+        if input["fault"] == "after-commit-health" {
+            self.next_health(context.deadline_unix_ms).await?;
+        }
+        if matches!(
+            input["fault"].as_str(),
+            Some("after-commit" | "after-commit-health")
+        ) {
             return Err(Status::unavailable(
                 "Reference response lost after committed execution",
             ));
@@ -358,7 +395,10 @@ impl CapabilityService for Echo {
                     },
                     output_json: output,
                 };
-                if fault == "none" || fault == "after-commit" {
+                if matches!(
+                    fault.as_str(),
+                    "none" | "after-commit" | "after-commit-health"
+                ) {
                     let mut results = this.results.write().await;
                     if results.len() >= 1024 {
                         results.clear();
@@ -372,7 +412,17 @@ impl CapabilityService for Echo {
                         },
                     );
                 }
-                if fault == "after-commit" {
+                if fault == "after-commit-health" {
+                    tokio::select! {
+                        _ = sender.closed() => return,
+                        _ = canceled.changed() => return,
+                        observed = this.next_health(deadline) => if let Err(error) = observed {
+                            let _ = sender.send(Err(error)).await;
+                            return;
+                        },
+                    }
+                }
+                if matches!(fault.as_str(), "after-commit" | "after-commit-health") {
                     let _ = sender
                         .send(Err(Status::unavailable(
                             "Reference stream ended after committed execution",
@@ -471,6 +521,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         effects: Default::default(),
         cells: Default::default(),
         active_streams: Default::default(),
+        health_observed: watch::channel(0).0,
     };
     loop {
         let cert = std::fs::read(PathBuf::from(std::env::var("XELAB_TLS_CERT_PATH")?))?;
@@ -519,6 +570,7 @@ mod tests {
             effects: Default::default(),
             cells: Default::default(),
             active_streams: Default::default(),
+            health_observed: watch::channel(0).0,
         };
         let mut context = xelab_kernel::controller::context(None);
         context.deadline_unix_ms = chrono::Utc::now().timestamp_millis() + 10_000;
@@ -533,6 +585,113 @@ mod tests {
             binding_id: String::new(),
         };
         (echo, request)
+    }
+
+    fn health_fixture() -> (Echo, rpc::InvokeRequest) {
+        let (mut echo, mut request) = fixture("queryable");
+        let contract = request.contract.as_mut().unwrap();
+        contract.version = "1.0.1".into();
+        contract.schema_digest = digest(b"health-synchronized queryable fixture");
+        let mut manifest = strict_json(&echo.manifest, 1048576).unwrap();
+        manifest["capabilities"][0]["contract"]["version"] = "1.0.1".into();
+        manifest["capabilities"][0]["contract"]["schema_digest"] =
+            contract.schema_digest.clone().into();
+        echo.manifest = Arc::new(serde_json::to_vec(&manifest).unwrap());
+        request.input_json = serde_json::to_vec(
+            &serde_json::json!({"message":"committed once","fault":"after-commit-health"}),
+        )
+        .unwrap();
+        request.input_digest = digest(&request.input_json);
+        (echo, request)
+    }
+
+    #[tokio::test]
+    async fn reference_health_loss_waits_for_new_probe_without_holding_results() {
+        let (echo, request) = health_fixture();
+        // Old probes with no subscribers are retained, but cannot release the
+        // waiter created after this Call's actual cache commit.
+        echo.get_health(Request::new(Default::default()))
+            .await
+            .unwrap();
+        let actor = echo.clone();
+        let invocation = request.clone();
+        let pending = tokio::spawn(async move { actor.invoke(Request::new(invocation)).await });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if echo.results.read().await.contains_key(&request.call_id) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("The business result must be committed without retaining its write lock");
+        assert!(!pending.is_finished());
+        let query = rpc::QueryResultRequest {
+            context: request.context.clone(),
+            call_id: request.call_id.clone(),
+            idempotency_key: request.context.as_ref().unwrap().idempotency_key.clone(),
+        };
+        let saved = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            echo.query_result(Request::new(query)),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .into_inner();
+        assert_eq!(saved.state, rpc::ExecutionState::Succeeded as i32);
+        let health = echo
+            .get_health(Request::new(Default::default()))
+            .await
+            .unwrap();
+        assert!(health.into_inner().capabilities[0].ready);
+        assert_eq!(
+            pending.await.unwrap().unwrap_err().code(),
+            tonic::Code::Unavailable
+        );
+        let replay = echo
+            .invoke(Request::new(request))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(echo.effects.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            strict_json(&replay.output_json, 65536).unwrap()["execution_count"],
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn reference_health_wait_preserves_deadline_even_for_late_ready_signal() {
+        let (echo, _) = health_fixture();
+        let deadline = chrono::Utc::now().timestamp_millis() + 20;
+        let wait = echo.next_health(deadline);
+        tokio::pin!(wait);
+        assert!(futures_util::poll!(wait.as_mut()).is_pending());
+        // A ready signal after a blocked runtime must not bypass the original
+        // deadline just because changed() can now immediately return Ready.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        echo.get_health(Request::new(Default::default()))
+            .await
+            .unwrap();
+        assert_eq!(
+            wait.await.unwrap_err().code(),
+            tonic::Code::DeadlineExceeded
+        );
+        assert_eq!(
+            echo.next_health(i64::MIN).await.unwrap_err().code(),
+            tonic::Code::DeadlineExceeded
+        );
+        let started = tokio::time::Instant::now();
+        assert_eq!(
+            echo.next_health(chrono::Utc::now().timestamp_millis() + 10)
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::DeadlineExceeded
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[tokio::test]

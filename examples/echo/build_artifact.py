@@ -134,6 +134,29 @@ def build(root, publisher, platform="linux/amd64", implementation="rust", reques
                 "mapping": "identity", "maximum_timeout_ms": 10000,
                 "input_blobs": False, "tags": ["echo", "ordinary-effects"],
             })
+        # An additive acceptance contract gives the positive QueryResult case
+        # a real post-commit Health observation. Existing 1.0.0 contracts,
+        # schemas, Skill definitions and digests remain byte-for-byte unchanged.
+        queryable = next(cap for cap in manifest["capabilities"]
+                         if cap["contract"]["name"] == manifest["plugin_id"] + ".queryable")
+        health_cap = json.loads(json.dumps(queryable))
+        health_cap["input_schema"]["properties"]["fault"]["enum"].append("after-commit-health")
+        health_directory = root / "xelab" / "contracts" / queryable["contract"]["name"] / "1.0.1"
+        health_directory.mkdir(parents=True, exist_ok=True)
+        health_checks = []
+        for file, value in [("input.schema.json", health_cap["input_schema"]), ("output.schema.json", health_cap["output_schema"]), ("stream.schema.json", health_cap["stream_item_schema"]), ("semantics.json", {"side_effect": "queryable"})]:
+            raw = encoded(value)
+            (health_directory / file).write_bytes(raw)
+            health_checks.append(f"{file} {hashlib.sha256(raw).hexdigest()}\n")
+        health_cap["contract"] = {"name": queryable["contract"]["name"], "version": "1.0.1", "schema_digest": "sha256:" + hashlib.sha256("".join(health_checks).encode()).hexdigest()}
+        health_skill = json.loads(json.dumps(next(skill for skill in manifest["skills"]
+                                                if skill["target"].get("contract") == queryable["contract"])))
+        health_skill["name"] += ".health-sync"
+        health_skill["description"] = "Lose the committed response after the next real Health probe, then query the original provider"
+        health_skill["input_schema"] = health_cap["input_schema"]
+        health_skill["target"]["contract"] = health_cap["contract"]
+        manifest["capabilities"].append(health_cap)
+        manifest["skills"].append(health_skill)
     if volume_access:
         manifest["volumes"] = [{"name": "data", "mount_path": "/data", "access": volume_access, "scope": "deployment", "minimum_bytes": 1048576}]
     if failed_startup:
@@ -158,7 +181,7 @@ if __name__ == "__main__":
     parser.add_argument("--request-secret", action="store_true", help="Enable the explicit Secret lease acceptance probe")
     parser.add_argument("--volume-access", choices=["ro", "rw"], help="Enable explicit persistent-volume acceptance")
     parser.add_argument("--request-blob", action="store_true", help="Enable explicit Blob proxy acceptance with a separate contract")
-    parser.add_argument("--plugin-version", choices=["1.0.0", "2.0.0", "3.0.0"], default="1.0.0", help="Plugin release version; capability contract stays at 1.0.0")
+    parser.add_argument("--plugin-version", choices=["1.0.0", "2.0.0", "3.0.0"], default="1.0.0", help="Plugin release version; existing capability contract versions remain fixed")
     parser.add_argument("--failed-startup", action="store_true", help="Build an explicit failing startup acceptance artifact")
     parser.add_argument("--data-schema", choices=["1", "2"], help="Reference DataMigration format; kernel admission remains disabled until its durable coordinator is complete")
     parser.add_argument("--migration-fail-after-write", action="store_true", help="Explicit acceptance artifact returning an ambiguous RPC outcome after a real committed write")
