@@ -472,6 +472,41 @@ async fn host_real_mtls_skill_invocation_replay_stream_and_parent_lineage() {
         input_digest: contracts::digest(&bytes),
         input_json: bytes,
     };
+    // The caller owns both Blobs and the actor has read-all approval, but the
+    // live parent delegation only contains `source`. A child input cannot add
+    // an unrelated Blob to that frozen whitelist by borrowing raw caller rights.
+    let unrelated = f.source(b"outside parent input".to_vec()).await;
+    let mut outside = request.clone();
+    let outside_call = Uuid::new_v4();
+    outside.call_id = Some(outside_call.to_string());
+    outside.context.as_mut().unwrap().idempotency_key = Uuid::new_v4().to_string();
+    outside.input_json = serde_json::to_vec(&json!({"source":unrelated})).unwrap();
+    outside.input_digest = contracts::digest(&outside.input_json);
+    let quota_before:i64=c.query_one("SELECT concurrent_calls_used FROM quotas WHERE account_id=(SELECT id FROM accounts WHERE independent_owner)",&[]).await.unwrap().get(0);
+    assert_eq!(
+        client.invoke_skill(outside).await.unwrap_err().code(),
+        tonic::Code::PermissionDenied
+    );
+    assert_eq!(plugin.calls.load(Ordering::SeqCst), 0);
+    assert!(!c
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM calls WHERE id=$1)",
+            &[&outside_call]
+        )
+        .await
+        .unwrap()
+        .get::<_, bool>(0));
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM host_child_calls WHERE parent_call_id=$1",
+            &[&parent]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        0
+    );
+    assert_eq!(c.query_one("SELECT concurrent_calls_used FROM quotas WHERE account_id=(SELECT id FROM accounts WHERE independent_owner)",&[]).await.unwrap().get::<_,i64>(0),quota_before);
     let result = client
         .invoke_skill(request.clone())
         .await
