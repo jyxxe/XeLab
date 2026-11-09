@@ -8,6 +8,7 @@ use crate::{
     policy::{self, Path, Policy},
     rpc,
 };
+use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use std::{
     collections::BTreeSet,
@@ -157,48 +158,52 @@ pub(crate) async fn approval_sources(
 ) -> Result<(Value, Value, IpAddr)> {
     approval_sources_current(c, app, deployment, manifest, None).await
 }
-pub(crate) async fn approval_sources_current(
-    c: &(impl GenericClient + Sync),
-    app: &App,
+pub(crate) fn approval_sources_current<'a>(
+    c: &'a (impl GenericClient + Sync),
+    app: &'a App,
     deployment: Uuid,
-    manifest: &Value,
-    cache: Option<&mut crate::host_calls::ProofCache>,
-) -> Result<(Value, Value, IpAddr)> {
-    let row=c.query_opt("SELECT d.approval,d.owner_id,a.credential_id,host(a.peer) AS peer,a.approval_digest,a.source_paths,a.browser_origin FROM deployments d JOIN host_proxy_approvals a ON a.deployment_id=d.id WHERE d.id=$1",&[&deployment]).await?.ok_or_else(Error::denied)?;
-    let approval: Value = row.get("approval");
-    if contracts::digest(&serde_json::to_vec(&approval)?) != row.get::<_, String>("approval_digest")
-    {
-        return Err(Error::denied());
-    }
-    let peer: IpAddr = row
-        .get::<_, String>("peer")
-        .parse()
-        .map_err(|_| Error::denied())?;
-    signed_approval(c, manifest, &approval, peer).await?;
-    required_approval(c, manifest, &approval, peer).await?;
-    let mut ctx = app
-        .auth
-        .resume(c, row.get("credential_id"), peer, Uuid::new_v4())
-        .await?;
-    ctx.browser_origin = row.get("browser_origin");
-    let mut policy = Policy::for_context(c, &ctx);
-    let original = saved(row.get("source_paths"))?;
-    let paths = if let Some(cache) = cache {
-        cache.revalidate(c, &ctx, None, &original).await?.1
-    } else {
-        policy.revalidate(&original, ctx.credential).await?
-    };
-    let live = policy::rules(&paths);
-    if !auth::rules_allow(
-        &live,
-        "plugin.permission.grant",
-        &Resource::new("deployment", deployment, Some(row.get("owner_id"))),
-        peer,
-    ) {
-        return Err(Error::denied());
-    }
-    Ok((approval, live, peer))
+    manifest: &'a Value,
+    cache: Option<&'a mut crate::host_calls::ProofCache>,
+) -> BoxFuture<'a, Result<(Value, Value, IpAddr)>> {
+    Box::pin(async move {
+        let row=c.query_opt("SELECT d.approval,d.owner_id,a.credential_id,host(a.peer) AS peer,a.approval_digest,a.source_paths,a.browser_origin FROM deployments d JOIN host_proxy_approvals a ON a.deployment_id=d.id WHERE d.id=$1",&[&deployment]).await?.ok_or_else(Error::denied)?;
+        let approval: Value = row.get("approval");
+        if contracts::digest(&serde_json::to_vec(&approval)?)
+            != row.get::<_, String>("approval_digest")
+        {
+            return Err(Error::denied());
+        }
+        let peer: IpAddr = row
+            .get::<_, String>("peer")
+            .parse()
+            .map_err(|_| Error::denied())?;
+        signed_approval(c, manifest, &approval, peer).await?;
+        required_approval(c, manifest, &approval, peer).await?;
+        let mut ctx = app
+            .auth
+            .resume(c, row.get("credential_id"), peer, Uuid::new_v4())
+            .await?;
+        ctx.browser_origin = row.get("browser_origin");
+        let mut policy = Policy::for_context(c, &ctx);
+        let original = saved(row.get("source_paths"))?;
+        let paths = if let Some(cache) = cache {
+            cache.revalidate(c, &ctx, None, &original).await?.1
+        } else {
+            policy.revalidate(&original, ctx.credential).await?
+        };
+        let live = policy::rules(&paths);
+        if !auth::rules_allow(
+            &live,
+            "plugin.permission.grant",
+            &Resource::new("deployment", deployment, Some(row.get("owner_id"))),
+            peer,
+        ) {
+            return Err(Error::denied());
+        }
+        Ok((approval, live, peer))
+    })
 }
+
 async fn required_approval(
     c: &(impl GenericClient + Sync),
     manifest: &Value,
