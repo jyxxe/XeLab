@@ -390,13 +390,12 @@ async fn host_queued_child_result_cannot_bypass_ancestor_ceiling_narrowed_after_
             {"action":"capability.invoke","resource":{"kind":"capability","match":"ids","ids":[target]}}
         ])
     };
-    scoped_proxy(
-        &f,
-        ancestor,
-        rules(&format!("{}@{}", contract.name, contract.version)),
-        &root,
-    )
-    .await;
+    let mut initial_rules = rules(&format!("{}@{}", contract.name, contract.version));
+    initial_rules[3]["resource"]["ids"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("org.xelab.echo@1.0.0"));
+    scoped_proxy(&f, ancestor, initial_rules, &root).await;
     dependency(&f, middle, &contract).await;
     let source = f.source(b"ancestor queued result".to_vec()).await;
     let (parent, parent_context) = f.delegation(ancestor, ancestor_instance, source).await;
