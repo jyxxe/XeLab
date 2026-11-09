@@ -482,7 +482,14 @@ mod tests {
             }
             if variant.starts_with("rust-") {
                 let capabilities = manifest["capabilities"].as_array().unwrap();
-                assert_eq!(capabilities.len(), 5);
+                assert_eq!(capabilities.len(), 6);
+                let health_query = capabilities.last().unwrap();
+                assert_eq!(
+                    health_query["contract"]["name"],
+                    format!("{}.queryable", manifest["plugin_id"].as_str().unwrap())
+                );
+                assert_eq!(health_query["contract"]["version"], "1.0.1");
+                assert_eq!(health_query["side_effect"], "queryable");
                 let effect = capabilities
                     .iter()
                     .find(|cap| cap["side_effect"] == "non_repeatable")
