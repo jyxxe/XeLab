@@ -40,6 +40,8 @@ mod platform_source;
 #[path = "support/platform_versioned.rs"]
 mod platform_versioned;
 
+#[path = "support/ordinary_effects.rs"]
+mod ordinary_effects;
 #[path = "support/upgrades.rs"]
 mod upgrade_acceptance;
 
@@ -482,7 +484,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     // Fault cases can require a public disable/enable after the unchanged
     // restart budget is exhausted. Keep the original intent/TLS checks above;
     // later liveness/isolation checks must follow the current live generation.
-    let instance = ordinary_skill_stream_lifecycle(
+    let mut instance = ordinary_skill_stream_lifecycle(
         &app,
         &router,
         &db,
@@ -491,7 +493,21 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         &manifest,
     )
     .await;
-    // Restart the controller; recovery fences the old container before restoring capacity.
+    let mut effects = ordinary_effects::successful(
+        &router,
+        &db,
+        owner,
+        token,
+        &installed["installation_id"],
+        &manifest,
+        &deployment,
+    )
+    .await;
+    instance = effects
+        .interrupted(&app, &router, &db, owner, token, instance, &deployment)
+        .await;
+    // The Controller was running during all side-effect/query/fencing checks.
+    // Now independently verify durable results and accounting after its restart.
     worker.abort();
     let _ = worker.await;
     app.ready.store(false, Ordering::SeqCst);
@@ -535,6 +551,9 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
             .get::<_, i64>(0),
         500
     );
+    effects
+        .after_restart(&app, &router, &db, owner, token, instance)
+        .await;
     let after_restart = api(
         &router,
         "invokeSkill",
@@ -558,7 +577,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         manifest["capabilities"][0],
         python_manifest["capabilities"][0]
     );
-    assert_eq!(manifest["capabilities"].as_array().unwrap().len(), 2);
+    assert_eq!(manifest["capabilities"].as_array().unwrap().len(), 5);
     assert_eq!(python_manifest["capabilities"].as_array().unwrap().len(), 1);
     assert_ne!(manifest["plugin_id"], python_manifest["plugin_id"]);
     let python_image = std::env::var("XELAB_TEST_PYTHON_IMAGE").unwrap();

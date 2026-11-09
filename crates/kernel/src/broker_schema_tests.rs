@@ -5,6 +5,17 @@ use crate::{auth, backups::tests::Fixture};
 
 #[tokio::test]
 async fn actual_postgres_idempotent_schema_call_never_replays_unknown_dispatch() {
+    unknown_dispatch("idempotent", true).await;
+}
+
+#[tokio::test]
+async fn actual_postgres_stateless_effects_never_replay_uncertain_dispatch() {
+    for effect in ["idempotent", "queryable", "non_repeatable"] {
+        unknown_dispatch(effect, false).await;
+    }
+}
+
+async fn unknown_dispatch(effect: &str, versioned: bool) {
     let Some(f) = Fixture::new().await else {
         return;
     };
@@ -28,15 +39,21 @@ async fn actual_postgres_idempotent_schema_call_never_replays_unknown_dispatch()
         serde_json::from_str(include_str!("../tests/fixtures/secret-manifest.json")).unwrap();
     manifest["requested_rules"] = json!([]);
     manifest["publisher_id"] = json!(publisher);
-    manifest["data_schema_version"] = json!("1");
-    manifest["volumes"] = json!([{"name":"data","mount_path":"/data","access":"rw","scope":"deployment","minimum_bytes":1048576}]);
-    manifest["capabilities"][0]["side_effect"] = json!("idempotent");
+    if versioned {
+        manifest["data_schema_version"] = json!("1");
+        manifest["volumes"] = json!([{"name":"data","mount_path":"/data","access":"rw","scope":"deployment","minimum_bytes":1048576}]);
+    }
+    manifest["capabilities"][0]["side_effect"] = json!(effect);
     manifest["concurrency"]["max_active_requests"] = json!(1);
     crate::artifact::validate_runtime_profile(&manifest).unwrap();
-    assert!(
-        crate::artifact::validate_profile(&manifest).is_err(),
-        "public installation stays closed"
-    );
+    if versioned {
+        assert!(
+            crate::artifact::validate_profile(&manifest).is_err(),
+            "public versioned installation stays closed"
+        );
+    } else {
+        crate::artifact::validate_profile(&manifest).unwrap();
+    }
     let cap = &manifest["capabilities"][0];
     let contract = cap["contract"].clone();
     let hash = digest(&serde_json::to_vec(&manifest).unwrap());
@@ -58,10 +75,10 @@ async fn actual_postgres_idempotent_schema_call_never_replays_unknown_dispatch()
     c.execute("INSERT INTO provider_records(instance_id,name,version,availability,features,observed_generation,observed_at) VALUES($1,$2,$3,'ready','[]',2,now())", &[&instance,&contract["name"].as_str().unwrap(),&contract["version"].as_str().unwrap()]).await.unwrap();
     let request = json!({"contract":contract,"input":{"message":"one durable request"},"provider_deployment_id":deployment,"timeout_ms":10000});
     let key = "schema-unknown-call";
-    for variant in ["unversioned", "other_contract", "other_schema"] {
+    for variant in ["other_effect", "other_contract", "other_schema"] {
         let mut wrong = manifest.clone();
         match variant {
-            "unversioned" => wrong["data_schema_version"] = json!("none"),
+            "other_effect" => wrong["capabilities"][0]["side_effect"] = json!("none"),
             "other_contract" => {
                 wrong["capabilities"][0]["contract"]["schema_digest"] =
                     json!(digest(b"other contract"))

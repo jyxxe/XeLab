@@ -226,11 +226,17 @@ fn validate_profile_inner(manifest: &Value, allow_versioned: bool) -> Result<()>
     }
     crate::contracts::compile_business(&manifest["config_schema"])?;
     for cap in manifest["capabilities"].as_array().unwrap() {
-        if !(cap["side_effect"] == "none" || (versioned && cap["side_effect"] == "idempotent"))
-            || (!cap["stream_item_schema"].is_null() && cap["side_effect"] != "none")
+        // Side effects control retries, not whether a signed ordinary plugin
+        // can execute its first call. The Broker never regenerates a stream or
+        // retries an uncertain invocation. The internal versioned-data profile
+        // remains limited to its independently verified write semantics.
+        if !matches!(
+            cap["side_effect"].as_str(),
+            Some("none" | "idempotent" | "queryable" | "non_repeatable")
+        ) || (versioned && !matches!(cap["side_effect"].as_str(), Some("none" | "idempotent")))
         {
             return Err(Error::invalid(
-                "This profile requires supported side effects; streaming is limited to pure capabilities",
+                "Unsupported ordinary capability or versioned-data side effects",
             ));
         }
         for key in ["input_schema", "output_schema", "stream_item_schema"] {
@@ -364,19 +370,154 @@ impl Artifact {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn streaming_profile_rejects_side_effects_and_external_item_schemas() {
+    fn generated_reference_profiles_match_manifest_and_raw_contracts() {
+        let root = tempfile::tempdir().unwrap();
+        let builder =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/echo/build_artifact.py");
+        let platform = if cfg!(target_arch = "aarch64") {
+            "linux/arm64"
+        } else {
+            "linux/amd64"
+        };
+        let variants: &[(&str, &[&str], bool)] = &[
+            ("rust-default", &[], false),
+            ("rust-upgrade", &["--plugin-version", "2.0.0"], false),
+            (
+                "rust-failed-upgrade",
+                &["--plugin-version", "3.0.0", "--failed-startup"],
+                false,
+            ),
+            ("rust-blob", &["--request-blob"], false),
+            (
+                "python-secret",
+                &["--implementation", "python", "--request-secret"],
+                false,
+            ),
+            (
+                "python-host-blob",
+                &["--implementation", "python", "--request-blob"],
+                false,
+            ),
+            (
+                "python-schema-1",
+                &[
+                    "--implementation",
+                    "python",
+                    "--volume-access",
+                    "rw",
+                    "--data-schema",
+                    "1",
+                ],
+                true,
+            ),
+            (
+                "python-schema-2",
+                &[
+                    "--implementation",
+                    "python",
+                    "--volume-access",
+                    "rw",
+                    "--data-schema",
+                    "2",
+                    "--plugin-version",
+                    "2.0.0",
+                ],
+                true,
+            ),
+        ];
+        for &(variant, arguments, versioned) in variants {
+            let directory = root.path().join(variant);
+            let output = std::process::Command::new("python3")
+                .arg(&builder)
+                .args([
+                    "--publisher-id",
+                    "00000000-0000-4000-8000-000000000001",
+                    "--platform",
+                    platform,
+                    "--output",
+                ])
+                .arg(&directory)
+                .args(arguments)
+                .env("PYTHONDONTWRITEBYTECODE", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "Reference generator failed for {variant}"
+            );
+            let bytes = read_image_file(&directory, "xelab/plugin.json", 4 * 1024 * 1024).unwrap();
+            let manifest = strict_json(&bytes, 4 * 1024 * 1024).unwrap();
+            validate_runtime_profile(&manifest).unwrap_or_else(|error| {
+                panic!("Generated {variant} profile failed: {}", error.code)
+            });
+            assert_eq!(
+                validate_profile(&manifest).is_err(),
+                versioned,
+                "Only versioned-data artifacts retain their public installation gate"
+            );
+            for capability in manifest["capabilities"].as_array().unwrap() {
+                let contract = &capability["contract"];
+                let name = contract["name"].as_str().unwrap();
+                let version = contract["version"].as_str().unwrap();
+                let mut checks = String::new();
+                for (file, field) in [
+                    ("input.schema.json", "input_schema"),
+                    ("output.schema.json", "output_schema"),
+                    ("stream.schema.json", "stream_item_schema"),
+                    ("semantics.json", ""),
+                ] {
+                    let bytes = read_image_file(
+                        &directory,
+                        &format!("xelab/contracts/{name}/{version}/{file}"),
+                        1024 * 1024,
+                    )
+                    .unwrap();
+                    let value = strict_json(&bytes, 1024 * 1024).unwrap();
+                    if field.is_empty() {
+                        assert_eq!(value["side_effect"], capability["side_effect"]);
+                    } else {
+                        assert_eq!(value, capability[field]);
+                    }
+                    checks.push_str(&format!("{file} {}\n", &digest(&bytes)[7..]));
+                }
+                assert_eq!(contract["schema_digest"], digest(checks.as_bytes()));
+            }
+            if variant.starts_with("rust-") {
+                let capabilities = manifest["capabilities"].as_array().unwrap();
+                assert_eq!(capabilities.len(), 5);
+                let effect = capabilities
+                    .iter()
+                    .find(|cap| cap["side_effect"] == "non_repeatable")
+                    .unwrap();
+                assert!(effect["contract"]["name"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(".non-repeatable"));
+                assert!(!effect["stream_item_schema"].is_null());
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_streaming_profiles_keep_side_effects_and_local_schemas() {
         let mut manifest: Value =
             serde_json::from_str(include_str!("../tests/fixtures/secret-manifest.json")).unwrap();
         manifest["requested_rules"] = json!([]);
         manifest["capabilities"][0]["stream_item_schema"] = json!({"type":"string"});
-        validate_profile(&manifest).unwrap();
+        for side_effect in ["none", "idempotent", "queryable", "non_repeatable"] {
+            manifest["capabilities"][0]["side_effect"] = json!(side_effect);
+            validate_profile(&manifest).unwrap();
+        }
         let mut referenced = manifest.clone();
         referenced["capabilities"][0]["stream_item_schema"] =
             json!({"$ref":"https://example.invalid/item.json"});
         assert!(validate_profile(&referenced).is_err());
         manifest["data_schema_version"] = json!("1");
         manifest["volumes"] = json!([{"name":"data","mount_path":"/data","access":"rw","scope":"deployment","minimum_bytes":1048576}]);
-        for side_effect in ["idempotent", "non_idempotent"] {
+        manifest["capabilities"][0]["side_effect"] = json!("idempotent");
+        validate_runtime_profile(&manifest).unwrap();
+        assert!(validate_profile(&manifest).is_err());
+        for side_effect in ["queryable", "non_repeatable", "non_idempotent"] {
             manifest["capabilities"][0]["side_effect"] = json!(side_effect);
             assert!(validate_runtime_profile(&manifest).is_err());
         }
@@ -392,7 +533,6 @@ mod tests {
         validate_runtime_profile(&manifest).unwrap();
         assert!(validate_profile(&manifest).is_err());
         for variant in [
-            "none_idempotent",
             "no_volumes",
             "read_only",
             "scratch",
@@ -403,7 +543,6 @@ mod tests {
         ] {
             let mut wrong = manifest.clone();
             match variant {
-                "none_idempotent" => wrong["data_schema_version"] = json!("none"),
                 "no_volumes" => wrong["volumes"] = json!([]),
                 "read_only" => wrong["volumes"][0]["access"] = json!("ro"),
                 "scratch" => wrong["volumes"][0]["mount_path"] = json!("/xelab-migration/nested"),

@@ -514,6 +514,19 @@ async fn dispatch(
         .await
         .map(|value| (value, 200));
     }
+    // QueryResult performs bounded network work between two short authority
+    // transactions. Never retain this dispatcher's authorization lock over RPC.
+    if name == "getCall" {
+        return crate::broker_query::get_call(
+            app,
+            &headers,
+            peer,
+            request_id,
+            path_id(&params, "call_id")?,
+        )
+        .await
+        .map(|value| (value, 200));
+    }
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
     let mutating = matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
@@ -640,20 +653,6 @@ async fn dispatch(
             tx.execute("UPDATE rpc_delegations SET status='revoked' WHERE call_id=$1 AND EXISTS(SELECT 1 FROM calls WHERE id=$1 AND state='unknown')", &[&call]).await?;
             tx.execute("UPDATE execution_delegations SET status='revoked' WHERE id IN(SELECT delegation_id FROM calls WHERE id=$1 AND state='unknown')", &[&call]).await?;
             (Value::Null, 204)
-        }
-        "getCall" => {
-            let call = path_id(&params, "call_id")?;
-            let r = tx
-                .query_one("SELECT state,result,error,skill_id,http_binding FROM calls WHERE id=$1", &[&call])
-                .await?;
-            if r.get::<_,Option<Value>>("result").is_some() && (r.get::<_,Option<Uuid>>("skill_id").is_some()||r.get::<_,Option<Value>>("http_binding").is_some()) {
-                broker::check_skill_authority(&tx,&ctx,call).await.map_err(|error|if matches!(error.code,"PERMISSION_DENIED"|"INVALID_CREDENTIAL"|"RESOURCE_NOT_FOUND"|"STATE_CONFLICT"){Error::denied()}else{error})?;
-                if r.get::<_,Option<Value>>("http_binding").is_some() {broker::check_http_approval(&tx,app,call).await.map_err(|error|if matches!(error.code,"PERMISSION_DENIED"|"INVALID_CREDENTIAL"|"RESOURCE_NOT_FOUND"|"STATE_CONFLICT"){Error::denied()}else{error})?;}
-            }
-            (
-                json!({"call_id":call,"state":r.get::<_,String>(0),"result":r.get::<_,Option<Value>>(1),"error":r.get::<_,Option<Value>>(2)}),
-                200,
-            )
         }
         "getNode" => (admission::status(&tx).await?, 200),
         "getOperation" => (

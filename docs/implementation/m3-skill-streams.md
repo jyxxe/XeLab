@@ -11,8 +11,8 @@
 `POST /api/platform/v1/skills/{skill_id}/calls:stream` 接受既有 `SkillInvokeRequest`，
 要求 `Idempotency-Key` 和有效身份；Cookie 来源及 Origin 检查与管理 API 保持一致。
 Skill 必须声明与签名 capability 精确一致的 `stream_item_schema`。
-当前公开运行 profile 只接受 `side_effect=none` 的流式 capability，
-不开放一般非幂等业务副作用或公开版本化数据制品。
+普通 capability 的 none/idempotent/queryable/non_repeatable 均可声明流；
+副作用不同不改变固定绑定、终帧验证或禁止自动重开的规则。公开版本化数据制品仍关闭。
 
 流和非流式 Skill 共用 Broker 的准入事务、固定安装/契约选择、
 `skill.invoke` 与目标 `capability.invoke` 双层授权、原始来源计费、账户额度、
@@ -66,13 +66,19 @@ HTTP `Cache-Control` 为 `no-store`，15 秒注释心跳不占业务序号。
 派发前再次检查接收端，保留该不确定记录并按原 deadline 与控制器围栏回收。
 `cancelCall` 记录取消意图并返回 204；已派发调用保持 `unknown`，
 错误标记为 `CANCELED`，不会谎称已撤销实际副作用。
-活动物理预约只由既有 Controller 在确认实例进程停止后释放。
+非可重复或仍未知的活动预约由既有 Controller 在确认实例进程停止后释放；
+queryable 已由原实例 QueryResult 确认的结果可在原冻结授权仍有效时结算。
 未知结果不能触发自动重新派发；纯流同样保留这一恢复围栏。
 
 ## 参考插件与可复现测试
 
 Rust `xelab-echo` 的签名清单同时提供原有 echo 和 `org.xelab.echo.stream@1.0.0`，
 后者输入 message/count/delay_ms，输出 item(index/message) 及最终 message。
+另有 idempotent/queryable/non_repeatable 三个固定契约及 Skill；后两类真实增加实例内计数，
+其 after-commit 故障在副作用和结果记录已提交后中断传输。idempotent 参考操作是
+向 SHA-256(message) 固定单元写入相同值，不使用递增计数；重新赋值的结果本身幂等。
+结果缓存是实例内有界记录，
+不能据此声称插件跨实例数据持久性或生产数据格式验收；缺失记录只能报告 unknown。
 测试故障参数用于验证错误序号、call ID、item、output、摘要、缺失终块和终块后数据。
 Python 和格式迁移参考制品保持原契约，不自动获得流式入口。
 
