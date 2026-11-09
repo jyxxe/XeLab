@@ -29,6 +29,6 @@ CREATE UNIQUE INDEX host_ticket_replay ON host_call_tickets(parent_call_id,idemp
 CREATE TABLE host_child_calls (
  child_call_id uuid PRIMARY KEY REFERENCES calls(id),
  parent_call_id uuid NOT NULL REFERENCES calls(id),
- ticket_id uuid NOT NULL REFERENCES host_call_tickets(id),
+ ticket_id uuid NOT NULL UNIQUE REFERENCES host_call_tickets(id),
  CHECK(child_call_id<>parent_call_id)
 );

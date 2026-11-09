@@ -94,7 +94,10 @@ impl HostService for Host {
         let duration = request
             .context
             .as_ref()
-            .map(|c| c.deadline_unix_ms - chrono::Utc::now().timestamp_millis())
+            .map(|c| {
+                c.deadline_unix_ms
+                    .saturating_sub(chrono::Utc::now().timestamp_millis())
+            })
             .unwrap_or(0)
             .clamp(0, 2000) as u64;
         let result = tokio::time::timeout(
@@ -145,7 +148,10 @@ impl HostService for Host {
         let milliseconds = request
             .context
             .as_ref()
-            .map(|c| c.deadline_unix_ms - chrono::Utc::now().timestamp_millis())
+            .map(|c| {
+                c.deadline_unix_ms
+                    .saturating_sub(chrono::Utc::now().timestamp_millis())
+            })
             .unwrap_or(0)
             .clamp(0, 2000) as u64;
         let bound = deadline.min(tokio::time::Instant::now() + Duration::from_millis(milliseconds));
@@ -185,7 +191,10 @@ impl HostService for Host {
         let milliseconds = request
             .context
             .as_ref()
-            .map(|c| c.deadline_unix_ms - chrono::Utc::now().timestamp_millis())
+            .map(|c| {
+                c.deadline_unix_ms
+                    .saturating_sub(chrono::Utc::now().timestamp_millis())
+            })
             .unwrap_or(0)
             .clamp(0, 2000) as u64;
         let bound = deadline.min(tokio::time::Instant::now() + Duration::from_millis(milliseconds));
@@ -225,7 +234,10 @@ impl HostService for Host {
         let milliseconds = request
             .context
             .as_ref()
-            .map(|c| c.deadline_unix_ms - chrono::Utc::now().timestamp_millis())
+            .map(|c| {
+                c.deadline_unix_ms
+                    .saturating_sub(chrono::Utc::now().timestamp_millis())
+            })
             .unwrap_or(0)
             .clamp(0, 2000) as u64;
         let bound = deadline.min(tokio::time::Instant::now() + Duration::from_millis(milliseconds));
@@ -265,7 +277,10 @@ impl HostService for Host {
         let milliseconds = request
             .context
             .as_ref()
-            .map(|c| c.deadline_unix_ms - chrono::Utc::now().timestamp_millis())
+            .map(|c| {
+                c.deadline_unix_ms
+                    .saturating_sub(chrono::Utc::now().timestamp_millis())
+            })
             .unwrap_or(0)
             .clamp(0, 300000) as u64;
         let bound = deadline.min(tokio::time::Instant::now() + Duration::from_millis(milliseconds));
@@ -305,7 +320,10 @@ impl HostService for Host {
         let milliseconds = request
             .context
             .as_ref()
-            .map(|c| c.deadline_unix_ms - chrono::Utc::now().timestamp_millis())
+            .map(|c| {
+                c.deadline_unix_ms
+                    .saturating_sub(chrono::Utc::now().timestamp_millis())
+            })
             .unwrap_or(0)
             .clamp(0, 300000) as u64;
         let bound = deadline.min(tokio::time::Instant::now() + Duration::from_millis(milliseconds));
@@ -348,7 +366,10 @@ impl HostService for Host {
         let milliseconds = request
             .context
             .as_ref()
-            .map(|c| c.deadline_unix_ms - chrono::Utc::now().timestamp_millis())
+            .map(|c| {
+                c.deadline_unix_ms
+                    .saturating_sub(chrono::Utc::now().timestamp_millis())
+            })
             .unwrap_or(0)
             .clamp(0, 2000) as u64;
         let bound = deadline.min(tokio::time::Instant::now() + Duration::from_millis(milliseconds));
@@ -388,7 +409,10 @@ impl HostService for Host {
         let milliseconds = request
             .context
             .as_ref()
-            .map(|c| c.deadline_unix_ms - chrono::Utc::now().timestamp_millis())
+            .map(|c| {
+                c.deadline_unix_ms
+                    .saturating_sub(chrono::Utc::now().timestamp_millis())
+            })
             .unwrap_or(0)
             .clamp(0, 300000) as u64;
         let bound = deadline.min(tokio::time::Instant::now() + Duration::from_millis(milliseconds));
@@ -428,7 +452,10 @@ impl HostService for Host {
         let milliseconds = request
             .context
             .as_ref()
-            .map(|c| c.deadline_unix_ms - chrono::Utc::now().timestamp_millis())
+            .map(|c| {
+                c.deadline_unix_ms
+                    .saturating_sub(chrono::Utc::now().timestamp_millis())
+            })
             .unwrap_or(0)
             .clamp(0, 300000) as u64;
         let bound = deadline.min(tokio::time::Instant::now() + Duration::from_millis(milliseconds));

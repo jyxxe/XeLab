@@ -142,3 +142,169 @@ async fn postgres_host_proxy_proof_does_not_freeze_credential_expiry_within_tran
     );
     tx.rollback().await.unwrap();
 }
+
+#[tokio::test]
+async fn postgres_host_business_cache_rechecks_external_issuer_expiry_without_losing_alternatives()
+{
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let (provider, _) = f.workload().await;
+    let (target, definition) = skill(&f, provider).await;
+    let mut c = f.app.db.connect().await.unwrap();
+    let caller = f
+        .app
+        .auth
+        .authenticate(&c, &f.token, "127.0.0.1".parse().unwrap(), Uuid::new_v4())
+        .await
+        .unwrap();
+    let contract = &definition["target"]["contract"];
+    let business = auth::Resource::new(
+        "capability",
+        format!(
+            "{}@{}",
+            contract["name"].as_str().unwrap(),
+            contract["version"].as_str().unwrap()
+        ),
+        None,
+    );
+    let proxy = auth::Resource::new("skill", target, Some(caller.subject));
+    for credential_expiry in [false, true] {
+        // Explicit authorization metadata fixture: an external account obtains
+        // only the real echo capability from the existing bootstrap Owner,
+        // then delegates that business scope back. Proxy Skill authority stays
+        // on the caller's independent original Owner sources throughout.
+        let preparation = c.transaction().await.unwrap();
+        crate::db::auth_lock(&preparation, true).await.unwrap();
+        let issuer = Uuid::new_v4();
+        preparation.execute("INSERT INTO accounts(id,kind,status,display_name,created_at,updated_at) VALUES($1,'service','active','expiring business issuer',now(),now())",&[&issuer]).await.unwrap();
+        preparation
+            .execute(
+                "INSERT INTO account_closure(ancestor_id,descendant_id,depth) VALUES($1,$1,0)",
+                &[&issuer],
+            )
+            .await
+            .unwrap();
+        let business_scope = json!({"kind":"capability","match":"ids","ids":[business.id]});
+        preparation.execute("INSERT INTO grants(id,subject_id,issuer_id,issuer_credential_id,role_id,scope,status,created_at,updated_at) VALUES($1,$2,$3,$4,'Owner',$5,'active',now(),now())",&[&Uuid::new_v4(),&issuer,&caller.subject,&caller.credential,&business_scope]).await.unwrap();
+        let credential = if credential_expiry {
+            let id = Uuid::new_v4();
+            let (_, hash) = f.app.auth.random_token();
+            preparation.execute("INSERT INTO credentials(id,owner_id,kind,hmac_key_id,verification_digest,status,conditions,expires_at,created_at,updated_at) VALUES($1,$2,'session',$3,$4,'active','{}',clock_timestamp()+interval '1 hour',now(),now())",&[&id,&issuer,&f.app.auth.key_id.as_str(),&hash]).await.unwrap();
+            Some(id)
+        } else {
+            None
+        };
+        let delegated = Uuid::new_v4();
+        preparation.execute("INSERT INTO grants(id,subject_id,issuer_id,issuer_credential_id,role_id,scope,status,created_at,updated_at) VALUES($1,$2,$3,$4,'Owner',$5,'active',now(),now())",&[&delegated,&caller.subject,&issuer,&credential,&business_scope]).await.unwrap();
+        let paths = crate::policy::Policy::for_context(&preparation, &caller)
+            .credential(caller.credential, 0)
+            .await
+            .unwrap();
+        let original_business: Vec<_> = paths
+            .iter()
+            .filter(|path| {
+                path.sources.contains(&delegated) && path.rule["action"] == "capability.invoke"
+            })
+            .cloned()
+            .collect();
+        let independent_business: Vec<_> = paths
+            .iter()
+            .filter(|path| {
+                !path.sources.contains(&delegated) && path.rule["action"] == "capability.invoke"
+            })
+            .cloned()
+            .collect();
+        let proxy_paths: Vec<_> = paths
+            .iter()
+            .filter(|path| path.rule["action"] == "skill.read")
+            .cloned()
+            .collect();
+        assert!(
+            !original_business.is_empty(),
+            "the external source must be proved by the actual Policy before exercising its expiry"
+        );
+        assert!(
+            proxy_paths
+                .iter()
+                .all(|path| !path.sources.contains(&delegated)),
+            "the business issuer must not be hidden inside a proxy action source"
+        );
+        let expires: chrono::DateTime<chrono::Utc> = if let Some(credential) = credential {
+            preparation.query_one("UPDATE credentials SET expires_at=clock_timestamp()+interval '3 seconds' WHERE id=$1 RETURNING expires_at",&[&credential]).await.unwrap().get(0)
+        } else {
+            preparation.query_one("UPDATE accounts SET expires_at=clock_timestamp()+interval '3 seconds' WHERE id=$1 RETURNING expires_at",&[&issuer]).await.unwrap().get(0)
+        };
+        preparation.commit().await.unwrap();
+        let tx = c.transaction().await.unwrap();
+        crate::db::auth_lock(&tx, false).await.unwrap();
+        let ctx = f
+            .app
+            .auth
+            .authenticate(&tx, &f.token, "127.0.0.1".parse().unwrap(), Uuid::new_v4())
+            .await
+            .unwrap();
+        let mut cache = host_calls::TestProofCache::default();
+        let first = cache
+            .revalidate(&tx, &ctx, Some(&business), &original_business)
+            .await
+            .unwrap();
+        assert!(auth::rules_allow(
+            &crate::policy::rules(&first),
+            "capability.invoke",
+            &business,
+            ctx.peer
+        ));
+        let before_proxy = cache
+            .revalidate(&tx, &ctx, Some(&proxy), &proxy_paths)
+            .await
+            .unwrap();
+        assert!(auth::rules_allow(
+            &crate::policy::rules(&before_proxy),
+            "skill.read",
+            &proxy,
+            ctx.peer
+        ));
+        // The same transaction, same authenticated caller and same private
+        // cache remain alive. Only clocks advance after the authorization fence.
+        tokio::time::sleep(
+            (expires - chrono::Utc::now()).to_std().unwrap_or_default() + Duration::from_millis(50),
+        )
+        .await;
+        let expired = cache
+            .revalidate(&tx, &ctx, Some(&business), &original_business)
+            .await
+            .unwrap();
+        assert!(!auth::rules_allow(&crate::policy::rules(&expired),"capability.invoke",&business,ctx.peer),"an expired external business-only issuer cannot be replaced by a cached independent rule (issuer_credential_present={credential_expiry})");
+        let independent = cache
+            .revalidate(&tx, &ctx, Some(&business), &independent_business)
+            .await
+            .unwrap();
+        assert!(
+            auth::rules_allow(
+                &crate::policy::rules(&independent),
+                "capability.invoke",
+                &business,
+                ctx.peer
+            ),
+            "independent preexisting business authority must remain usable"
+        );
+        let after_proxy = cache
+            .revalidate(&tx, &ctx, Some(&proxy), &proxy_paths)
+            .await
+            .unwrap();
+        assert!(
+            auth::rules_allow(
+                &crate::policy::rules(&after_proxy),
+                "skill.read",
+                &proxy,
+                ctx.peer
+            ),
+            "caller and proxy sources remain valid after the unrelated business issuer expires"
+        );
+        auth::authorize(&tx, &ctx, "skill.read", &proxy)
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+    }
+}

@@ -134,13 +134,12 @@ async fn authority_digest(
     }
     stage(timing, "resume");
     let (target_action, target) = crate::broker::business_target(c, row.get("call_id")).await?;
-    let business_current = cache.current(c, &ctx, Some(&target)).await?;
-    let live = Policy::for_context(c, &ctx)
-        .with_resource_owner(&target)
-        .revalidate_current(&saved(row.get("source_paths"))?, &business_current)
+    let (_, business_live) = cache
+        .revalidate(c, &ctx, Some(&target), &saved(row.get("source_paths"))?)
         .await?;
     stage(timing, "business_sources");
-    let rules = policy::rules(&live);
+    let rules = policy::rules(&business_live);
+    let mut business_required = vec![(target_action.clone(), target.clone())];
     let maximum: Value = row.get("maximum_rules");
     let blobs: Vec<Uuid> =
         serde_json::from_value(row.get("read_blob_ids")).map_err(|_| Error::denied())?;
@@ -165,6 +164,7 @@ async fn authority_digest(
         {
             return Err(Error::denied());
         }
+        business_required.push(("blob.read".to_owned(), resource));
     }
 
     crate::broker::check_skill_binding(c, &ctx, row.get("call_id")).await?;
@@ -185,6 +185,7 @@ async fn authority_digest(
         {
             return Err(Error::denied());
         }
+        business_required.push(("skill.invoke".to_owned(), resource));
     }
     if !auth::rules_allow(&rules, &target_action, &target, peer)
         || !auth::rules_allow(&maximum, &target_action, &target, peer)
@@ -192,9 +193,8 @@ async fn authority_digest(
         return Err(Error::denied());
     }
     stage(timing, "business_binding");
-    let proxy_current = cache.current(c, &ctx, None).await?;
-    let mut live = Policy::for_context(c, &ctx)
-        .revalidate_current(&saved(row.get("proxy_source_paths"))?, &proxy_current)
+    let (proxy_current, mut live) = cache
+        .revalidate(c, &ctx, None, &saved(row.get("proxy_source_paths"))?)
         .await?;
     stage(timing, "proxy_sources");
     let mut ceilings: Vec<Value> =
@@ -257,6 +257,22 @@ async fn authority_digest(
         ],
     )?;
     auth::validate_sources(c, Some(ctx.credential), Some(ctx.subject), ctx.peer).await?;
+    // Recursive ancestors and approval walks can cross a source's clock
+    // boundary even while authorization mutations are fenced. Business-only
+    // sources need this final check independently of the proxy action set.
+    let business_live = Policy::for_context(c, &ctx)
+        .live_proxy_sources(business_live)
+        .await?;
+    let business_rules = policy::rules(&business_live);
+    if business_required
+        .iter()
+        .any(|(action, resource)| !auth::rules_allow(&business_rules, action, resource, peer))
+    {
+        return Err(Error::denied());
+    }
+    live = Policy::for_context(c, &ctx)
+        .live_proxy_sources(live)
+        .await?;
     if until_ms <= chrono::Utc::now().timestamp_millis() {
         return Err(Error::new(
             "DEADLINE_EXCEEDED",
@@ -919,6 +935,7 @@ async fn prepare_capability(
     app: &App,
     workload: Workload,
     request: &rpc::InvokeRequest,
+    streaming: bool,
 ) -> Result<Prepared> {
     let context = context(request.context.as_ref())?;
     let call = uuid(&request.call_id)?;
@@ -959,7 +976,7 @@ async fn prepare_capability(
     .clamp(1, 300000) as u64;
     let mut input = json!({"contract":contract,"input":payload,"provider_deployment_id":provider,"timeout_ms":timeout,"idempotency_key":context.idempotency_key});
     let fingerprint = contracts::digest(&serde_json::to_vec(
-        &json!({"contract":contract,"input_digest":request.input_digest,"provider":provider,"call_id":call,"binding":request.binding_id}),
+        &json!({"contract":contract,"input_digest":request.input_digest,"provider":provider,"call_id":call,"binding":request.binding_id,"streaming":streaming}),
     )?);
     let bounds = policy::rules(auth.ctx.proxy_paths.as_ref().ok_or_else(Error::denied)?);
     let token = ticket(
@@ -993,6 +1010,7 @@ async fn prepare_skill(
     app: &App,
     workload: Workload,
     request: &rpc::SkillInvokeRequest,
+    streaming: bool,
 ) -> Result<Prepared> {
     let context = context(request.context.as_ref())?;
     let skill = uuid(&request.skill_id)?;
@@ -1043,7 +1061,7 @@ async fn prepare_skill(
         input["provider_deployment_id"] = provider.clone();
     }
     let fingerprint = contracts::digest(&serde_json::to_vec(
-        &json!({"skill":skill,"definition_digest":value["definition_digest"],"input_digest":request.input_digest,"call_id":requested_call}),
+        &json!({"skill":skill,"definition_digest":value["definition_digest"],"input_digest":request.input_digest,"call_id":requested_call,"streaming":streaming}),
     )?);
     let expected = if value["definition"]["target"]["kind"] == "capability" {
         Some(value["definition"]["target"]["contract"].clone())
@@ -1107,7 +1125,7 @@ pub(crate) async fn invoke(
     workload: Workload,
     request: rpc::InvokeRequest,
 ) -> Result<rpc::InvokeResponse> {
-    let prepared = prepare_capability(app, workload, &request).await?;
+    let prepared = prepare_capability(app, workload, &request, false).await?;
     response(
         crate::broker::invoke_host(
             app,
@@ -1126,7 +1144,7 @@ pub(crate) async fn invoke_skill(
     workload: Workload,
     request: rpc::SkillInvokeRequest,
 ) -> Result<rpc::InvokeResponse> {
-    let prepared = prepare_skill(app, workload, &request).await?;
+    let prepared = prepare_skill(app, workload, &request, false).await?;
     let started = tokio::time::Instant::now();
     let result = crate::broker::invoke_host(
         app,
@@ -1176,7 +1194,12 @@ async fn visible_error(
                 tx.commit().await?;
                 Ok::<(), Error>(())
             };
-            if !matches!(tokio::time::timeout(budget, check).await, Ok(Ok(()))) {
+            let checked = tokio::time::timeout(budget, check).await;
+            if !matches!(checked, Ok(Ok(()))) {
+                #[cfg(test)]
+                if std::env::var_os("XELAB_HOST_TIMING").is_some() {
+                    eprintln!("HOST_ERROR_VISIBILITY {checked:?}");
+                }
                 error.resource_id = None;
             }
         }
@@ -1194,7 +1217,7 @@ pub(crate) async fn invoke_stream(
     workload: Workload,
     request: rpc::InvokeRequest,
 ) -> Result<RpcStream> {
-    let prepared = prepare_capability(&app, workload, &request).await?;
+    let prepared = prepare_capability(&app, workload, &request, true).await?;
     stream(app, prepared).await
 }
 pub(crate) async fn invoke_skill_stream(
@@ -1202,7 +1225,7 @@ pub(crate) async fn invoke_skill_stream(
     workload: Workload,
     request: rpc::SkillInvokeRequest,
 ) -> Result<RpcStream> {
-    let prepared = prepare_skill(&app, workload, &request).await?;
+    let prepared = prepare_skill(&app, workload, &request, true).await?;
     stream(app, prepared).await
 }
 async fn stream(app: std::sync::Arc<App>, prepared: Prepared) -> Result<RpcStream> {
@@ -1448,7 +1471,78 @@ struct ProofCache {
     current: std::collections::HashMap<String, Vec<crate::policy::Path>>,
     paths: usize,
 }
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct TestProofCache(ProofCache);
+#[cfg(test)]
+impl TestProofCache {
+    pub(crate) async fn revalidate(
+        &mut self,
+        c: &(impl GenericClient + Sync),
+        ctx: &Context,
+        resource: Option<&Resource>,
+        saved: &[crate::policy::Path],
+    ) -> Result<Vec<crate::policy::Path>> {
+        Ok(self.0.revalidate(c, ctx, resource, saved).await?.1)
+    }
+}
 impl ProofCache {
+    async fn revalidate(
+        &mut self,
+        c: &(impl GenericClient + Sync),
+        ctx: &Context,
+        resource: Option<&Resource>,
+        saved: &[crate::policy::Path],
+    ) -> Result<(Vec<crate::policy::Path>, Vec<crate::policy::Path>)> {
+        if saved.len() > 4096 {
+            return Err(Error::exhausted());
+        }
+        auth::validate_sources(c, Some(ctx.credential), Some(ctx.subject), ctx.peer).await?;
+        let current = self.current(c, ctx, resource).await?;
+        // The cache is transaction-local, but clocks still advance. In
+        // particular, external business issuers may not appear in proxy scopes.
+        let current = Policy::for_context(c, ctx)
+            .live_proxy_sources(current)
+            .await?;
+        let mut policy = Policy::for_context(c, ctx);
+        if let Some(resource) = resource.filter(|r| r.kind == "plugin") {
+            policy = policy.with_resource_owner(resource);
+        }
+        let mut live = Vec::new();
+        let mut pending = Vec::new();
+        for path in saved {
+            let identical_sources: Vec<_> = current
+                .iter()
+                .filter(|p| p.sources == path.sources)
+                .cloned()
+                .collect();
+            let proved = policy
+                .intersection(std::slice::from_ref(path), &identical_sources)
+                .await?;
+            if proved.iter().any(|p| p.rule == path.rule) {
+                // This fresh credential proof has the exact same source IDs,
+                // and covers the entire frozen rule under the same owner
+                // profile. All original sources are already proved; preserve
+                // every current alternative when applying the frozen scope.
+                live.extend(
+                    policy
+                        .intersection(std::slice::from_ref(path), &current)
+                        .await?,
+                );
+            } else {
+                pending.push(path.clone());
+            }
+            if live.len() > 4096 {
+                return Err(Error::exhausted());
+            }
+        }
+        live.extend(policy.revalidate_current(&pending, &current).await?);
+        if live.len() > 4096 {
+            return Err(Error::exhausted());
+        }
+        Ok((current, live))
+    }
+
     async fn current(
         &mut self,
         c: &(impl GenericClient + Sync),

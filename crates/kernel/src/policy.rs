@@ -334,7 +334,7 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
     // Grant/account mutations are excluded while the Host proof's auth fence
     // is held. Time-based source-credential expiry is checked again at leaves;
     // expired alternatives are removed rather than reviving them from new grants.
-    async fn live_proxy_sources(&self, paths: Vec<Path>) -> Result<Vec<Path>> {
+    pub(crate) async fn live_proxy_sources(&self, paths: Vec<Path>) -> Result<Vec<Path>> {
         let sources: Vec<Uuid> = paths
             .iter()
             .flat_map(|p| p.sources.iter().copied())

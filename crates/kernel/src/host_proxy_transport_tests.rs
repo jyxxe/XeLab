@@ -719,7 +719,11 @@ async fn host_mtls_effectful_failure_exposes_admitted_call_without_redispatch() 
         parent
     );
     let replay = client.invoke_skill(request.clone()).await.unwrap_err();
-    assert_eq!(structured_error(&replay).resource_id, known.to_string());
+    assert_eq!(
+        structured_error(&replay).resource_id,
+        known.to_string(),
+        "unknown replay status: {replay:?}"
+    );
     assert_eq!(
         plugin.calls.load(Ordering::SeqCst),
         1,
@@ -772,10 +776,38 @@ async fn host_mtls_effectful_failure_exposes_admitted_call_without_redispatch() 
         "unknown"
     );
     assert_eq!(
-        structured_error(&client.invoke_skill(legacy).await.unwrap_err()).resource_id,
+        structured_error(&client.invoke_skill(legacy.clone()).await.unwrap_err()).resource_id,
         assigned
     );
     assert_eq!(plugin.calls.load(Ordering::SeqCst), 2);
+    let quota_before: i64 = c
+        .query_one("SELECT concurrent_calls_used FROM quotas WHERE account_id=(SELECT id FROM accounts WHERE independent_owner)", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        client.invoke_skill_stream(legacy).await.unwrap_err().code(),
+        tonic::Code::FailedPrecondition,
+        "changing the response mode must not re-dispatch an unknown effectful call"
+    );
+    assert_eq!(plugin.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM host_child_calls WHERE parent_call_id=$1",
+            &[&parent],
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        2
+    );
+    assert_eq!(
+        c.query_one("SELECT concurrent_calls_used FROM quotas WHERE account_id=(SELECT id FROM accounts WHERE independent_owner)", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        quota_before
+    );
     proxy(
         &f,
         consumer,
