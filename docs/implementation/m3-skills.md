@@ -1,5 +1,7 @@
 # M3 Skill 注册与普通 OCI 调用
 
+
+> 2026-11-09 验收补记：M3 功能提交 #45/#46/#47 的精确完整与专项 CI 已全部通过。下文保留相应切片开发时的命令、历史状态和证据边界；当前验收表与精确 head/tree/CI 见 [当前验收记录](m3-acceptance-20261109.md)，最终集成与 main CI 见 [目标 #38](https://github.com/jyxxe/XeLab/issues/38)。历史“待验收”表述不得替代该最新记录，组件通过也不替代真实 OCI 或正式生产验收。
 [实施索引](README.md) · [持续目标与验收清单](m3-progress.md) · [Skill 契约](../skills/README.md)
 
 本页记录 M3-A 的已合并注册/纯调用切片与开发分支中的普通副作用扩展。

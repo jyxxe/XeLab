@@ -1,5 +1,7 @@
 # M3 官方 WebUI、插件页面与整体测试
 
+
+> 2026-11-09 验收补记：M3 功能提交 #45/#46/#47 的精确完整与专项 CI 已全部通过。下文保留相应切片开发时的命令、历史状态和证据边界；当前验收表与精确 head/tree/CI 见 [当前验收记录](m3-acceptance-20261109.md)，最终集成与 main CI 见 [目标 #38](https://github.com/jyxxe/XeLab/issues/38)。历史“待验收”表述不得替代该最新记录，组件通过也不替代真实 OCI 或正式生产验收。
 [实施目录](README.md) · [M3 进度](m3-progress.md) · [核心 OAuth/UI](m3-oauth-ui.md) · [WebUI 部署](../../examples/webui/DEPLOYMENT.md) · [独立 UI 插件](../../examples/ui-reference/README.md)
 
 证据快照：2026-11-04 23:07 UTC。D/E 的执行代码和 F 的真实集成测试已存在，最终集成和新隐私修复门禁尚未完成；本快照不自动代表后续分支状态，最新状态见[目标 #38](https://github.com/jyxxe/XeLab/issues/38)。该时刻 main `e9ad62b83708e46569ca47f74413f6890950cdb5` 的 [CI 41860893005](https://github.com/jyxxe/XeLab/actions/runs/41860893005) 已成功，包含合并的 #39–44，尚不包含 #45–47。#46 的精确提交 `7249b969…` 已在 [CI 41922164310](https://github.com/jyxxe/XeLab/actions/runs/41922164310) 的 full 和 focus 两个 job 完成真实 F、53 项浏览器检查与11项 Core 检查，workspace/契约/lint全部通过；这不替代新隐私修复、依赖 PR 或最终 main 的完整门禁。
