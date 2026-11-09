@@ -264,7 +264,11 @@ export class BridgeHost {
       const response=await this.#api.invoke('getUiContribution',{params:{deployment_id:this.#fixed.deployment_id,contribution_id:message.params.contribution_id},signal:this.#controller.signal});
       const contribution=validateContribution(response.data,{parentOrigin:this.#parent,coreOrigin:this.#core});
       if(contribution.deployment_id!==this.#fixed.deployment_id||contribution.installation_id!==this.#fixed.installation_id||contribution.manifest_digest!==this.#fixed.manifest_digest||contribution.plugin_id!==this.#fixed.plugin_id||contribution.frame_origin!==this.#fixed.frame_origin||contribution.spec.kind!=='window')throw problem('PERMISSION_DENIED','仅可打开同一固定部署的获准窗口。');
-      const viewId=await this.#open(contribution);if(!UUID.test(viewId||''))throw problem('RATE_LIMITED','窗口不可用或已达上限。');return{view_id:viewId};
+      const sourceCurrent=()=>!this.#closed&&this.#current(this.#subject);
+      if(!sourceCurrent())throw problem('CHANNEL_CLOSED','账户或页面通道已结束。');
+      const viewId=await this.#open(contribution,sourceCurrent);
+      if(!sourceCurrent())throw problem('CHANNEL_CLOSED','账户或页面通道已结束。');
+      if(!UUID.test(viewId||''))throw problem('RATE_LIMITED','窗口不可用或已达上限。');return{view_id:viewId};
     }
     const binding=this.#fixed.bindings.find(value=>value.alias===message.params.binding_alias&&value.modes.includes('call'));
     if(!binding)throw problem('BINDING_UNAVAILABLE','未获准此固定 Skill 调用绑定。');

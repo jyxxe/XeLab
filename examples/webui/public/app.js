@@ -366,9 +366,17 @@ async function openContribution(value){
   const current=await request('getUiContribution',{params:{deployment_id:value.deployment_id,contribution_id:value.spec.id}});
   const fixed=validateContribution(current.data,{parentOrigin:location.origin,coreOrigin:runtimeConfig.core_origin});
   if(!sameContribution(value,fixed))throw new Error('贡献或权限已改变，请刷新后明确打开当前版本。');
+  return openCheckedContribution(fixed);
+}
+// Internal bridge targets have already passed a fresh core read and all pinned
+// identity checks. Actual iframe mounting still revalidates the target below.
+async function openCheckedContribution(fixed,sourceCurrent=()=>true){
+  const epoch=sessionEpoch,subject=accountId;
+  const current=()=>epoch===sessionEpoch&&oauth.loggedIn&&accountId===subject&&Boolean(subject)&&sourceCurrent();
+  if(!current())throw new Error('登录来源或页面通道已改变，请重新打开页面。');
   if(fixed.spec.kind!=='window')throw new Error('该贡献不是窗口。');
-  const epoch=sessionEpoch,reference=await contributionReference(fixed);
-  if(epoch!==sessionEpoch||!oauth.loggedIn||!accountId)throw new Error('登录来源已改变，请重新打开页面。');
+  const reference=await contributionReference(fixed);
+  if(!current())throw new Error('登录来源或页面通道已改变，请重新打开页面。');
   return openWindow({id:`plugin:${fixed.deployment_id}:${fixed.spec.id}`,title:`${fixed.spec.title} · ${fixed.plugin_id}`,render:win=>displayContribution(win,fixed,reference,false)},{ephemeral:true,restoreRef:reference});
 }
 async function contributionReference(fixed) {
@@ -422,7 +430,7 @@ async function mountContribution(container,fixed,owner){
   const frame=node('iframe',{class:'bridge-frame'}),status=node('p',{class:'contribution-note'},'正在核对固定贡献并握手…');
   container.replaceChildren(node('p',{class:'contribution-note',title:`安装 ${fixed.installation_id}；清单 ${fixed.manifest_digest}`},`固定贡献 ${fixed.contribution_digest.slice(0,23)}…`),status,frame);
   const bridge=new BridgeHost({iframe:frame,api,contribution:fixed,subjectId:accountId,isCurrent:subject=>oauth.loggedIn&&accountId===subject,coreOrigin:runtimeConfig.core_origin,viewId:owner.id,theme:bridgeTheme,
-    openWindow:async contribution=>(await openContribution(contribution))?.id,
+    openWindow:async (contribution,sourceCurrent)=>(await openCheckedContribution(contribution,sourceCurrent))?.id,
     onState:(phase,reason)=>{if(phase==='active')status.hidden=true;else if(phase==='closed'){owner.bridge=null;owner.closed=true;clearInterval(owner.refreshTimer);container.replaceChildren(state('unavailable','页面通道已关闭',`${reason} · 请重新发现并明确打开当前版本。`));}},
   });
   owner.bridge=bridge;
