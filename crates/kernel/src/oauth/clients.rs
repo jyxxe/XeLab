@@ -141,13 +141,13 @@ pub(crate) fn validate_spec(spec: &Value) -> Result<()> {
         if !origins.contains(parsed.origin().ascii_serialization().as_str())
             || !callbacks.insert(callback)
             || parsed.query_pairs().any(|(name, _)| {
-                ["code", "state", "error", "error_description"]
+                ["code", "state", "error", "error_description", "xelab_frame"]
                     .iter()
                     .any(|reserved| name.eq_ignore_ascii_case(reserved))
             })
         {
             return Err(Error::invalid(
-                "Callback must have an allowed origin and no reserved OAuth query fields",
+                "Callback must have an allowed origin and no core-reserved query fields",
             ));
         }
     }

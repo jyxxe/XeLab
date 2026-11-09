@@ -24,6 +24,8 @@ User/ServiceAccount 是授权主体；Session/API Key 是凭证；WorkloadIdenti
 
 authorize 只接受精确注册 redirect_uri，PKCE 仅 S256。可信登录后由内核批准注册范围的子集并签发授权码；客户端不能自行提交账户 ID 代替会话主体。code 绑定 client/URI/challenge、60s、单次使用。
 
+Client注册和修改时，redirect URI必须属于精确allowed_origin，且不能自带内核保留的code、state、error、error_description或xelab_frame查询字段；解码后的字段名不区分大小写检查。其他固定应用查询参数仍按原精确回调语义保留。xelab_frame仅用于核心生成的贡献嵌入政策，不是OAuth回调参数。
+
 token 的 code 与 refresh 分支字段定义见 [OAuthTokenRequest](../api/models/OAuthTokenRequest.md)。刷新凭证每次轮换并记录族 ID，重用即吊销同族。敏感 Cookie 操作校验 CSRF token 和 Origin；CLI 无 Origin 时必须显式提供 Bearer 或密码凭证，不依据 localhost 自动放行。
 
 未登录的 authorize 请求先校验 Client、精确回调、PKCE 与已注册 scope，再保存短期服务端续接状态；浏览器只持有内核来源的 Secure/HttpOnly、`__Host-` 不透明 Cookie。可信登录完成后，固定登录入口将该请求绑定到新会话，再跳转固定同意页。禁止任意 `next`/`return` URL，也不把密码、会话令牌或 PKCE verifier 放入续接 URL。authorize 的中间 302 只能指向内核登录/同意页，最终 302 才指向已核验回调。

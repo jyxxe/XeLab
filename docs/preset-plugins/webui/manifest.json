@@ -46,6 +46,20 @@
     "description": "macOS风格可变主题桌面壳的部署默认；不是用户授权",
     "additionalProperties": false,
     "properties": {
+      "core_origin": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2048,
+        "description": "Exact trusted HTTPS core origin; public configuration, never a credential"
+      },
+      "client_id": {
+        "type": ["string", "null"],
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9._~-]+$",
+        "default": null,
+        "description": "Null only for initial disabled deployment; Initialize requires the registered public Client identifier"
+      },
       "management_api_major": {
         "const": 1
       },
@@ -94,7 +108,9 @@
       "max_open_windows",
       "max_active_widgets",
       "widget_min_refresh_seconds",
-      "ui_protocol_major"
+      "ui_protocol_major",
+      "core_origin",
+      "client_id"
     ]
   },
   "data_schema_version": "none",

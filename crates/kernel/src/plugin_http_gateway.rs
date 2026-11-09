@@ -406,37 +406,49 @@ async fn handle_with_ingress(
     let (parts, body) = request.into_parts();
     let path = parts.uri.path();
     plugin_http::canonical_path(path)?;
+    plugin_http::reject_upgrade(&parts.headers)?;
+    if !path.starts_with("/plugins/") && !path.starts_with("/ui/") {
+        return Err(Error::not_found());
+    }
+    // Reserve bounded metadata work before either public query profile can
+    // open a connection or validate a current deployment/client binding.
+    let _ingress = ingress
+        .try_acquire_owned()
+        .map_err(|_| Error::exhausted())?;
+    let mut framing = None;
     if let Some(query) = parts.uri.query() {
         let deployment = match host {
             Host::Deployment(id) if matches!(parts.method.as_str(), "GET" | "HEAD") => id,
             _ => return Err(Error::invalid("Undeclared plugin query parameters")),
         };
-        // Only a registered callback of this exact signed WebUI may carry
-        // OAuth response fields. The backend always receives path alone.
-        tokio::time::timeout_at(started + Duration::from_secs(10), async {
+        // Both reserved query profiles terminate at the core. The backend
+        // receives the fixed signed path alone, including for public pages.
+        framing = tokio::time::timeout_at(started + Duration::from_secs(10), async {
             let mut c = app.db.connect_scoped(Duration::from_secs(10)).await?;
             let tx = c.transaction().await?;
             db::auth_lock(&tx, false).await?;
-            crate::webui::validate_callback(&tx, &app, deployment, path, query).await?;
+            let framing = if query.starts_with("xelab_frame=") {
+                Some(FramingPolicy {
+                    query: query.to_owned(),
+                    parent: crate::webui::validate_framing_query(
+                        &tx, &app, deployment, path, query,
+                    )
+                    .await?,
+                })
+            } else {
+                crate::webui::validate_callback(&tx, &app, deployment, path, query).await?;
+                None
+            };
             tx.commit().await?;
-            Ok::<_, Error>(())
+            Ok::<_, Error>(framing)
         })
         .await
         .map_err(|_| deadline())??;
     }
-    plugin_http::reject_upgrade(&parts.headers)?;
     let fixed = match host {
         Host::Core => None,
         Host::Deployment(id) => Some(id),
     };
-    if !path.starts_with("/plugins/") && !path.starts_with("/ui/") {
-        return Err(Error::not_found());
-    }
-    // This also bounds metadata/validator work before a static/business route
-    // is classified; the retained response pools have separate lifetimes.
-    let _ingress = ingress
-        .try_acquire_owned()
-        .map_err(|_| Error::exhausted())?;
     if let Some(deployment) = fixed.filter(|_| {
         path.starts_with("/plugins/")
             && (parts.method == Method::GET || parts.method == Method::HEAD)
@@ -465,6 +477,7 @@ async fn handle_with_ingress(
                 path,
                 &parts.headers,
                 started,
+                framing,
             )
             .await;
         }
@@ -524,6 +537,7 @@ async fn handle_with_ingress(
         path,
         &parts.headers,
         started,
+        framing,
     )
     .await
 }
@@ -558,6 +572,10 @@ fn retain(response: Response, permit: OwnedSemaphorePermit) -> Response {
     )
 }
 
+struct FramingPolicy {
+    query: String,
+    parent: String,
+}
 #[derive(Clone)]
 struct StaticBinding {
     installation: Uuid,
@@ -577,8 +595,27 @@ struct StaticLease {
     app: Arc<App>,
     id: Uuid,
     settled: bool,
+    deployment: Uuid,
+    started: tokio::time::Instant,
+    phase_started: tokio::time::Instant,
+    phase: &'static str,
 }
 impl StaticLease {
+    fn new(app: Arc<App>, id: Uuid, deployment: Uuid, started: tokio::time::Instant) -> Self {
+        Self {
+            app,
+            id,
+            settled: false,
+            deployment,
+            started,
+            phase_started: tokio::time::Instant::now(),
+            phase: "transport_setup",
+        }
+    }
+    fn phase(&mut self, phase: &'static str) {
+        self.phase = phase;
+        self.phase_started = tokio::time::Instant::now();
+    }
     async fn complete(&mut self) -> Result<()> {
         let mut connection = self.app.db.connect_scoped(Duration::from_secs(3)).await?;
         let transaction = connection.transaction().await?;
@@ -612,6 +649,7 @@ impl Drop for StaticLease {
         if self.settled {
             return;
         }
+        tracing::info!(target:"xelab.static_transition",code="STATIC_UNSETTLED",stage=self.phase,deployment_id=%self.deployment,elapsed_ms=self.started.elapsed().as_millis().min(u64::MAX as u128) as u64,phase_ms=self.phase_started.elapsed().as_millis().min(u64::MAX as u128) as u64);
         let app = self.app.clone();
         let id = self.id;
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
@@ -648,6 +686,7 @@ async fn static_page(
     path: &str,
     headers: &HeaderMap,
     started: tokio::time::Instant,
+    framing: Option<FramingPolicy>,
 ) -> Result<Response> {
     let permit = pool().try_acquire_owned().map_err(|_| Error::exhausted())?;
     if headers.contains_key("range") {
@@ -666,6 +705,9 @@ async fn static_page(
         let value = value.to_str().map_err(|_| Error::denied())?;
         if value != origin.origin()
             && value != app.config.text("server", "public_origin")
+            && !framing
+                .as_ref()
+                .is_some_and(|policy| policy.parent == value)
             && !app.config.value["ui_gateway"]["shell_origins"]
                 .as_array()
                 .is_some_and(|origins| origins.iter().any(|origin| origin == value))
@@ -738,11 +780,7 @@ async fn static_page(
     })
     .await
     .map_err(|_| deadline())??;
-    let mut lease = StaticLease {
-        app: app.clone(),
-        id: binding.lease,
-        settled: false,
-    };
+    let mut lease = StaticLease::new(app.clone(), binding.lease, binding.deployment, started);
     ensure_deadline(binding.deadline)?;
     let client = InstanceHttp::from_runtime(
         &app.config,
@@ -761,14 +799,20 @@ async fn static_page(
             .saturating_duration_since(tokio::time::Instant::now()),
     );
     tokio::pin!(fetch);
+    lease.phase("fetch");
     let mut monitor = tokio::time::interval(Duration::from_millis(100));
     let mut response = loop {
         tokio::select! {
             response=&mut fetch => break response?,
-            _=monitor.tick()=> static_authority(&app,&binding).await?,
+            _=monitor.tick()=> {
+                lease.phase("authority_monitor");
+                static_authority(&app,&binding).await?;
+                lease.phase("fetch");
+            },
             _=tokio::time::sleep_until(binding.deadline)=>return Err(deadline()),
         }
     };
+    lease.phase("lease_complete");
     tokio::time::timeout_at(binding.deadline, lease.complete())
         .await
         .map_err(|_| deadline())??;
@@ -782,7 +826,7 @@ async fn static_page(
                 let mut c = app.db.connect_scoped(Duration::from_secs(3)).await?;
                 let tx = c.transaction().await?;
                 db::auth_lock(&tx, false).await?;
-                if binding.manifest.get("webui").is_some() {
+                if binding.manifest.get("webui").is_some() && framing.is_none() {
                     response.headers.insert(
                         "content-security-policy",
                         crate::webui::csp(&tx, &app, binding.deployment, &binding.manifest)
@@ -791,8 +835,22 @@ async fn static_page(
                             .map_err(|_| Error::denied())?,
                     );
                 } else {
-                    let ancestors =
-                        crate::webui::frame_ancestors(&tx, &app, binding.deployment).await?;
+                    let ancestors = if let Some(policy) = framing.as_ref() {
+                        let parent = crate::webui::validate_framing_query(
+                            &tx,
+                            &app,
+                            binding.deployment,
+                            path,
+                            &policy.query,
+                        )
+                        .await?;
+                        if parent != policy.parent {
+                            return Err(Error::denied());
+                        }
+                        vec![parent]
+                    } else {
+                        crate::webui::frame_ancestors(&tx, &app, binding.deployment).await?
+                    };
                     let ancestors = if ancestors.is_empty() {
                         "'none'".into()
                     } else {

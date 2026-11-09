@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{BTreeSet, HashSet},
     net::IpAddr,
+    sync::Mutex,
 };
 use tokio_postgres::GenericClient;
 use uuid::Uuid;
@@ -21,6 +22,35 @@ pub struct Path {
     pub rule: Value,
     pub sources: BTreeSet<Uuid>,
 }
+/// An observation of unresolved intersections, never an authorization result.
+/// Only UI SQL candidate selection uses it, then evaluates each fixed owner
+/// again through the ordinary policy and rechecks every resulting deployment.
+#[derive(Default)]
+pub(crate) struct PluginOwnerCandidates(Mutex<BTreeSet<(String, Uuid)>>);
+impl PluginOwnerCandidates {
+    fn record(&self, plugin: &str, owner: Uuid) -> Result<()> {
+        let mut pairs = self
+            .0
+            .lock()
+            .map_err(|_| Error::unavailable("Policy candidate collector failed"))?;
+        let pair = (plugin.to_owned(), owner);
+        if !pairs.contains(&pair) && pairs.len() >= MAX_PATHS {
+            return Err(Error::exhausted());
+        }
+        pairs.insert(pair);
+        Ok(())
+    }
+    pub(crate) fn pairs(&self) -> Result<Vec<(String, Uuid)>> {
+        Ok(self
+            .0
+            .lock()
+            .map_err(|_| Error::unavailable("Policy candidate collector failed"))?
+            .iter()
+            .cloned()
+            .collect())
+    }
+}
+
 pub struct Policy<'a, C> {
     c: &'a C,
     peer: IpAddr,
@@ -28,6 +58,7 @@ pub struct Policy<'a, C> {
     evaluating_grants: HashSet<Uuid>,
     proving_self_grants: HashSet<Uuid>,
     resource_owner: Option<(String, String, Uuid)>,
+    plugin_owner_candidates: Option<&'a PluginOwnerCandidates>,
 }
 impl<'a, C: GenericClient + Sync> Policy<'a, C> {
     pub fn new(c: &'a C, peer: IpAddr) -> Self {
@@ -38,7 +69,16 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
             evaluating_grants: HashSet::new(),
             proving_self_grants: HashSet::new(),
             resource_owner: None,
+            plugin_owner_candidates: None,
         }
+    }
+
+    pub(crate) fn with_plugin_owner_candidates(
+        mut self,
+        candidates: &'a PluginOwnerCandidates,
+    ) -> Self {
+        self.plugin_owner_candidates = Some(candidates);
+        self
     }
 
     pub fn for_context(c: &'a C, ctx: &Context) -> Self {
@@ -499,6 +539,12 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
             } else {
                 let kind = string(ids, "kind")?;
                 let id = value.as_str().ok_or_else(Error::denied)?;
+                if kind == "plugin" && self.resource_owner.is_none() && other["match"] == "owned_by"
+                {
+                    if let Some(candidates) = self.plugin_owner_candidates {
+                        candidates.record(id, crate::contracts::id(other, "owner_id")?)?;
+                    }
+                }
                 let owner = if let Some((fixed_kind, fixed_id, owner)) = &self.resource_owner {
                     if fixed_kind == kind && fixed_id == id {
                         Some(*owner)
@@ -838,5 +884,29 @@ mod tests {
         assert!(same_rule(&utc, &offset));
         offset["conditions"]["expires_at"] = json!("2030-01-02T00:00:00Z");
         assert!(!same_rule(&utc, &offset));
+    }
+}
+
+#[cfg(test)]
+mod owner_candidate_tests {
+    use super::*;
+    #[test]
+    fn owner_candidates_deduplicate_and_enforce_the_existing_path_bound() {
+        let candidates = PluginOwnerCandidates::default();
+        for index in 0..MAX_PATHS {
+            candidates
+                .record("org.xelab.fixture", Uuid::from_u128(index as u128))
+                .unwrap();
+        }
+        candidates.record("org.xelab.fixture", Uuid::nil()).unwrap();
+        assert_eq!(candidates.pairs().unwrap().len(), MAX_PATHS);
+        assert_eq!(
+            candidates
+                .record("org.xelab.other", Uuid::nil())
+                .unwrap_err()
+                .code,
+            "RESOURCE_EXHAUSTED"
+        );
+        assert_eq!(candidates.pairs().unwrap().len(), MAX_PATHS);
     }
 }

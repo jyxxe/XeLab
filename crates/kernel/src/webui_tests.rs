@@ -206,7 +206,11 @@ async fn actual_postgres_default_webui_pins_origin_callback_and_converges_on_dis
         "connect-src {};",
         f.app.config.text("server", "public_origin")
     )));
-    assert!(policy.contains("frame-src 'none'"));
+    assert!(policy.contains("frame-src https://*.plugins.example;"));
+    assert!(
+        !policy.contains(&deployment.to_string())
+            && !policy.contains(&deployment.simple().to_string())
+    );
     assert!(!policy.contains("unsafe-inline") && !policy.contains("unsafe-eval"));
     tx.commit().await.unwrap();
     assert_eq!(
