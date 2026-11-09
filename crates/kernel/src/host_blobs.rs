@@ -162,7 +162,7 @@ pub(crate) async fn approval_sources_current(
     app: &App,
     deployment: Uuid,
     manifest: &Value,
-    current: Option<(&Context, &[Path])>,
+    cache: Option<&mut crate::host_calls::ProofCache>,
 ) -> Result<(Value, Value, IpAddr)> {
     let row=c.query_opt("SELECT d.approval,d.owner_id,a.credential_id,host(a.peer) AS peer,a.approval_digest,a.source_paths,a.browser_origin FROM deployments d JOIN host_proxy_approvals a ON a.deployment_id=d.id WHERE d.id=$1",&[&deployment]).await?.ok_or_else(Error::denied)?;
     let approval: Value = row.get("approval");
@@ -183,17 +183,8 @@ pub(crate) async fn approval_sources_current(
     ctx.browser_origin = row.get("browser_origin");
     let mut policy = Policy::for_context(c, &ctx);
     let original = saved(row.get("source_paths"))?;
-    let paths = if let Some((proof, paths)) = current.filter(|(proof, _)| {
-        proof.credential == ctx.credential
-            && proof.subject == ctx.subject
-            && proof.peer == ctx.peer
-            && proof.browser_origin == ctx.browser_origin
-            && proof.proxy_paths.is_none()
-            && proof.proxy_ceilings.is_empty()
-            && proof.proxy_proof.is_none()
-    }) {
-        let _ = proof;
-        policy.revalidate_current(&original, paths).await?
+    let paths = if let Some(cache) = cache {
+        cache.revalidate(c, &ctx, None, &original).await?.1
     } else {
         policy.revalidate(&original, ctx.credential).await?
     };
