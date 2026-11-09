@@ -674,6 +674,7 @@ async fn invoke_inner(
     let check = async {
         let mut current = app.auth.authenticate(&tx, token, peer, request_id).await?;
         current.browser_origin = browser_origin.map(str::to_owned);
+        crate::dependencies::check_call(&tx, call).await?;
         crate::dependencies::check_ready(&tx, app, row.get("deployment_id")).await?;
         if protected {
             crate::host_blobs::check_call_sources(&tx, &current, call).await?;
@@ -788,6 +789,7 @@ async fn check_live_call(
         )
         .await?
         .get(0);
+    crate::dependencies::check_call(&check, call).await?;
     crate::dependencies::check_ready(&check, app, deployment).await?;
     check.commit().await?;
     crate::skill_streams::ensure_active(app)?;

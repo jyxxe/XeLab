@@ -1124,3 +1124,117 @@ async fn postgres_staged_upgrade_keeps_exact_provider_and_publishes_without_redi
         0
     );
 }
+
+#[tokio::test]
+async fn postgres_dynamic_strong_request_edges_survive_base_replacement_until_expiry() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let ctx = context(&f).await;
+    let mut c = f.app.db.connect().await.unwrap();
+    let a = Uuid::from_u128(160);
+    let b = Uuid::from_u128(260);
+    let c_provider = Uuid::from_u128(360);
+    let d_provider = Uuid::from_u128(460);
+    seed(
+        &c,
+        ctx.subject,
+        c_provider,
+        manifest(
+            "org.test.dynamic-c",
+            "1.0.0",
+            "org.test.dynamic-c.run",
+            "1.0.0",
+        ),
+        json!([]),
+        true,
+    )
+    .await;
+    seed(
+        &c,
+        ctx.subject,
+        d_provider,
+        manifest(
+            "org.test.dynamic-d",
+            "1.0.0",
+            "org.test.dynamic-d.run",
+            "1.0.0",
+        ),
+        json!([]),
+        true,
+    )
+    .await;
+    let mut am = manifest(
+        "org.test.dynamic-a",
+        "1.0.0",
+        "org.test.dynamic-a.run",
+        "1.0.0",
+    );
+    let mut bm = manifest(
+        "org.test.dynamic-b",
+        "1.0.0",
+        "org.test.dynamic-b.run",
+        "1.0.0",
+    );
+    let mut ad = requirement("provider", "org.test.dynamic-c.run", true);
+    let mut bd = requirement("provider", "org.test.dynamic-d.run", true);
+    ad["binding_scope"] = json!("request");
+    bd["binding_scope"] = json!("request");
+    am["dependencies"] = json!([ad]);
+    bm["dependencies"] = json!([bd]);
+    seed(&c, ctx.subject, a, am, json!([]), true).await;
+    seed(&c, ctx.subject, b, bm, json!([]), true).await;
+    bind_in_transaction(&f, &ctx, a).await.unwrap();
+    bind_in_transaction(&f, &ctx, b).await.unwrap();
+    let a_call = seed_parent_call(&c, &ctx, a).await;
+    let b_call = seed_parent_call(&c, &ctx, b).await;
+    let tx = c.transaction().await.unwrap();
+    dependency_lock(&tx).await.unwrap();
+    // These rows isolate the graph transaction invariant. The resolved provider
+    // pins are deliberately not business execution/health fixtures.
+    let a_child = Uuid::new_v4();
+    tx.execute("INSERT INTO dependency_bindings(id,consumer_deployment_id,alias,provider_deployment_id,contract,binding_scope,required,bound_call,parent_binding_id,expires_at) SELECT $1,consumer_deployment_id,alias,$3,contract,binding_scope,true,$2,id,now()+interval '30 seconds' FROM dependency_bindings WHERE consumer_deployment_id=$4 AND bound_call IS NULL",&[&a_child,&a_call,&b,&a]).await.unwrap();
+    assert!(
+        graph(&tx, b, &[json!({"required":true,"deployment_id":a})])
+            .await
+            .is_err(),
+        "A's active request to B must block a prospective B to A strong edge"
+    );
+    let b_child = Uuid::new_v4();
+    tx.execute("INSERT INTO dependency_bindings(id,consumer_deployment_id,alias,provider_deployment_id,contract,binding_scope,required,bound_call,parent_binding_id,expires_at) SELECT $1,consumer_deployment_id,alias,$3,contract,binding_scope,true,$2,id,now()+interval '30 seconds' FROM dependency_bindings WHERE consumer_deployment_id=$4 AND bound_call IS NULL",&[&b_child,&b_call,&a,&b]).await.unwrap();
+    assert!(
+        graph(
+            &tx,
+            b,
+            &[json!({"required":true,"deployment_id":d_provider})]
+        )
+        .await
+        .is_err(),
+        "replacing B's base cannot discard B's still-active request edge to A"
+    );
+    tx.execute(
+        "UPDATE dependency_bindings SET expires_at=now()-interval '1 second' WHERE id=$1",
+        &[&a_child],
+    )
+    .await
+    .unwrap();
+    graph(
+        &tx,
+        b,
+        &[json!({"required":true,"deployment_id":d_provider})],
+    )
+    .await
+    .unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        c.query_one(
+            "SELECT count(*) FROM dependency_bindings WHERE bound_call IS NOT NULL",
+            &[]
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0),
+        0,
+        "rejected speculative graph work must not leak active bindings"
+    );
+}

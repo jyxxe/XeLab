@@ -361,6 +361,17 @@ pub async fn invalidate_dependents(c: &(impl GenericClient + Sync), provider: Uu
         return Err(Error::exhausted());
     }
     let ids: Vec<Uuid> = rows.iter().map(|r| r.get(0)).collect();
+    // A request can have chosen a different provider than its deployment's
+    // preview/base edge. Fence that exact issued parent Call, while permitting
+    // future independent Calls to resolve another healthy request provider.
+    let bound: Vec<Uuid> = c.query("SELECT DISTINCT bound_call FROM dependency_bindings WHERE provider_deployment_id=$1 AND required AND bound_call IS NOT NULL AND expires_at>now()", &[&provider]).await?.iter().map(|r|r.get(0)).collect();
+    c.execute(
+        "UPDATE rpc_delegations SET status='revoked' WHERE call_id=ANY($1)",
+        &[&bound],
+    )
+    .await?;
+    c.execute("UPDATE execution_delegations SET status='revoked' WHERE id IN(SELECT delegation_id FROM calls WHERE id=ANY($1))", &[&bound]).await?;
+    c.execute("UPDATE calls SET state='unknown',error=$2 WHERE id=ANY($1) AND state IN ('accepted','running')", &[&bound,&Error::unavailable("Issued required request dependency became unavailable; physical outcome requires verification").detail()]).await?;
     c.execute("UPDATE provider_records SET availability='unavailable' WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=ANY($1))", &[&ids]).await?;
     c.execute("UPDATE rpc_delegations SET status='revoked' WHERE call_id IN(SELECT c.id FROM calls c JOIN instances i ON i.id=c.provider_instance_id WHERE i.deployment_id=ANY($1) AND c.state IN ('accepted','running'))", &[&ids]).await?;
     c.execute("UPDATE execution_delegations SET status='revoked' WHERE id IN(SELECT c.delegation_id FROM calls c JOIN instances i ON i.id=c.provider_instance_id WHERE i.deployment_id=ANY($1) AND c.state IN ('accepted','running'))", &[&ids]).await?;
@@ -425,7 +436,7 @@ async fn insert_binding(
     binding: &Value,
     paths: &Value,
 ) -> Result<()> {
-    c.execute("INSERT INTO dependency_bindings(id,consumer_deployment_id,alias,provider_deployment_id,contract,binding_scope,consumer_installation_id,provider_installation_id,provider_manifest_digest,required,failure_policy,issuer_credential_id,subject_id,peer,browser_origin,source_paths,provider_spec,provider_generation,required_features,provider_plugin_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::text::inet,$15, $16,$17,$18,$19,$20)", &[&Uuid::new_v4(),&deployment,&string(&binding,"alias")?,&id(&binding,"deployment_id")?,&binding["contract"],&string(&binding,"binding_scope")?,&installation,&id(&binding,"provider_installation_id")?,&string(&binding,"provider_manifest_digest")?,&binding["required"].as_bool().unwrap(),&string(&binding,"failure_policy")?,&ctx.credential,&ctx.subject,&ctx.peer.to_string(),&ctx.browser_origin,paths,&binding["provider_spec"],&binding["provider_generation"].as_i64(),&binding["required_features"],&string(&binding,"provider_plugin_id")?]).await?;
+    c.execute("INSERT INTO dependency_bindings(id,consumer_deployment_id,alias,provider_deployment_id,contract,binding_scope,consumer_installation_id,provider_installation_id,provider_manifest_digest,required,failure_policy,issuer_credential_id,subject_id,peer,browser_origin,source_paths,provider_spec,provider_generation,required_features,provider_plugin_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::text::inet,$15, $16,$17,$18,$19,$20)", &[&Uuid::new_v4(),&deployment,&string(binding,"alias")?,&id(binding,"deployment_id")?,&binding["contract"],&string(binding,"binding_scope")?,&installation,&id(binding,"provider_installation_id")?,&string(binding,"provider_manifest_digest")?,&binding["required"].as_bool().unwrap(),&string(binding,"failure_policy")?,&ctx.credential,&ctx.subject,&ctx.peer.to_string(),&ctx.browser_origin,paths,&binding["provider_spec"],&binding["provider_generation"].as_i64(),&binding["required_features"],&string(binding,"provider_plugin_id")?]).await?;
     Ok(())
 }
 
@@ -516,6 +527,15 @@ pub async fn optional_conditions(
     Ok(reasons)
 }
 
+/// A parent Call retains the provider it actually resolved. A healthy base
+/// preview or a new candidate cannot authorize completion of this older Call.
+pub async fn check_call(c: &(impl GenericClient + Sync), call: Uuid) -> Result<()> {
+    for binding in c.query("SELECT b.* FROM dependency_bindings b WHERE bound_call=$1 AND required AND expires_at>now()", &[&call]).await? {
+        provider_ready(c, &binding).await?;
+    }
+    Ok(())
+}
+
 async fn provider_ready(
     c: &(impl GenericClient + Sync),
     binding: &tokio_postgres::Row,
@@ -534,7 +554,7 @@ async fn candidate_ready(c: &(impl GenericClient + Sync), binding: &Value) -> Re
     let live = if contract.is_null() {
         c.query_one("SELECT EXISTS(SELECT 1 FROM deployments d JOIN installations n ON n.id=d.installation_id JOIN publishers u ON u.id=n.publisher_id JOIN instances i ON i.deployment_id=d.id WHERE d.id=$1 AND d.installation_id=$2 AND n.manifest_digest=$3 AND n.state='installed' AND u.status='trusted' AND d.archived_at IS NULL AND d.spec->>'enabled'='true' AND d.spec=$4 AND i.generation=$5 AND i.phase='ready' AND (i.last_heartbeat_at>now()-interval '1 millisecond'*((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint+(n.manifest->'health'->>'timeout_ms')::bigint) OR EXISTS(SELECT 1 FROM provider_records p WHERE p.instance_id=i.id AND p.availability='ready' AND p.observed_generation=i.generation AND p.observed_at>now()-interval '1 millisecond'*((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint+(n.manifest->'health'->>'timeout_ms')::bigint))) AND ($6='[]'::jsonb OR EXISTS(SELECT 1 FROM provider_records p WHERE p.instance_id=i.id AND p.availability='ready' AND p.observed_generation=i.generation AND p.features @> $6)))", &[&id(binding,"deployment_id")?,&Some(id(binding,"provider_installation_id")?),&Some(string(binding,"provider_manifest_digest")?),&Some(binding["provider_spec"].clone()),&binding["provider_generation"].as_i64(),&binding["required_features"].clone()]).await?.get::<_,bool>(0)
     } else {
-        c.query_one("SELECT EXISTS(SELECT 1 FROM deployments d JOIN installations n ON n.id=d.installation_id JOIN publishers u ON u.id=n.publisher_id JOIN instances i ON i.deployment_id=d.id JOIN provider_records p ON p.instance_id=i.id JOIN capability_contracts k ON k.name=p.name AND k.version=p.version WHERE d.id=$1 AND d.installation_id=$2 AND n.manifest_digest=$3 AND n.state='installed' AND u.status='trusted' AND d.archived_at IS NULL AND d.spec->>'enabled'='true' AND i.phase='ready' AND p.name=$4 AND p.version=$5 AND k.schema_digest=$6 AND d.spec=$7 AND i.generation=$8 AND p.features @> $9 AND NOT $10 AND p.availability='ready' AND p.observed_generation=i.generation AND p.observed_at>now()-interval '1 millisecond'*((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint+(n.manifest->'health'->>'timeout_ms')::bigint))", &[&id(binding,"deployment_id")?,&Some(id(binding,"provider_installation_id")?),&Some(string(binding,"provider_manifest_digest")?),&string(&contract,"name")?,&string(&contract,"version")?,&string(&contract,"schema_digest")?,&Some(binding["provider_spec"].clone()),&binding["provider_generation"].as_i64(),&binding["required_features"].clone(),&binding["failure_latched"].as_bool().unwrap_or(false)]).await?.get::<_,bool>(0)
+        c.query_one("SELECT EXISTS(SELECT 1 FROM deployments d JOIN installations n ON n.id=d.installation_id JOIN publishers u ON u.id=n.publisher_id JOIN instances i ON i.deployment_id=d.id JOIN provider_records p ON p.instance_id=i.id JOIN capability_contracts k ON k.name=p.name AND k.version=p.version WHERE d.id=$1 AND d.installation_id=$2 AND n.manifest_digest=$3 AND n.state='installed' AND u.status='trusted' AND d.archived_at IS NULL AND d.spec->>'enabled'='true' AND i.phase='ready' AND p.name=$4 AND p.version=$5 AND k.schema_digest=$6 AND d.spec=$7 AND i.generation=$8 AND p.features @> $9 AND NOT $10 AND p.availability='ready' AND p.observed_generation=i.generation AND p.observed_at>now()-interval '1 millisecond'*((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint+(n.manifest->'health'->>'timeout_ms')::bigint))", &[&id(binding,"deployment_id")?,&Some(id(binding,"provider_installation_id")?),&Some(string(binding,"provider_manifest_digest")?),&string(contract,"name")?,&string(contract,"version")?,&string(contract,"schema_digest")?,&Some(binding["provider_spec"].clone()),&binding["provider_generation"].as_i64(),&binding["required_features"].clone(),&binding["failure_latched"].as_bool().unwrap_or(false)]).await?.get::<_,bool>(0)
     };
     if !live {
         return Err(Error::unavailable(
