@@ -20,6 +20,17 @@ from xelab.v1 import host_pb2 as host
 from xelab.v1 import host_pb2_grpc as host_service
 from build_artifact import PLUGIN, TOPIC
 
+CALL_LIMIT = 1024
+STAGES = frozenset({"host.open", "dependency.resolve", "dependency.resolve.validate",
+    "dependency.invoke", "dependency.invoke.validate", "skill.resolve", "skill.resolve.validate",
+    "skill.check", "skill.check.validate", "skill.invoke", "skill.invoke.validate",
+    "event.publish", "event.publish.duplicate", "event.publish.validate", "event.subscribe",
+    "event.delivery.validate", "event.ack", "event.ack.duplicate", "event.ack.validate", "unknown"})
+DIAGNOSTIC_CHECKS = frozenset({"binding_contract_equal", "binding_deadline_within_parent",
+    "binding_unexpired", "skill_ready", "skill_target_equal", "skill_access_ready",
+    "event_duplicate_same", "delivery_event_equal"})
+DIAGNOSTIC_KINDS = frozenset({"RPC", "ValueError", "KeyError", "TypeError", "StopIteration", "OSError"})
+
 
 def digest(raw):
     return "sha256:" + hashlib.sha256(raw).hexdigest()
@@ -88,6 +99,7 @@ class Consumer(lifecycle.PluginLifecycleServicer, capability.CapabilityServiceSe
         self.active = {}
         self.channels = {}
         self.results = {}
+        self.failures = {}
 
     def Describe(self, request, context):
         require_kernel(context)
@@ -142,8 +154,15 @@ class Consumer(lifecycle.PluginLifecycleServicer, capability.CapabilityServiceSe
             ("grpc.max_receive_message_length", 1048576), ("grpc.max_send_message_length", 1048576),
             ("grpc.enable_retries", 0)])
 
-    def execute(self, proxy, request, value, context, canceled):
+    def execute(self, proxy, request, value, context, canceled, stage=None):
         parent = request.context
+        def mark(name):
+            if stage is not None:
+                stage["stage"] = name
+        def observed(name, value):
+            if stage is not None:
+                stage[name] = bool(value)
+            return value
         def child(phase):
             return common.RpcContext(request_id=str(uuid.uuid4()), delegation_token=parent.delegation_token,
                 deadline_unix_ms=parent.deadline_unix_ms, idempotency_key=request.call_id + ":" + phase,
@@ -157,16 +176,22 @@ class Consumer(lifecycle.PluginLifecycleServicer, capability.CapabilityServiceSe
                 context.abort(grpc.StatusCode.DEADLINE_EXCEEDED, "Parent call expired")
             return remaining
         payload = encoded({"message": value["message"]})
+        mark("dependency.resolve")
         binding = proxy.Resolve(host.ResolveRequest(context=child("resolve"), contract=self.dependency,
                                 binding_scope_id=self.deployment), timeout=timeout())
+        mark("dependency.resolve.validate")
         canonical_uuid(binding.binding_id)
         provider = canonical_uuid(binding.provider_deployment_id)
-        if (binding.contract != self.dependency or binding.expires_unix_ms > parent.deadline_unix_ms
-                or binding.expires_unix_ms <= int(time.time() * 1000)):
+        equal = observed("binding_contract_equal", binding.contract == self.dependency)
+        clipped = observed("binding_deadline_within_parent", binding.expires_unix_ms <= parent.deadline_unix_ms)
+        fresh = observed("binding_unexpired", binding.expires_unix_ms > int(time.time() * 1000))
+        if not equal or not clipped or not fresh:
             raise ValueError("Fixed dependency response differs")
         child_id = str(uuid.uuid4())
+        mark("dependency.invoke")
         dependency_result = proxy.Invoke(cap.InvokeRequest(context=child("dependency"), call_id=child_id,
             contract=self.dependency, input_json=payload, input_digest=digest(payload), binding_id=binding.binding_id), timeout=timeout())
+        mark("dependency.invoke.validate")
         if dependency_result.call_id != child_id:
             raise ValueError("Dependency Call ID differs")
         def business(result):
@@ -174,30 +199,47 @@ class Consumer(lifecycle.PluginLifecycleServicer, capability.CapabilityServiceSe
             if digest(result.output_json) != result.output_digest or strict_json(result.output_json) != {"message": value["message"]}:
                 raise ValueError("Downstream output differs")
         business(dependency_result)
+        mark("skill.resolve")
         resolved = proxy.ResolveSkill(host.ResolveSkillRequest(context=child("resolve-skill"), skill_id=value["skill_id"]), timeout=timeout())
+        mark("skill.resolve.validate")
         definition = strict_json(resolved.definition_json, 1048576)
+        observed("skill_ready", resolved.ready)
+        target = definition.get("target", {}) if isinstance(definition, dict) else {}
+        observed("skill_target_equal", isinstance(target, dict) and target.get("contract") == self.dependency_value)
         if (resolved.skill_id != value["skill_id"] or not resolved.ready
                 or definition["target"]["kind"] != "capability"
                 or definition["target"]["plugin_id"] not in ("org.xelab.echo", "org.xelab.echo-python")
                 or definition["target"]["contract"] != self.dependency_value):
             raise ValueError("Fixed Skill target is not the approved echo contract")
+        mark("skill.check")
         access = proxy.CheckSkillAccess(host.CheckSkillAccessRequest(context=child("check-skill"),
             skill_id=value["skill_id"], expected_definition_digest=resolved.definition_digest), timeout=timeout())
+        mark("skill.check.validate")
+        observed("skill_access_ready", access.ready)
         if not access.ready or access.skill_id != value["skill_id"] or access.definition_digest != resolved.definition_digest:
             raise ValueError("Fixed Skill access changed")
+        mark("skill.invoke")
         skill_result = proxy.InvokeSkill(host.SkillInvokeRequest(context=child("skill"), skill_id=value["skill_id"],
                                         input_json=payload, input_digest=digest(payload)), timeout=timeout())
+        mark("skill.invoke.validate")
         business(skill_result)
+        mark("event.publish")
         first = proxy.PublishEvent(host.PublishEventRequest(context=child("publish"), topic=TOPIC, version="1.0.0",
             payload_json=payload, dedupe_key=request.call_id), timeout=timeout())
+        mark("event.publish.duplicate")
         second = proxy.PublishEvent(host.PublishEventRequest(context=child("publish-duplicate"), topic=TOPIC, version="1.0.0",
             payload_json=payload, dedupe_key=request.call_id), timeout=timeout())
+        mark("event.publish.validate")
         canonical_uuid(first.event_id)
+        observed("event_duplicate_same", first.event_id == second.event_id and second.duplicate)
         if first.event_id != second.event_id or not second.duplicate:
             raise ValueError("Event dedupe result differs")
+        mark("event.subscribe")
         deliveries = proxy.Subscribe(host.SubscribeRequest(context=child("subscribe"), subscription_id=value["subscription_id"]), timeout=timeout())
         try:
             delivery = next(deliveries)
+            mark("event.delivery.validate")
+            observed("delivery_event_equal", delivery.event_id == first.event_id)
             if (delivery.event_id != first.event_id or delivery.topic != TOPIC or delivery.version != "1.0.0"
                     or strict_json(delivery.payload_json) != {"message": value["message"]}
                     or not 1 <= delivery.attempt <= 10 or not delivery.lease_token
@@ -205,8 +247,10 @@ class Consumer(lifecycle.PluginLifecycleServicer, capability.CapabilityServiceSe
                 raise ValueError("Delivery is not the just-published event")
             canonical_uuid(delivery.delivery_id)
             for phase in ("ack", "ack-duplicate"):
+                mark("event.ack" if phase == "ack" else "event.ack.duplicate")
                 ack = proxy.AckEvent(host.AckEventRequest(context=child(phase), subscription_id=value["subscription_id"],
                     delivery_id=delivery.delivery_id, lease_token=delivery.lease_token, outcome=host.AckEventRequest.OUTCOME_ACK), timeout=timeout())
+                mark("event.ack.validate")
                 if not ack.accepted:
                     raise ValueError("Acknowledgment was not accepted")
         finally:
@@ -214,6 +258,24 @@ class Consumer(lifecycle.PluginLifecycleServicer, capability.CapabilityServiceSe
         return {"message": value["message"], "dependency_call_id": dependency_result.call_id,
                 "skill_call_id": skill_result.call_id, "event_id": first.event_id, "duplicate": second.duplicate,
                 "delivery_event_id": delivery.event_id, "acked": True, "provider_deployment_id": provider}
+
+    def remember_failure(self, request, stage, kind, status, response_code):
+        # Only fixed labels and booleans leave this bounded diagnostic ledger.
+        # The business outcome remains UNKNOWN: a child effect may have committed.
+        diagnostic = {"version": 1, "code": "M4_FIXTURE_DIAGNOSTIC",
+                      "stage": stage.get("stage") if stage.get("stage") in STAGES else "unknown",
+                      "kind": kind if kind in DIAGNOSTIC_KINDS else "ValueError",
+                      "status": status if status in {code.name for code in grpc.StatusCode} else "UNKNOWN"}
+        diagnostic.update({name: stage[name] for name in DIAGNOSTIC_CHECKS
+                           if isinstance(stage.get(name), bool)})
+        raw = encoded(diagnostic).decode()
+        if len(raw.encode()) > 1024:
+            raw = encoded({"version": 1, "code": "M4_FIXTURE_DIAGNOSTIC", "stage": "unknown",
+                           "kind": "ValueError", "status": "UNKNOWN"}).decode()
+        with self.lock:
+            self.failures[request.call_id] = (request.input_digest, request.context.idempotency_key,
+                                               raw, response_code)
+        return diagnostic["stage"]
 
     def Invoke(self, request, context):
         require_kernel(context)
@@ -238,26 +300,40 @@ class Consumer(lifecycle.PluginLifecycleServicer, capability.CapabilityServiceSe
                 if previous[0] != request.input_digest or previous[1] != request.context.idempotency_key:
                     context.abort(grpc.StatusCode.FAILED_PRECONDITION, "Call fingerprint differs")
                 return previous[2]
-            if request.call_id in self.active or len(self.results) + len(self.active) >= 1024:
+            failed = self.failures.get(request.call_id)
+            if failed is not None:
+                if failed[0] != request.input_digest or failed[1] != request.context.idempotency_key:
+                    context.abort(grpc.StatusCode.FAILED_PRECONDITION, "Call fingerprint differs")
+                context.abort(failed[3], "Prior composite outcome is unknown; inspect the original Call")
+            if request.call_id in self.active or len(self.results) + len(self.failures) + len(self.active) >= CALL_LIMIT:
                 context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "Bounded call ledger is full or busy")
             canceled = threading.Event()
             self.active[request.call_id] = canceled
+        stage = {"stage": "host.open"}
         try:
             with self.open_host() as channel:
                 with self.lock:
                     self.channels[request.call_id] = channel
                 context.add_callback(channel.close)
-                output = encoded(self.execute(host_service.HostServiceStub(channel), request, value, context, canceled))
+                output = encoded(self.execute(host_service.HostServiceStub(channel), request, value, context, canceled, stage))
             if len(output) > 65536:
                 raise ValueError("Output exceeds signed bound")
             response = cap.InvokeResponse(call_id=request.call_id, output_json=output, output_digest=digest(output))
             with self.lock:
                 self.results[request.call_id] = (request.input_digest, request.context.idempotency_key, response)
             return response
-        except grpc.RpcError:
-            context.abort(grpc.StatusCode.UNAVAILABLE, "HostService request failed; outcome requires verification")
-        except (ValueError, KeyError, TypeError, StopIteration, OSError):
-            context.abort(grpc.StatusCode.FAILED_PRECONDITION, "HostService response violates the fixed contract")
+        except grpc.RpcError as error:
+            code = error.code()
+            status = code.name if isinstance(code, grpc.StatusCode) else "UNKNOWN"
+            phase = self.remember_failure(request, stage, "RPC", status, grpc.StatusCode.UNAVAILABLE)
+            context.abort(grpc.StatusCode.UNAVAILABLE, "HostService request failed at " + phase + "; outcome requires verification")
+        except (ValueError, KeyError, TypeError, StopIteration, OSError) as error:
+            kind = next(name for kind_type, name in ((ValueError, "ValueError"), (KeyError, "KeyError"),
+                (TypeError, "TypeError"), (StopIteration, "StopIteration"), (OSError, "OSError"))
+                if isinstance(error, kind_type))
+            phase = self.remember_failure(request, stage, kind, "FAILED_PRECONDITION",
+                                          grpc.StatusCode.FAILED_PRECONDITION)
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, "HostService response violates the fixed contract at " + phase)
         finally:
             with self.lock:
                 self.active.pop(request.call_id, None)
@@ -282,7 +358,15 @@ class Consumer(lifecycle.PluginLifecycleServicer, capability.CapabilityServiceSe
         require_kernel(context)
         with self.lock:
             value = self.results.get(request.call_id)
+            failure = self.failures.get(request.call_id)
         if value is None:
+            if failure is not None:
+                if failure[1] != request.idempotency_key:
+                    context.abort(grpc.StatusCode.PERMISSION_DENIED, "Original business key required")
+                # UNKNOWN has no outcome under the existing wire contract.
+                # This signed reference fixture exposes only bounded diagnostics
+                # in transport metadata, after the original-key identity gate.
+                context.send_initial_metadata((("xelab-m4-fixture-diag-bin", failure[2].encode()),))
             return cap.QueryResultResponse(state=common.EXECUTION_STATE_UNKNOWN)
         if value[1] != request.idempotency_key:
             context.abort(grpc.StatusCode.PERMISSION_DENIED, "Original business key required")

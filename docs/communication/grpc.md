@@ -18,6 +18,12 @@ proto3 无法用 required 自动表达必填，接收方必须在业务入口校
 
 input_json/output_json 必须为 UTF-8 且满足锁定契约，重复 key 拒绝；config_json 匹配清单 Schema；不接受任意未定义元数据。Proto 未知字段按向前兼容保留，但本版未知业务枚举拒绝执行。
 
+仅[独立 M4 验收镜像](../../examples/m4-consumer/README.md#fixture-only-diagnostics)
+定义响应初始二进制元数据 `xelab-m4-fixture-diag-bin`：在内核 mTLS 身份及原业务键
+校验后提供有版本、至多 1024 字节且只含固定标签/布尔值的诊断。该例外只供验收夹具
+读取，不是平台请求字段，不由生产客户端或 HostService 消费，也不改变通用元数据
+拒绝规则。QueryResult 仍为 UNKNOWN 且不携带 outcome；该诊断没有执行结果或授权效力。
+
 ## 失败后的持久引用
 
 `xelab-error-bin` 为序列化 `ErrorDetail`。新增可选语义的 `resource_id` 字符串
