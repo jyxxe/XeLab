@@ -1002,6 +1002,7 @@ async fn postgres_staged_upgrade_keeps_exact_provider_and_publishes_without_redi
     .await
     .unwrap();
     let tx = c.transaction().await.unwrap();
+    tx.execute("UPDATE provider_records SET observed_at=now() WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)", &[&original_provider]).await.unwrap();
     stage_upgrade(&tx, &ctx, consumer, target, operation)
         .await
         .unwrap();
@@ -1032,13 +1033,17 @@ async fn postgres_staged_upgrade_keeps_exact_provider_and_publishes_without_redi
     .await;
     // This metadata fixture has no running lifecycle producer. Publish explicit
     // observations instead of letting setup duration stand in for health.
+    // Positive checks use the production transaction boundary, so authorization
+    // work cannot age an observation relative to the same SQL now() snapshot.
     c.execute("UPDATE provider_records SET observed_at=now()-interval '1 hour' WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)", &[&original_provider]).await.unwrap();
     assert!(
         check_upgrade(&c, &f.app, &ctx, operation).await.is_err(),
         "stale original provider must fail despite a healthy alternative"
     );
-    c.execute("UPDATE provider_records SET observed_at=now() WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)", &[&original_provider]).await.unwrap();
-    check_upgrade(&c, &f.app, &ctx, operation).await.unwrap();
+    let tx = c.transaction().await.unwrap();
+    tx.execute("UPDATE provider_records SET observed_at=now() WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)", &[&original_provider]).await.unwrap();
+    check_upgrade(&tx, &f.app, &ctx, operation).await.unwrap();
+    tx.commit().await.unwrap();
     let spec: Value = c
         .query_one(
             "SELECT spec FROM deployments WHERE id=$1",
@@ -1076,8 +1081,8 @@ async fn postgres_staged_upgrade_keeps_exact_provider_and_publishes_without_redi
     )
     .await
     .unwrap();
-    c.execute("UPDATE provider_records SET observed_generation=1,observed_at=now() WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)",&[&original_provider]).await.unwrap();
     let tx = c.transaction().await.unwrap();
+    tx.execute("UPDATE provider_records SET observed_generation=1,observed_at=now() WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)",&[&original_provider]).await.unwrap();
     publish_upgrade(&tx, &f.app, &ctx, consumer, operation)
         .await
         .unwrap();
@@ -1090,7 +1095,10 @@ async fn postgres_staged_upgrade_keeps_exact_provider_and_publishes_without_redi
         original_provider,
         "publication must use the staged pins, not the now-preferred provider"
     );
-    check_ready(&c, &f.app, consumer).await.unwrap();
+    let tx = c.transaction().await.unwrap();
+    tx.execute("UPDATE provider_records SET observed_at=now() WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)", &[&original_provider]).await.unwrap();
+    check_ready(&tx, &f.app, consumer).await.unwrap();
+    tx.commit().await.unwrap();
     let before:Value=c.query_one("SELECT jsonb_agg(to_jsonb(b) ORDER BY b.id) FROM dependency_bindings b WHERE consumer_deployment_id=$1",&[&consumer]).await.unwrap().get(0);
     let mut bad_manifest = manifest(
         "org.test.upgrade-consumer",
