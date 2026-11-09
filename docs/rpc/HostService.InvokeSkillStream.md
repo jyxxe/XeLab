@@ -14,7 +14,7 @@
 
 ## 前置条件、执行及失败语义
 
-无stream_item_schema拒绝；embedding与知识库预设不支持流式。流控、终帧、取消及来源链校验沿用InvokeStream，不自动重启拼接。
+无stream_item_schema拒绝；embedding与知识库预设不支持流式。流控、终帧、取消及来源链校验沿用InvokeStream，不自动重启拼接。 可选call_id及ErrorDetail.resource_id沿用InvokeSkill；流中断不自动恢复或拼接，预先给出的Call UUID仅用于核实持久结果。
 
 ## 请求字段
 
@@ -24,6 +24,7 @@
 | 2 | `skill_id` | `string` | 按业务校验必填/默认值 |
 | 3 | `input_json` | `bytes` | 按业务校验必填/默认值 |
 | 4 | `input_digest` | `string` | 按业务校验必填/默认值 |
+| 5 | `call_id` | `string` | optional |
 
 ## 响应字段
 

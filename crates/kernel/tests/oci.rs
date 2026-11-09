@@ -577,7 +577,12 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         manifest["capabilities"][0],
         python_manifest["capabilities"][0]
     );
-    assert_eq!(manifest["capabilities"].as_array().unwrap().len(), 5);
+    let rust_capabilities = manifest["capabilities"].as_array().unwrap();
+    assert_eq!(rust_capabilities.len(), 6);
+    let health_query = rust_capabilities.last().unwrap();
+    assert_eq!(health_query["contract"]["name"], "org.xelab.echo.queryable");
+    assert_eq!(health_query["contract"]["version"], "1.0.1");
+    assert_eq!(health_query["side_effect"], "queryable");
     assert_eq!(python_manifest["capabilities"].as_array().unwrap().len(), 1);
     assert_ne!(manifest["plugin_id"], python_manifest["plugin_id"]);
     let python_image = std::env::var("XELAB_TEST_PYTHON_IMAGE").unwrap();

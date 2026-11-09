@@ -1294,3 +1294,279 @@ async fn postgres_dynamic_strong_request_edges_survive_base_replacement_until_ex
         "rejected speculative graph work must not leak active bindings"
     );
 }
+
+/// Public GET supplies the actual ETag; public PUT exercises the normal
+/// authentication, authorization, idempotency and mutation-savepoint boundary.
+async fn enable_through_public_router(f: &Fixture, deployment: Uuid, key: &str) -> (u16, Value) {
+    use axum::{
+        body::{to_bytes, Body},
+        extract::ConnectInfo,
+        http::Request,
+    };
+    use tower::ServiceExt;
+    let host = crate::plugin_http_gateway::core_authority(&f.app.config).unwrap();
+    let mut read = Request::builder()
+        .method("GET")
+        .uri(format!("/api/platform/v1/deployments/{deployment}"))
+        .header("host", &host)
+        .header("authorization", format!("Bearer {}", f.token))
+        .body(Body::empty())
+        .unwrap();
+    read.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:54321".parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    let read = crate::api::router(f.app.clone())
+        .oneshot(read)
+        .await
+        .unwrap();
+    let status = read.status().as_u16();
+    let etag = read
+        .headers()
+        .get("etag")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let bytes = to_bytes(read.into_body(), 1024 * 1024).await.unwrap();
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
+    let etag = etag.expect("public deployment GET must return a strong ETag");
+    let mut request = Request::builder()
+        .method("PUT")
+        .uri(format!("/api/platform/v1/deployments/{deployment}/enabled"))
+        .header("host", &host)
+        .header("authorization", format!("Bearer {}", f.token))
+        .header("content-type", "application/json")
+        .header("idempotency-key", key)
+        .header("if-match", etag)
+        .body(Body::from(
+            serde_json::to_vec(&json!({"enabled":true})).unwrap(),
+        ))
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:54321".parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    let response = crate::api::router(f.app.clone())
+        .oneshot(request)
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+#[tokio::test]
+async fn postgres_public_enable_binds_required_deployment_dependency_before_gateway_readiness() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let ctx = context(&f).await;
+    let c = f.app.db.connect().await.unwrap();
+    let provider = Uuid::new_v4();
+    // Reuse the existing component health/metadata fixture. No Controller,
+    // container, reservation or physical Ready transition is performed here.
+    let provider_installation = seed(
+        &c,
+        ctx.subject,
+        provider,
+        manifest(
+            "org.test.enable-provider",
+            "1.0.0",
+            "org.test.enable.lookup",
+            "1.0.0",
+        ),
+        json!([]),
+        true,
+    )
+    .await;
+    let consumer = Uuid::new_v4();
+    let mut declared = manifest(
+        "org.test.enable-consumer",
+        "1.0.0",
+        "org.test.enable.consumer",
+        "1.0.0",
+    );
+    declared["dependencies"] = json!([requirement("lookup", "org.test.enable.lookup", true)]);
+    let consumer_installation = seed(&c, ctx.subject, consumer, declared, json!([]), false).await;
+    let result = enable_through_public_router(&f, consumer, "public-enable-fixed-dependency").await;
+    assert_eq!(result.0, 202, "{}", result.1);
+    contracts::validate("Operation", &result.1).unwrap();
+    assert_eq!(result.1["kind"], "setDeploymentEnabled");
+    assert_eq!(result.1["resource_id"], consumer.to_string());
+    assert_eq!(
+        result.1["state"], "pending",
+        "the router records intent without claiming runtime startup"
+    );
+    let bindings = c
+        .query(
+            "SELECT * FROM dependency_bindings WHERE consumer_deployment_id=$1",
+            &[&consumer],
+        )
+        .await
+        .unwrap();
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(bindings[0].get::<_, String>("alias"), "lookup");
+    assert_eq!(bindings[0].get::<_, String>("binding_scope"), "deployment");
+    assert!(bindings[0].get::<_, bool>("required"));
+    assert_eq!(
+        bindings[0].get::<_, Uuid>("provider_deployment_id"),
+        provider
+    );
+    assert_eq!(
+        bindings[0].get::<_, Option<Uuid>>("consumer_installation_id"),
+        Some(consumer_installation)
+    );
+    assert_eq!(
+        bindings[0].get::<_, Option<Uuid>>("provider_installation_id"),
+        Some(provider_installation)
+    );
+    assert_eq!(
+        bindings[0].get::<_, Option<i64>>("provider_generation"),
+        Some(1)
+    );
+    let row = c
+        .query_one(
+            "SELECT spec,phase,revision FROM deployments WHERE id=$1",
+            &[&consumer],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, Value>("spec")["enabled"], true);
+    assert_eq!(row.get::<_, String>("phase"), "reconciling");
+    assert_eq!(row.get::<_, i64>("revision"), 2);
+    let instances = c
+        .query(
+            "SELECT id,phase,health,runtime_id,generation FROM instances WHERE deployment_id=$1",
+            &[&consumer],
+        )
+        .await
+        .unwrap();
+    assert_eq!(instances.len(), 1);
+    assert_eq!(instances[0].get::<_, String>("phase"), "pending");
+    assert_eq!(instances[0].get::<_, String>("health"), "unknown");
+    assert_eq!(instances[0].get::<_, Option<String>>("runtime_id"), None);
+    assert_eq!(instances[0].get::<_, i64>("generation"), 2);
+    let reservations: i64 = c
+        .query_one(
+            "SELECT count(*) FROM reservations WHERE instance_id=$1",
+            &[&instances[0].get::<_, Uuid>("id")],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        reservations, 0,
+        "pending API intent cannot bypass runtime admission"
+    );
+}
+
+#[tokio::test]
+async fn postgres_public_enable_missing_required_dependency_rolls_back_all_enable_intent() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let ctx = context(&f).await;
+    let c = f.app.db.connect().await.unwrap();
+    let consumer = Uuid::new_v4();
+    let mut declared = manifest(
+        "org.test.enable-missing",
+        "1.0.0",
+        "org.test.enable.missing",
+        "1.0.0",
+    );
+    declared["dependencies"] = json!([requirement("required", "org.test.enable.absent", true)]);
+    seed(&c, ctx.subject, consumer, declared, json!([]), false).await;
+    let result = enable_through_public_router(&f, consumer, "public-enable-missing-provider").await;
+    assert_eq!(result.0, 409, "{}", result.1);
+    assert_eq!(result.1["error"]["code"], "STATE_CONFLICT");
+    let row = c
+        .query_one(
+            "SELECT spec,phase,revision FROM deployments WHERE id=$1",
+            &[&consumer],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, Value>("spec")["enabled"], false);
+    assert_eq!(row.get::<_, String>("phase"), "disabled");
+    assert_eq!(row.get::<_, i64>("revision"), 1);
+    let counts = c.query_one("SELECT (SELECT count(*) FROM dependency_bindings WHERE consumer_deployment_id=$1),(SELECT count(*) FROM instances WHERE deployment_id=$1),(SELECT count(*) FROM operations WHERE kind='setDeploymentEnabled' AND resource_id=$2),(SELECT count(*) FROM outbox WHERE topic='deployment.changed' AND aggregate_id=$1)",&[&consumer,&consumer.to_string()]).await.unwrap();
+    for column in 0usize..4 {
+        assert_eq!(
+            counts.get::<_, i64>(column),
+            0,
+            "failed enable leaked mutation column {column}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn postgres_public_enable_late_drain_rejection_rolls_back_tentative_dependency_binding() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let ctx = context(&f).await;
+    let c = f.app.db.connect().await.unwrap();
+    let provider = Uuid::new_v4();
+    // This is the same explicit component-health fixture as the successful
+    // enable case; the old consumer intent below stays pending, never Ready.
+    seed(
+        &c,
+        ctx.subject,
+        provider,
+        manifest(
+            "org.test.enable-drain-provider",
+            "1.0.0",
+            "org.test.enable.drain.lookup",
+            "1.0.0",
+        ),
+        json!([]),
+        true,
+    )
+    .await;
+    let consumer = Uuid::new_v4();
+    let mut declared = manifest(
+        "org.test.enable-drain-consumer",
+        "1.0.0",
+        "org.test.enable.drain.consumer",
+        "1.0.0",
+    );
+    declared["dependencies"] = json!([requirement("lookup", "org.test.enable.drain.lookup", true)]);
+    let limits = declared["minimum_resources"].clone();
+    seed(&c, ctx.subject, consumer, declared, json!([]), false).await;
+    let prior_instance = Uuid::new_v4();
+    c.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,created_at,updated_at) VALUES($1,$2,1,0,'pending','unknown',$3,now(),now())",&[&prior_instance,&consumer,&limits]).await.unwrap();
+    let result = enable_through_public_router(&f, consumer, "public-enable-drain-rollback").await;
+    assert_eq!(result.0, 409, "{}", result.1);
+    assert_eq!(result.1["error"]["code"], "STATE_CONFLICT");
+    assert_eq!(
+        result.1["error"]["message"], "Previous instances have not drained",
+        "this must fail after tentative binding/readiness, at the unchanged drain guard"
+    );
+    let row = c
+        .query_one(
+            "SELECT spec,phase,revision FROM deployments WHERE id=$1",
+            &[&consumer],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, Value>("spec")["enabled"], false);
+    assert_eq!(row.get::<_, String>("phase"), "disabled");
+    assert_eq!(row.get::<_, i64>("revision"), 1);
+    let prior = c
+        .query(
+            "SELECT id,phase,health,runtime_id FROM instances WHERE deployment_id=$1",
+            &[&consumer],
+        )
+        .await
+        .unwrap();
+    assert_eq!(prior.len(), 1);
+    assert_eq!(prior[0].get::<_, Uuid>("id"), prior_instance);
+    assert_eq!(prior[0].get::<_, String>("phase"), "pending");
+    assert_eq!(prior[0].get::<_, String>("health"), "unknown");
+    assert_eq!(prior[0].get::<_, Option<String>>("runtime_id"), None);
+    let counts = c.query_one("SELECT (SELECT count(*) FROM dependency_bindings WHERE consumer_deployment_id=$1),(SELECT count(*) FROM operations WHERE kind='setDeploymentEnabled' AND resource_id=$2),(SELECT count(*) FROM outbox WHERE topic='deployment.changed' AND aggregate_id=$1),(SELECT count(*) FROM reservations WHERE instance_id=$3)",&[&consumer,&consumer.to_string(),&prior_instance]).await.unwrap();
+    for column in 0usize..4 {
+        assert_eq!(
+            counts.get::<_, i64>(column),
+            0,
+            "late rejection leaked tentative mutation column {column}"
+        );
+    }
+}

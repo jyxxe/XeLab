@@ -149,23 +149,20 @@ fn validate_profile_inner(manifest: &Value, allow_versioned: bool) -> Result<()>
         .and_then(Value::as_array)
         .is_some_and(|rules| {
             rules.iter().any(|r| {
-                r["required"] != false
-                    || !((r["rule"]["action"] == "secret.use"
-                        && r["rule"]["resource"]["kind"] == "secret")
-                        || (matches!(
-                            r["rule"]["action"].as_str(),
-                            Some("blob.read" | "blob.create")
-                        ) && r["rule"]["resource"]
-                            == serde_json::json!({"kind":"blob","match":"all"})))
+                !(r["required"] == false
+                    && r["rule"]["action"] == "secret.use"
+                    && r["rule"]["resource"]["kind"] == "secret"
+                    || crate::host_blobs::proxy_action(
+                        r["rule"]["action"].as_str().unwrap_or(""),
+                        r["rule"]["resource"]["kind"].as_str().unwrap_or(""),
+                    ))
                     || r["rule"]
                         .get("conditions")
                         .is_some_and(|v| !v.as_object().is_some_and(serde_json::Map::is_empty))
             })
         })
     {
-        return Err(Error::invalid(
-            "This profile permits only optional unconditional secret.use and Blob proxy requests",
-        ));
+        return Err(Error::invalid("Only unconditional supported HostService proxy requests and optional secret.use are accepted"));
     }
     crate::volumes::validate_mounts(manifest)?;
     if (versioned && !allow_versioned)
@@ -485,7 +482,14 @@ mod tests {
             }
             if variant.starts_with("rust-") {
                 let capabilities = manifest["capabilities"].as_array().unwrap();
-                assert_eq!(capabilities.len(), 5);
+                assert_eq!(capabilities.len(), 6);
+                let health_query = capabilities.last().unwrap();
+                assert_eq!(
+                    health_query["contract"]["name"],
+                    format!("{}.queryable", manifest["plugin_id"].as_str().unwrap())
+                );
+                assert_eq!(health_query["contract"]["version"], "1.0.1");
+                assert_eq!(health_query["side_effect"], "queryable");
                 let effect = capabilities
                     .iter()
                     .find(|cap| cap["side_effect"] == "non_repeatable")

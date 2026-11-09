@@ -36,6 +36,71 @@ pub struct Context {
     // Set only by trusted HTTP admission after exact Origin validation. Never
     // deserialize this field from a body, plugin header, or delegation.
     pub(crate) browser_origin: Option<String>,
+    pub(crate) proxy_paths: Option<Vec<crate::policy::Path>>,
+    pub(crate) proxy_ceilings: Vec<Value>,
+    pub(crate) proxy_proof: Option<ProxyProof>,
+}
+#[derive(Clone, PartialEq)]
+pub(crate) struct ProxyProof {
+    nonce: String,
+    credential: Uuid,
+    subject: Uuid,
+    peer: IpAddr,
+    origin: Option<String>,
+}
+impl ProxyProof {
+    pub(crate) fn matches(&self, ctx: &Context) -> bool {
+        self.credential == ctx.credential
+            && self.subject == ctx.subject
+            && self.peer == ctx.peer
+            && self.origin == ctx.browser_origin
+    }
+    pub(crate) fn nonce(&self) -> &str {
+        &self.nonce
+    }
+}
+impl Context {
+    // A server-local nonce is SET LOCAL on the actual PostgreSQL transaction.
+    // It disappears on commit/rollback; cloning this Context into another
+    // transaction cannot turn an old proof into current authorization.
+    pub(crate) async fn bind_proxy_proof(&mut self, c: &impl GenericClient) -> Result<()> {
+        if self.proxy_paths.is_none() {
+            return Err(Error::denied());
+        }
+        let row=c.query_one("SELECT txid_current() AS xid,current_setting('xelab.host_proof_nonce',true) AS nonce",&[]).await?;
+        let prefix = format!("{}:", row.get::<_, i64>("xid"));
+        let nonce = match row.get::<_, Option<String>>("nonce") {
+            Some(value)
+                if value
+                    .strip_prefix(&prefix)
+                    .is_some_and(|v| Uuid::parse_str(v).is_ok()) =>
+            {
+                value
+            }
+            _ => {
+                let nonce = format!("{prefix}{}", Uuid::new_v4());
+                c.query_one(
+                    "SELECT set_config('xelab.host_proof_nonce',$1,true)",
+                    &[&nonce],
+                )
+                .await?;
+                nonce
+            }
+        };
+        self.proxy_proof = Some(ProxyProof {
+            nonce,
+            credential: self.credential,
+            subject: self.subject,
+            peer: self.peer,
+            origin: self.browser_origin.clone(),
+        });
+        Ok(())
+    }
+    pub(crate) fn proxy_allows(&self, action: &str, resource: &Resource) -> bool {
+        self.proxy_ceilings
+            .iter()
+            .all(|ceiling| rules_allow(ceiling, action, resource, self.peer))
+    }
 }
 #[derive(Clone)]
 pub struct Resource {
@@ -54,6 +119,9 @@ pub(crate) struct CurrentAuthority<'transaction, 'client> {
     request: Uuid,
     chain: Vec<Uuid>,
     browser_origin: Option<String>,
+    proxy_paths: Option<Vec<crate::policy::Path>>,
+    proxy_ceilings: Vec<Value>,
+    proxy_proof: Option<ProxyProof>,
     paths: Vec<crate::policy::Path>,
     rules: Value,
     plugin_target: Option<(String, Option<Uuid>)>,
@@ -86,6 +154,9 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
             request: ctx.request,
             chain: ctx.chain.clone(),
             browser_origin: ctx.browser_origin.clone(),
+            proxy_paths: ctx.proxy_paths.clone(),
+            proxy_ceilings: ctx.proxy_ceilings.clone(),
+            proxy_proof: ctx.proxy_proof.clone(),
             paths,
             rules,
             plugin_target: None,
@@ -103,6 +174,9 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
             || self.request != ctx.request
             || self.chain != ctx.chain
             || self.browser_origin != ctx.browser_origin
+            || self.proxy_paths != ctx.proxy_paths
+            || self.proxy_ceilings != ctx.proxy_ceilings
+            || self.proxy_proof != ctx.proxy_proof
         {
             return Err(Error::denied());
         }
@@ -157,7 +231,9 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
     ) -> Result<()> {
         self.verify(transaction, ctx)?;
         self.check_resource(resource)?;
-        if rules_allow(&self.rules, action, resource, ctx.peer) {
+        if ctx.proxy_allows(action, resource)
+            && rules_allow(&self.rules, action, resource, ctx.peer)
+        {
             Ok(())
         } else {
             Err(Error::denied())
@@ -176,6 +252,10 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
             || self.request != ctx.request
             || self.chain != ctx.chain
             || self.browser_origin != ctx.browser_origin
+            || self.proxy_paths != ctx.proxy_paths
+            || self.proxy_ceilings != ctx.proxy_ceilings
+            || self.proxy_proof != ctx.proxy_proof
+            || !ctx.proxy_allows(action, resource)
             || !rules_allow(&self.rules, action, resource, ctx.peer)
         {
             return Err(Error::denied());
@@ -294,6 +374,9 @@ impl Auth {
             request,
             chain,
             browser_origin: None,
+            proxy_paths: None,
+            proxy_ceilings: Vec::new(),
+            proxy_proof: None,
         })
     }
     pub fn check_login_budget(&self, account: Uuid, peer: IpAddr) -> Result<()> {

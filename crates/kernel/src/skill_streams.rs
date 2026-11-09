@@ -80,8 +80,8 @@ pub(crate) struct Frame {
     pub call: Uuid,
     pub sequence: u64,
     deadline: chrono::DateTime<chrono::Utc>,
-    kind: &'static str,
-    data: String,
+    pub(crate) kind: &'static str,
+    pub(crate) data: String,
 }
 impl Frame {
     fn event(&self) -> Event {
@@ -110,9 +110,19 @@ fn frame(
     sequence: u64,
     deadline: chrono::DateTime<chrono::Utc>,
 ) -> Result<Frame> {
+    frame_bounded(value, kind, call, sequence, deadline, MAX_FRAME)
+}
+fn frame_bounded(
+    value: &Value,
+    kind: &'static str,
+    call: Uuid,
+    sequence: u64,
+    deadline: chrono::DateTime<chrono::Utc>,
+    maximum: usize,
+) -> Result<Frame> {
     validate("SkillStreamEvent", value)?;
     let data = serde_json::to_string(value)?;
-    if data.len() > MAX_FRAME {
+    if data.len() > maximum {
         return Err(Error::invalid("Skill stream frame exceeds 1 MiB"));
     }
     Ok(Frame {
@@ -130,11 +140,13 @@ pub(crate) struct Output {
     sender: mpsc::Sender<Result<Frame>>,
     state: Mutex<State>,
     emission: tokio::sync::Mutex<()>,
+    host: bool,
 }
 impl Output {
-    fn new(sender: mpsc::Sender<Result<Frame>>) -> Self {
+    pub(crate) fn new(sender: mpsc::Sender<Result<Frame>>) -> Self {
         Self {
             sender,
+            host: false,
             emission: tokio::sync::Mutex::new(()),
             state: Mutex::new(State {
                 identity: None,
@@ -143,6 +155,29 @@ impl Output {
                 accepted: false,
                 stalled: false,
             }),
+        }
+    }
+    pub(crate) fn maximum_rpc_response(&self) -> usize {
+        if self.host {
+            16777216 + 65536
+        } else {
+            1024 * 1024 + 1024
+        }
+    }
+    pub(crate) fn new_host(sender: mpsc::Sender<Result<Frame>>) -> Self {
+        let mut output = Self::new(sender);
+        output.host = true;
+        output
+    }
+    fn maximum(&self, kind: &str) -> usize {
+        if self.host {
+            if kind == "completed" {
+                16777216 + 65536
+            } else {
+                MAX_FRAME + 65536
+            }
+        } else {
+            MAX_FRAME
         }
     }
     pub(crate) fn bind(
@@ -178,12 +213,13 @@ impl Output {
             .ok_or_else(|| Error::conflict("Stream has no admitted call"))?;
         let value = json!({"skill_id":identity.skill,"skill_version":identity.version,"definition_digest":identity.digest,
             "event":{"call_id":identity.call,"sequence":state.sequence+1,"kind":"completed","payload":payload,"terminal":true}});
-        frame(
+        frame_bounded(
             &value,
             "completed",
             identity.call,
             state.sequence + 1,
             identity.deadline,
+            self.maximum("completed"),
         )?;
         Ok(())
     }
@@ -236,7 +272,14 @@ impl Output {
             let terminal = matches!(kind, "completed" | "failed" | "canceled");
             let value = json!({"skill_id":identity.skill,"skill_version":identity.version,"definition_digest":identity.digest,
                 "event":{"call_id":identity.call,"sequence":sequence,"kind":kind,"payload":payload,"terminal":terminal}});
-            let message = frame(&value, kind, identity.call, sequence, identity.deadline)?;
+            let message = frame_bounded(
+                &value,
+                kind,
+                identity.call,
+                sequence,
+                identity.deadline,
+                self.maximum(kind),
+            )?;
             (message, identity.deadline, sequence, state.stalled)
         };
         let remaining = (deadline - chrono::Utc::now()).num_milliseconds().max(0) as u64;
@@ -314,7 +357,7 @@ impl Output {
         state.accepted |= kind == "accepted";
         Ok(())
     }
-    async fn finish(&self, result: Result<Value>) {
+    pub(crate) async fn finish(&self, result: Result<Value>) {
         let admitted = self
             .state
             .lock()

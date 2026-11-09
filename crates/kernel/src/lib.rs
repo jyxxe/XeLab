@@ -17,6 +17,7 @@ pub mod deployments;
 pub mod error;
 pub mod host;
 pub mod host_blobs;
+pub(crate) mod host_calls;
 pub mod http_contracts;
 pub mod identity;
 pub mod migration_rpc;
