@@ -24,7 +24,7 @@
 HTTP 目标见独立 HTTP 实现；HostService 的 Skill 方法已接入 [M4 代理](m4-host.md)。
 micro、extension 和异步任务排队仍未交付。
 `HostService.ListSkillCandidates/ResolveSkill/CheckSkillAccess/InvokeSkill/InvokeSkillStream`
-继续返回 UNIMPLEMENTED，不能通过插件声称已经取得内部 Skill 路由上下文。
+均使用实际 mTLS 实例、原 Call 及当前授权来源，不接受插件自报内部路由上下文。
 本次不新增 BatchEngine、Workflow、MPR 或 Extension 执行系统。
 普通无版本数据格式的 capability 支持 `none`、`idempotent`、`queryable` 和 `non_repeatable`，
 声明了匹配流 Schema 时同样可使用流。副作用分类控制重试/核实，不能用来拒绝首次执行。
