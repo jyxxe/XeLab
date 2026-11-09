@@ -800,16 +800,37 @@ async fn static_page(
     );
     tokio::pin!(fetch);
     lease.phase("fetch");
-    let mut monitor = tokio::time::interval(Duration::from_millis(100));
-    let mut response = loop {
-        tokio::select! {
-            response=&mut fetch => break response?,
-            _=monitor.tick()=> {
+    let fetched = {
+        // Keep polling the transport and its deadline while the complete
+        // authority check waits on PostgreSQL. Awaiting it inside a selected
+        // timer branch would suspend TLS/HTTP progress for that entire wait.
+        let authority = async {
+            let mut monitor = tokio::time::interval(Duration::from_millis(100));
+            loop {
+                monitor.tick().await;
                 lease.phase("authority_monitor");
-                static_authority(&app,&binding).await?;
+                if let Err(error) = static_authority(&app, &binding).await {
+                    return error;
+                }
                 lease.phase("fetch");
-            },
+            }
+        };
+        tokio::pin!(authority);
+        tokio::select! {
+            response=&mut fetch => response,
+            error=&mut authority => return Err(error),
             _=tokio::time::sleep_until(binding.deadline)=>return Err(deadline()),
+        }
+    };
+    let mut response = match fetched {
+        Ok(response) => response,
+        Err(error) => {
+            lease.phase(if error.code == "DEADLINE_EXCEEDED" {
+                "fetch_timeout"
+            } else {
+                "fetch_error"
+            });
+            return Err(error);
         }
     };
     lease.phase("lease_complete");
