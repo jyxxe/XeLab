@@ -2,7 +2,13 @@
 
 [实施索引](README.md) · [目标 Issue #38](https://github.com/jyxxe/XeLab/issues/38) · [里程碑](roadmap.md)
 
-状态快照：2026-11-04 23:07 UTC；本页保留该时刻的阶段证据，不自动代表后续分支状态。
+## 当前验收记录
+
+2026-11-09（北京时间）已复核三个精确功能提交的完整/专项 CI 均成功。阶段、head/tree/CI、安全修复、生产边界和后续依赖见[当前验收记录](m3-acceptance-20261109.md)；最终集成和 main CI 以[目标 #38](https://github.com/jyxxe/XeLab/issues/38)实际结果为准。
+
+## 2026-11-04 开发历史（保留当时状态）
+
+以下状态快照截至 2026-11-04 23:07 UTC；其中未完成/待发布表述是当时事实，不代表上方当前精确提交状态。
 GitHub 状态会继续变化，最终完成清单以[目标 #38](https://github.com/jyxxe/XeLab/issues/38)持续维护的实际证据为准。
 初始基线为 main
 `dbb35cbc7c2c110c88de7ba16dc2d4569fad3ad2`，内部 Schema 14。
