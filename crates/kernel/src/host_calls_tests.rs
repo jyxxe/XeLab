@@ -172,6 +172,15 @@ async fn host_mtls_skill_discovery_check_and_generation_delegation_fences() {
             .code(),
         tonic::Code::FailedPrecondition
     );
+    for deadline in [-1, i64::MIN] {
+        let mut expired = request.clone();
+        expired.context.as_mut().unwrap().deadline_unix_ms = deadline;
+        assert_eq!(
+            client.check_skill_access(expired).await.unwrap_err().code(),
+            tonic::Code::DeadlineExceeded,
+            "untrusted extreme deadline must fail closed without arithmetic overflow"
+        );
+    }
     let candidates = client
         .list_skill_candidates(rpc::ListSkillCandidatesRequest {
             context: Some(context.clone()),
