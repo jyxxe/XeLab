@@ -161,6 +161,27 @@ pub async fn successful(
             409
         );
     }
+    let health_definition = manifest["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|skill| skill["name"] == "org.xelab.echo.queryable.health-sync")
+        .expect("A distinct signed Health-synchronized queryable contract is required");
+    let health_skill = api(
+        router,
+        "registerSkill",
+        &[],
+        Some(token),
+        json!({"installation_id":installation,"definition":health_definition,"enabled":true}),
+        "effects-register-queryable-health-sync",
+        None,
+    )
+    .await;
+    assert_eq!(health_skill.0, 201, "{}", health_skill.1);
+    evidence.skills.insert(
+        "queryable-health".into(),
+        health_skill.1["id"].as_str().unwrap().into(),
+    );
     let after = usage(&c, owner).await;
     assert_eq!(
         after,
@@ -173,9 +194,10 @@ pub async fn successful(
 }
 
 impl Evidence {
-    /// Align fault injection with an observed real health probe. The Controller
-    /// continues normal reconciliation and physical fencing throughout; a query
-    /// that loses the race must remain unknown, not change generation or retry.
+    /// The positive queryable case loses its committed response only after a
+    /// subsequent real Health RPC. Query before replay spends that live original
+    /// provider window on QueryResult. The Controller continues normal recovery
+    /// throughout; all other cases retain the immediate fault and physical fences.
     #[allow(clippy::too_many_arguments)] // Explicit real fixture identities and fixed deployment.
     pub async fn interrupted(
         &mut self,
@@ -189,13 +211,19 @@ impl Evidence {
     ) -> Uuid {
         let c = db.connect().await.unwrap();
         for effect in ["queryable", "non_repeatable"] {
-            let skill = self.skills[effect].clone();
             let variants: &[(bool, bool)] = if effect == "queryable" {
                 &[(false, false), (true, false), (false, true)]
             } else {
                 &[(false, false), (true, false)]
             };
             for &(stream, cache_loss) in variants {
+                let controlled_query = effect == "queryable" && !stream && !cache_loss;
+                let skill = self.skills[if controlled_query {
+                    "queryable-health"
+                } else {
+                    effect
+                }]
+                .clone();
                 let observed: chrono::DateTime<chrono::Utc> = c.query_one("SELECT max(observed_at) FROM provider_records WHERE instance_id=$1 AND availability='ready'", &[&instance]).await.unwrap().get(0);
                 let mut fresh = false;
                 for _ in 0..120 {
@@ -209,7 +237,7 @@ impl Evidence {
                 assert!(fresh, "An actual health probe must precede each interruption; no synthetic freshness is permitted");
                 let old_process = stream_process(app, instance).await;
                 let key = format!("effects-after-commit-{effect}-{stream}-{cache_loss}");
-                let request = json!({"input":{"message":key,"count":2,"fault":"after-commit"},"provider_deployment_id":deployment,"timeout_ms":10000});
+                let request = json!({"input":{"message":key,"count":2,"fault":if controlled_query {"after-commit-health"} else {"after-commit"}},"provider_deployment_id":deployment,"timeout_ms":10000});
                 let call = if stream {
                     let response =
                         stream_skill_request(router, token, &skill, &request, &key, false).await;
@@ -249,18 +277,20 @@ impl Evidence {
                         .unwrap()
                         .parse::<Uuid>()
                         .unwrap();
-                    let replay = api(
-                        router,
-                        "invokeSkill",
-                        &[("skill_id", skill.clone())],
-                        Some(token),
-                        request.clone(),
-                        &key,
-                        None,
-                    )
-                    .await;
-                    assert_eq!(replay.0, 409, "{}", replay.1);
-                    assert_eq!(replay.1["error"]["resource_id"], call.to_string());
+                    if !controlled_query {
+                        let replay = api(
+                            router,
+                            "invokeSkill",
+                            &[("skill_id", skill.clone())],
+                            Some(token),
+                            request.clone(),
+                            &key,
+                            None,
+                        )
+                        .await;
+                        assert_eq!(replay.0, 409, "{}", replay.1);
+                        assert_eq!(replay.1["error"]["resource_id"], call.to_string());
+                    }
                     call
                 };
                 let row = c.query_one("SELECT state,provider_instance_id,r.status FROM calls c JOIN reservations r ON r.id=c.id AND r.kind='call' WHERE c.id=$1", &[&call]).await.unwrap();
@@ -304,6 +334,7 @@ impl Evidence {
                     assert!(lost.1["result"].is_null());
                     continue;
                 }
+                let query_started = tokio::time::Instant::now();
                 let read = api(
                     router,
                     "getCall",
@@ -315,6 +346,25 @@ impl Evidence {
                 )
                 .await;
                 assert_eq!(read.0, 200, "{}", read.1);
+                let observation = c.query_one("SELECT i.phase,i.generation,c.deadline_at>clock_timestamp() AS deadline_live,r.status,(SELECT count(*) FROM rpc_delegations q WHERE q.call_id=c.id AND q.execution_delegation_id<>c.delegation_id) AS query_leases FROM calls c JOIN instances i ON i.id=c.provider_instance_id JOIN reservations r ON r.id=c.id AND r.kind='call' WHERE c.id=$1", &[&call]).await.unwrap();
+                println!("ordinary-effects query effect={effect} stream={stream} health_sync={controlled_query} elapsed_ms={} state={} original_phase={} original_generation={} deadline_live={} reservation={} query_leases={}",query_started.elapsed().as_millis(),read.1["state"],observation.get::<_,String>("phase"),observation.get::<_,i64>("generation"),observation.get::<_,bool>("deadline_live"),observation.get::<_,String>("status"),observation.get::<_,i64>("query_leases"));
+                if controlled_query {
+                    if read.1["state"] == "unknown" {
+                        let replay = api(
+                            router,
+                            "invokeSkill",
+                            &[("skill_id", skill.clone())],
+                            Some(token),
+                            request.clone(),
+                            &key,
+                            None,
+                        )
+                        .await;
+                        assert_eq!(replay.0, 409, "{}", replay.1);
+                        assert_eq!(replay.1["error"]["resource_id"], call.to_string());
+                    }
+                    assert_eq!(read.1["state"], "succeeded", "The signed post-Health fault must produce an actual same-instance QueryResult before normal fencing; no metadata result or retry can substitute");
+                }
                 if effect == "queryable" && read.1["state"] == "succeeded" {
                     assert_eq!(
                         read.1["result"]["output"]["message"],
