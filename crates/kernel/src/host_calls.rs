@@ -8,6 +8,7 @@ use crate::{
     policy::{self, Policy},
     rpc,
 };
+use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use std::{net::IpAddr, sync::atomic::Ordering, time::Duration};
 use tokio_postgres::GenericClient;
@@ -60,115 +61,116 @@ pub(crate) async fn authority(
     }
     Ok(authority)
 }
-async fn authority_digest(
-    c: &(impl GenericClient + Sync),
-    app: &App,
+fn authority_digest<'a>(
+    c: &'a (impl GenericClient + Sync),
+    app: &'a App,
     workload: Workload,
-    context: &rpc::RpcContext,
-    hash: &[u8],
+    context: &'a rpc::RpcContext,
+    hash: &'a [u8],
     depth: usize,
-    cache: &mut ProofCache,
-) -> Result<Authority> {
-    let timing = std::time::Instant::now();
-    if depth >= 16 {
-        return Err(Error::conflict("HostService delegation depth limit"));
-    }
-    if app.leader.is_closed()
-        || app.shutdown.load(Ordering::SeqCst)
-        || !app.ready.load(Ordering::SeqCst)
-    {
-        return Err(Error::unavailable("Kernel is not ready"));
-    }
-    db::call_lock(c).await?;
-    crate::dependencies::dependency_lock(c).await?;
-    stage(timing, "locks");
-    let request: Uuid = context
-        .request_id
-        .parse()
-        .map_err(|_| Error::invalid("RPC request_id must be a UUID"))?;
-    if context.deadline_unix_ms <= chrono::Utc::now().timestamp_millis() {
-        return Err(Error::new(
-            "DEADLINE_EXCEEDED",
-            "Blob deadline exceeded",
-            axum::http::StatusCode::GATEWAY_TIMEOUT,
-        ));
-    }
-    if !context.actor_instance_id.is_empty()
-        && context.actor_instance_id != workload.instance.to_string()
-    {
-        return Err(Error::denied());
-    }
-    // Match terminal-call and controller row ordering: call, deployment,
-    // instance, then delegation records. A reverse order can deadlock against
-    // completion (call -> delegation) or health publication (deployment -> instance).
-    let target=c.query_opt("SELECT r.call_id,i.deployment_id FROM rpc_delegations r JOIN instances i ON i.id=r.instance_id WHERE r.hmac_key_id=$1 AND r.verification_digest=$2 AND r.instance_id=$3",&[&app.auth.key_id.as_str(),&hash,&workload.instance]).await?.ok_or_else(Error::denied)?;
-    c.query_one(
-        "SELECT id FROM calls WHERE id=$1 FOR SHARE",
-        &[&target.get::<_, Uuid>("call_id")],
-    )
-    .await?;
-    c.query_one(
-        "SELECT id FROM deployments WHERE id=$1 FOR SHARE",
-        &[&target.get::<_, Uuid>("deployment_id")],
-    )
-    .await?;
-    c.query_one(
-        "SELECT id FROM instances WHERE id=$1 FOR SHARE",
-        &[&workload.instance],
-    )
-    .await?;
-    let row=c.query_opt("SELECT LEAST(r.expires_at,e.expires_at,c.deadline_at) AS until,r.call_id,r.subject_id,r.issuer_credential_id,e.maximum_rules,c.contract,i.deployment_id,t.manifest,x.source_paths,x.proxy_source_paths,x.proxy_ceilings,x.read_blob_ids,x.browser_origin,host(x.peer) AS peer FROM rpc_delegations r JOIN execution_delegations e ON e.id=r.execution_delegation_id JOIN calls c ON c.id=r.call_id JOIN host_rpc_contexts x ON x.call_id=c.id JOIN instances i ON i.id=r.instance_id JOIN deployments d ON d.id=i.deployment_id JOIN installations t ON t.id=d.installation_id JOIN publishers p ON p.id=t.publisher_id WHERE r.hmac_key_id=$1 AND r.verification_digest=$2 AND r.instance_id=$3 AND r.generation=$4 AND r.status='active' AND r.expires_at>now() AND e.status='active' AND e.expires_at>now() AND e.subject_id=r.subject_id AND e.issuer_credential_id=r.issuer_credential_id AND c.state='running' AND c.deadline_at>now() AND c.provider_instance_id=i.id AND c.owner_id=r.subject_id AND c.credential_id=r.issuer_credential_id AND c.delegation_id=e.id AND i.generation=r.generation AND i.runtime_id=i.id::text AND i.phase IN ('ready','degraded') AND d.spec->>'enabled'='true' AND d.archived_at IS NULL AND t.state='installed' AND p.status='trusted' FOR SHARE OF r,e,t,p",&[&app.auth.key_id.as_str(),&hash,&workload.instance,&workload.generation]).await?.ok_or_else(Error::denied)?;
-    let peer: IpAddr = row
-        .get::<_, String>("peer")
-        .parse()
-        .map_err(|_| Error::denied())?;
-    let mut ctx = app
-        .auth
-        .resume(c, row.get("issuer_credential_id"), peer, request)
-        .await?;
-    ctx.browser_origin = row.get("browser_origin");
-    if ctx.subject != row.get::<_, Uuid>("subject_id")
-        || (!context.subject_id.is_empty() && context.subject_id != ctx.subject.to_string())
-    {
-        return Err(Error::denied());
-    }
-    stage(timing, "resume");
-    let (target_action, target) = crate::broker::business_target(c, row.get("call_id")).await?;
-    let (_, business_live) = cache
-        .revalidate(c, &ctx, Some(&target), &saved(row.get("source_paths"))?)
-        .await?;
-    stage(timing, "business_sources");
-    let rules = policy::rules(&business_live);
-    let mut business_required = vec![(target_action.clone(), target.clone())];
-    let maximum: Value = row.get("maximum_rules");
-    let blobs: Vec<Uuid> =
-        serde_json::from_value(row.get("read_blob_ids")).map_err(|_| Error::denied())?;
-    if blobs.len() > 256 {
-        return Err(Error::denied());
-    }
-    for blob in blobs {
-        let owner: Uuid = c
-            .query_opt(
-                &format!(
-                    "SELECT owner_id FROM blobs WHERE id=$1 AND {}",
-                    crate::blobs::LIVE
-                ),
-                &[&blob],
-            )
-            .await?
-            .ok_or_else(Error::denied)?
-            .get(0);
-        let resource = Resource::new("blob", blob, Some(owner));
-        if !auth::rules_allow(&rules, "blob.read", &resource, peer)
-            || !auth::rules_allow(&maximum, "blob.read", &resource, peer)
+    cache: &'a mut ProofCache,
+) -> BoxFuture<'a, Result<Authority>> {
+    Box::pin(async move {
+        let timing = std::time::Instant::now();
+        if depth >= 16 {
+            return Err(Error::conflict("HostService delegation depth limit"));
+        }
+        if app.leader.is_closed()
+            || app.shutdown.load(Ordering::SeqCst)
+            || !app.ready.load(Ordering::SeqCst)
+        {
+            return Err(Error::unavailable("Kernel is not ready"));
+        }
+        db::call_lock(c).await?;
+        crate::dependencies::dependency_lock(c).await?;
+        stage(timing, "locks");
+        let request: Uuid = context
+            .request_id
+            .parse()
+            .map_err(|_| Error::invalid("RPC request_id must be a UUID"))?;
+        if context.deadline_unix_ms <= chrono::Utc::now().timestamp_millis() {
+            return Err(Error::new(
+                "DEADLINE_EXCEEDED",
+                "Blob deadline exceeded",
+                axum::http::StatusCode::GATEWAY_TIMEOUT,
+            ));
+        }
+        if !context.actor_instance_id.is_empty()
+            && context.actor_instance_id != workload.instance.to_string()
         {
             return Err(Error::denied());
         }
-        business_required.push(("blob.read".to_owned(), resource));
-    }
+        // Match terminal-call and controller row ordering: call, deployment,
+        // instance, then delegation records. A reverse order can deadlock against
+        // completion (call -> delegation) or health publication (deployment -> instance).
+        let target=c.query_opt("SELECT r.call_id,i.deployment_id FROM rpc_delegations r JOIN instances i ON i.id=r.instance_id WHERE r.hmac_key_id=$1 AND r.verification_digest=$2 AND r.instance_id=$3",&[&app.auth.key_id.as_str(),&hash,&workload.instance]).await?.ok_or_else(Error::denied)?;
+        c.query_one(
+            "SELECT id FROM calls WHERE id=$1 FOR SHARE",
+            &[&target.get::<_, Uuid>("call_id")],
+        )
+        .await?;
+        c.query_one(
+            "SELECT id FROM deployments WHERE id=$1 FOR SHARE",
+            &[&target.get::<_, Uuid>("deployment_id")],
+        )
+        .await?;
+        c.query_one(
+            "SELECT id FROM instances WHERE id=$1 FOR SHARE",
+            &[&workload.instance],
+        )
+        .await?;
+        let row=c.query_opt("SELECT LEAST(r.expires_at,e.expires_at,c.deadline_at) AS until,r.call_id,r.subject_id,r.issuer_credential_id,e.maximum_rules,c.contract,i.deployment_id,t.manifest,x.source_paths,x.proxy_source_paths,x.proxy_ceilings,x.read_blob_ids,x.browser_origin,host(x.peer) AS peer FROM rpc_delegations r JOIN execution_delegations e ON e.id=r.execution_delegation_id JOIN calls c ON c.id=r.call_id JOIN host_rpc_contexts x ON x.call_id=c.id JOIN instances i ON i.id=r.instance_id JOIN deployments d ON d.id=i.deployment_id JOIN installations t ON t.id=d.installation_id JOIN publishers p ON p.id=t.publisher_id WHERE r.hmac_key_id=$1 AND r.verification_digest=$2 AND r.instance_id=$3 AND r.generation=$4 AND r.status='active' AND r.expires_at>now() AND e.status='active' AND e.expires_at>now() AND e.subject_id=r.subject_id AND e.issuer_credential_id=r.issuer_credential_id AND c.state='running' AND c.deadline_at>now() AND c.provider_instance_id=i.id AND c.owner_id=r.subject_id AND c.credential_id=r.issuer_credential_id AND c.delegation_id=e.id AND i.generation=r.generation AND i.runtime_id=i.id::text AND i.phase IN ('ready','degraded') AND d.spec->>'enabled'='true' AND d.archived_at IS NULL AND t.state='installed' AND p.status='trusted' FOR SHARE OF r,e,t,p",&[&app.auth.key_id.as_str(),&hash,&workload.instance,&workload.generation]).await?.ok_or_else(Error::denied)?;
+        let peer: IpAddr = row
+            .get::<_, String>("peer")
+            .parse()
+            .map_err(|_| Error::denied())?;
+        let mut ctx = app
+            .auth
+            .resume(c, row.get("issuer_credential_id"), peer, request)
+            .await?;
+        ctx.browser_origin = row.get("browser_origin");
+        if ctx.subject != row.get::<_, Uuid>("subject_id")
+            || (!context.subject_id.is_empty() && context.subject_id != ctx.subject.to_string())
+        {
+            return Err(Error::denied());
+        }
+        stage(timing, "resume");
+        let (target_action, target) = crate::broker::business_target(c, row.get("call_id")).await?;
+        let (_, business_live) = cache
+            .revalidate(c, &ctx, Some(&target), &saved(row.get("source_paths"))?)
+            .await?;
+        stage(timing, "business_sources");
+        let rules = policy::rules(&business_live);
+        let mut business_required = vec![(target_action.clone(), target.clone())];
+        let maximum: Value = row.get("maximum_rules");
+        let blobs: Vec<Uuid> =
+            serde_json::from_value(row.get("read_blob_ids")).map_err(|_| Error::denied())?;
+        if blobs.len() > 256 {
+            return Err(Error::denied());
+        }
+        for blob in blobs {
+            let owner: Uuid = c
+                .query_opt(
+                    &format!(
+                        "SELECT owner_id FROM blobs WHERE id=$1 AND {}",
+                        crate::blobs::LIVE
+                    ),
+                    &[&blob],
+                )
+                .await?
+                .ok_or_else(Error::denied)?
+                .get(0);
+            let resource = Resource::new("blob", blob, Some(owner));
+            if !auth::rules_allow(&rules, "blob.read", &resource, peer)
+                || !auth::rules_allow(&maximum, "blob.read", &resource, peer)
+            {
+                return Err(Error::denied());
+            }
+            business_required.push(("blob.read".to_owned(), resource));
+        }
 
-    crate::broker::check_skill_binding(c, &ctx, row.get("call_id")).await?;
-    if let Some(skill) = c
+        crate::broker::check_skill_binding(c, &ctx, row.get("call_id")).await?;
+        if let Some(skill) = c
         .query_opt(
             "SELECT s.id,s.created_by FROM calls c JOIN skills s ON s.id=c.skill_id WHERE c.id=$1",
             &[&row.get::<_, Uuid>("call_id")],
@@ -187,33 +189,33 @@ async fn authority_digest(
         }
         business_required.push(("skill.invoke".to_owned(), resource));
     }
-    if !auth::rules_allow(&rules, &target_action, &target, peer)
-        || !auth::rules_allow(&maximum, &target_action, &target, peer)
-    {
-        return Err(Error::denied());
-    }
-    stage(timing, "business_binding");
-    let (_, mut live) = cache
-        .revalidate(c, &ctx, None, &saved(row.get("proxy_source_paths"))?)
-        .await?;
-    stage(timing, "proxy_sources");
-    let mut ceilings: Vec<Value> =
-        serde_json::from_value(row.get("proxy_ceilings")).map_err(|_| Error::denied())?;
-    crate::broker::check_http_approval(c, app, row.get("call_id")).await?;
-    crate::dependencies::check_ready(c, app, row.get("deployment_id")).await?;
-    crate::dependencies::check_call(c, row.get("call_id")).await?;
-    let mut until_ms = row
-        .get::<_, chrono::DateTime<chrono::Utc>>("until")
-        .timestamp_millis()
-        .min(context.deadline_unix_ms);
-    if until_ms <= chrono::Utc::now().timestamp_millis() {
-        return Err(Error::new(
-            "DEADLINE_EXCEEDED",
-            "Call deadline exceeded",
-            axum::http::StatusCode::GATEWAY_TIMEOUT,
-        ));
-    }
-    if let Some(parent)=c.query_opt("SELECT t.instance_id,t.generation,t.delegation_digest,t.rpc_context,t.bounds,t.expires_at,t.dependency_binding_id,t.expected_contract,t.provider_deployment_id,t.ceilings FROM host_child_calls l JOIN host_call_tickets t ON t.id=l.ticket_id WHERE l.child_call_id=$1",&[&row.get::<_,Uuid>("call_id")]).await? {
+        if !auth::rules_allow(&rules, &target_action, &target, peer)
+            || !auth::rules_allow(&maximum, &target_action, &target, peer)
+        {
+            return Err(Error::denied());
+        }
+        stage(timing, "business_binding");
+        let (_, mut live) = cache
+            .revalidate(c, &ctx, None, &saved(row.get("proxy_source_paths"))?)
+            .await?;
+        stage(timing, "proxy_sources");
+        let mut ceilings: Vec<Value> =
+            serde_json::from_value(row.get("proxy_ceilings")).map_err(|_| Error::denied())?;
+        crate::broker::check_http_approval(c, app, row.get("call_id")).await?;
+        crate::dependencies::check_ready(c, app, row.get("deployment_id")).await?;
+        crate::dependencies::check_call(c, row.get("call_id")).await?;
+        let mut until_ms = row
+            .get::<_, chrono::DateTime<chrono::Utc>>("until")
+            .timestamp_millis()
+            .min(context.deadline_unix_ms);
+        if until_ms <= chrono::Utc::now().timestamp_millis() {
+            return Err(Error::new(
+                "DEADLINE_EXCEEDED",
+                "Call deadline exceeded",
+                axum::http::StatusCode::GATEWAY_TIMEOUT,
+            ));
+        }
+        if let Some(parent)=c.query_opt("SELECT t.instance_id,t.generation,t.delegation_digest,t.rpc_context,t.bounds,t.expires_at,t.dependency_binding_id,t.expected_contract,t.provider_deployment_id,t.ceilings FROM host_child_calls l JOIN host_call_tickets t ON t.id=l.ticket_id WHERE l.child_call_id=$1",&[&row.get::<_,Uuid>("call_id")]).await? {
         let expiry=parent.get::<_,chrono::DateTime<chrono::Utc>>("expires_at").timestamp_millis();
         if expiry<=chrono::Utc::now().timestamp_millis(){return Err(Error::denied());}
         let original:Value=parent.get("rpc_context");
@@ -239,138 +241,142 @@ async fn authority_digest(
         extend_ceilings(&mut ceilings,&ancestor.ctx.proxy_ceilings)?;
         extend_ceilings(&mut ceilings,&serde_json::from_value::<Vec<Value>>(parent.get("ceilings")).map_err(|_|Error::denied())?)?;
     }
-    stage(timing, "ancestors");
-    let (approval, approver, approved_peer) = crate::host_blobs::approval_sources_current(
-        c,
-        app,
-        row.get("deployment_id"),
-        &row.get("manifest"),
-        Some(cache),
-    )
-    .await?;
-    extend_ceilings(
-        &mut ceilings,
-        &[
-            maximum,
-            approval["rules"].clone(),
-            scopes_at_peer(&approver, approved_peer),
-        ],
-    )?;
-    auth::validate_sources(c, Some(ctx.credential), Some(ctx.subject), ctx.peer).await?;
-    // Recursive ancestors and approval walks can cross a source's clock
-    // boundary even while authorization mutations are fenced. Business-only
-    // sources need this final check independently of the proxy action set.
-    let business_live = Policy::for_context(c, &ctx)
-        .live_proxy_sources(business_live)
+        stage(timing, "ancestors");
+        let (approval, approver, approved_peer) = crate::host_blobs::approval_sources_current(
+            c,
+            app,
+            row.get("deployment_id"),
+            &row.get("manifest"),
+            Some(cache),
+        )
         .await?;
-    let business_rules = policy::rules(&business_live);
-    if business_required
-        .iter()
-        .any(|(action, resource)| !auth::rules_allow(&business_rules, action, resource, peer))
-    {
-        return Err(Error::denied());
-    }
-    live = Policy::for_context(c, &ctx)
-        .live_proxy_sources(live)
-        .await?;
-    if until_ms <= chrono::Utc::now().timestamp_millis() {
-        return Err(Error::new(
-            "DEADLINE_EXCEEDED",
-            "Ancestor call deadline elapsed",
-            axum::http::StatusCode::GATEWAY_TIMEOUT,
-        ));
-    }
-    stage(timing, "approval");
-    ctx.proxy_ceilings = ceilings;
-    ctx.proxy_paths = Some(live);
-    ctx.bind_proxy_proof(c).await?;
-    Ok(Authority {
-        ctx,
-        deployment: row.get("deployment_id"),
-        call: row.get("call_id"),
-        until_ms,
+        extend_ceilings(
+            &mut ceilings,
+            &[
+                maximum,
+                approval["rules"].clone(),
+                scopes_at_peer(&approver, approved_peer),
+            ],
+        )?;
+        auth::validate_sources(c, Some(ctx.credential), Some(ctx.subject), ctx.peer).await?;
+        // Recursive ancestors and approval walks can cross a source's clock
+        // boundary even while authorization mutations are fenced. Business-only
+        // sources need this final check independently of the proxy action set.
+        let business_live = Policy::for_context(c, &ctx)
+            .live_proxy_sources(business_live)
+            .await?;
+        let business_rules = policy::rules(&business_live);
+        if business_required
+            .iter()
+            .any(|(action, resource)| !auth::rules_allow(&business_rules, action, resource, peer))
+        {
+            return Err(Error::denied());
+        }
+        live = Policy::for_context(c, &ctx)
+            .live_proxy_sources(live)
+            .await?;
+        if until_ms <= chrono::Utc::now().timestamp_millis() {
+            return Err(Error::new(
+                "DEADLINE_EXCEEDED",
+                "Ancestor call deadline elapsed",
+                axum::http::StatusCode::GATEWAY_TIMEOUT,
+            ));
+        }
+        stage(timing, "approval");
+        ctx.proxy_ceilings = ceilings;
+        ctx.proxy_paths = Some(live);
+        ctx.bind_proxy_proof(c).await?;
+        Ok(Authority {
+            ctx,
+            deployment: row.get("deployment_id"),
+            call: row.get("call_id"),
+            until_ms,
+        })
     })
 }
 
 /// Ordinary HTTP never enters this path: the private handle exists only inside
 /// the authenticated HostService adapter and is never returned to a workload.
-pub(crate) async fn authenticate(
-    c: &(impl GenericClient + Sync),
-    app: &App,
-    token: &str,
+pub(crate) fn authenticate<'a>(
+    c: &'a (impl GenericClient + Sync),
+    app: &'a App,
+    token: &'a str,
     peer: IpAddr,
     request: Uuid,
-) -> Result<Context> {
-    if !token.starts_with("host:") {
-        return app.auth.authenticate(c, token, peer, request).await;
-    }
-    let hash = app.auth.token_digest(token);
-    let row = c
-        .query_opt(
-            "SELECT * FROM host_call_tickets WHERE verification_digest=$1 AND expires_at>now()",
-            &[&hash],
-        )
-        .await?
-        .ok_or_else(Error::denied)?;
-    let original: Value = row.get("rpc_context");
-    let context = rpc::RpcContext {
-        request_id: request.to_string(),
-        deadline_unix_ms: original["deadline"].as_i64().ok_or_else(Error::denied)?,
-        idempotency_key: String::new(),
-        delegation_token: String::new(),
-        subject_id: String::new(),
-        actor_instance_id: String::new(),
-    };
-    let workload = Workload {
-        instance: row.get("instance_id"),
-        generation: row.get("generation"),
-    };
-    let mut authority = authority_digest(
-        c,
-        app,
-        workload,
-        &context,
-        &row.get::<_, Vec<u8>>("delegation_digest"),
-        0,
-        &mut ProofCache::default(),
-    )
-    .await?;
-    if authority.call != row.get::<_, Uuid>("parent_call_id") || authority.ctx.peer != peer {
-        return Err(Error::denied());
-    }
-    if let Some(binding) = row.get::<_, Option<Uuid>>("dependency_binding_id") {
-        let provider = crate::dependencies::check_host(
+) -> BoxFuture<'a, Result<Context>> {
+    Box::pin(async move {
+        if !token.starts_with("host:") {
+            return app.auth.authenticate(c, token, peer, request).await;
+        }
+        let hash = app.auth.token_digest(token);
+        let row = c
+            .query_opt(
+                "SELECT * FROM host_call_tickets WHERE verification_digest=$1 AND expires_at>now()",
+                &[&hash],
+            )
+            .await?
+            .ok_or_else(Error::denied)?;
+        let original: Value = row.get("rpc_context");
+        let context = rpc::RpcContext {
+            request_id: request.to_string(),
+            deadline_unix_ms: original["deadline"].as_i64().ok_or_else(Error::denied)?,
+            idempotency_key: String::new(),
+            delegation_token: String::new(),
+            subject_id: String::new(),
+            actor_instance_id: String::new(),
+        };
+        let workload = Workload {
+            instance: row.get("instance_id"),
+            generation: row.get("generation"),
+        };
+        let mut authority = authority_digest(
             c,
-            &authority.ctx,
-            authority.deployment,
-            authority.call,
-            binding,
-            &row.get::<_, Option<Value>>("expected_contract")
-                .ok_or_else(Error::denied)?,
+            app,
+            workload,
+            &context,
+            &row.get::<_, Vec<u8>>("delegation_digest"),
+            0,
+            &mut ProofCache::default(),
         )
         .await?;
-        if Some(provider) != row.get::<_, Option<Uuid>>("provider_deployment_id") {
+        if authority.call != row.get::<_, Uuid>("parent_call_id") || authority.ctx.peer != peer {
             return Err(Error::denied());
         }
-    }
-    let bounds: Value = row.get("bounds");
-    let p = Policy::for_context(c, &authority.ctx);
-    let paths = p
-        .intersection(
-            authority
-                .ctx
-                .proxy_paths
-                .as_ref()
-                .ok_or_else(Error::denied)?,
-            &caps(&bounds)?,
-        )
-        .await?;
-    extend_ceilings(
-        &mut authority.ctx.proxy_ceilings,
-        &serde_json::from_value::<Vec<Value>>(row.get("ceilings")).map_err(|_| Error::denied())?,
-    )?;
-    authority.ctx.proxy_paths = Some(paths);
-    Ok(authority.ctx)
+        if let Some(binding) = row.get::<_, Option<Uuid>>("dependency_binding_id") {
+            let provider = crate::dependencies::check_host(
+                c,
+                &authority.ctx,
+                authority.deployment,
+                authority.call,
+                binding,
+                &row.get::<_, Option<Value>>("expected_contract")
+                    .ok_or_else(Error::denied)?,
+            )
+            .await?;
+            if Some(provider) != row.get::<_, Option<Uuid>>("provider_deployment_id") {
+                return Err(Error::denied());
+            }
+        }
+        let bounds: Value = row.get("bounds");
+        let p = Policy::for_context(c, &authority.ctx);
+        let paths = p
+            .intersection(
+                authority
+                    .ctx
+                    .proxy_paths
+                    .as_ref()
+                    .ok_or_else(Error::denied)?,
+                &caps(&bounds)?,
+            )
+            .await?;
+        extend_ceilings(
+            &mut authority.ctx.proxy_ceilings,
+            &serde_json::from_value::<Vec<Value>>(row.get("ceilings"))
+                .map_err(|_| Error::denied())?,
+        )?;
+        authority.ctx.proxy_paths = Some(paths);
+        Ok(authority.ctx)
+    })
 }
 
 /// Persist ancestry in the same transaction as the child ledger and quota
@@ -1541,56 +1547,58 @@ impl TestProofCache {
     }
 }
 impl ProofCache {
-    pub(crate) async fn revalidate(
-        &mut self,
-        c: &(impl GenericClient + Sync),
-        ctx: &Context,
-        resource: Option<&Resource>,
-        saved: &[crate::policy::Path],
-    ) -> Result<(Vec<crate::policy::Path>, Vec<crate::policy::Path>)> {
-        if saved.len() > 4096 {
-            return Err(Error::exhausted());
-        }
-        auth::validate_sources(c, Some(ctx.credential), Some(ctx.subject), ctx.peer).await?;
-        let current = self.current(c, ctx, resource).await?;
-        // The cache is transaction-local, but clocks still advance. In
-        // particular, external business issuers may not appear in proxy scopes.
-        let current = Policy::for_context(c, ctx)
-            .live_proxy_sources(current)
-            .await?;
-        let mut policy = Policy::for_context(c, ctx);
-        if let Some(resource) = resource.filter(|r| r.kind == "plugin") {
-            policy = policy.with_resource_owner(resource);
-        }
-        let mut live = Vec::new();
-        let mut pending = Vec::new();
-        for path in saved {
-            let identical_sources: Vec<_> = current
-                .iter()
-                .filter(|p| p.sources == path.sources)
-                .cloned()
-                .collect();
-            let proved = policy
-                .intersection(std::slice::from_ref(path), &identical_sources)
-                .await?;
-            if proved.iter().any(|p| p.rule == path.rule) {
-                // The fresh proof has the exact original sources and covers
-                // the entire frozen rule under the same owner profile. Any
-                // narrower intersection with additional conjunctive sources
-                // is dominated by this already-proved original path.
-                live.push(path.clone());
-            } else {
-                pending.push(path.clone());
+    pub(crate) fn revalidate<'a>(
+        &'a mut self,
+        c: &'a (impl GenericClient + Sync),
+        ctx: &'a Context,
+        resource: Option<&'a Resource>,
+        saved: &'a [crate::policy::Path],
+    ) -> BoxFuture<'a, Result<(Vec<crate::policy::Path>, Vec<crate::policy::Path>)>> {
+        Box::pin(async move {
+            if saved.len() > 4096 {
+                return Err(Error::exhausted());
             }
+            auth::validate_sources(c, Some(ctx.credential), Some(ctx.subject), ctx.peer).await?;
+            let current = self.current(c, ctx, resource).await?;
+            // The cache is transaction-local, but clocks still advance. In
+            // particular, external business issuers may not appear in proxy scopes.
+            let current = Policy::for_context(c, ctx)
+                .live_proxy_sources(current)
+                .await?;
+            let mut policy = Policy::for_context(c, ctx);
+            if let Some(resource) = resource.filter(|r| r.kind == "plugin") {
+                policy = policy.with_resource_owner(resource);
+            }
+            let mut live = Vec::new();
+            let mut pending = Vec::new();
+            for path in saved {
+                let identical_sources: Vec<_> = current
+                    .iter()
+                    .filter(|p| p.sources == path.sources)
+                    .cloned()
+                    .collect();
+                let proved = policy
+                    .intersection(std::slice::from_ref(path), &identical_sources)
+                    .await?;
+                if proved.iter().any(|p| p.rule == path.rule) {
+                    // The fresh proof has the exact original sources and covers
+                    // the entire frozen rule under the same owner profile. Any
+                    // narrower intersection with additional conjunctive sources
+                    // is dominated by this already-proved original path.
+                    live.push(path.clone());
+                } else {
+                    pending.push(path.clone());
+                }
+                if live.len() > 4096 {
+                    return Err(Error::exhausted());
+                }
+            }
+            live.extend(policy.revalidate_current(&pending, &current).await?);
             if live.len() > 4096 {
                 return Err(Error::exhausted());
             }
-        }
-        live.extend(policy.revalidate_current(&pending, &current).await?);
-        if live.len() > 4096 {
-            return Err(Error::exhausted());
-        }
-        Ok((current, live))
+            Ok((current, live))
+        })
     }
 
     async fn current(
