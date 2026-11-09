@@ -315,6 +315,7 @@ async fn check_approval_inner(
         &auth::CurrentAuthority<'_, '_>,
     )>,
 ) -> Result<()> {
+    crate::dependencies::check_ready(c, app, deployment).await?;
     if !manifest["routes"]
         .as_array()
         .is_some_and(|routes| !routes.is_empty())

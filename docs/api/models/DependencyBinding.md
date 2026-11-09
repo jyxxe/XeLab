@@ -11,7 +11,7 @@
 | 字段 | 类型 | 必填 | 约束 / 默认值 | 含义 |
 |---|---|---|---|---|
 | `alias` | string | 是 | minLength=`1`; maxLength=`80` | 依赖别名 |
-| `contract` | [ContractRef](ContractRef.md) | 是 | 见类型定义 | 不可变能力契约引用 |
+| `contract` | [ContractRef](ContractRef.md) / null | 是 | 见类型定义 | 能力依赖为精确契约；插件依赖为 null，仍固定提供者部署/安装/代次，不伪造能力 |
 | `deployment_id` | string | 是 | format=`"uuid"`; minLength=`1`; maxLength=`36` | 提供者部署 |
 | `instance_id` | string / null | 是 | 见类型定义 | 按请求绑定时可以为空 |
 | `binding_scope` | string | 是 | enum=`["request", "deployment", "task"]` | 范围 |

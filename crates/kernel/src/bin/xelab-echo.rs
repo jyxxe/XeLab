@@ -100,6 +100,7 @@ impl PluginLifecycle for Echo {
                 .unwrap()
                 .iter()
                 .map(|cap| rpc::CapabilityHealth {
+                    features: Vec::new(),
                     contract: Some(rpc::ContractRef {
                         name: cap["contract"]["name"].as_str().unwrap().into(),
                         version: cap["contract"]["version"].as_str().unwrap().into(),

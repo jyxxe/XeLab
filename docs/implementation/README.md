@@ -3,6 +3,7 @@
 [文档总目录](../README.md)
 
 - [验收矩阵与故障注入](acceptance.md)
+- [M4 依赖解析、固定路由与失效策略](m4-dependencies.md)
 - [M3 当前验收记录与精确 CI（2026-11-09）](m3-acceptance-20261109.md)
 - [M3 实现目标与开发历史](m3-progress.md)
 - [M3 声明式 HTTP、HTTP Skill 与静态网关（实现与验收）](m3-http.md)

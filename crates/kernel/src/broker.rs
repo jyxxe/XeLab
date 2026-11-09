@@ -347,7 +347,7 @@ async fn invoke_inner(
             "Unsupported capability side-effect semantics",
         ));
     }
-    let protected = skill.is_some() || definition["side_effect"] != "none";
+    let mut protected = skill.is_some() || definition["side_effect"] != "none";
     let fingerprint = digest(&serde_json::to_vec(original)?);
     let path = skill_id.map_or_else(
         || "/api/platform/v1/calls".to_owned(),
@@ -369,7 +369,7 @@ async fn invoke_inner(
         let call_id=r.get::<_,Option<String>>("resource_id").and_then(|s|s.parse::<Uuid>().ok()).ok_or_else(||Error::conflict("Missing prior call"))?;
         if stream.is_some() { return Err(Error::conflict("Generation streams cannot be replayed; inspect the admitted Call").with_resource(call_id)); }
         let row=tx.query_one("SELECT state,result FROM calls WHERE id=$1",&[&call_id]).await?;
-        if row.get::<_,String>("state")=="succeeded"{if protected{check_skill_authority(&tx,&ctx,call_id).await?;}let value = row.get::<_,Option<Value>>("result").ok_or_else(||Error::conflict("Call result is unavailable"))?; return skill_result(skill.as_ref(), value);}
+        if row.get::<_,String>("state")=="succeeded"{let deployment:Uuid=tx.query_one("SELECT i.deployment_id FROM calls c JOIN instances i ON i.id=c.provider_instance_id WHERE c.id=$1", &[&call_id]).await?.get(0);crate::dependencies::check_ready(&tx,app,deployment).await?;if protected{check_skill_authority(&tx,&ctx,call_id).await?;}let value = row.get::<_,Option<Value>>("result").ok_or_else(||Error::conflict("Call result is unavailable"))?; return skill_result(skill.as_ref(), value);}
         return Err(Error::new("OUTCOME_UNKNOWN","Prior call is not a confirmed success; query its call ID",axum::http::StatusCode::CONFLICT).with_resource(call_id));
     }
     let bytes = serde_json::to_vec(&input["input"])?;
@@ -386,9 +386,13 @@ async fn invoke_inner(
     let row = providers
         .first()
         .ok_or_else(|| Error::unavailable("No healthy fixed provider is available"))?;
+    crate::dependencies::check_ready(&tx, app, row.get("deployment_id")).await?;
     let instance: Uuid = row.get("id");
     let generation: i64 = row.get("generation");
     let manifest: Value = row.get("manifest");
+    protected |= manifest["dependencies"]
+        .as_array()
+        .is_some_and(|d| !d.is_empty());
     if definition["side_effect"] != "none" {
         crate::artifact::validate_runtime_profile(&manifest)?;
         if !manifest["capabilities"]
@@ -670,6 +674,8 @@ async fn invoke_inner(
     let check = async {
         let mut current = app.auth.authenticate(&tx, token, peer, request_id).await?;
         current.browser_origin = browser_origin.map(str::to_owned);
+        crate::dependencies::check_call(&tx, call).await?;
+        crate::dependencies::check_ready(&tx, app, row.get("deployment_id")).await?;
         if protected {
             crate::host_blobs::check_call_sources(&tx, &current, call).await?;
         }
@@ -776,6 +782,15 @@ async fn check_live_call(
     if !live {
         return Err(Error::unavailable("Fixed Skill deployment is unavailable"));
     }
+    let deployment: Uuid = check
+        .query_one(
+            "SELECT deployment_id FROM instances WHERE id=$1",
+            &[&instance],
+        )
+        .await?
+        .get(0);
+    crate::dependencies::check_call(&check, call).await?;
+    crate::dependencies::check_ready(&check, app, deployment).await?;
     check.commit().await?;
     crate::skill_streams::ensure_active(app)?;
     Ok(())

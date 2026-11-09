@@ -75705,7 +75705,15 @@
             "description": "依赖别名"
           },
           "contract": {
-            "$ref": "#/components/schemas/ContractRef"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContractRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "能力依赖为精确契约；插件依赖为 null，仍固定提供者部署/安装/代次，不伪造能力"
           },
           "deployment_id": {
             "type": "string",
