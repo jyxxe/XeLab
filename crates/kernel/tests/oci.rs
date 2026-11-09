@@ -391,6 +391,9 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     .await;
     assert_eq!(replay.1["id"], installed["id"]);
     let installed = operation(&router, installed["id"].as_str().unwrap(), token).await;
+    // Later Python installation fixtures deliberately shadow `installed`.
+    // Preserve the original signed Rust origin used by the fixed Skill.
+    let rust_installation = contracts::id(&installed, "installation_id").unwrap();
     let limits =
         json!({"cpu_millis":500,"memory_bytes":134217728,"ephemeral_bytes":1048576,"pids":64});
     let (status,created)=api(&router,"createDeployment",&[],Some(token),json!({"installation_id":installed["installation_id"],"display_name":"echo","enabled":false,"limits":limits,"config":{},"volume_ids":[]}),"deploy-1",None).await;
@@ -1202,7 +1205,7 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         token,
         publisher,
         &signing,
-        contracts::id(&installed, "installation_id").unwrap(),
+        rust_installation,
         skill.parse().unwrap(),
     ))
     .await;

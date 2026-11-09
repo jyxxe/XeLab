@@ -467,6 +467,19 @@ pub(super) async fn run(
     skill: Uuid,
 ) {
     let c = app.db.connect().await.unwrap();
+    let fixed_source = c
+        .query_one(
+            "SELECT s.installation_id,n.plugin_id FROM skills s JOIN installations n ON n.id=s.installation_id WHERE s.id=$1",
+            &[&skill],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fixed_source.get::<_, Uuid>("installation_id"),
+        provider_installation,
+        "M4 must deploy the immutable installation that owns the fixed Skill"
+    );
+    assert_eq!(fixed_source.get::<_, String>("plugin_id"), "org.xelab.echo");
     assert_eq!(
         c.query_one("SELECT reserved_cpu_millis FROM node_budget", &[])
             .await
@@ -484,7 +497,7 @@ pub(super) async fn run(
         json!({"rules":[],"egress":[]}),
     )
     .await;
-    let providers=c.query("SELECT i.id FROM provider_records p JOIN instances i ON i.id=p.instance_id JOIN deployments d ON d.id=i.deployment_id WHERE p.name='org.xelab.echo' AND p.version='1.0.0' AND p.availability='ready' AND i.phase='ready' AND d.spec->>'enabled'='true' ORDER BY i.id", &[]).await.unwrap();
+    let providers=c.query("SELECT i.id,d.installation_id,n.plugin_id FROM provider_records p JOIN instances i ON i.id=p.instance_id JOIN deployments d ON d.id=i.deployment_id JOIN installations n ON n.id=d.installation_id WHERE p.name='org.xelab.echo' AND p.version='1.0.0' AND p.availability='ready' AND i.phase='ready' AND d.spec->>'enabled'='true' ORDER BY i.id", &[]).await.unwrap();
     assert_eq!(
         providers
             .iter()
@@ -493,6 +506,11 @@ pub(super) async fn run(
         vec![provider_instance],
         "the signed Rust deployment must be the unique live echo provider"
     );
+    assert_eq!(
+        providers[0].get::<_, Uuid>("installation_id"),
+        provider_installation
+    );
+    assert_eq!(providers[0].get::<_, String>("plugin_id"), "org.xelab.echo");
     let raw = fs::read("examples/generated-m4-consumer/xelab/plugin.json").unwrap();
     let manifest: Value = serde_json::from_slice(&raw).unwrap();
     let image = std::env::var("XELAB_TEST_M4_CONSUMER_IMAGE")
