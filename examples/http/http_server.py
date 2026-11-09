@@ -23,6 +23,9 @@ PLUGIN_ID = "org.xelab.http-echo"
 BUSINESS_PATH = "/plugins/" + PLUGIN_ID + "/echo"
 HOLD_PATH = "/plugins/" + PLUGIN_ID + "/hold"
 EVENTS_PATH = "/plugins/" + PLUGIN_ID + "/events"
+READ_PATH = "/plugins/" + PLUGIN_ID + "/read"
+CREATED_PATH = "/plugins/" + PLUGIN_ID + "/created"
+DISCARD_PATH = "/plugins/" + PLUGIN_ID + "/discard"
 STATIC_PATH = "/ui/" + PLUGIN_ID + "/index.html"
 KERNEL_IDENTITY = "spiffe://xelab.local/kernel"
 MAXIMUM_BODY_BYTES = 8192
@@ -169,7 +172,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # the request line so that normalization cannot turn an undeclared
         # external spelling into a declared route.
         target = self.requestline.split(" ", 2)[1]
-        if target != self.path or self.path not in (BUSINESS_PATH, HOLD_PATH, EVENTS_PATH, STATIC_PATH):
+        if target != self.path or self.path not in (BUSINESS_PATH, HOLD_PATH, EVENTS_PATH, READ_PATH, CREATED_PATH, DISCARD_PATH, STATIC_PATH):
             self.error(404, "NOT_FOUND")
             return False
         if (self.headers.get("Upgrade") or self.headers.get("Transfer-Encoding")
@@ -183,15 +186,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return False
         return True
 
-    def do_POST(self):
-        if not self.safe_request():
-            return
-        if self.path not in (BUSINESS_PATH, HOLD_PATH, EVENTS_PATH):
-            self.error(405, "METHOD_NOT_ALLOWED")
-            return
+    def admitted_context(self):
         if not self.server.state.ready():
             self.error(503, "UNAVAILABLE")
-            return
+            return None
         delegates = self.headers.get_all("X-Xelab-Delegation", [])
         subjects = self.headers.get_all("X-Xelab-Subject", [])
         call_ids = self.headers.get_all("X-Xelab-Call-ID", [])
@@ -213,6 +211,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise ValueError("Invalid encoded business key")
         except (ValueError, AttributeError):
             self.error(403, "DELEGATION_REQUIRED")
+            return None
+        return call_ids[0], int(deadlines[0])
+
+    def do_POST(self):
+        if not self.safe_request():
+            return
+        allowed = (BUSINESS_PATH, HOLD_PATH, EVENTS_PATH) if self.command == "POST" else (CREATED_PATH,)
+        if self.path not in allowed:
+            self.error(405, "METHOD_NOT_ALLOWED")
+            return
+        if not self.server.state.ready():
+            self.error(503, "UNAVAILABLE")
+            return
+        context = self.admitted_context()
+        if context is None:
             return
         if self.headers.get_content_type() != "application/json":
             self.error(415, "UNSUPPORTED_MEDIA_TYPE")
@@ -238,7 +251,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     raise ValueError("Truncated request")
                 value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object,
                                    parse_constant=invalid_constant)
-                required = {"message"} if self.path == BUSINESS_PATH else ({"message", "delay_ms"} if self.path == HOLD_PATH else {"message", "items", "interval_ms"})
+                required = {"message"} if self.path in (BUSINESS_PATH, CREATED_PATH) else ({"message", "delay_ms"} if self.path == HOLD_PATH else {"message", "items", "interval_ms"})
                 if (not isinstance(value, dict) or set(value) != required
                         or not isinstance(value.get("message"), str) or len(value["message"]) > 1024):
                     raise ValueError("Input differs from schema")
@@ -252,9 +265,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # Actual business work: parse and return exactly the submitted text.
             # Delegation and subject are never reflected in the response body.
             if self.path == EVENTS_PATH:
-                self.events(value, call_ids[0], int(deadlines[0]))
-            elif self.wait(value.get("delay_ms", 0), int(deadlines[0])):
-                self.reply(200, result)
+                self.events(value, context[0], context[1])
+            elif self.wait(value.get("delay_ms", 0), context[1]):
+                self.reply(201 if self.command == "PUT" else 200, result)
 
     def wait(self, milliseconds, deadline):
         end = time.monotonic() + milliseconds / 1000
@@ -311,6 +324,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.safe_request():
             return
+        if self.path == READ_PATH and self.command in ("GET", "HEAD"):
+            self.bodyless_business(200, {"message": "HTTP fixed read"})
+            return
         if self.path != STATIC_PATH:
             self.error(405, "METHOD_NOT_ALLOWED")
             return
@@ -329,11 +345,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     do_HEAD = do_GET
 
+    def bodyless_business(self, status, value=None):
+        if self.admitted_context() is None:
+            return
+        if self.headers.get("Content-Length", "0") != "0":
+            self.error(400, "INVALID_REQUEST")
+            return
+        with self.server.state.business() as acquired:
+            if not acquired:
+                self.error(429 if self.server.state.ready() else 503, "UNAVAILABLE")
+                return
+            self.reply(status, b"" if status == 204 or self.command == "HEAD" else encoded(value))
+
     def do_PUT(self):
+        self.do_POST()
+
+    def do_PATCH(self):
+        self.do_POST()
+
+    def do_DELETE(self):
+        if not self.safe_request():
+            return
+        if self.path != DISCARD_PATH:
+            self.error(405, "METHOD_NOT_ALLOWED")
+            return
+        self.bodyless_business(204)
+
+    def unsupported(self):
         self.error(405, "METHOD_NOT_ALLOWED")
 
-    do_PATCH = do_PUT
-    do_DELETE = do_PUT
-    do_OPTIONS = do_PUT
-    do_CONNECT = do_PUT
-    do_TRACE = do_PUT
+    do_OPTIONS = unsupported
+    do_CONNECT = unsupported
+    do_TRACE = unsupported

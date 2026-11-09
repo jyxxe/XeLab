@@ -170,7 +170,7 @@ fn signed_artifact_loader_preserves_exact_file_and_refuses_symlinks() {
             .unwrap()
             .operations
             .len(),
-        3
+        8
     );
     let path = directory.path().join("xelab/http/openapi.json");
     let original = std::fs::read(&path).unwrap();
@@ -218,7 +218,9 @@ fn static_origin_is_derived_from_config_and_deployment() {
 fn only_declared_safe_headers_and_strict_json_survive() {
     let (manifest, bytes) = fixture();
     let registry = Registry::compile(&manifest, Some(&bytes)).unwrap();
-    let op = &registry.operations[0];
+    let op = registry
+        .resolve(&Method::POST, "/plugins/org.xelab.http-echo/echo")
+        .unwrap();
     let mut headers = HeaderMap::new();
     for (name, value) in [
         ("content-type", "application/json"),
@@ -378,7 +380,7 @@ async fn real_reference_server_uses_pinned_mtls_and_sanitized_transport() {
     .unwrap();
     let bytes = fs::read(examples.join("openapi.json")).unwrap();
     let manifest = json!({"plugin_id":"org.xelab.http-echo","routes":[
-        {"path_prefix":"/plugins/org.xelab.http-echo/","methods":["POST"],"kind":"http","required_action":"plugin.http.invoke","maximum_body_bytes":8192,"timeout_ms":10000,"http_contract_digest":digest(&bytes)},
+        {"path_prefix":"/plugins/org.xelab.http-echo/","methods":["GET","HEAD","POST","PUT","PATCH","DELETE"],"kind":"http","required_action":"plugin.http.invoke","maximum_body_bytes":8192,"timeout_ms":10000,"http_contract_digest":digest(&bytes)},
         {"path_prefix":"/ui/org.xelab.http-echo/","methods":["GET","HEAD"],"kind":"static","required_action":"plugin.ui.open","maximum_body_bytes":0,"timeout_ms":10000,"authentication":"public"}
     ]});
     let registry = Registry::compile(&manifest, Some(&bytes)).unwrap();
@@ -595,4 +597,121 @@ async fn real_reference_server_uses_pinned_mtls_and_sanitized_transport() {
             .is_err());
     }
     server.kill().await.unwrap();
+}
+
+#[test]
+fn http_stream_and_fixed_method_candidates_keep_distinct_signed_schema_authorities() {
+    let directory = tempfile::tempdir().unwrap();
+    let result = std::process::Command::new("python3")
+        .arg(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../examples/http/build_artifact.py"),
+        )
+        .arg("--publisher-id")
+        .arg(uuid::Uuid::new_v4().to_string())
+        .arg("--output")
+        .arg(directory.path())
+        .output()
+        .unwrap();
+    assert!(result.status.success());
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(directory.path().join("xelab/plugin.json")).unwrap())
+            .unwrap();
+    let registry = from_signed_artifact(&manifest, directory.path()).unwrap();
+    let definitions = manifest["skills"].as_array().unwrap();
+    assert_eq!(definitions.len(), 7);
+    let stream = registry.bind_skill(&definitions[1]).unwrap();
+    assert_eq!(stream.id, "streamMessages");
+    assert_eq!(
+        stream.responses[&200].media_type.as_deref(),
+        Some("text/event-stream")
+    );
+    assert_ne!(
+        stream.responses[&200].schema.as_ref().unwrap().value(),
+        &definitions[1]["stream_item_schema"]
+    );
+    for (index, method, status) in [
+        (2, Method::GET, 200),
+        (3, Method::PUT, 201),
+        (4, Method::PATCH, 200),
+        (5, Method::DELETE, 204),
+        (6, Method::HEAD, 200),
+    ] {
+        let operation = registry.bind_skill(&definitions[index]).unwrap();
+        assert_eq!(operation.method, method);
+        assert!(operation.responses.contains_key(&status));
+    }
+    let mut altered = manifest.clone();
+    altered["skills"][1]["stream_item_schema"] = Value::Null;
+    assert!(from_signed_artifact(&altered, directory.path()).is_err());
+    let mut altered = manifest.clone();
+    altered["skills"][1]["stream_item_schema"] =
+        json!({"$ref":"https://outside.invalid/item.schema.json"});
+    assert!(from_signed_artifact(&altered, directory.path()).is_err());
+    let mut altered = manifest.clone();
+    altered["skills"][1]["output_schema"] = json!({"type":"string"});
+    assert!(from_signed_artifact(&altered, directory.path()).is_err());
+    let mut altered = manifest.clone();
+    altered["skills"][1]["stream_item_schema"] = json!({"type":"integer"});
+    assert!(from_signed_artifact(&altered, directory.path()).is_err());
+    let head = registry.bind_skill(&definitions[6]).unwrap();
+    assert!(head
+        .response(StatusCode::OK, &HeaderMap::new(), b"unverifiable body")
+        .is_err());
+    let raw = std::fs::read(directory.path().join("xelab/http/openapi.json")).unwrap();
+    let mut doc: Value = serde_json::from_slice(&raw).unwrap();
+    doc["paths"]["/plugins/org.xelab.http-echo/read"]["head"]["responses"]["200"]["content"] =
+        json!({"application/json":{"schema":{"type":"object"}}});
+    let raw = serde_json::to_vec(&doc).unwrap();
+    let mut head_claim = manifest.clone();
+    head_claim["routes"][0]["http_contract_digest"] = json!(digest(&raw));
+    let error = Registry::compile(&head_claim, Some(&raw))
+        .err()
+        .expect("HEAD cannot promise an absent JSON output");
+    assert_eq!(
+        error.message,
+        "Bodyless HTTP response cannot declare content"
+    );
+    // A false extra guard must not make a merely present then.payload
+    // schema look authoritative for all item frames.
+    let original: Value = serde_json::from_slice(
+        &std::fs::read(directory.path().join("xelab/http/openapi.json")).unwrap(),
+    )
+    .unwrap();
+    for variant in 0..5 {
+        let mut doc = original.clone();
+        let branches = doc["paths"]["/plugins/org.xelab.http-echo/events"]["post"]["responses"]
+            ["200"]["content"]["text/event-stream"]["schema"]["allOf"]
+            .as_array_mut()
+            .unwrap();
+        let branch = branches
+            .iter_mut()
+            .find(|branch| branch["if"]["properties"]["kind"]["const"] == "item")
+            .unwrap();
+        match variant {
+            0 => branch["if"]["properties"]["kind"]["minLength"] = json!(5),
+            1 => branch["if"]["properties"]["kind"]["enum"] = json!(["completed"]),
+            2 => branch["if"]["type"] = json!("array"),
+            3 => branch["if"]["required"] = json!(["kind", "absent"]),
+            _ => branch["if"]["properties"]["absent"] = json!({"const":true}),
+        }
+        let raw = serde_json::to_vec(&doc).unwrap();
+        let hash = digest(&raw);
+        let mut claimed = manifest.clone();
+        claimed["routes"][0]["http_contract_digest"] = json!(hash);
+        for candidate in claimed["skills"].as_array_mut().unwrap() {
+            candidate["target"]["http_contract_digest"] = json!(hash);
+        }
+        let error = Registry::compile(&claimed, Some(&raw))
+            .err()
+            .expect("Conditional false guards must not attest the Skill payload schema");
+        assert_eq!(
+            error.message,
+            "HTTP Skill schemas must match its fixed signed operation and success response",
+            "variant {variant}"
+        );
+    }
+    let mut altered = definitions[1].clone();
+    altered["target"]["http_contract_digest"] = json!(digest(b"different stream"));
+    assert!(registry.bind_skill(&altered).is_err());
 }

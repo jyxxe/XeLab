@@ -33,3 +33,12 @@ python3 examples/echo/sign_artifact.py \
 安装、批准、部署及启停沿用公开管理 API；网关只连接运行时观测到的实例地址。HTTP 固定监听 `0.0.0.0:8080`，证书采用现有 `XELAB_TLS_CERT_PATH/XELAB_TLS_KEY_PATH/XELAB_TLS_CA_PATH`；每次 TLS 握手重新加载证书，并校验平台 CA 及精确内核 SPIFFE SAN。业务请求还需内核重建的 `X-Xelab-Delegation`、UUID `X-Xelab-Subject/Call-ID`、十进制 `X-Xelab-Deadline-Unix-Ms` 和 `X-Xelab-Idempotency-Key`（UTF-8 业务键的无填充 base64url），不接受用户原始 Bearer。委托是不透明句柄，插件不解释角色，也不实现平行用户授权。
 
 业务请求在 `Initialize` 后接受，在 `Drain` 后拒绝；实例应用额外限制四个同时活动业务请求。该局部限制不代替内核所有入口共享的 Broker 并发与配额。GET/HEAD 静态壳不需要用户凭证，但后端连接仍须内核 mTLS。测试使用临时 CA 和真实回环 HTTPS，覆盖正确内核、其他工作负载、缺证书、委托、正文、路径和停用状态；不使用 AWS。
+
+
+签名参考制品还提供 GET/HEAD `/read`、PUT/PATCH `/created` 和 DELETE `/discard`，
+验证固定方法、201 JSON 和 204 无正文结果；每项均有对应不可变 Skill 候选。
+`events` 候选通过公开 `streamSkill` 调用，OpenAPI 完整事件 Schema 与 Skill 的 item/output
+双重校验；插件只能返回原 HTTP Call 身份，核心才构造 Skill 结果信封。
+无正文 Skill 输入为 null，同一生成流键不重发，取消/断线的未知副作用保留原 Call 及物理围栏。
+运行 `python3 -m unittest discover -s examples/http -p 'test_http.py' -v` 验证真实 mTLS 方法/状态；
+完整 Kernel/OCI 授权、撤权、重启、配额与流测试见 `crates/kernel/tests/http.rs`。
