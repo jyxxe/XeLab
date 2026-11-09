@@ -1030,6 +1030,14 @@ async fn postgres_staged_upgrade_keeps_exact_provider_and_publishes_without_redi
         true,
     )
     .await;
+    // This metadata fixture has no running lifecycle producer. Publish explicit
+    // observations instead of letting setup duration stand in for health.
+    c.execute("UPDATE provider_records SET observed_at=now()-interval '1 hour' WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)", &[&original_provider]).await.unwrap();
+    assert!(
+        check_upgrade(&c, &f.app, &ctx, operation).await.is_err(),
+        "stale original provider must fail despite a healthy alternative"
+    );
+    c.execute("UPDATE provider_records SET observed_at=now() WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)", &[&original_provider]).await.unwrap();
     check_upgrade(&c, &f.app, &ctx, operation).await.unwrap();
     let spec: Value = c
         .query_one(
@@ -1040,6 +1048,7 @@ async fn postgres_staged_upgrade_keeps_exact_provider_and_publishes_without_redi
         .unwrap()
         .get(0);
     c.execute("UPDATE deployments SET spec=jsonb_set(spec,'{config}','{\"changed\":true}'::jsonb) WHERE id=$1",&[&original_provider]).await.unwrap();
+    c.execute("UPDATE provider_records SET observed_at=now() WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)", &[&original_provider]).await.unwrap();
     assert!(
         check_upgrade(&c, &f.app, &ctx, operation).await.is_err(),
         "staged provider config drift must fail despite a healthy alternative"
