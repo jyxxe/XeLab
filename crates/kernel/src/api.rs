@@ -800,6 +800,12 @@ fn dispatch<'a>(
                 let manifest:Value=tx.query_one("SELECT manifest FROM installations WHERE id=$1",&[&row.get::<_,Uuid>("installation_id")]).await?.get(0);
                 crate::http_contracts::validate_actions(&tx,&manifest).await?;
                 crate::host_blobs::check_approval(&tx,app,id,&manifest).await?;
+                // Gateway readiness validates the fixed dependency graph.
+                // Bind after Host approval in this same transaction so a later
+                // denial rolls back both bindings and the enable intent.
+                if spec["enabled"] != true {
+                    crate::dependencies::bind(&tx,app,&ctx,id).await?;
+                }
                 crate::plugin_http_gateway::check_approval(&tx,app,id,&manifest).await?;
             }
             if bootstrap.is_some() && (!enabled || spec["enabled"] == true) {
@@ -807,7 +813,6 @@ fn dispatch<'a>(
             }
             let op = db::operation(&tx, ctx.subject, name, Some(id.to_string())).await?;
             if enabled && spec["enabled"] != true {
-                crate::dependencies::bind(&tx,app,&ctx,id).await?;
                 if tx.query_one("SELECT count(*) FROM instances WHERE deployment_id=$1 AND phase<>'stopped'",&[&id]).await?.get::<_,i64>(0)>0{return Err(Error::conflict("Previous instances have not drained"));}
                 let instance = Uuid::new_v4();
                 let generation = row.get::<_, i64>("revision") + 1;
