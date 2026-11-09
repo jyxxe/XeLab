@@ -1,6 +1,6 @@
-# XeLab Kernel：M1/M2/M3 与 M4 依赖、HostService
+# XeLab Kernel：M1/M2/M3 与 M4 依赖、HostService、事件
 
-这是基于现有 **2.8.0 契约**的 Rust 实现，crate 版本为 0.1.0。已实现 M1 普通插件、身份与管理闭环，以及 M2 卷、Blob、Secret、部署备份/恢复、整体离线恢复和内部格式监督器。M3 源码提供普通 OCI Skill 的七项公开操作、声明式 HTTP、OAuth/Client/UI 控制面及独立 WebUI/消息桥；内部 Schema 为 **18**，历史 SQL 及校验和不变。源码功能范围与实际验收状态分别记录：逐项测试、精确提交、PR 集成和 main CI 以有时间戳的[持续进度](../../docs/implementation/m3-progress.md)及[目标 #38](https://github.com/jyxxe/XeLab/issues/38)最新证据为准，不能仅凭实现代码宣布完整 M3 完成。正式生产、AWS/独立宿主和完整格式迁移验收仍独立待完成；公开版本化制品安装入口仍关闭。
+这是基于现有 **2.8.0 契约**的 Rust 实现，crate 版本为 0.1.0。已实现 M1 普通插件、身份与管理闭环，以及 M2 卷、Blob、Secret、部署备份/恢复、整体离线恢复和内部格式监督器。M3 源码提供普通 OCI Skill 的七项公开操作、声明式 HTTP、OAuth/Client/UI 控制面及独立 WebUI/消息桥；内部 Schema 为 **19**，历史 SQL 及校验和不变。源码功能范围与实际验收状态分别记录：逐项测试、精确提交、PR 集成和 main CI 以有时间戳的[持续进度](../../docs/implementation/m3-progress.md)及[目标 #38](https://github.com/jyxxe/XeLab/issues/38)最新证据为准，不能仅凭实现代码宣布完整 M3 完成。正式生产、AWS/独立宿主和完整格式迁移验收仍独立待完成；公开版本化制品安装入口仍关闭。
 
 ## 已实现与边界
 
@@ -13,7 +13,8 @@
 | 依赖 | `resolveDependencies`、普通插件/能力完整解析、精确契约/安装/配置/代次与特性固定、并发强环/16层图检查、可选降级和升级计划日志 | HostService 已提供固定能力和 Skill 的发现/解析/调用；task 执行依赖 TaskEngine，微/扩展宿主仍未交付 |
 | 控制器 | 安装/批准/启用/健康/排空停止、有界对账与重启、完全停用排空后的配置更新、部署重建与同格式卷切换、内部初始化/格式迁移监督器 | 多副本、滚动升级、运行中动态配置；完整格式升级/不兼容回退仍待正式备份验收 |
 | 执行 | containerd/runc 真容器、cgroups v2 CPU/内存/PID、只读根目录、受限 tmpfs、无 Linux capabilities、隔离网络、工作负载 mTLS | 外网/代理、尚未实现的 HostService 方法、GPU、微插件/MPR、Extension Plugin；组件预算不代替生产 RUN-03 |
-| 调用 | 固定契约/安装/部署、双层授权、共享实例并发、树配额/源链计费、幂等/unknown 账本、有界 SSE 缓冲与取消围栏；普通无版本数据格式 capability 四类副作用的单次/声明流和原实例 QueryResult | #46 精确真实 OCI 副作用/QueryResult 门禁已通过；事务锁准入等待及有界 SSE 缓冲不是业务等待队列或持久 TaskEngine；Workflow、Batch、Schedule、Event 尚未交付 |
+| 调用 | 固定契约/安装/部署、双层授权、共享实例并发、树配额/源链计费、幂等/unknown 账本、有界 SSE 缓冲与取消围栏；普通无版本数据格式 capability 四类副作用的单次/声明流和原实例 QueryResult | #46 精确真实 OCI 副作用/QueryResult 门禁已通过；事务锁准入等待及有界 SSE 缓冲不是业务等待队列或持久 TaskEngine；Workflow、Batch、Schedule 尚未交付 |
+| 事件 | 持久化发布/outbox、24h 去重、独立游标、30s 租约、旧租约 fencing、退避重投/死信、保留和容量上限、SSE/HostService、原生快照及恢复授权重置 | 当前源代码与专项证据见 [M4 事件](../../docs/implementation/m4-events.md)和[#54](https://github.com/jyxxe/XeLab/issues/54)；正式 daemon/独立宿主及 AWS 仍由 #50 跟踪 |
 | HTTP | #43 已合并签名原始 OpenAPI、精确操作/动作/Schema、共享 Broker 账本、直接 HTTP SSE、隔离来源静态 GET/HEAD 与物理槽；#47 扩展固定 HTTP Skill 的六方法、成功状态和 SSE | #47 精确 HTTP Skill 六方法/流真实 OCI 门禁已通过；不是任意 URL/路径模板/查询参数代理，未声明协议拒绝 |
 | 独立 WebUI/消息桥 | #45 实现 UID 65532 OCI 桌面、公开管理 API/OAuth 客户端、window/widget、固定 alias 的 skill.call、同部署 window.open、通道撤权/登出/升级失效及独立 UI 参考插件 | 组件与打包探针通过不能替代真实核心 OCI/Owner OAuth/iframe 全链；#45 精确完整/专项门禁均通过，未来 batch 方法明确不可用 |
 | 持久卷 | 独立 XFS 硬配额、预留/扩容/回收、实际计数、单写者 fence、OCI 挂载、新私有卷恢复、同格式克隆/回退、内部格式证明 | 多副本应用行为、公开格式安装/迁移、正式独立宿主恢复验收 |
@@ -22,11 +23,16 @@
 | 备份/恢复 | 部署一致性备份、新卷恢复/切换、整体离线源冻结、元数据/Blob/镜像/卷重建、权限重置、持久检查点与中断续作、格式备份登记 | 自动备份调度、正式 AWS/独立宿主恢复、不同格式升级/不兼容回退的完整正式演练；兼容对象存储始终 off_host=false |
 | 运维 | HTTPS 管理 API、独立 CLI、WebUI 配置/默认界面及停用恢复、离线备份/恢复与账户维护命令、探针、结构化错误日志、数据库审计、故障恢复测试 | UDS 控制通道、指标/Tracing 导出、自动备份、数据与 AI 平台；独立 WebUI 的精确整体门禁见持续进度 |
 
-当前公开安装 profile 接受单副本、普通依赖、无扩展点且 data_schema_version 为 none 的普通插件；宿主权限申请包括显式签名/审批的能力、Skill、事件及 Blob 代理动作，必需代理规则须完整批准，可选 secret.use 保留原约束。事件 API/RPC 入口由独立事件阶段接入。允许受控持久卷、签名 capability/HTTP Skill 候选、经验证的 http/static/webui 路由及固定 WebUI/UI Contribution 声明；页面必须有独立来源和对应签名准入，不因 UI 存在而授予业务权限。内部版本化格式的初始化、同格式切换和 Plan/Apply/Verify 见[格式监督器](../../docs/implementation/m2-format-transitions.md)；内部实现不等于公开准入或正式验收。业务 Schema 必须自包含，拒绝 $ref/$id 等引用。实例业务池满拒绝，事务锁准入等待和有界 SSE 缓冲不创建业务等待队列或持久任务，未实现操作明确报错。
+当前公开安装 profile 接受单副本、普通依赖、无扩展点且 data_schema_version 为 none 的普通插件；宿主权限申请包括显式签名/审批的能力、Skill、事件及 Blob 代理动作，必需代理规则须完整批准，可选 secret.use 保留原约束。事件阶段接通公开订阅/发布/确认及 HostService 事件 RPC。允许受控持久卷、签名 capability/HTTP Skill 候选、经验证的 http/static/webui 路由及固定 WebUI/UI Contribution 声明；页面必须有独立来源和对应签名准入，不因 UI 存在而授予业务权限。内部版本化格式的初始化、同格式切换和 Plan/Apply/Verify 见[格式监督器](../../docs/implementation/m2-format-transitions.md)；内部实现不等于公开准入或正式验收。业务 Schema 必须自包含，拒绝 $ref/$id 等引用。实例业务池满拒绝，事务锁准入等待和有界 SSE 缓冲不创建业务等待队列或持久任务，未实现操作明确报错。
 
 `registerSkill/getSkill/listSkills/setSkillEnabled/archiveSkill/invokeSkill/streamSkill` 固定安装、不可变定义与 UUID，复用 Broker 并发、配额、来源链和 unknown 围栏。普通 capability 的 `none/idempotent/queryable/non_repeatable` 均支持首次单次和已声明流；从不自动重派业务。queryable 的 getCall 仅向原实例/代次发送 QueryResult，复核原来源，不切换提供者或重新 Invoke。内部版本化数据 profile 仍保留既有 none/idempotent 限制，公开版本化制品门禁关闭。HTTP Skill 固定签名 GET/HEAD/POST/PUT/PATCH/DELETE、声明成功状态和 Schema；无正文/204/HEAD 使用契约允许的 null，声明流接入已有 Skill SSE，不能由输入选 URL/方法。两类扩展已通过 #46/#47 精确真实 OCI 门禁，主线最终验收状态见持续进度与目标 #38。M4 HostService 已接入 Skill 发现/解析/检查/单次及流式调用，并复用原 Broker 资源和来源链；详见 [HostService](../../docs/implementation/m4-host.md)。边界和命令见 [Skill](../../docs/implementation/m3-skills.md)、[流式调用](../../docs/implementation/m3-skill-streams.md)、[HTTP](../../docs/implementation/m3-http.md)和[WebUI 整体门禁](../../docs/implementation/m3-webui.md)。
 
 M4 第一阶段新增普通依赖清单准入、固定部署绑定、请求范围路由基础和失败策略；启用会重新核对真实提供者，物理停止前不释放资源预留。绑定不是授权，实际调用继续检查当前调用者与完整来源链。实现和验证范围见 [依赖说明](../../docs/implementation/m4-dependencies.md)与[目标 #51](https://github.com/jyxxe/XeLab/issues/51)。
+
+事件公开操作为 `publishEvent/listSubscriptions/createSubscription/getSubscription/deleteSubscription/streamDeliveries/ackDelivery`；
+HostService 接通 `PublishEvent/Subscribe/AckEvent`。主题是全局命名空间，必须显式 ids/all 授权，
+owned_by 不匹配；订阅另校验 owner。新凭证按当前权限续用持久游标，创建凭证仅供审计。
+事件至少一次投递，消费者仍须去重；不可把确认成功当成外部业务副作用的恰好一次保证。
 
 配置仍使用现有 `kernel.toml`；`unix_socket` 暂未提供控制服务。`ui_gateway` 提供精确部署来源的静态/WebUI 代理，未配置时不降级到可信内核同源页面。WebUI 需先创建 disabled 部署、取得隔离来源、注册精确 Client、以完整 `{spec}` 更新配置并轮询 202 Operation，审批/启用至 Ready 后再设默认界面；根路径不可用返回 503，核心 API/CLI 独立。部署步骤和同一 TLS listener 的通配域名配置见[WebUI 说明](../../examples/webui/DEPLOYMENT.md)。备份 URI 的标准 AWS 后端还需独立凭证、主密钥及仓库注册，见 [备份任务](../../docs/implementation/m2-backup-jobs.md)。
 
@@ -58,12 +64,12 @@ cargo fmt --all -- --check
 
 ```bash
 xelabctl validate-config --config /etc/xelab/kernel.toml
-xelabctl migrate --config /etc/xelab/kernel.toml --target 18
+xelabctl migrate --config /etc/xelab/kernel.toml --target 19
 xelabctl bootstrap --config /etc/xelab/kernel.toml --owner-name admin
 xelabd --config /etc/xelab/kernel.toml
 ```
 
-`validate-config` 只验证结构和本地约束；不宣称宿主检查已经通过。当前迁移目标为 18：
+`validate-config` 只验证结构和本地约束；不宣称宿主检查已经通过。当前迁移目标为 19：
 空库先建立原始基线，已有库先检查已应用的版本和校验和，再顺序执行追加迁移；
 重复执行仍核对布局与校验和。bootstrap 只允许空账户库，须在启动守护进程前执行。
 守护进程不会隐式迁移数据库。
@@ -167,7 +173,7 @@ CI 另在一次性 Linux 主机运行 `tests/oci.rs`：真实 containerd + Rust/
 - 自授 Grant 证明签发权限时，忽略同账户其他非引导自授绑定，只使用独立来源（外部 Grant、父级继承或初始 Owner）。这些自授绑定仍在最外层保留权限/来源记录；撤销独立来源后不能互相维持权限。此优化针对同账户自授，其他来源图仍受现有深度/路径边界限制。
 - 控制器启用与停用清理分别保存 `(created_at,id)` 游标与上界，每轮各最多 16 项，并在项间检查 250 ms 时间片。Probe 按实例代次复用、分批回收；已清理禁用记录不反复协调。完整行为、回归与单项延迟限制见 [Controller 稳定化](../../docs/implementation/m1-acceptance.md#controller-稳定化pr-4-遗留项)。
 
-升级前备份并停机，确认没有未完成任务，执行上面的 `--target 18` 后再启动。
+升级前备份并停机，确认没有未完成任务，执行上面的 `--target 19` 后再启动。
 旧二进制拒绝不匹配的元数据版本，不能直接回退；原生快照恢复同样要求精确布局。
 v1 已有的凭证/账户派生调用继续计入预算；旧版本未记录的实际 Grant 来源无法事后精确重建，因此已有受此漏洞影响的限次来源 Key 应在升级时撤销后重新签发，不把旧账本当成完整历史计费证据。v7 持久备份任务见 [备份任务记录](../../docs/implementation/m2-backup-jobs.md)，v8 新卷恢复和切换见 [恢复实现](../../docs/implementation/m2-restores.md)，v9 元数据快照、启动门禁与权限重置见 [离线恢复组件](../../docs/implementation/m2-platform-recovery.md)。
 v10–11 部署重建与卷克隆见[部署重建实现](../../docs/implementation/m2-deployment-upgrades.md)，
@@ -176,7 +182,9 @@ v13 格式备份登记见[登记组件](../../docs/implementation/m2-format-back
 v14 为恢复后的历史用户提供[维护窗口重新激活](../../docs/implementation/m2-recovered-accounts.md)，
 需要实际宿主 root、当前恢复 Owner 凭证和明确的目标修订；不恢复旧授权。
 v15 保存[原始 HTTP 契约与调用绑定](../../docs/implementation/m3-http-provenance.md)，v16 保存[OAuth/UI 状态](../../docs/implementation/m3-oauth-ui.md)；恢复仍撤销旧凭证、Client 和信任，历史记录不能复活权限。
-v17 保存[依赖固定绑定和升级计划](../../docs/implementation/m4-dependencies.md)，不改变既有权限快照；HostService 代理与持久事件仍由 M4 后续阶段交付。
+v17 保存[依赖固定绑定和升级计划](../../docs/implementation/m4-dependencies.md)，不改变既有权限快照。
+v18 保存[HostService 原调用与独立来源上限](../../docs/implementation/m4-host.md)，v19 保存[事件、订阅和租约](../../docs/implementation/m4-events.md)。
+离线恢复保留事件/outbox/死信历史，但停用全部旧订阅并围栏旧租约，不恢复历史调用或临时句柄权限。
 已验证的业务格式可随认证数据进行[整体备份/恢复](../../docs/implementation/m2-platform-formats.md)，保留逻辑卷和历史格式绑定；恢复仍禁用部署并撤销旧信任，不自动迁移或重新授权。
 内部[格式变更执行器](../../docs/implementation/m2-format-transitions.md)已经接通，
 正式备份下的完整迁移与故障验收尚未完成，公开版本化制品安装入口仍关闭。

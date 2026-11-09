@@ -3,6 +3,9 @@
 use super::*;
 use crate::{db, events};
 
+#[path = "host_event_expiry_tests.rs"]
+mod expiry_tests;
+
 async fn event_proxy(f: &Fixture, deployment: Uuid) -> (String, auth::Context) {
     let mut c = f.app.db.connect().await.unwrap();
     let tx = c.transaction().await.unwrap();

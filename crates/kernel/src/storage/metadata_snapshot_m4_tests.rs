@@ -43,6 +43,11 @@ async fn actual_postgres_event_copy_preserves_pending_outbox_and_dead_letters_bu
         )
         .await
         .unwrap();
+    let (ticket, request_binding, unfinished) =
+        archived_host_handles(&source, &ctx, installation).await;
+    assert!(crate::recovery::ensure_m4_authority_reset(&source)
+        .await
+        .is_err());
     let tx = source.transaction().await.unwrap();
     db::auth_lock(&tx, false).await.unwrap();
     events::store(&tx, installation, &manifest).await.unwrap();
@@ -85,6 +90,7 @@ async fn actual_postgres_event_copy_preserves_pending_outbox_and_dead_letters_bu
     let pending = events::append(&tx, &f.app.auth, &ctx, &json!({"topic":topic,"version":"1.0.0","payload":{"n":9007199254740993u64},"dedupe_key":"snapshot-pending"})).await.unwrap().0;
     tx.commit().await.unwrap();
     for mutation in [
+        "INSERT INTO outbox(id,topic,aggregate_id,payload,created_at) VALUES(gen_random_uuid(),'kernel.event.publish',gen_random_uuid(),'{}',clock_timestamp())",
         "UPDATE subscriptions SET cursor_sequence=(SELECT next_sequence FROM event_store_limits) WHERE cursor IS NULL",
         "UPDATE subscriptions SET spec=jsonb_set(spec,'{topic}','\"org.xelab.backup-fixture.wrong\"')",
         "UPDATE event_deliveries SET state='retry',retry_at=NULL WHERE state='leased'",
@@ -121,6 +127,26 @@ async fn actual_postgres_event_copy_preserves_pending_outbox_and_dead_letters_bu
     events::snapshot::ensure_authority_reset(&destination)
         .await
         .unwrap();
+    crate::recovery::ensure_m4_authority_reset(&destination)
+        .await
+        .unwrap();
+    assert_eq!(
+        destination
+            .query_one("SELECT state FROM calls WHERE id=$1", &[&unfinished])
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        "unknown"
+    );
+    for (query, id) in [
+        ("UPDATE host_call_tickets SET expires_at=clock_timestamp()+interval '1 minute' WHERE id=$1", ticket),
+        ("UPDATE dependency_bindings SET expires_at=clock_timestamp()+interval '1 minute' WHERE id=$1", request_binding),
+    ] {
+        let tx = destination.transaction().await.unwrap();
+        tx.execute(query, &[&id]).await.unwrap();
+        assert!(crate::recovery::ensure_m4_authority_reset(&tx).await.is_err());
+        tx.rollback().await.unwrap();
+    }
     events::snapshot::validate_snapshot(&destination)
         .await
         .unwrap();
@@ -192,4 +218,33 @@ async fn actual_postgres_event_copy_preserves_pending_outbox_and_dead_letters_bu
         .await
         .unwrap();
     assert!(export_inner(&mut source, &mut Vec::new()).await.is_err());
+}
+
+// Unfinished crash metadata is deliberately inert: the instance is stopped and
+// no execution delegation is minted. COPY must still fence every stored handle.
+async fn archived_host_handles(
+    c: &Client,
+    ctx: &crate::auth::Context,
+    installation: Uuid,
+) -> (Uuid, Uuid, Uuid) {
+    let deployment: Uuid = c
+        .query_one(
+            "SELECT id FROM deployments WHERE installation_id=$1",
+            &[&installation],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let instance = Uuid::new_v4();
+    let call = Uuid::new_v4();
+    let binding = Uuid::new_v4();
+    let ticket = Uuid::new_v4();
+    let digest = contracts::digest(b"archived M4 metadata fixture");
+    let contract =
+        json!({"name":"org.xelab.snapshot.archive","version":"1.0.0","schema_digest":digest});
+    c.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,created_at,updated_at) VALUES($1,$2,1,0,'stopped','unknown',$3,now(),now())", &[&instance,&deployment,&json!({"cpu_millis":100,"memory_bytes":67108864,"ephemeral_bytes":1048576,"pids":64})]).await.unwrap();
+    c.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,state,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,$6,'running',now()+interval '5 minutes',now())", &[&call,&ctx.subject,&ctx.credential,&instance,&contract,&digest]).await.unwrap();
+    c.execute("INSERT INTO dependency_bindings(id,consumer_deployment_id,alias,provider_deployment_id,contract,binding_scope,required,bound_call,expires_at) VALUES($1,$2,'inert-archived-request',$2,$3,'request',false,$4,now()+interval '5 minutes')", &[&binding,&deployment,&contract,&call]).await.unwrap();
+    c.execute("INSERT INTO host_call_tickets(id,parent_call_id,instance_id,generation,delegation_digest,verification_digest,rpc_context,invocation,bounds,idempotency_key,fingerprint,input_digest,dependency_binding_id,expires_at) VALUES($1,$2,$3,1,$4,$5,'{}','{}','[]','archived-m4-ticket',$6,$6,$7,now()+interval '5 minutes')", &[&ticket,&call,&instance,&vec![1u8;32],&vec![2u8;32],&digest,&binding]).await.unwrap();
+    (ticket, binding, call)
 }

@@ -27,6 +27,6 @@ accepted 之后插件失败用 failed 终帧，HTTP 已为 200 时不能改成 5
 
 ## 事件订阅 SSE
 
-订阅流 data 为 Delivery，不是 StreamEvent；最多一个未确认 lease，显式 ack 才推进游标。断线不自动 ack，超租约会重投。同 delivery_id 的去重由消费者负责，见 [事件](../tasks/events.md)。
+订阅流 data 为 Delivery，不是 StreamEvent；最多一个未确认 lease，显式 ack 才推进游标。断线不自动 ack，超租约会重投。跨租约重投产生新的 delivery_id；消费者须按 event_id 或自身业务副作用键去重，见 [事件](../tasks/events.md)。
 
 兼容 AI SSE 使用 ChatChunk 与 `[DONE]`，不能与通用能力流混用。

@@ -15,7 +15,7 @@ use serde_json::json;
 use std::{
     convert::Infallible,
     net::SocketAddr,
-    sync::{atomic::Ordering, Arc, OnceLock},
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 use tokio::time::Instant;
@@ -34,12 +34,7 @@ struct State {
 }
 
 async fn next(state: &State) -> Result<Option<serde_json::Value>> {
-    if state.app.leader.is_closed()
-        || state.app.shutdown.load(Ordering::SeqCst)
-        || !state.app.ready.load(Ordering::SeqCst)
-    {
-        return Err(Error::unavailable("Event stream is stopping"));
-    }
+    events::ensure_serving(&state.app)?;
     let mut c = state.app.db.connect_scoped(Duration::from_secs(10)).await?;
     let tx = c.transaction().await?;
     db::auth_lock(&tx, false).await?;
@@ -53,10 +48,9 @@ async fn next(state: &State) -> Result<Option<serde_json::Value>> {
     )
     .await?;
     let value = events::lease(&tx, &state.app.auth, &ctx, state.subscription).await?;
-    if state.app.leader.is_closed() {
-        return Err(Error::unavailable("Controller leadership is lost"));
-    }
+    events::ensure_serving(&state.app)?;
     tx.commit().await?;
+    events::ensure_serving(&state.app)?;
     Ok(value)
 }
 
@@ -66,6 +60,7 @@ pub(crate) async fn handle(
     request_id: Uuid,
     request: Request<Body>,
 ) -> Result<Response> {
+    events::ensure_serving(&app)?;
     if request.method() != axum::http::Method::GET
         || request.uri().query().is_some()
         || request.headers().contains_key("last-event-id")

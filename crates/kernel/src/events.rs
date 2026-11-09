@@ -20,6 +20,17 @@ use std::collections::{BTreeSet, HashMap};
 use tokio_postgres::{GenericClient, Row};
 use uuid::Uuid;
 
+pub(crate) fn ensure_serving(app: &App) -> Result<()> {
+    use std::sync::atomic::Ordering;
+    if app.leader.is_closed()
+        || app.shutdown.load(Ordering::SeqCst)
+        || !app.ready.load(Ordering::SeqCst)
+    {
+        return Err(Error::unavailable("Event transport is stopping"));
+    }
+    Ok(())
+}
+
 pub fn handles(name: &str) -> bool {
     matches!(
         name,
@@ -527,6 +538,18 @@ async fn finish(
     }
     c.execute("UPDATE subscriptions SET cursor=$2,cursor_sequence=(SELECT sequence FROM events WHERE id=$2),revision=revision+1,updated_at=now() WHERE id=$1",&[&subscription,&event_id]).await?;
     Ok(())
+}
+
+/// Scheduling hint only. It grants no authority and never changes a cursor.
+/// The actual lease still locks and reauthorizes before exposing payload bytes.
+pub(crate) async fn delivery_ready(c: &(impl GenericClient + Sync), sub: &Row) -> Result<bool> {
+    let subscription: Uuid = sub.get("id");
+    if let Some(row)=c.query_opt("SELECT state,lease_expires_at,retry_at,clock_timestamp() AS instant FROM event_deliveries WHERE subscription_id=$1 AND state IN ('leased','retry') AND completed_at IS NULL ORDER BY created_at DESC,id DESC LIMIT 1",&[&subscription]).await? {
+        let now:DateTime<Utc>=row.get("instant");
+        return Ok(if row.get::<_,String>("state")=="leased" {row.get::<_,DateTime<Utc>>("lease_expires_at")<=now}else{row.get::<_,Option<DateTime<Utc>>>("retry_at").is_some_and(|time|time<=now)});
+    }
+    let spec: Value = sub.get("spec");
+    Ok(c.query_opt("SELECT published FROM events WHERE topic=$1 AND sequence>$2 AND expires_at>$3 ORDER BY sequence LIMIT 1",&[&string(&spec,"topic")?,&sub.get::<_,i64>("cursor_sequence"),&sub.get::<_,DateTime<Utc>>("created_at")]).await?.is_some_and(|row|row.get(0)))
 }
 
 pub async fn lease(

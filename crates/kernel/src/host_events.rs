@@ -110,19 +110,18 @@ pub(crate) async fn publish(
     let deadline = Instant::now() + Duration::from_millis(until as u64);
     tokio::time::timeout_at(deadline,async {
         events::fence(&tx).await?;
-        let authority=host_calls::authority(&tx,app,workload,context,"event.publish",&resource).await?;
     let actor=tx.query_one("SELECT t.manifest,t.publisher_id FROM deployments d JOIN installations t ON t.id=d.installation_id WHERE d.id=$1",&[&authority.deployment]).await?;
     let manifest: Value = actor.get("manifest");
-    let original_publisher:Uuid=tx.query_one("SELECT t.publisher_id FROM event_contracts e JOIN installations t ON t.id=e.publisher_installation_id WHERE e.topic=$1 AND e.version=$2",&[&request.topic,&request.version]).await?.get(0);
-    if actor.get::<_, Uuid>("publisher_id") != original_publisher {
-        return Err(Error::denied());
-    }
     events::validate_manifest(&manifest)?;
     if !manifest["event_topics"].as_array().is_some_and(|topics| {
         topics
             .iter()
             .any(|topic| topic["topic"] == request.topic && topic["version"] == request.version)
     }) {
+        return Err(Error::denied());
+    }
+    let original_publisher:Uuid=tx.query_opt("SELECT t.publisher_id FROM event_contracts e JOIN installations t ON t.id=e.publisher_installation_id WHERE e.topic=$1 AND e.version=$2",&[&request.topic,&request.version]).await?.ok_or_else(Error::denied)?.get(0);
+    if actor.get::<_, Uuid>("publisher_id") != original_publisher {
         return Err(Error::denied());
     }
     events::authorize(
@@ -143,14 +142,20 @@ pub(crate) async fn publish(
             event_id: saved["event_id"].as_str().ok_or_else(Error::denied)?.into(),
             duplicate: true,
         };
-        tx.commit().await?;
+        host_calls::authority(&tx,app,workload,context,"event.publish",&resource).await?;
+    events::ensure_serving(app)?;
+    tx.commit().await?;
+    events::ensure_serving(app)?;
         return Ok(result);
     }
     let (event, duplicate) = events::append(&tx, &app.auth, &authority.ctx, &body).await?;
     let response = json!({"event_id":event["id"],"duplicate":duplicate});
     remember(&tx, &authority.ctx, context, &path, &body, &response).await?;
     audit(&tx, &authority.ctx, workload, "event.publish", &resource).await?;
+    host_calls::authority(&tx,app,workload,context,"event.publish",&resource).await?;
+    events::ensure_serving(app)?;
     tx.commit().await?;
+    events::ensure_serving(app)?;
     Ok(rpc::PublishEventResponse {
         event_id: event["id"].as_str().unwrap_or("").into(),
         duplicate,
@@ -198,10 +203,6 @@ pub(crate) async fn ack(
     let deadline = Instant::now() + Duration::from_millis(until as u64);
     tokio::time::timeout_at(deadline, async {
         events::fence(&tx).await?;
-        let authority =
-            host_calls::authority(&tx, app, workload, context, "event.subscribe", &resource)
-                .await?;
-        events::check_subscription(&tx, &app.auth, &authority.ctx, subscription).await?;
         let path = format!(
             "/xelab.v1.HostService/AckEvent/{}/{}/{subscription}",
             workload.instance, workload.generation
@@ -221,8 +222,13 @@ pub(crate) async fn ack(
             )
             .await?;
             audit(&tx, &authority.ctx, workload, "event.subscribe", &resource).await?;
+        } else {
+            events::check_subscription(&tx, &app.auth, &authority.ctx, subscription).await?;
         }
+        host_calls::authority(&tx, app, workload, context, "event.subscribe", &resource).await?;
+        events::ensure_serving(app)?;
         tx.commit().await?;
+        events::ensure_serving(app)?;
         Ok(rpc::Ack {
             request_id: context.request_id.clone(),
             accepted: true,
@@ -256,19 +262,33 @@ struct SubscriptionStream {
     subscription: Uuid,
     until: Instant,
     last_poll: Instant,
+    checked_at: Instant,
+    subject: Uuid,
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
-async fn next(state: &SubscriptionStream) -> Result<Option<rpc::EventDelivery>> {
+async fn next(state: &mut SubscriptionStream) -> Result<Option<rpc::EventDelivery>> {
     let mut c = state.app.db.connect_scoped(Duration::from_secs(10)).await?;
     let tx = c.transaction().await?;
     db::auth_lock(&tx, false).await?;
     let row = tx
         .query_opt(
-            "SELECT owner_id,spec FROM subscriptions WHERE id=$1",
+            "SELECT * FROM subscriptions WHERE id=$1",
             &[&state.subscription],
         )
         .await?
         .ok_or_else(Error::not_found)?;
+    if row.get::<_, Uuid>("owner_id") != state.subject {
+        return Err(Error::not_found());
+    }
+    if row.get::<_, String>("status") != "active" {
+        return Err(Error::conflict("Subscription is disabled"));
+    }
+    events::ensure_serving(&state.app)?;
+    let due = events::delivery_ready(&tx, &row).await?;
+    if !due && state.checked_at.elapsed() < Duration::from_secs(5) {
+        tx.commit().await?;
+        return Ok(None);
+    }
     let spec: Value = row.get("spec");
     let resource = events::resource(contracts::string(&spec, "topic")?);
     let authority = host_calls::authority(
@@ -280,6 +300,13 @@ async fn next(state: &SubscriptionStream) -> Result<Option<rpc::EventDelivery>> 
         &resource,
     )
     .await?;
+    state.checked_at = Instant::now();
+    if !due {
+        events::ensure_serving(&state.app)?;
+        tx.commit().await?;
+        return Ok(None);
+    }
+    events::fence(&tx).await?;
     let value = events::lease(&tx, &state.app.auth, &authority.ctx, state.subscription).await?;
     if value.is_some() {
         audit(
@@ -291,7 +318,19 @@ async fn next(state: &SubscriptionStream) -> Result<Option<rpc::EventDelivery>> 
         )
         .await?;
     }
+    host_calls::authority(
+        &tx,
+        &state.app,
+        state.workload,
+        &state.context,
+        "event.subscribe",
+        &resource,
+    )
+    .await?;
+    state.checked_at = Instant::now();
+    events::ensure_serving(&state.app)?;
     tx.commit().await?;
+    events::ensure_serving(&state.app)?;
     value
         .map(|value| {
             let event = &value["event"];
@@ -346,7 +385,9 @@ pub(crate) async fn subscribe(
             axum::http::StatusCode::GATEWAY_TIMEOUT,
         ));
     }
+    events::ensure_serving(&app)?;
     tx.commit().await?;
+    events::ensure_serving(&app)?;
     static STREAMS: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
     let permit = STREAMS
         .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(32)))
@@ -363,6 +404,8 @@ pub(crate) async fn subscribe(
         subscription,
         until,
         last_poll: Instant::now(),
+        checked_at: Instant::now(),
+        subject: authority.ctx.subject,
         _permit: permit,
     };
     Ok(Box::pin(futures_util::stream::unfold(
@@ -379,7 +422,7 @@ pub(crate) async fn subscribe(
                 }
                 match tokio::time::timeout_at(
                     state.until.min(Instant::now() + Duration::from_secs(10)),
-                    next(&state),
+                    next(&mut state),
                 )
                 .await
                 {
