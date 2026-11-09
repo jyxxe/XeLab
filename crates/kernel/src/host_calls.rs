@@ -176,6 +176,7 @@ async fn authority_digest(
     }
     crate::broker::check_http_approval(c, app, row.get("call_id")).await?;
     crate::dependencies::check_ready(c, app, row.get("deployment_id")).await?;
+    crate::dependencies::check_call(c, row.get("call_id")).await?;
     let mut until_ms = row
         .get::<_, chrono::DateTime<chrono::Utc>>("until")
         .timestamp_millis()
@@ -1165,6 +1166,7 @@ async fn stream(app: std::sync::Arc<App>, prepared: Prepared) -> Result<RpcStrea
                     crate::broker::check_skill_authority(&tx, &ctx, child).await?;
                     let deployment:Uuid=tx.query_one("SELECT i.deployment_id FROM calls c JOIN instances i ON i.id=c.provider_instance_id WHERE c.id=$1",&[&child]).await?.get(0);
                     crate::dependencies::check_ready(&tx, &app, deployment).await?;
+                    crate::dependencies::check_call(&tx, child).await?;
                     tx.commit().await?;
                     Ok::<(), Error>(())
                 };
