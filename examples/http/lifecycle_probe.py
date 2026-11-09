@@ -7,7 +7,6 @@ This is a component probe; it does not exercise the kernel or its OCI runtime.
 """
 import argparse
 import base64
-import concurrent.futures
 import hashlib
 import http.client
 import json
@@ -46,14 +45,21 @@ def main():
     context = ssl.create_default_context(cafile=root / "ca.crt")
     context.load_cert_chain(root / "kernel.crt", root / "kernel.key")
 
-    def request(method, path, body=None):
+    def open_request(method, path, body=None):
         connection = http.client.HTTPSConnection("localhost", 8080, context=context, timeout=2)
         try:
             connection.request(method, path, body=body, headers={"Content-Type": "application/json",
                 "X-Xelab-Delegation": "component-probe-opaque-handle", "X-Xelab-Subject": instance,
                 "X-Xelab-Call-ID": str(uuid.uuid4()), "X-Xelab-Deadline-Unix-Ms": str(int(time.time() * 1000) + 10000),
                 "X-Xelab-Idempotency-Key": base64.urlsafe_b64encode("component-probe-business-key".encode()).rstrip(b"=").decode()})
-            response = connection.getresponse()
+            return connection, connection.getresponse()
+        except BaseException:
+            connection.close()
+            raise
+
+    def request(method, path, body=None):
+        connection, response = open_request(method, path, body)
+        try:
             return response.status, response.read()
         finally:
             connection.close()
@@ -102,23 +108,31 @@ def main():
                     except grpc.RpcError as error:
                         assert error.code() == grpc.StatusCode.INVALID_ARGUMENT
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    held_http = pool.submit(request, "POST", HOLD_PATH, b'{"message":"held HTTP","delay_ms":1000}')
-                    held_rpc = [rpc_client.Invoke.future(rpc_request(), timeout=5) for _ in range(3)]
+                # A successful SSE header is an acknowledgement that HTTP has
+                # acquired its application slot. Launch RPC only after that
+                # admission, and keep the stream open through the assertions.
+                held_connection, held_http = open_request("POST", EVENTS_PATH,
+                    b'{"message":"held HTTP","items":4,"interval_ms":1000}')
+                try:
+                    assert held_http.status == 200
+                    held_rpc = [rpc_client.Invoke.future(rpc_request(3000), timeout=5) for _ in range(3)]
                     for _ in range(30):
                         if request("POST", BUSINESS_PATH, b'{"message":"probe"}')[0] == 429:
                             break
                         time.sleep(0.02)
                     else:
-                        raise AssertionError("HTTP and RPC did not share the four physical instance slots")
+                        outcomes = [str(pending.code()) if pending.done() else "running" for pending in held_rpc]
+                        raise AssertionError("HTTP and RPC did not share the four physical instance slots; RPC=" + repr(outcomes))
                     try:
                         rpc_client.Invoke(rpc_request(), timeout=2)
                         raise AssertionError("RPC bypassed HTTP's shared application slots")
                     except grpc.RpcError as error:
                         assert error.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
-                    assert held_http.result(timeout=5)[0] == 200
                     for pending in held_rpc:
                         assert json.loads(pending.result(timeout=5).output_json) == {"message": "real RPC"}
+                    assert b'"kind":"completed"' in held_http.read()
+                finally:
+                    held_connection.close()
             drained = client.Drain(life.DrainRequest(grace_ms=1000), timeout=2)
             assert drained.drained and not drained.accepting_requests and drained.active_calls == 0
             assert request("POST", BUSINESS_PATH, b'{"message":"after drain"}')[0] == 503
