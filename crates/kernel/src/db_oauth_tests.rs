@@ -39,7 +39,10 @@ async fn actual_postgres_v15_oauth_migration_preserves_checksums_and_empty_resto
     db.migrate().await.unwrap();
     db.check().await.unwrap();
     let versions: Vec<i64> = c
-        .query("SELECT version FROM schema_migrations ORDER BY version", &[])
+        .query(
+            "SELECT version FROM schema_migrations ORDER BY version",
+            &[],
+        )
         .await
         .unwrap()
         .iter()
