@@ -133,7 +133,8 @@ fn validate_profile_inner(manifest: &Value, allow_versioned: bool) -> Result<()>
     let versioned = manifest["data_schema_version"] != "none";
     crate::webui::validate_manifest(manifest)?;
     crate::ui::validate_manifest(manifest)?;
-    for field in ["dependencies", "event_topics", "extension_points"] {
+    crate::dependencies::validate_manifest(manifest)?;
+    for field in ["event_topics", "extension_points"] {
         if manifest
             .get(field)
             .is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))

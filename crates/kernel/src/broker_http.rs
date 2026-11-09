@@ -1309,7 +1309,9 @@ pub(crate) async fn check_route_approval(
     app: &App,
     call: Uuid,
 ) -> Result<()> {
-    let row=c.query_one("SELECT c.http_binding,n.manifest FROM calls c JOIN instances i ON i.id=c.provider_instance_id JOIN deployments d ON d.id=i.deployment_id JOIN installations n ON n.id=d.installation_id WHERE c.id=$1",&[&call]).await?;
+    crate::dependencies::check_call(c, call).await?;
+    let row=c.query_one("SELECT c.http_binding,n.manifest,d.id AS dependency_deployment FROM calls c JOIN instances i ON i.id=c.provider_instance_id JOIN deployments d ON d.id=i.deployment_id JOIN installations n ON n.id=d.installation_id WHERE c.id=$1",&[&call]).await?;
+    crate::dependencies::check_ready(c, app, row.get("dependency_deployment")).await?;
     if let Some(binding) = row.get::<_, Option<Value>>("http_binding") {
         crate::plugin_http_gateway::check_approval(
             c,

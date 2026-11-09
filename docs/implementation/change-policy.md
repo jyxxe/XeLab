@@ -36,6 +36,11 @@ MPR1.2父默认4vCPU/4GiB，微资源设置在停用且排空后以If-Match及�
 
 ## 2.8扩展类型兼容规则
 
+M4 普通依赖的插件目标可以没有能力，DependencyBinding.contract 因此允许 null；
+能力目标继续保存精确 ContractRef，不把插件版本伪装成能力版本。
+CapabilityHealth 新增可选 repeated features 字段 4，旧实现按空列表解释；
+不回写旧签名清单、镜像摘要或已有权限上限。实际调用仍检查当前主体和完整来源链。
+
 ExtensionPlugin为第三种独立核心类型，宿主可为普通、微或扩展，必须显式声明版本化extension_points；没有声明的旧清单保持不支持，不回填字段或重算既有包/签名。独立扩展来源也不由宿主签名自动覆盖。
 
 新增data/skill模式、typed宿主、固定host_chain_digest、根ExtensionHostService和extension Skill目标。扩展配置、版本、宿主及limits变化均创建新部署/候选；现有工作流与batch保留原链。MPR1.3的扩展适配必须协商支持，不把扩展Data或handler桥静默加入旧运行时；资源、网络profile和调用者当前授权上限不得扩张。
