@@ -794,3 +794,6 @@ async fn host_mtls_effectful_failure_exposes_admitted_call_without_redispatch() 
     host.abort();
     downstream.abort();
 }
+
+#[path = "host_proxy_proof_tests.rs"]
+mod transaction_proofs;
