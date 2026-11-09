@@ -134,16 +134,16 @@ fn validate_profile_inner(manifest: &Value, allow_versioned: bool) -> Result<()>
     crate::webui::validate_manifest(manifest)?;
     crate::ui::validate_manifest(manifest)?;
     crate::dependencies::validate_manifest(manifest)?;
-    for field in ["event_topics", "extension_points"] {
-        if manifest
-            .get(field)
-            .is_some_and(|v| !v.as_array().is_some_and(Vec::is_empty))
-        {
-            return Err(Error::invalid(
-                "This ordinary-plugin profile does not support dependencies, UI or extensions",
-            ));
-        }
+    crate::events::validate_manifest(manifest)?;
+    if manifest
+        .get("extension_points")
+        .is_some_and(|value| !value.as_array().is_some_and(Vec::is_empty))
+    {
+        return Err(Error::invalid(
+            "This ordinary-plugin profile does not support extension points",
+        ));
     }
+
     if manifest
         .get("requested_rules")
         .and_then(Value::as_array)

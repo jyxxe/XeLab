@@ -40,10 +40,71 @@ mod platform_source;
 #[path = "support/platform_versioned.rs"]
 mod platform_versioned;
 
+#[path = "support/m4.rs"]
+mod m4;
 #[path = "support/ordinary_effects.rs"]
 mod ordinary_effects;
 #[path = "support/upgrades.rs"]
 mod upgrade_acceptance;
+
+#[test]
+fn m4_signed_consumer_fixture_matches_actual_kernel_profile_and_contracts() {
+    let directory = tempfile::tempdir().unwrap();
+    let platform = if cfg!(target_arch = "aarch64") {
+        "linux/arm64"
+    } else {
+        "linux/amd64"
+    };
+    let generated = std::process::Command::new("python3")
+        .arg(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../examples/m4-consumer/build_artifact.py"),
+        )
+        .args([
+            "--publisher-id",
+            "00000000-0000-4000-8000-000000000001",
+            "--platform",
+            platform,
+            "--output",
+        ])
+        .arg(directory.path())
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    let raw = fs::read(directory.path().join("xelab/plugin.json")).unwrap();
+    let manifest = contracts::strict_json(&raw, 1048576).unwrap();
+    artifact::validate_profile(&manifest).unwrap();
+    let capability = &manifest["capabilities"][0];
+    assert_eq!(capability["side_effect"], "non_repeatable");
+    let name = capability["contract"]["name"].as_str().unwrap();
+    let mut checks = String::new();
+    for file in [
+        "input.schema.json",
+        "output.schema.json",
+        "stream.schema.json",
+        "semantics.json",
+    ] {
+        let bytes = fs::read(
+            directory
+                .path()
+                .join("xelab/contracts")
+                .join(name)
+                .join("1.0.0")
+                .join(file),
+        )
+        .unwrap();
+        checks.push_str(&format!("{file} {}\n", &contracts::digest(&bytes)[7..]));
+    }
+    assert_eq!(
+        capability["contract"]["schema_digest"],
+        contracts::digest(checks.as_bytes())
+    );
+}
 
 #[allow(clippy::too_many_arguments)] // Test request envelope.
 async fn api(
@@ -182,6 +243,19 @@ async fn disable_after_observation(
 async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     assert_eq!(std::env::var("XELAB_OCI_TEST").as_deref(), Ok("1"));
     assert_eq!(unsafe { libc::geteuid() }, 0);
+    assert_eq!(
+        std::env::var("XELAB_M4_OCI_REQUIRED").as_deref(),
+        Ok("1"),
+        "the full OCI gate must explicitly require M4"
+    );
+    let m4_image =
+        std::env::var("XELAB_TEST_M4_CONSUMER_IMAGE").expect("required M4 image is missing");
+    artifact::image_ref(&m4_image).expect("M4 image must use its imported immutable digest");
+    assert!(
+        std::path::Path::new("examples/generated-m4-consumer/xelab/plugin.json").is_file(),
+        "required signed M4 artifact is missing"
+    );
+
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     xelab_kernel::init_crypto();
     let base = std::env::var("XELAB_TEST_DATABASE_URL").unwrap();
@@ -317,6 +391,9 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     .await;
     assert_eq!(replay.1["id"], installed["id"]);
     let installed = operation(&router, installed["id"].as_str().unwrap(), token).await;
+    // Later Python installation fixtures deliberately shadow `installed`.
+    // Preserve the original signed Rust origin used by the fixed Skill.
+    let rust_installation = contracts::id(&installed, "installation_id").unwrap();
     let limits =
         json!({"cpu_millis":500,"memory_bytes":134217728,"ephemeral_bytes":1048576,"pids":64});
     let (status,created)=api(&router,"createDeployment",&[],Some(token),json!({"installation_id":installed["installation_id"],"display_name":"echo","enabled":false,"limits":limits,"config":{},"volume_ids":[]}),"deploy-1",None).await;
@@ -1122,6 +1199,16 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     operation(&router, disabled.1["id"].as_str().unwrap(), token).await;
     assert!(!app.runtime.running(instance).await.unwrap());
     host_blob_component(&app, &router, token, publisher, &signing).await;
+    Box::pin(m4::run(
+        &app,
+        &router,
+        token,
+        publisher,
+        &signing,
+        rust_installation,
+        skill.parse().unwrap(),
+    ))
+    .await;
     assert_eq!(
         c.query_one("SELECT reserved_cpu_millis FROM node_budget", &[])
             .await

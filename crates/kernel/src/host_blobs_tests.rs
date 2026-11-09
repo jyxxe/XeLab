@@ -1193,3 +1193,6 @@ mod result_authority;
 
 #[path = "host_calls_tests.rs"]
 mod host_calls_tests;
+
+#[path = "host_events_tests.rs"]
+mod host_events_tests;

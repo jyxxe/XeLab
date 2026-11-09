@@ -11,7 +11,7 @@ use crate::{
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
-use tokio_postgres::Transaction;
+use tokio_postgres::{GenericClient, Transaction};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -85,7 +85,14 @@ pub(crate) async fn reset_rows(
         &[],
     )
     .await?;
+    c.execute(
+        "UPDATE host_call_tickets SET expires_at=least(expires_at,clock_timestamp())",
+        &[],
+    )
+    .await?;
+    c.execute("UPDATE dependency_bindings SET expires_at=least(coalesce(expires_at,clock_timestamp()),clock_timestamp()) WHERE bound_call IS NOT NULL", &[]).await?;
     crate::oauth::reset_authority(c).await?;
+    crate::events::snapshot::reset_authority(c).await?;
     c.execute(
         "UPDATE clients SET status='disabled',revision=revision+1,updated_at=now()",
         &[],
@@ -194,6 +201,18 @@ pub(crate) async fn reset_rows(
         "OFFLINE_AUTHORITY_RESET",
     )
     .await?;
+    Ok(())
+}
+
+/// Offline recovery never carries private Broker tickets or transient routing
+/// handles into a fresh host. Historical rows remain available for audit.
+pub(crate) async fn ensure_m4_authority_reset(c: &(impl GenericClient + Sync)) -> Result<()> {
+    let unsafe_state: bool = c.query_one("SELECT EXISTS(SELECT 1 FROM host_call_tickets WHERE expires_at>clock_timestamp()) OR EXISTS(SELECT 1 FROM dependency_bindings WHERE bound_call IS NOT NULL AND (expires_at IS NULL OR expires_at>clock_timestamp()))", &[]).await?.get(0);
+    if unsafe_state {
+        return Err(Error::conflict(
+            "Historical Host ticket or request binding survived recovery",
+        ));
+    }
     Ok(())
 }
 

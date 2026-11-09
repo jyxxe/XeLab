@@ -21,9 +21,10 @@
 | `invokeSkill` | 普通 capability 目标的非流式调用，通过 Broker 发送至固定安装的真实 OCI 实例 |
 | `streamSkill` | 后续切片实现普通 OCI 声明流；准确边界与待验收证据见[流式调用](m3-skill-streams.md) |
 
-HTTP 目标见独立 HTTP 实现；micro、extension、异步任务排队和 HostService 的 Skill 方法仍未交付。
+HTTP 目标见独立 HTTP 实现；HostService 的 Skill 方法已接入 [M4 代理](m4-host.md)。
+micro、extension 和异步任务排队仍未交付。
 `HostService.ListSkillCandidates/ResolveSkill/CheckSkillAccess/InvokeSkill/InvokeSkillStream`
-继续返回 UNIMPLEMENTED，不能通过插件声称已经取得内部 Skill 路由上下文。
+均使用实际 mTLS 实例、原 Call 及当前授权来源，不接受插件自报内部路由上下文。
 本次不新增 BatchEngine、Workflow、MPR 或 Extension 执行系统。
 普通无版本数据格式的 capability 支持 `none`、`idempotent`、`queryable` 和 `non_repeatable`，
 声明了匹配流 Schema 时同样可使用流。副作用分类控制重试/核实，不能用来拒绝首次执行。
