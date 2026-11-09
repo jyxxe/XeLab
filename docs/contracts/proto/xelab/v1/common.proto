@@ -27,6 +27,8 @@ message ErrorDetail {
   bool retryable = 3;
   uint32 retry_after_ms = 4;
   repeated FieldViolation violations = 5;
+  // 已准入且调用者仍可见的持久Call等资源引用；空表示未提供，不证明未执行。
+  string resource_id = 6;
 }
 message FieldViolation { string path = 1; string reason = 2; }
 message Empty {}

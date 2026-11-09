@@ -56,6 +56,7 @@ impl Service {
             error: if mode == 6 {
                 Some(rpc::ErrorDetail {
                     code: "DATA_CORRUPT".into(),
+                    resource_id: String::new(),
                     ..Default::default()
                 })
             } else {

@@ -18,6 +18,17 @@ proto3 无法用 required 自动表达必填，接收方必须在业务入口校
 
 input_json/output_json 必须为 UTF-8 且满足锁定契约，重复 key 拒绝；config_json 匹配清单 Schema；不接受任意未定义元数据。Proto 未知字段按向前兼容保留，但本版未知业务枚举拒绝执行。
 
+## 失败后的持久引用
+
+`xelab-error-bin` 为序列化 `ErrorDetail`。新增可选语义的 `resource_id` 字符串
+为空时表示未提供引用，不证明调用未执行。HostService 仅对已准入且当前调用者
+仍可见的持久 Call 填写原 UUID；字段、摘要或授权等准入前错误不填。
+
+HostService.Invoke 的 call_id 必须在发送前固定；InvokeSkill/InvokeSkillStream
+允许在新增可选 call_id 预先给出规范 UUID，旧请求省略/空值仍由核心分配。
+相同父 Call/键/指纹只保留原结果引用。完全丢失响应时收不到错误元数据，必须用
+预先固定的 UUID 查询核实；unknown 和 non_repeatable 不得换键或自动重发。
+
 ## 期限和流控
 
 Describe/GetHealth/Query/Resolve 默认 2s，上限 10s；Initialize 默认 30s，上限启动期限；Drain/Shutdown 受 grace_ms 限制，默认 30s、上限 300s；Invoke 默认 30s、上限 300s；Task.Execute 以步骤/任务期限为准，最长 24h 单步；迁移上限 1h。

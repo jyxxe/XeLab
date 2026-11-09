@@ -838,13 +838,15 @@ pub(crate) async fn check_skill_binding(
             )
             .await;
         }
-        let resolved = crate::skills::resolve_for_invoke(c, ctx, skill).await?;
-        if Some(resolved.definition_digest)
-            != row.get::<_, Option<String>>("skill_definition_digest")
-            || Some(resolved.installation_id) != row.get::<_, Option<Uuid>>("installation_id")
-        {
-            return Err(Error::denied());
-        }
+        crate::skills::check_admitted_capability_binding(
+            c,
+            skill,
+            &row.get::<_, Option<String>>("skill_definition_digest")
+                .ok_or_else(Error::denied)?,
+            row.get::<_, Option<Uuid>>("installation_id")
+                .ok_or_else(Error::denied)?,
+        )
+        .await?;
     }
     Ok(())
 }

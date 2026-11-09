@@ -77,6 +77,7 @@ fn query_result_is_a_strict_state_outcome_pair_and_missing_is_unknown() {
         retryable: true,
         retry_after_ms: 0,
         violations: vec![],
+        resource_id: String::new(),
     };
     assert!(decode(
         &binding,
@@ -178,6 +179,7 @@ fn queried_error_obeys_bounded_public_error_schema() {
                     retryable: false,
                     retry_after_ms: 0,
                     violations: vec![],
+                    resource_id: String::new(),
                 },
             )),
         };

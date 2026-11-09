@@ -14,7 +14,7 @@
 
 ## 前置条件、执行及失败语义
 
-call_id为新的下游调用，绑定父request/委托；校验 input摘要和契约，再由内核向目标代理。不得转交原始用户令牌或扩大代理范围。
+call_id为新的下游调用，绑定父request/委托；校验 input摘要和契约，再由内核向目标代理。不得转交原始用户令牌或扩大代理范围。 call_id为调用者预先固定的新下游Call UUID；已准入失败的xelab-error-bin可携ErrorDetail.resource_id，限当前调用者可见的原持久Call。字段/授权等准入前错误不填；完全丢失响应时使用原call_id查询核实，不能换键或自动重发unknown。
 
 ## 请求字段
 

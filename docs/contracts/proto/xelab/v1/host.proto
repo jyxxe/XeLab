@@ -88,6 +88,8 @@ message SkillInvokeRequest {
   string skill_id = 2; // 不可变版本UUID，不能以同名“最新版”替代。
   bytes input_json = 3; // 最大4MiB，必须匹配Skill输入Schema。
   string input_digest = 4;
+  // 可选新下游Call UUID；省略/空由核心分配。提供后可在丢失响应时按原ID核实，不授权自动重发。
+  optional string call_id = 5;
 }
 message ResolveRequest { RpcContext context = 1; ContractRef contract = 2; string binding_scope_id = 3; }
 message ResolveResponse {

@@ -267,6 +267,7 @@ async fn authority_digest(
     stage(timing, "approval");
     ctx.proxy_ceilings = ceilings;
     ctx.proxy_paths = Some(live);
+    ctx.bind_proxy_proof(c).await?;
     Ok(Authority {
         ctx,
         deployment: row.get("deployment_id"),
@@ -995,6 +996,12 @@ async fn prepare_skill(
 ) -> Result<Prepared> {
     let context = context(request.context.as_ref())?;
     let skill = uuid(&request.skill_id)?;
+    let requested_call = request
+        .call_id
+        .as_deref()
+        .filter(|v| !v.is_empty())
+        .map(uuid)
+        .transpose()?;
     let payload = contracts::strict_json(&request.input_json, 4194304)?;
     if contracts::digest(&request.input_json) != request.input_digest {
         return Err(Error::invalid("Input digest differs"));
@@ -1036,7 +1043,7 @@ async fn prepare_skill(
         input["provider_deployment_id"] = provider.clone();
     }
     let fingerprint = contracts::digest(&serde_json::to_vec(
-        &json!({"skill":skill,"definition_digest":value["definition_digest"],"input_digest":request.input_digest}),
+        &json!({"skill":skill,"definition_digest":value["definition_digest"],"input_digest":request.input_digest,"call_id":requested_call}),
     )?);
     let expected = if value["definition"]["target"]["kind"] == "capability" {
         Some(value["definition"]["target"]["contract"].clone())
@@ -1067,7 +1074,7 @@ async fn prepare_skill(
         Some(skill),
         expected,
         &input_digest,
-        None,
+        requested_call,
         &mut input,
         None,
     )
@@ -1120,18 +1127,48 @@ pub(crate) async fn invoke_skill(
     request: rpc::SkillInvokeRequest,
 ) -> Result<rpc::InvokeResponse> {
     let prepared = prepare_skill(app, workload, &request).await?;
-    response(
-        crate::broker::invoke_host(
-            app,
-            &prepared.token,
-            &prepared.ctx,
-            &prepared.input,
-            &prepared.key,
-            prepared.skill,
-            None,
-        )
-        .await?,
+    let result = crate::broker::invoke_host(
+        app,
+        &prepared.token,
+        &prepared.ctx,
+        &prepared.input,
+        &prepared.key,
+        prepared.skill,
+        None,
     )
+    .await;
+    let result = visible_error(app, &prepared, result).await;
+    response(result?)
+}
+async fn visible_error(app: &App, prepared: &Prepared, mut result: Result<Value>) -> Result<Value> {
+    if let Err(error) = &mut result {
+        if let Some(id) = error.resource_id.as_deref() {
+            let check = async {
+                let child = uuid(id)?;
+                let mut c = app.db.connect_scoped(Duration::from_secs(2)).await?;
+                let tx = c.transaction().await?;
+                db::call_lock(&tx).await?;
+                let ctx = authenticate(
+                    &tx,
+                    app,
+                    &prepared.token,
+                    prepared.ctx.peer,
+                    prepared.ctx.request,
+                )
+                .await?;
+                crate::broker::check_skill_authority(&tx, &ctx, child).await?;
+                tx.commit().await?;
+                Ok::<(), Error>(())
+            };
+            if !matches!(
+                tokio::time::timeout(Duration::from_secs(2), check).await,
+                Ok(Ok(()))
+            ) {
+                error.resource_id = None;
+            }
+        }
+    }
+    result
 }
 pub(crate) type RpcStream = std::pin::Pin<
     Box<
@@ -1279,6 +1316,11 @@ pub(crate) fn status(error: Error) -> tonic::Status {
         retryable: false,
         retry_after_ms: 0,
         violations: Vec::new(),
+        resource_id: if matches!(error.status.as_u16(), 401 | 403 | 404) {
+            String::new()
+        } else {
+            error.resource_id.clone().unwrap_or_default()
+        },
     };
     let mut status = crate::host_blobs::status(error);
     status.metadata_mut().insert_bin(
@@ -1402,7 +1444,8 @@ impl ProofCache {
     ) -> Result<Vec<crate::policy::Path>> {
         // Private to a single Host authority walk under its shared auth fence.
         // Contexts are freshly resumed; no body or prior request supplies proof.
-        if ctx.proxy_paths.is_some() || !ctx.proxy_ceilings.is_empty() {
+        if ctx.proxy_paths.is_some() || !ctx.proxy_ceilings.is_empty() || ctx.proxy_proof.is_some()
+        {
             return Err(Error::denied());
         }
         let owner = resource.filter(|r| r.kind == "plugin");

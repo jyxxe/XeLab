@@ -43,7 +43,10 @@ CheckSkillAccess 不创建 Call 或资源预约，仍同时检查 Skill 和原�
 
 子调用幂等键绑定父 Call；重放保持原目标、输入和第一次准入参数，不能重开
 unknown 或已拒绝的工作。每个父调用最多保留 256 个子调用准入记录；重放不
-增加条目。Invoke 使用请求给定的新 Call UUID，Skill 调用由核心创建 UUID。
+增加条目。Invoke 使用请求给定的新 Call UUID；Skill 也可显式提供新的 Call UUID，省略时由核心创建。
+错误的 `xelab-error-bin` 在原调用者仍可核实时保留已准入 Call 引用；传输丢失时
+错误元数据也可能丢失。调用方提前选择 UUID 可配合既有 getCall/运维核实，不表示
+可以自动重派 unknown，也不新增插件查询 RPC。
 
 RPC 流复用原 Broker 的 Schema 校验、断开取消和物理槽围栏。64 个并发响应，
 解码前跨所有连接共享 64 个准入槽，每层最多两个缓冲帧；item 业务 JSON 最大 1 MiB，completed 最大 16 MiB。

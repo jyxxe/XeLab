@@ -56,6 +56,7 @@ pub struct Policy<'a, C> {
     peer: IpAddr,
     browser_origin: Option<String>,
     proxy_paths: Option<Vec<Path>>,
+    proxy_proof: Option<(Uuid, String, bool)>,
     evaluating_grants: HashSet<Uuid>,
     proving_self_grants: HashSet<Uuid>,
     resource_owner: Option<(String, String, Uuid)>,
@@ -68,6 +69,7 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
             peer,
             browser_origin: None,
             proxy_paths: None,
+            proxy_proof: None,
             evaluating_grants: HashSet::new(),
             proving_self_grants: HashSet::new(),
             resource_owner: None,
@@ -87,6 +89,10 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
         {
             let mut policy = Self::with_browser_origin(c, ctx.peer, ctx.browser_origin.as_deref());
             policy.proxy_paths = ctx.proxy_paths.clone();
+            policy.proxy_proof = ctx
+                .proxy_proof
+                .as_ref()
+                .map(|proof| (ctx.credential, proof.nonce().to_owned(), proof.matches(ctx)));
             policy
         }
     }
@@ -204,6 +210,25 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
     }
 
     pub async fn credential(&mut self, credential: Uuid, depth: usize) -> Result<Vec<Path>> {
+        if depth == 0 {
+            if let Some((scope, nonce, identity_matches)) = self.proxy_proof.as_ref() {
+                if !identity_matches || *scope != credential {
+                    return Err(Error::denied());
+                }
+                let current: Option<String> = self
+                    .c
+                    .query_one("SELECT current_setting('xelab.host_proof_nonce',true)", &[])
+                    .await?
+                    .get(0);
+                if current.as_deref() != Some(nonce.as_str()) {
+                    return Err(Error::denied());
+                }
+                crate::auth::validate_sources(self.c, Some(credential), None, self.peer).await?;
+                return self
+                    .live_proxy_sources(self.proxy_paths.clone().ok_or_else(Error::denied)?)
+                    .await;
+            }
+        }
         if depth > 64 {
             return Err(Error::denied());
         }
@@ -304,6 +329,55 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
             }
         }
         Ok(paths)
+    }
+
+    // Grant/account mutations are excluded while the Host proof's auth fence
+    // is held. Time-based source-credential expiry is checked again at leaves;
+    // expired alternatives are removed rather than reviving them from new grants.
+    async fn live_proxy_sources(&self, paths: Vec<Path>) -> Result<Vec<Path>> {
+        let sources: Vec<Uuid> = paths
+            .iter()
+            .flat_map(|p| p.sources.iter().copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let rows = self
+            .c
+            .query(
+                "SELECT id,issuer_id,issuer_credential_id FROM grants WHERE id=ANY($1)",
+                &[&sources],
+            )
+            .await?;
+        if rows.len() != sources.len() {
+            return Err(Error::denied());
+        }
+        let mut valid = HashSet::new();
+        let mut issuers: std::collections::HashMap<(Option<Uuid>, Uuid), bool> = Default::default();
+        for row in rows {
+            let issuer: Option<Uuid> = row.get("issuer_credential_id");
+            let owner: Uuid = row.get("issuer_id");
+            let allowed = if let Some(valid) = issuers.get(&(issuer, owner)) {
+                *valid
+            } else {
+                let valid =
+                    match crate::auth::validate_sources(self.c, issuer, Some(owner), self.peer)
+                        .await
+                    {
+                        Ok(_) => true,
+                        Err(e) if e.code == "INVALID_CREDENTIAL" => false,
+                        Err(e) => return Err(e),
+                    };
+                issuers.insert((issuer, owner), valid);
+                valid
+            };
+            if allowed {
+                valid.insert(row.get::<_, Uuid>("id"));
+            }
+        }
+        Ok(paths
+            .into_iter()
+            .filter(|p| p.sources.iter().all(|id| valid.contains(id)))
+            .collect())
     }
 
     async fn grant(&mut self, grant: Uuid, depth: usize) -> Result<Vec<Path>> {
