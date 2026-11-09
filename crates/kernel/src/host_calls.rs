@@ -1127,6 +1127,7 @@ pub(crate) async fn invoke_skill(
     request: rpc::SkillInvokeRequest,
 ) -> Result<rpc::InvokeResponse> {
     let prepared = prepare_skill(app, workload, &request).await?;
+    let started = tokio::time::Instant::now();
     let result = crate::broker::invoke_host(
         app,
         &prepared.token,
@@ -1137,15 +1138,30 @@ pub(crate) async fn invoke_skill(
         None,
     )
     .await;
-    let result = visible_error(app, &prepared, result).await;
+    let maximum = prepared.input["timeout_ms"].as_u64().unwrap_or(30000);
+    let result = visible_error(
+        app,
+        &prepared,
+        result,
+        started + Duration::from_millis(maximum),
+    )
+    .await;
     response(result?)
 }
-async fn visible_error(app: &App, prepared: &Prepared, mut result: Result<Value>) -> Result<Value> {
+async fn visible_error(
+    app: &App,
+    prepared: &Prepared,
+    mut result: Result<Value>,
+    deadline: tokio::time::Instant,
+) -> Result<Value> {
     if let Err(error) = &mut result {
         if let Some(id) = error.resource_id.as_deref() {
+            let budget = deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+                .min(Duration::from_secs(10));
             let check = async {
                 let child = uuid(id)?;
-                let mut c = app.db.connect_scoped(Duration::from_secs(2)).await?;
+                let mut c = app.db.connect_scoped(budget).await?;
                 let tx = c.transaction().await?;
                 db::call_lock(&tx).await?;
                 let ctx = authenticate(
@@ -1160,10 +1176,7 @@ async fn visible_error(app: &App, prepared: &Prepared, mut result: Result<Value>
                 tx.commit().await?;
                 Ok::<(), Error>(())
             };
-            if !matches!(
-                tokio::time::timeout(Duration::from_secs(2), check).await,
-                Ok(Ok(()))
-            ) {
+            if !matches!(tokio::time::timeout(budget, check).await, Ok(Ok(()))) {
                 error.resource_id = None;
             }
         }
@@ -1200,6 +1213,7 @@ async fn stream(app: std::sync::Arc<App>, prepared: Prepared) -> Result<RpcStrea
     let delivery_peer = prepared.ctx.peer;
     let delivery_request = prepared.ctx.request;
     let actor = producer.clone();
+    drop(producer);
     let owner = app.clone();
     tokio::spawn(async move {
         let result = crate::broker::invoke_host(
@@ -1266,7 +1280,6 @@ async fn stream(app: std::sync::Arc<App>, prepared: Prepared) -> Result<RpcStrea
                 break;
             }
         }
-        drop(producer);
     });
     let guarded = futures_util::stream::unfold(
         (source, app, delivery_token, false),
