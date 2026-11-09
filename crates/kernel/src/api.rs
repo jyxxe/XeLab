@@ -316,6 +316,18 @@ async fn handle_core(
             ),
         };
     }
+    if operation(request.method().as_str(), request.uri().path())
+        .is_some_and(|(operation, _)| operation["operationId"] == "streamDeliveries")
+    {
+        return match crate::event_streams::handle(app, peer, request_id, request).await {
+            Ok(value) => value,
+            Err(error) => response(
+                json!({"error":error.detail(),"request_id":request_id}),
+                error.status.as_u16(),
+                request_id,
+            ),
+        };
+    }
     let blob = operation(request.method().as_str(), request.uri().path())
         .is_some_and(|(op, _)| crate::blobs::handles(op["operationId"].as_str().unwrap_or("")));
     if blob {
@@ -580,7 +592,7 @@ async fn dispatch(
         if let Some(row)=tx.query_opt("SELECT fingerprint,safe_response,response_status,sensitive,resource_id FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method=$3 AND path=$4 AND key=$5 AND expires_at>now()",&[&ctx.subject,&ctx.credential,&method,&path,&key]).await?{
             if row.get::<_,String>("fingerprint")!=fingerprint{return Err(Error::new("IDEMPOTENCY_CONFLICT","Idempotency key fingerprint differs",StatusCode::CONFLICT));}
             if row.get::<_,bool>("sensitive") {
-                authorize_operation(&tx,&ctx,name,&params,&body).await?;
+                authorize_operation(&tx,&app.auth,&ctx,name,&params,&body).await?;
                 return Err(Error::new("ONE_TIME_RESPONSE_UNAVAILABLE","The one-time secret is unavailable; inspect the existing resource",StatusCode::CONFLICT).with_resource(row.get::<_,String>("resource_id")));
             }
             // Authentication has been rechecked; resource authorization is checked by the same dispatch before any replay below.
@@ -589,7 +601,7 @@ async fn dispatch(
                 if name == "trustPublisher" && row.get::<_,i32>("response_status") == 201 {
                     auth::authorize(&tx, &ctx, "publisher.trust", &Resource::new("publisher", "new", Some(ctx.subject))).await?;
                 } else {
-                    authorize_operation(&tx, &ctx, name, &params, &body).await?;
+                    authorize_operation(&tx, &app.auth, &ctx, name, &params, &body).await?;
                 }
                 if matches!(name, "upgradeDeployment" | "rollbackDeployment") {
                     crate::upgrades::authorize_replay(&tx, &ctx, id(&value, "id")?).await?;
@@ -602,7 +614,7 @@ async fn dispatch(
             return Err(Error::conflict("Operation has no replayable response"));
         }
     }
-    if let Err(error) = authorize_operation(&tx, &ctx, name, &params, &body).await {
+    if let Err(error) = authorize_operation(&tx, &app.auth, &ctx, name, &params, &body).await {
         db::audit(
             &tx,
             ctx.subject,
@@ -621,6 +633,8 @@ async fn dispatch(
     let execution=async {
     let result = if identity::handles(name) {
         identity::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
+    } else if crate::events::handles(name) {
+        crate::events::execute(&tx,app,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
     } else if crate::plugin_catalog::handles(name) {
         crate::plugin_catalog::execute(&tx,&app.auth,&ctx,name,uri.query().unwrap_or("")).await?
     } else if crate::oauth::clients::handles(name) {
@@ -962,6 +976,7 @@ async fn dispatch(
 
 async fn authorize_operation(
     c: &(impl GenericClient + Sync),
+    app_auth: &Auth,
     ctx: &Context,
     name: &str,
     params: &HashMap<String, String>,
@@ -969,6 +984,9 @@ async fn authorize_operation(
 ) -> Result<()> {
     if identity::handles(name) {
         return identity::authorize(c, ctx, name, params, body).await;
+    }
+    if crate::events::handles(name) {
+        return crate::events::authorize(c, app_auth, ctx, name, params, body).await;
     }
     if crate::plugin_catalog::handles(name) {
         // Collection entry grants no object authority. The catalog filters each

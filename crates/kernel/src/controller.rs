@@ -267,6 +267,12 @@ async fn tick(app: &App, first: bool, state: &mut ControllerState) -> Result<()>
     // deployment sweep. Recovery precedes potentially slow image installation.
     recover_expired_calls(app).await?;
     process_installations(app).await?;
+    {
+        let mut events_connection = app.db.connect().await?;
+        let tx = events_connection.transaction().await?;
+        crate::events::maintenance(&tx).await?;
+        tx.commit().await?;
+    }
     prune_probes(&c, state).await?;
     for active in [true, false] {
         let sweep = if active {
@@ -515,6 +521,7 @@ async fn install(app: &App, request: &Value, operation: Uuid, payload: &Value) -
         }
         id
     };
+    crate::events::store(&tx, id, &artifact.manifest).await?;
     crate::http_contracts::store(
         &tx,
         id,

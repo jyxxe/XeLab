@@ -86,6 +86,7 @@ pub(crate) async fn reset_rows(
     )
     .await?;
     crate::oauth::reset_authority(c).await?;
+    crate::events::snapshot::reset_authority(c).await?;
     c.execute(
         "UPDATE clients SET status='disabled',revision=revision+1,updated_at=now()",
         &[],

@@ -45151,8 +45151,8 @@
         },
         "x-authorization": {
           "resource_kind": "event",
-          "resource_source": "body.topic 或 lookup(subscription_id).spec.topic；订阅另校验 owner",
-          "conditions": "默认拒绝；校验对象归属、完整祖先/源凭证链、固定上限、当前授权版本和额度；特殊字段条件见接口说明。"
+          "resource_source": "全局主题 body.topic 或 lookup(subscription_id).spec.topic（无账户 owner）；订阅另校验 owner",
+          "conditions": "默认拒绝；主题必须显式授予 ids/all，owned_by 不匹配主题；主题内不同发布账户的事件属于广播，不隐式按 publisher_id 过滤。订阅另校验归属、完整祖先/源凭证链、固定上限、当前授权版本和额度。"
         }
       }
     },
@@ -45514,8 +45514,8 @@
         "x-sensitive-response": false,
         "x-authorization": {
           "resource_kind": "event",
-          "resource_source": "body.topic 或 lookup(subscription_id).spec.topic；订阅另校验 owner",
-          "conditions": "默认拒绝；校验对象归属、完整祖先/源凭证链、固定上限、当前授权版本和额度；特殊字段条件见接口说明。"
+          "resource_source": "全局主题 body.topic 或 lookup(subscription_id).spec.topic（无账户 owner）；订阅另校验 owner",
+          "conditions": "默认拒绝；主题必须显式授予 ids/all，owned_by 不匹配主题；主题内不同发布账户的事件属于广播，不隐式按 publisher_id 过滤。订阅另校验归属、完整祖先/源凭证链、固定上限、当前授权版本和额度。"
         }
       },
       "post": {
@@ -45874,8 +45874,8 @@
         },
         "x-authorization": {
           "resource_kind": "event",
-          "resource_source": "body.topic 或 lookup(subscription_id).spec.topic；订阅另校验 owner",
-          "conditions": "默认拒绝；校验对象归属、完整祖先/源凭证链、固定上限、当前授权版本和额度；特殊字段条件见接口说明。"
+          "resource_source": "全局主题 body.topic 或 lookup(subscription_id).spec.topic（无账户 owner）；订阅另校验 owner",
+          "conditions": "默认拒绝；主题必须显式授予 ids/all，owned_by 不匹配主题；主题内不同发布账户的事件属于广播，不隐式按 publisher_id 过滤。订阅另校验归属、完整祖先/源凭证链、固定上限、当前授权版本和额度。"
         }
       }
     },
@@ -46236,8 +46236,8 @@
         "x-sensitive-response": false,
         "x-authorization": {
           "resource_kind": "event",
-          "resource_source": "body.topic 或 lookup(subscription_id).spec.topic；订阅另校验 owner",
-          "conditions": "默认拒绝；校验对象归属、完整祖先/源凭证链、固定上限、当前授权版本和额度；特殊字段条件见接口说明。"
+          "resource_source": "全局主题 body.topic 或 lookup(subscription_id).spec.topic（无账户 owner）；订阅另校验 owner",
+          "conditions": "默认拒绝；主题必须显式授予 ids/all，owned_by 不匹配主题；主题内不同发布账户的事件属于广播，不隐式按 publisher_id 过滤。订阅另校验归属、完整祖先/源凭证链、固定上限、当前授权版本和额度。"
         }
       },
       "delete": {
@@ -46657,8 +46657,8 @@
         "x-sensitive-response": false,
         "x-authorization": {
           "resource_kind": "event",
-          "resource_source": "body.topic 或 lookup(subscription_id).spec.topic；订阅另校验 owner",
-          "conditions": "默认拒绝；校验对象归属、完整祖先/源凭证链、固定上限、当前授权版本和额度；特殊字段条件见接口说明。"
+          "resource_source": "全局主题 body.topic 或 lookup(subscription_id).spec.topic（无账户 owner）；订阅另校验 owner",
+          "conditions": "默认拒绝；主题必须显式授予 ids/all，owned_by 不匹配主题；主题内不同发布账户的事件属于广播，不隐式按 publisher_id 过滤。订阅另校验归属、完整祖先/源凭证链、固定上限、当前授权版本和额度。"
         }
       }
     },
@@ -47010,8 +47010,8 @@
         "x-sensitive-response": false,
         "x-authorization": {
           "resource_kind": "event",
-          "resource_source": "body.topic 或 lookup(subscription_id).spec.topic；订阅另校验 owner",
-          "conditions": "默认拒绝；校验对象归属、完整祖先/源凭证链、固定上限、当前授权版本和额度；特殊字段条件见接口说明。"
+          "resource_source": "全局主题 body.topic 或 lookup(subscription_id).spec.topic（无账户 owner）；订阅另校验 owner",
+          "conditions": "默认拒绝；主题必须显式授予 ids/all，owned_by 不匹配主题；主题内不同发布账户的事件属于广播，不隐式按 publisher_id 过滤。订阅另校验归属、完整祖先/源凭证链、固定上限、当前授权版本和额度。"
         }
       }
     },
@@ -47378,8 +47378,8 @@
         },
         "x-authorization": {
           "resource_kind": "event",
-          "resource_source": "body.topic 或 lookup(subscription_id).spec.topic；订阅另校验 owner",
-          "conditions": "默认拒绝；校验对象归属、完整祖先/源凭证链、固定上限、当前授权版本和额度；特殊字段条件见接口说明。"
+          "resource_source": "全局主题 body.topic 或 lookup(subscription_id).spec.topic（无账户 owner）；订阅另校验 owner",
+          "conditions": "默认拒绝；主题必须显式授予 ids/all，owned_by 不匹配主题；主题内不同发布账户的事件属于广播，不隐式按 publisher_id 过滤。订阅另校验归属、完整祖先/源凭证链、固定上限、当前授权版本和额度。"
         }
       }
     },

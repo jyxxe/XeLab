@@ -163,6 +163,7 @@ async fn export_inner(c: &mut Client, out: &mut (impl AsyncWrite + Unpin)) -> Re
     crate::oauth::snapshot::validate_snapshot(&tx).await?;
     crate::ui::validate_snapshot(&tx).await?;
     crate::webui::validate_snapshot(&tx).await?;
+    crate::events::snapshot::validate_snapshot(&tx).await?;
     if tx
         .query_one(
             "SELECT EXISTS(SELECT 1 FROM platform_recovery_state WHERE phase<>'ready')",
@@ -420,6 +421,7 @@ async fn import_inner(
     crate::oauth::snapshot::validate_snapshot(&tx).await?;
     crate::ui::validate_snapshot(&tx).await?;
     crate::webui::validate_snapshot(&tx).await?;
+    crate::events::snapshot::validate_snapshot(&tx).await?;
     recovery::reset_rows(&tx, owner, password, recovery).await?;
     tx.execute(
         "UPDATE platform_recovery_state SET metadata_summary=$2 WHERE recovery_id=$1",
@@ -443,3 +445,7 @@ async fn foreign_keys(tx: &Transaction<'_>) -> Result<Vec<(String, String, Strin
 #[cfg(test)]
 #[path = "metadata_snapshot_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "metadata_snapshot_m4_tests.rs"]
+mod m4_tests;

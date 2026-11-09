@@ -14,6 +14,8 @@ pub mod controller;
 pub mod db;
 pub mod deployments;
 pub mod error;
+pub(crate) mod event_streams;
+pub mod events;
 pub mod host;
 pub mod host_blobs;
 pub mod http_contracts;

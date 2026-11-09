@@ -409,6 +409,7 @@ impl Target {
             ));
         }
         crate::oauth::snapshot::ensure_authority_reset(&tx).await?;
+        crate::events::snapshot::ensure_authority_reset(&tx).await?;
         volume_restore::publish(&tx, volumes).await?;
         tx.execute("UPDATE platform_recovery_state SET phase='ready',updated_at=now() WHERE recovery_id=$1 AND phase='rebuilding'",&[&self.recovery]).await?;
         crate::db::audit(
