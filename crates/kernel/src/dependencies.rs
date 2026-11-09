@@ -127,7 +127,7 @@ pub fn validate_graph(graph: &BTreeMap<Uuid, Vec<Uuid>>) -> Result<()> {
 }
 
 async fn graph(c: &(impl GenericClient + Sync), consumer: Uuid, bindings: &[Value]) -> Result<()> {
-    let rows = c.query("SELECT consumer_deployment_id,provider_deployment_id,bound_call FROM dependency_bindings WHERE required AND (bound_call IS NULL OR expires_at>now()) ORDER BY consumer_deployment_id,provider_deployment_id LIMIT 4097", &[]).await?;
+    let rows = c.query("SELECT b.consumer_deployment_id,b.provider_deployment_id,b.bound_call FROM dependency_bindings b LEFT JOIN calls q ON q.id=b.bound_call WHERE b.required AND (b.bound_call IS NULL OR (b.expires_at>now() AND q.state='running')) ORDER BY b.consumer_deployment_id,b.provider_deployment_id LIMIT 4097", &[]).await?;
     if rows.len() > 4096 {
         return Err(Error::exhausted());
     }

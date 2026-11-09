@@ -731,6 +731,7 @@ async fn postgres_host_request_handle_is_call_bound_and_refuses_generation_and_c
         .is_err(),
         "request scope cannot masquerade as deployment scope"
     );
+    check_call(&c, call).await.unwrap();
     let original_spec: Value = c
         .query_one("SELECT spec FROM deployments WHERE id=$1", &[&provider])
         .await
@@ -740,6 +741,10 @@ async fn postgres_host_request_handle_is_call_bound_and_refuses_generation_and_c
     assert!(check_host(&c, &ctx, deployment, call, binding, &contract)
         .await
         .is_err());
+    assert!(
+        check_call(&c, call).await.is_err(),
+        "parent completion must validate its actual request provider pin"
+    );
     c.execute(
         "UPDATE deployments SET spec=$2 WHERE id=$1",
         &[&provider, &original_spec],
@@ -1225,6 +1230,40 @@ async fn postgres_dynamic_strong_request_edges_survive_base_replacement_until_ex
     )
     .await
     .unwrap();
+    tx.execute(
+        "UPDATE dependency_bindings SET expires_at=now()+interval '30 seconds' WHERE id=$1",
+        &[&a_child],
+    )
+    .await
+    .unwrap();
+    tx.execute(
+        "UPDATE dependency_bindings SET expires_at=now()-interval '1 second' WHERE id=$1",
+        &[&b_child],
+    )
+    .await
+    .unwrap();
+    invalidate_dependents(&tx, b).await.unwrap();
+    let a_state: String = tx
+        .query_one("SELECT state FROM calls WHERE id=$1", &[&a_call])
+        .await
+        .unwrap()
+        .get(0);
+    let b_state: String = tx
+        .query_one("SELECT state FROM calls WHERE id=$1", &[&b_call])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        a_state, "unknown",
+        "disable must fence the issued A to B request despite A base pointing to C"
+    );
+    assert_eq!(
+        b_state, "running",
+        "unrelated future request scopes retain their independent parent Call"
+    );
+    graph(&tx, b, &[json!({"required":true,"deployment_id":a})])
+        .await
+        .unwrap();
     tx.rollback().await.unwrap();
     assert_eq!(
         c.query_one(
