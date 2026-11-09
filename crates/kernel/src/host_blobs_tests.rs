@@ -191,14 +191,24 @@ impl Fixture {
         let installation = Uuid::new_v4();
         let deployment = Uuid::new_v4();
         let instance = Uuid::new_v4();
-        c.execute("INSERT INTO publishers(id,name,key_id,public_key_pem,status,created_at,updated_at) VALUES($1,'fixture','fixture','fixture','trusted',now(),now())",&[&publisher]).await.unwrap();
+        c.execute("INSERT INTO publishers(id,name,key_id,public_key_pem,status,created_at,updated_at) VALUES($1,'fixture',$2,'fixture','trusted',now(),now())",&[&publisher,&publisher.to_string()]).await.unwrap();
         let mut manifest: Value =
             serde_json::from_str(include_str!("../tests/fixtures/secret-manifest.json")).unwrap();
+        let offset: i64 = c
+            .query_one(
+                "SELECT count(*) FROM installations WHERE plugin_id='org.xelab.echo-python'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let version = format!("1.0.{offset}");
+        manifest["version"] = json!(version);
         manifest["publisher_id"] = json!(publisher);
         manifest["requested_rules"] = json!([{"required":false,"rule":{"action":"blob.read","resource":{"kind":"blob","match":"all"}}},{"required":false,"rule":{"action":"blob.create","resource":{"kind":"blob","match":"all"}}}]);
         manifest["capabilities"][0]["input_schema"] = json!({"type":"object","properties":{"source":{"type":"string","format":"uuid","x-xelab-resource-kind":"blob"}},"required":["source"],"additionalProperties":false});
         crate::artifact::validate_profile(&manifest).unwrap();
-        c.execute("INSERT INTO installations(id,plugin_id,version,publisher_id,image_digest,manifest_digest,manifest,state,created_at,updated_at) VALUES($1,'org.xelab.echo-python','1.0.0',$2,'fixture','fixture',$3,'installed',now(),now())",&[&installation,&publisher,&manifest]).await.unwrap();
+        c.execute("INSERT INTO installations(id,plugin_id,version,publisher_id,image_digest,manifest_digest,manifest,state,created_at,updated_at) VALUES($1,'org.xelab.echo-python',$4,$2,'fixture','fixture',$3,'installed',now(),now())",&[&installation,&publisher,&manifest,&version]).await.unwrap();
         c.execute("INSERT INTO deployments(id,owner_id,installation_id,spec,phase,created_at,updated_at) VALUES($1,$2,$3,$4,'ready',now(),now())",&[&deployment,&owner,&installation,&json!({"enabled":false})]).await.unwrap();
         c.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,runtime_id,created_at,updated_at) VALUES($1,$2,7,0,'ready','alive','{}',$3,now(),now())",&[&instance,&deployment,&instance.to_string()]).await.unwrap();
         let approval = json!({"rules":[{"action":"blob.read","resource":{"kind":"blob","match":"all"}},{"action":"blob.create","resource":{"kind":"blob","match":"all"}}],"egress":[]});
@@ -335,21 +345,23 @@ impl Fixture {
         tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,idempotency_key,state,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,'running',$8,now())",&[&call,&ctx.subject,&ctx.credential,&instance,&contract,&contracts::digest(&serde_json::to_vec(&input).unwrap()),&Uuid::new_v4().to_string(),&deadline]).await.unwrap();
         if let Some(skill) = skill {
             tx.execute("UPDATE calls SET skill_id=$2,skill_definition_digest=(SELECT definition_digest FROM skills WHERE id=$2) WHERE id=$1", &[&call,&skill]).await.unwrap();
-            let mut charged = crate::identity::call_sources(
-                &tx,
-                &ctx,
-                &auth::Resource::new(
-                    "capability",
-                    format!(
-                        "{}@{}",
-                        contract["name"].as_str().unwrap(),
-                        contract["version"].as_str().unwrap()
-                    ),
-                    None,
+        }
+        let mut charged = crate::identity::call_sources(
+            &tx,
+            &ctx,
+            &auth::Resource::new(
+                "capability",
+                format!(
+                    "{}@{}",
+                    contract["name"].as_str().unwrap(),
+                    contract["version"].as_str().unwrap()
                 ),
-            )
-            .await
-            .unwrap();
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+        if let Some(skill) = skill {
             charged.extend(
                 crate::identity::call_sources_for(
                     &tx,
@@ -360,14 +372,14 @@ impl Fixture {
                 .await
                 .unwrap(),
             );
-            for credential in charged {
-                tx.execute(
-                    "INSERT INTO call_credential_charges(call_id,credential_id) VALUES($1,$2)",
-                    &[&call, &credential],
-                )
-                .await
-                .unwrap();
-            }
+        }
+        for credential in charged {
+            tx.execute(
+                "INSERT INTO call_credential_charges(call_id,credential_id) VALUES($1,$2)",
+                &[&call, &credential],
+            )
+            .await
+            .unwrap();
         }
         let token = self
             .app
@@ -1178,3 +1190,6 @@ async fn skill_frozen_business_proofs_exclude_exhausted_uncharged_alternatives()
 
 #[path = "m3_result_authority_tests.rs"]
 mod result_authority;
+
+#[path = "host_calls_tests.rs"]
+mod host_calls_tests;

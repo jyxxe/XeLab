@@ -14,7 +14,7 @@
 
 ## 前置条件、执行及失败语义
 
-无业务副作用。每个契约必须声明 ready/reason，未声明的能力视为不可用。alive=true 不等于所有能力 Ready，observed_generation 必须匹配。
+无业务副作用。每个契约必须声明 ready/reason，未声明的能力视为不可用。alive=true 不等于所有能力 Ready，observed_generation 必须匹配。 features 缺省为空；每个契约最多256个唯一非空特性，单项最多128字节，拒绝控制字符。核心只保存当前工作负载代次的观测，不给旧实现自动增加特性。
 
 ## 请求字段
 

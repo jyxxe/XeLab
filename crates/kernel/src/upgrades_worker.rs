@@ -361,6 +361,7 @@ async fn publish(
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
     db::auth_lock(&tx, false).await?;
+    crate::dependencies::dependency_lock(&tx).await?;
     let ctx = revalidate(&tx, app, row).await?;
     tx.query_one("SELECT id FROM node_budget FOR UPDATE", &[])
         .await?;
@@ -411,6 +412,7 @@ async fn publish(
     let runtime = enabled.then(|| candidate.to_string());
     tx.execute("UPDATE instances SET phase=$2,runtime_id=$3,health=$4,last_heartbeat_at=now(),revision=revision+1,updated_at=now() WHERE id=$1",&[&candidate,&instance_phase,&runtime,&if enabled{"alive"}else{"unknown"}]).await?;
     tx.execute("UPDATE deployments SET installation_id=$2,spec=$3,approval=$4,observed_generation=$5,phase=$6,conditions='[]',revision=revision+1,updated_at=now() WHERE id=$1",&[&deployment,&row.get::<_,Uuid>("target_installation_id"),&row.get::<_,Value>("target_spec"),&approval,&generation,&phase]).await?;
+    crate::dependencies::publish_upgrade(&tx, app, &ctx, deployment, operation).await?;
     tx.execute("UPDATE deployment_upgrade_jobs SET state='succeeded',updated_at=now() WHERE operation_id=$1",&[&operation]).await?;
     tx.execute(
         "DELETE FROM deployment_storage_holds WHERE deployment_id=$1 AND operation_id=$2",

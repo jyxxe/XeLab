@@ -292,7 +292,7 @@ async fn execute_inner(
         )
         .await?;
     let tx = c.transaction().await?;
-    let mut ctx = app.auth.authenticate(&tx, token, peer, request).await?;
+    let mut ctx = crate::host_calls::authenticate(&tx, app, token, peer, request).await?;
     ctx.browser_origin = input.browser_origin.clone();
     let mut authority = crate::auth::CurrentAuthority::new(&tx, &ctx).await?;
     let skill = if let Some(skill) = input.skill {
@@ -341,7 +341,7 @@ async fn execute_inner(
     // shared auth fence. The physical ledger, provider rows and mutable budget
     // choices remain serialized in the established order below.
     db::call_lock(&tx).await?;
-    let mut current = app.auth.authenticate(&tx, token, peer, request).await?;
+    let mut current = crate::host_calls::authenticate(&tx, app, token, peer, request).await?;
     current.browser_origin = input.browser_origin.clone();
     authority.verify(&tx, &current)?;
     let target = resolve(&tx, &input, skill.as_ref()).await?;
@@ -371,8 +371,19 @@ async fn execute_inner(
     if remaining.is_zero() {
         return Err(expired());
     }
-    let wall_deadline =
-        chrono::Utc::now() + chrono::Duration::from_std(remaining).map_err(|_| expired())?;
+    let wall_deadline = crate::host_calls::bound_deadline(
+        &tx,
+        app,
+        token,
+        chrono::Utc::now() + chrono::Duration::from_std(remaining).map_err(|_| expired())?,
+    )
+    .await?;
+    input.deadline = input.deadline.min(
+        tokio::time::Instant::now()
+            + (wall_deadline - chrono::Utc::now())
+                .to_std()
+                .unwrap_or(Duration::ZERO),
+    );
     let headers = op.request(&input.headers, &input.bytes)?;
     crate::plugin_http_gateway::check_approval_prepared(
         &tx,
@@ -479,7 +490,7 @@ async fn execute_inner(
         Some(&authority),
     )
     .await?;
-    let call = Uuid::new_v4();
+    let call = crate::host_calls::new_call(&tx, app, token).await?;
     tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,idempotency_key,state,deadline_at,created_at,http_binding,skill_id,skill_definition_digest) VALUES($1,$2,$3,$4,$5,$6,$7,'running',$8,now(),$9,$10,$11)",&[&call,&ctx.subject,&ctx.credential,&target.instance,&contract,&digest(&input.bytes),&business_key,&wall_deadline,&binding,&skill.as_ref().map(|s|s.id),&skill.as_ref().map(|s|s.definition_digest.as_str())]).await?;
     for credential in charged {
         tx.execute(
@@ -489,6 +500,7 @@ async fn execute_inner(
         .await?;
     }
     tx.execute("INSERT INTO reservations(id,account_id,kind,expires_at,status,created_at) VALUES($1,$2,'call',$3,'active',now())",&[&call,&ctx.subject,&wall_deadline]).await?;
+    crate::host_calls::bind_child(&tx, app, token, call, target.instance).await?;
     let delegation = app
         .auth
         .issue_rpc(
@@ -721,7 +733,7 @@ async fn execute_inner(
     let tx = c.transaction().await?;
     db::call_lock(&tx).await?;
     let authority = async {
-        let mut current = app.auth.authenticate(&tx, token, peer, request).await?;
+        let mut current = crate::host_calls::authenticate(&tx, app, token, peer, request).await?;
         current.browser_origin = input.browser_origin.clone();
         check_skill_authority(&tx, &current, call).await?;
         check_route_approval(&tx, app, call).await
@@ -1085,7 +1097,7 @@ async fn delivery(
     }
     let mut c = app.db.connect_scoped(remaining).await?;
     let tx = c.transaction().await?;
-    let mut ctx = app.auth.authenticate(&tx, token, peer, request).await?;
+    let mut ctx = crate::host_calls::authenticate(&tx, app, token, peer, request).await?;
     ctx.browser_origin = identity.browser_origin.clone();
     let row = tx
         .query_one(
@@ -1297,7 +1309,9 @@ pub(crate) async fn check_route_approval(
     app: &App,
     call: Uuid,
 ) -> Result<()> {
-    let row=c.query_one("SELECT c.http_binding,n.manifest FROM calls c JOIN instances i ON i.id=c.provider_instance_id JOIN deployments d ON d.id=i.deployment_id JOIN installations n ON n.id=d.installation_id WHERE c.id=$1",&[&call]).await?;
+    crate::dependencies::check_call(c, call).await?;
+    let row=c.query_one("SELECT c.http_binding,n.manifest,d.id AS dependency_deployment FROM calls c JOIN instances i ON i.id=c.provider_instance_id JOIN deployments d ON d.id=i.deployment_id JOIN installations n ON n.id=d.installation_id WHERE c.id=$1",&[&call]).await?;
+    crate::dependencies::check_ready(c, app, row.get("dependency_deployment")).await?;
     if let Some(binding) = row.get::<_, Option<Value>>("http_binding") {
         crate::plugin_http_gateway::check_approval(
             c,

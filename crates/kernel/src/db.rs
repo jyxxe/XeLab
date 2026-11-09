@@ -25,8 +25,10 @@ const RECOVERED_ACCOUNT_ACTIVATIONS: &str =
     include_str!("../migrations/0014_recovered_account_activations.sql");
 const PLUGIN_HTTP_CONTRACTS: &str = include_str!("../migrations/0015_plugin_http_contracts.sql");
 const OAUTH_STATE: &str = include_str!("../migrations/0016_oauth_state.sql");
+const DEPENDENCIES: &str = include_str!("../migrations/0017_dependencies.sql");
+const HOST_CALLS: &str = include_str!("../migrations/0018_host_calls.sql");
 const EVENT_STORE: &str = include_str!("../migrations/0019_events.sql");
-const MIGRATIONS: [&str; 17] = [
+const MIGRATIONS: [&str; 19] = [
     BASELINE,
     CALL_CHARGES,
     SECRET_AUTHORITY,
@@ -43,6 +45,8 @@ const MIGRATIONS: [&str; 17] = [
     RECOVERED_ACCOUNT_ACTIVATIONS,
     PLUGIN_HTTP_CONTRACTS,
     OAUTH_STATE,
+    DEPENDENCIES,
+    HOST_CALLS,
     EVENT_STORE,
 ];
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;

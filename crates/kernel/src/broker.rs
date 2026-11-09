@@ -246,7 +246,7 @@ async fn invoke_inner(
         .await?;
     let tx = c.transaction().await?;
     db::call_lock(&tx).await?;
-    let mut ctx = app.auth.authenticate(&tx, token, peer, request_id).await?;
+    let mut ctx = crate::host_calls::authenticate(&tx, app, token, peer, request_id).await?;
     ctx.browser_origin = browser_origin.map(str::to_owned);
     let skill = if let Some(id) = skill_id {
         match crate::skills::resolve_for_invoke(&tx, &ctx, id).await {
@@ -270,15 +270,6 @@ async fn invoke_inner(
     } else {
         None
     };
-    if stream.is_some()
-        && skill
-            .as_ref()
-            .is_none_or(|skill| skill.definition["stream_item_schema"].is_null())
-    {
-        return Err(Error::invalid(
-            "Skill does not declare a streaming item schema",
-        ));
-    }
     let mut adapted;
     let original = input;
     let input = if let Some(skill) = &skill {
@@ -347,7 +338,13 @@ async fn invoke_inner(
             "Unsupported capability side-effect semantics",
         ));
     }
-    let protected = skill.is_some() || definition["side_effect"] != "none";
+    if stream.is_some() && definition["stream_item_schema"].is_null() {
+        return Err(Error::invalid(
+            "Capability does not declare a streaming item schema",
+        ));
+    }
+    let mut protected =
+        skill.is_some() || definition["side_effect"] != "none" || token.starts_with("host:");
     let fingerprint = digest(&serde_json::to_vec(original)?);
     let path = skill_id.map_or_else(
         || "/api/platform/v1/calls".to_owned(),
@@ -369,7 +366,7 @@ async fn invoke_inner(
         let call_id=r.get::<_,Option<String>>("resource_id").and_then(|s|s.parse::<Uuid>().ok()).ok_or_else(||Error::conflict("Missing prior call"))?;
         if stream.is_some() { return Err(Error::conflict("Generation streams cannot be replayed; inspect the admitted Call").with_resource(call_id)); }
         let row=tx.query_one("SELECT state,result FROM calls WHERE id=$1",&[&call_id]).await?;
-        if row.get::<_,String>("state")=="succeeded"{if protected{check_skill_authority(&tx,&ctx,call_id).await?;}let value = row.get::<_,Option<Value>>("result").ok_or_else(||Error::conflict("Call result is unavailable"))?; return skill_result(skill.as_ref(), value);}
+        if row.get::<_,String>("state")=="succeeded"{let deployment:Uuid=tx.query_one("SELECT i.deployment_id FROM calls c JOIN instances i ON i.id=c.provider_instance_id WHERE c.id=$1", &[&call_id]).await?.get(0);crate::dependencies::check_ready(&tx,app,deployment).await?;if protected || tx.query_one("SELECT EXISTS(SELECT 1 FROM host_rpc_contexts WHERE call_id=$1)",&[&call_id]).await?.get::<_,bool>(0){check_skill_authority(&tx,&ctx,call_id).await?;}let value = row.get::<_,Option<Value>>("result").ok_or_else(||Error::conflict("Call result is unavailable"))?; return skill_result(skill.as_ref(), value);}
         return Err(Error::new("OUTCOME_UNKNOWN","Prior call is not a confirmed success; query its call ID",axum::http::StatusCode::CONFLICT).with_resource(call_id));
     }
     let bytes = serde_json::to_vec(&input["input"])?;
@@ -386,9 +383,13 @@ async fn invoke_inner(
     let row = providers
         .first()
         .ok_or_else(|| Error::unavailable("No healthy fixed provider is available"))?;
+    crate::dependencies::check_ready(&tx, app, row.get("deployment_id")).await?;
     let instance: Uuid = row.get("id");
     let generation: i64 = row.get("generation");
     let manifest: Value = row.get("manifest");
+    protected |= manifest["dependencies"]
+        .as_array()
+        .is_some_and(|d| !d.is_empty());
     if definition["side_effect"] != "none" {
         crate::artifact::validate_runtime_profile(&manifest)?;
         if !manifest["capabilities"]
@@ -417,6 +418,14 @@ async fn invoke_inner(
     if manifest["business_entry"] == "skill_required" && skill.is_none() {
         return Err(Error::denied());
     }
+    protected |= manifest["requested_rules"].as_array().is_some_and(|rs| {
+        rs.iter().any(|r| {
+            crate::host_blobs::proxy_action(
+                r["rule"]["action"].as_str().unwrap_or(""),
+                r["rule"]["resource"]["kind"].as_str().unwrap_or(""),
+            )
+        })
+    });
     let (accounts, charged) = reserve_business(
         &tx,
         &ctx,
@@ -428,13 +437,19 @@ async fn invoke_inner(
         None,
     )
     .await?;
-    let call = Uuid::new_v4();
+    let call = crate::host_calls::new_call(&tx, app, token).await?;
     let timeout = input
         .get("timeout_ms")
         .map(unsigned)
         .transpose()?
         .unwrap_or(30000);
-    let deadline = started + chrono::Duration::milliseconds(timeout as i64);
+    let deadline = crate::host_calls::bound_deadline(
+        &tx,
+        app,
+        token,
+        started + chrono::Duration::milliseconds(timeout as i64),
+    )
+    .await?;
     if deadline <= chrono::Utc::now() {
         return Err(Error::new(
             "DEADLINE_EXCEEDED",
@@ -458,6 +473,7 @@ async fn invoke_inner(
         .await?;
     }
     tx.execute("INSERT INTO reservations(id,account_id,kind,expires_at,status,created_at) VALUES($1,$2,'call',$3,'active',now())", &[&call,&ctx.subject,&deadline]).await?;
+    crate::host_calls::bind_child(&tx, app, token, call, instance).await?;
     let delegation = app
         .auth
         .issue_rpc(&tx, &ctx, call, instance, generation, deadline)
@@ -490,17 +506,25 @@ async fn invoke_inner(
         || Duration::from_millis((deadline - chrono::Utc::now()).num_milliseconds().max(0) as u64);
     let result = async {
         if let Some(stream) = stream {
-            stream.bind(skill.as_ref().ok_or_else(Error::denied)?, call, deadline)?;
+            if let Some(skill) = skill.as_ref() {
+                stream.bind(skill, call, deadline)?;
+            } else {
+                let synthetic = crate::skills::ResolvedSkill {
+                    id: Uuid::nil(),
+                    installation_id: Uuid::nil(),
+                    definition: json!({"version":version}),
+                    definition_digest: schema_digest.into(),
+                    owner: ctx.subject,
+                };
+                stream.bind(&synthetic, call, deadline)?;
+            }
             stream.emit("accepted", json!({})).await?;
         }
         let address = app.runtime.address(instance)?;
         let channel = tls::channel(&app.config, instance, generation, &address).await?;
-        let mut client =
-            CapabilityServiceClient::new(channel).max_decoding_message_size(if stream.is_some() {
-                1024 * 1024 + 1024 // One bounded JSON block plus protobuf metadata.
-            } else {
-                16778240
-            });
+        let mut client = CapabilityServiceClient::new(channel).max_decoding_message_size(
+            stream.map(|s| s.maximum_rpc_response()).unwrap_or(16778240),
+        );
         let mut context = controller::context(Some(ctx.subject));
         context.request_id = ctx.request.to_string();
         context.delegation_token = delegation;
@@ -554,8 +578,9 @@ async fn invoke_inner(
                     Some(rpc::invoke_chunk::Body::ItemJson(bytes)) => {
                         let item = strict_json(&bytes, 1024 * 1024)?;
                         validate_business(&definition["stream_item_schema"], &item)?;
-                        let skill = skill.as_ref().ok_or_else(Error::denied)?;
-                        validate_business(&skill.definition["stream_item_schema"], &item)?;
+                        if let Some(skill) = skill.as_ref() {
+                            validate_business(&skill.definition["stream_item_schema"], &item)?;
+                        }
                         check_live_call(
                             app,
                             token,
@@ -668,8 +693,11 @@ async fn invoke_inner(
     let tx = c.transaction().await?;
     db::call_lock(&tx).await?;
     let check = async {
-        let mut current = app.auth.authenticate(&tx, token, peer, request_id).await?;
+        let mut current =
+            crate::host_calls::authenticate(&tx, app, token, peer, request_id).await?;
         current.browser_origin = browser_origin.map(str::to_owned);
+        crate::dependencies::check_call(&tx, call).await?;
+        crate::dependencies::check_ready(&tx, app, row.get("deployment_id")).await?;
         if protected {
             crate::host_blobs::check_call_sources(&tx, &current, call).await?;
         }
@@ -748,10 +776,7 @@ async fn check_live_call(
         )
         .await?;
     let check = connection.transaction().await?;
-    let mut current = app
-        .auth
-        .authenticate(&check, token, peer, request_id)
-        .await?;
+    let mut current = crate::host_calls::authenticate(&check, app, token, peer, request_id).await?;
     current.browser_origin = browser_origin.map(str::to_owned);
     check_skill_authority(&check, &current, call).await?;
     http::check_route_approval(&check, app, call).await?;
@@ -776,13 +801,22 @@ async fn check_live_call(
     if !live {
         return Err(Error::unavailable("Fixed Skill deployment is unavailable"));
     }
+    let deployment: Uuid = check
+        .query_one(
+            "SELECT deployment_id FROM instances WHERE id=$1",
+            &[&instance],
+        )
+        .await?
+        .get(0);
+    crate::dependencies::check_call(&check, call).await?;
+    crate::dependencies::check_ready(&check, app, deployment).await?;
     check.commit().await?;
     crate::skill_streams::ensure_active(app)?;
     Ok(())
 }
 
 /// HostService reads authority from the admitted Call, not plugin JSON/headers.
-async fn check_skill_binding(
+pub(crate) async fn check_skill_binding(
     c: &(impl tokio_postgres::GenericClient + Sync),
     ctx: &crate::auth::Context,
     call: Uuid,
@@ -999,3 +1033,27 @@ pub(crate) async fn check_skill_authority(
 #[cfg(test)]
 #[path = "broker_monitor_tests.rs"]
 mod monitor_tests;
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn invoke_host(
+    app: &App,
+    token: &str,
+    ctx: &crate::auth::Context,
+    input: &Value,
+    key: &str,
+    skill: Option<Uuid>,
+    stream: Option<&crate::skill_streams::Output>,
+) -> Result<Value> {
+    invoke_bounded(
+        app,
+        token,
+        ctx.peer,
+        ctx.request,
+        input,
+        key,
+        skill,
+        stream,
+        ctx.browser_origin.as_deref(),
+    )
+    .await
+}

@@ -82,6 +82,7 @@ pub async fn execute(
     authorize(c, ctx, name, params, body).await?;
     validate("DeploymentPatch", body)?;
     let deployment = path_id(params, "deployment_id")?;
+    crate::dependencies::dependency_lock(c).await?;
     // The caller retains the exclusive authorization transaction until commit.
     // Never wait on a Controller fence while holding that authorization lock:
     // Controller may be waiting for its shared authorization check.
@@ -167,6 +168,7 @@ pub async fn execute(
     if row.get::<_, i64>("revision") >= i32::MAX as i64 {
         return Err(Error::exhausted());
     }
+    crate::dependencies::clear(c, deployment).await?;
     c.execute("UPDATE deployments SET spec=$2,revision=revision+1,conditions='[]',updated_at=now() WHERE id=$1", &[&deployment,&wanted]).await?;
     let operation = db::operation(c, ctx.subject, name, Some(deployment.to_string())).await?;
     let result = read_object(c, "deployments", deployment, "Deployment").await?;

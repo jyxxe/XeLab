@@ -1,6 +1,6 @@
-# XeLab Kernel：M1/M2 与 M3 Skill、HTTP、OAuth/WebUI
+# XeLab Kernel：M1/M2/M3 与 M4 依赖
 
-这是基于现有 **2.8.0 契约**的 Rust 实现，crate 版本为 0.1.0。已实现 M1 普通插件、身份与管理闭环，以及 M2 卷、Blob、Secret、部署备份/恢复、整体离线恢复和内部格式监督器。M3 源码提供普通 OCI Skill 的七项公开操作、声明式 HTTP、OAuth/Client/UI 控制面及独立 WebUI/消息桥；内部 Schema 为 **16**，历史 SQL 及校验和不变。源码功能范围与实际验收状态分别记录：逐项测试、精确提交、PR 集成和 main CI 以有时间戳的[持续进度](../../docs/implementation/m3-progress.md)及[目标 #38](https://github.com/jyxxe/XeLab/issues/38)最新证据为准，不能仅凭实现代码宣布完整 M3 完成。正式生产、AWS/独立宿主和完整格式迁移验收仍独立待完成；公开版本化制品安装入口仍关闭。
+这是基于现有 **2.8.0 契约**的 Rust 实现，crate 版本为 0.1.0。已实现 M1 普通插件、身份与管理闭环，以及 M2 卷、Blob、Secret、部署备份/恢复、整体离线恢复和内部格式监督器。M3 源码提供普通 OCI Skill 的七项公开操作、声明式 HTTP、OAuth/Client/UI 控制面及独立 WebUI/消息桥；内部 Schema 为 **17**，历史 SQL 及校验和不变。源码功能范围与实际验收状态分别记录：逐项测试、精确提交、PR 集成和 main CI 以有时间戳的[持续进度](../../docs/implementation/m3-progress.md)及[目标 #38](https://github.com/jyxxe/XeLab/issues/38)最新证据为准，不能仅凭实现代码宣布完整 M3 完成。正式生产、AWS/独立宿主和完整格式迁移验收仍独立待完成；公开版本化制品安装入口仍关闭。
 
 ## 已实现与边界
 
@@ -10,6 +10,7 @@
 | 身份与授权 | Owner 引导、五种角色、Guest 自助、固定父级子账户与激活、三种继承模式、不可变权限组/授权、API Key 与会话/密码管理、实时源链撤销、树配额、审计、Cookie CSRF 与可信 Host；恢复后历史用户显式重新激活 | Workflow 执行委托与缓存式授权优化；恢复不复活旧权限 |
 | OAuth/UI 控制面 | 精确 Client origin/redirect/规则上限、code + PKCE S256、可信登录/原生同意、短期单次码、刷新轮换/重用撤族、来源绑定 CORS、默认 UI、签名贡献发现及本人偏好；已随 #44 合并 | 独立 OCI WebUI 已通过 #45 精确完整/专项门禁；不代理插件密码或核心 Cookie |
 | 制品 | 预导入固定 OCI manifest digest、Ed25519 信封、原始清单/契约摘要及实际内容校验、严格 JSON/Schema 校验、OCI 归档及冷内容库导入 | 在线拉取、image index 自动选平台、仓库登录、依赖安装、卸载；公开非 none 格式安装关闭 |
+| 依赖 | `resolveDependencies`、普通插件/能力完整解析、精确契约/安装/配置/代次与特性固定、并发强环/16层图检查、可选降级和升级计划日志 | HostService 入口由 M4 下一阶段接入；task 执行依赖 TaskEngine，微/扩展宿主仍未交付 |
 | 控制器 | 安装/批准/启用/健康/排空停止、有界对账与重启、完全停用排空后的配置更新、部署重建与同格式卷切换、内部初始化/格式迁移监督器 | 多副本、滚动升级、运行中动态配置；完整格式升级/不兼容回退仍待正式备份验收 |
 | 执行 | containerd/runc 真容器、cgroups v2 CPU/内存/PID、只读根目录、受限 tmpfs、无 Linux capabilities、隔离网络、工作负载 mTLS | 外网/代理、尚未实现的 HostService 方法、GPU、微插件/MPR、Extension Plugin；组件预算不代替生产 RUN-03 |
 | 调用 | 固定契约/安装/部署、双层授权、共享实例并发、树配额/源链计费、幂等/unknown 账本、有界 SSE 缓冲与取消围栏；普通无版本数据格式 capability 四类副作用的单次/声明流和原实例 QueryResult | #46 精确真实 OCI 副作用/QueryResult 门禁已通过；事务锁准入等待及有界 SSE 缓冲不是业务等待队列或持久 TaskEngine；Workflow、Batch、Schedule、Event、M4 HostService 代理未交付 |
@@ -24,6 +25,8 @@
 当前公开安装 profile 接受单副本、无依赖、无扩展点且 data_schema_version 为 none 的普通插件；宿主权限申请仅保留现有可选 Secret/Blob profile。允许受控持久卷、签名 capability/HTTP Skill 候选、经验证的 http/static/webui 路由及固定 WebUI/UI Contribution 声明；页面必须有独立来源和对应签名准入，不因 UI 存在而授予业务权限。内部版本化格式的初始化、同格式切换和 Plan/Apply/Verify 见[格式监督器](../../docs/implementation/m2-format-transitions.md)；内部实现不等于公开准入或正式验收。业务 Schema 必须自包含，拒绝 $ref/$id 等引用。实例业务池满拒绝，事务锁准入等待和有界 SSE 缓冲不创建业务等待队列或持久任务，未实现操作明确报错。
 
 `registerSkill/getSkill/listSkills/setSkillEnabled/archiveSkill/invokeSkill/streamSkill` 固定安装、不可变定义与 UUID，复用 Broker 并发、配额、来源链和 unknown 围栏。普通 capability 的 `none/idempotent/queryable/non_repeatable` 均支持首次单次和已声明流；从不自动重派业务。queryable 的 getCall 仅向原实例/代次发送 QueryResult，复核原来源，不切换提供者或重新 Invoke。内部版本化数据 profile 仍保留既有 none/idempotent 限制，公开版本化制品门禁关闭。HTTP Skill 固定签名 GET/HEAD/POST/PUT/PATCH/DELETE、声明成功状态和 Schema；无正文/204/HEAD 使用契约允许的 null，声明流接入已有 Skill SSE，不能由输入选 URL/方法。两类扩展已通过 #46/#47 精确真实 OCI 门禁，主线最终验收状态见持续进度与目标 #38。HostService 的 Skill 发现/解析/检查/调用 RPC 仍为 UNIMPLEMENTED，属于 M4；不等于公开 Skill API 未实现。边界和命令见 [Skill](../../docs/implementation/m3-skills.md)、[流式调用](../../docs/implementation/m3-skill-streams.md)、[HTTP](../../docs/implementation/m3-http.md)和[WebUI 整体门禁](../../docs/implementation/m3-webui.md)。
+
+M4 第一阶段新增普通依赖清单准入、固定部署绑定、请求范围路由基础和失败策略；启用会重新核对真实提供者，物理停止前不释放资源预留。绑定不是授权，实际调用继续检查当前调用者与完整来源链。实现和验证范围见 [依赖说明](../../docs/implementation/m4-dependencies.md)与[目标 #51](https://github.com/jyxxe/XeLab/issues/51)。
 
 配置仍使用现有 `kernel.toml`；`unix_socket` 暂未提供控制服务。`ui_gateway` 提供精确部署来源的静态/WebUI 代理，未配置时不降级到可信内核同源页面。WebUI 需先创建 disabled 部署、取得隔离来源、注册精确 Client、以完整 `{spec}` 更新配置并轮询 202 Operation，审批/启用至 Ready 后再设默认界面；根路径不可用返回 503，核心 API/CLI 独立。部署步骤和同一 TLS listener 的通配域名配置见[WebUI 说明](../../examples/webui/DEPLOYMENT.md)。备份 URI 的标准 AWS 后端还需独立凭证、主密钥及仓库注册，见 [备份任务](../../docs/implementation/m2-backup-jobs.md)。
 

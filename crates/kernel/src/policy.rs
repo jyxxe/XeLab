@@ -17,7 +17,7 @@ use tokio_postgres::GenericClient;
 use uuid::Uuid;
 
 const MAX_PATHS: usize = 4096;
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Path {
     pub rule: Value,
     pub sources: BTreeSet<Uuid>,
@@ -55,6 +55,7 @@ pub struct Policy<'a, C> {
     c: &'a C,
     peer: IpAddr,
     browser_origin: Option<String>,
+    proxy_paths: Option<Vec<Path>>,
     evaluating_grants: HashSet<Uuid>,
     proving_self_grants: HashSet<Uuid>,
     resource_owner: Option<(String, String, Uuid)>,
@@ -66,6 +67,7 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
             c,
             peer,
             browser_origin: None,
+            proxy_paths: None,
             evaluating_grants: HashSet::new(),
             proving_self_grants: HashSet::new(),
             resource_owner: None,
@@ -82,7 +84,11 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
     }
 
     pub fn for_context(c: &'a C, ctx: &Context) -> Self {
-        Self::with_browser_origin(c, ctx.peer, ctx.browser_origin.as_deref())
+        {
+            let mut policy = Self::with_browser_origin(c, ctx.peer, ctx.browser_origin.as_deref());
+            policy.proxy_paths = ctx.proxy_paths.clone();
+            policy
+        }
     }
 
     pub fn with_browser_origin(c: &'a C, peer: IpAddr, origin: Option<&str>) -> Self {
@@ -292,6 +298,11 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
             };
             path.rule["conditions"] = condition;
         }
+        if depth == 0 {
+            if let Some(ceiling) = self.proxy_paths.clone() {
+                paths = self.intersection(&paths, &ceiling).await?;
+            }
+        }
         Ok(paths)
     }
 
@@ -470,10 +481,23 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
         bounded(saved)?;
         bounded(current)?;
         let mut live = Vec::new();
+        // A source is immutable under this transaction's authorization fence.
+        // Reuse its current expansion only within this one proof evaluation.
+        let mut sources: std::collections::HashMap<Uuid, Vec<Path>> = Default::default();
+        let mut cached_paths = 0;
         for path in saved {
             let mut current = vec![path.clone()];
             for source in &path.sources {
-                let grants = self.grant(*source, 1).await?;
+                let grants = if let Some(paths) = sources.get(source) {
+                    paths.clone()
+                } else {
+                    let paths = self.grant(*source, 1).await?;
+                    if cached_paths + paths.len() <= MAX_PATHS {
+                        cached_paths += paths.len();
+                        sources.insert(*source, paths.clone());
+                    }
+                    paths
+                };
                 current = self.intersection(&current, &grants).await?;
                 if current.is_empty() {
                     break;

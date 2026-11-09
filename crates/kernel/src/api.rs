@@ -564,6 +564,17 @@ async fn dispatch(
         app.config.text("server", "public_origin"),
     )
     .await?;
+    if matches!(
+        name,
+        "resolveDependencies"
+            | "createDeployment"
+            | "setDeploymentEnabled"
+            | "updateDeployment"
+            | "upgradeDeployment"
+            | "rollbackDeployment"
+    ) {
+        crate::dependencies::dependency_lock(&tx).await?;
+    }
     let key = if mutating {
         Some(header(&headers, "idempotency-key")?)
     } else {
@@ -716,6 +727,7 @@ async fn dispatch(
             .await?;
             (db::operation_value(&tx, id).await?, 202)
         }
+        "resolveDependencies" => (crate::dependencies::plan(&tx,&ctx,id(&body,"deployment_id")?,id(&body,"installation_id")?).await?,200),
         "createDeployment" => {
             if body["enabled"] == true {
                 return Err(Error::invalid(
@@ -801,6 +813,7 @@ async fn dispatch(
             }
             let op = db::operation(&tx, ctx.subject, name, Some(id.to_string())).await?;
             if enabled && spec["enabled"] != true {
+                crate::dependencies::bind(&tx,app,&ctx,id).await?;
                 if tx.query_one("SELECT count(*) FROM instances WHERE deployment_id=$1 AND phase<>'stopped'",&[&id]).await?.get::<_,i64>(0)>0{return Err(Error::conflict("Previous instances have not drained"));}
                 let instance = Uuid::new_v4();
                 let generation = row.get::<_, i64>("revision") + 1;
@@ -822,6 +835,8 @@ async fn dispatch(
                 crate::schema_jobs::revalidate(&tx,app,&admitted).await?;
             }
             if !enabled {
+                crate::dependencies::invalidate_dependents(&tx,id).await?;
+                crate::dependencies::clear(&tx,id).await?;
                 tx.execute("UPDATE provider_records SET availability='unavailable' WHERE instance_id IN(SELECT id FROM instances WHERE deployment_id=$1)",&[&id]).await?;
             }
             db::outbox(&tx, "deployment.changed", id, &json!({})).await?;
@@ -1113,6 +1128,20 @@ async fn authorize_operation(
             (
                 "plugin.read",
                 Resource::new("plugin", r.get::<_, String>(0), None),
+            )
+        }
+        "resolveDependencies" => {
+            let id = id(body, "deployment_id")?;
+            let row = c
+                .query_opt(
+                    "SELECT owner_id FROM deployments WHERE id=$1 AND archived_at IS NULL",
+                    &[&id],
+                )
+                .await?
+                .ok_or_else(Error::not_found)?;
+            (
+                "plugin.dependencies.read",
+                Resource::new("deployment", id, Some(row.get(0))),
             )
         }
         "getDeployment" | "setDeploymentEnabled" | "approvePlugin" | "getPluginApproval" => {
