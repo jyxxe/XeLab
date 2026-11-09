@@ -1088,6 +1088,9 @@ pub(crate) async fn call_sources_from_paths(
     resource: &Resource,
     paths: Vec<crate::policy::Path>,
 ) -> Result<BTreeSet<Uuid>> {
+    if !ctx.proxy_allows(action, resource) {
+        return Err(Error::denied());
+    }
     let mut alternatives = Vec::new();
     'candidate: for path in paths {
         if !auth::rules_allow(&json!([path.rule]), action, resource, ctx.peer) {

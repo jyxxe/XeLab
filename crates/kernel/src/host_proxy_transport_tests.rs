@@ -628,3 +628,6 @@ async fn host_queued_stream_frame_rechecks_proxy_authority_at_first_poll() {
     assert!(stream.next().await.is_none());
     downstream.abort();
 }
+
+#[path = "host_proxy_ceilings_tests.rs"]
+mod layered_ceilings;

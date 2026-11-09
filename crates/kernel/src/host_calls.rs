@@ -33,18 +33,20 @@ pub(crate) async fn authority(
 ) -> Result<Authority> {
     let hash = app.auth.token_digest(&context.delegation_token);
     let authority = authority_digest(c, app, workload, context, &hash, 0).await?;
-    if !auth::rules_allow(
-        &policy::rules(
-            authority
-                .ctx
-                .proxy_paths
-                .as_ref()
-                .ok_or_else(Error::denied)?,
-        ),
-        action,
-        resource,
-        authority.ctx.peer,
-    ) {
+    if !authority.ctx.proxy_allows(action, resource)
+        || !auth::rules_allow(
+            &policy::rules(
+                authority
+                    .ctx
+                    .proxy_paths
+                    .as_ref()
+                    .ok_or_else(Error::denied)?,
+            ),
+            action,
+            resource,
+            authority.ctx.peer,
+        )
+    {
         return Err(Error::denied());
     }
     Ok(authority)
@@ -57,6 +59,7 @@ async fn authority_digest(
     hash: &[u8],
     depth: usize,
 ) -> Result<Authority> {
+    let timing = std::time::Instant::now();
     if depth >= 16 {
         return Err(Error::conflict("HostService delegation depth limit"));
     }
@@ -68,6 +71,7 @@ async fn authority_digest(
     }
     db::call_lock(c).await?;
     crate::dependencies::dependency_lock(c).await?;
+    stage(timing, "locks");
     let request: Uuid = context
         .request_id
         .parse()
@@ -103,7 +107,7 @@ async fn authority_digest(
         &[&workload.instance],
     )
     .await?;
-    let row=c.query_opt("SELECT LEAST(r.expires_at,e.expires_at,c.deadline_at) AS until,r.call_id,r.subject_id,r.issuer_credential_id,e.maximum_rules,c.contract,i.deployment_id,t.manifest,x.source_paths,x.read_blob_ids,x.browser_origin,host(x.peer) AS peer FROM rpc_delegations r JOIN execution_delegations e ON e.id=r.execution_delegation_id JOIN calls c ON c.id=r.call_id JOIN host_rpc_contexts x ON x.call_id=c.id JOIN instances i ON i.id=r.instance_id JOIN deployments d ON d.id=i.deployment_id JOIN installations t ON t.id=d.installation_id JOIN publishers p ON p.id=t.publisher_id WHERE r.hmac_key_id=$1 AND r.verification_digest=$2 AND r.instance_id=$3 AND r.generation=$4 AND r.status='active' AND r.expires_at>now() AND e.status='active' AND e.expires_at>now() AND e.subject_id=r.subject_id AND e.issuer_credential_id=r.issuer_credential_id AND c.state='running' AND c.deadline_at>now() AND c.provider_instance_id=i.id AND c.owner_id=r.subject_id AND c.credential_id=r.issuer_credential_id AND c.delegation_id=e.id AND i.generation=r.generation AND i.runtime_id=i.id::text AND i.phase IN ('ready','degraded') AND d.spec->>'enabled'='true' AND d.archived_at IS NULL AND t.state='installed' AND p.status='trusted' FOR SHARE OF r,e,t,p",&[&app.auth.key_id.as_str(),&hash,&workload.instance,&workload.generation]).await?.ok_or_else(Error::denied)?;
+    let row=c.query_opt("SELECT LEAST(r.expires_at,e.expires_at,c.deadline_at) AS until,r.call_id,r.subject_id,r.issuer_credential_id,e.maximum_rules,c.contract,i.deployment_id,t.manifest,x.source_paths,x.proxy_source_paths,x.proxy_ceilings,x.read_blob_ids,x.browser_origin,host(x.peer) AS peer FROM rpc_delegations r JOIN execution_delegations e ON e.id=r.execution_delegation_id JOIN calls c ON c.id=r.call_id JOIN host_rpc_contexts x ON x.call_id=c.id JOIN instances i ON i.id=r.instance_id JOIN deployments d ON d.id=i.deployment_id JOIN installations t ON t.id=d.installation_id JOIN publishers p ON p.id=t.publisher_id WHERE r.hmac_key_id=$1 AND r.verification_digest=$2 AND r.instance_id=$3 AND r.generation=$4 AND r.status='active' AND r.expires_at>now() AND e.status='active' AND e.expires_at>now() AND e.subject_id=r.subject_id AND e.issuer_credential_id=r.issuer_credential_id AND c.state='running' AND c.deadline_at>now() AND c.provider_instance_id=i.id AND c.owner_id=r.subject_id AND c.credential_id=r.issuer_credential_id AND c.delegation_id=e.id AND i.generation=r.generation AND i.runtime_id=i.id::text AND i.phase IN ('ready','degraded') AND d.spec->>'enabled'='true' AND d.archived_at IS NULL AND t.state='installed' AND p.status='trusted' FOR SHARE OF r,e,t,p",&[&app.auth.key_id.as_str(),&hash,&workload.instance,&workload.generation]).await?.ok_or_else(Error::denied)?;
     let peer: IpAddr = row
         .get::<_, String>("peer")
         .parse()
@@ -118,11 +122,13 @@ async fn authority_digest(
     {
         return Err(Error::denied());
     }
+    stage(timing, "resume");
     let (target_action, target) = crate::broker::business_target(c, row.get("call_id")).await?;
-    let mut live = Policy::for_context(c, &ctx)
+    let live = Policy::for_context(c, &ctx)
         .with_resource_owner(&target)
         .revalidate(&saved(row.get("source_paths"))?, ctx.credential)
         .await?;
+    stage(timing, "business_sources");
     let rules = policy::rules(&live);
     let maximum: Value = row.get("maximum_rules");
     let blobs: Vec<Uuid> =
@@ -174,6 +180,13 @@ async fn authority_digest(
     {
         return Err(Error::denied());
     }
+    stage(timing, "business_binding");
+    let mut live = Policy::for_context(c, &ctx)
+        .revalidate(&saved(row.get("proxy_source_paths"))?, ctx.credential)
+        .await?;
+    stage(timing, "proxy_sources");
+    let mut ceilings: Vec<Value> =
+        serde_json::from_value(row.get("proxy_ceilings")).map_err(|_| Error::denied())?;
     crate::broker::check_http_approval(c, app, row.get("call_id")).await?;
     crate::dependencies::check_ready(c, app, row.get("deployment_id")).await?;
     crate::dependencies::check_call(c, row.get("call_id")).await?;
@@ -188,7 +201,7 @@ async fn authority_digest(
             axum::http::StatusCode::GATEWAY_TIMEOUT,
         ));
     }
-    if let Some(parent)=c.query_opt("SELECT t.instance_id,t.generation,t.delegation_digest,t.rpc_context,t.bounds,t.expires_at,t.dependency_binding_id,t.expected_contract,t.provider_deployment_id FROM host_child_calls l JOIN host_call_tickets t ON t.id=l.ticket_id WHERE l.child_call_id=$1",&[&row.get::<_,Uuid>("call_id")]).await? {
+    if let Some(parent)=c.query_opt("SELECT t.instance_id,t.generation,t.delegation_digest,t.rpc_context,t.bounds,t.expires_at,t.dependency_binding_id,t.expected_contract,t.provider_deployment_id,t.ceilings FROM host_child_calls l JOIN host_call_tickets t ON t.id=l.ticket_id WHERE l.child_call_id=$1",&[&row.get::<_,Uuid>("call_id")]).await? {
         let expiry=parent.get::<_,chrono::DateTime<chrono::Utc>>("expires_at").timestamp_millis();
         if expiry<=chrono::Utc::now().timestamp_millis(){return Err(Error::denied());}
         let original:Value=parent.get("rpc_context");
@@ -198,22 +211,36 @@ async fn authority_digest(
             let provider=crate::dependencies::check_host(c,&ancestor.ctx,ancestor.deployment,ancestor.call,binding,&parent.get::<_,Option<Value>>("expected_contract").ok_or_else(Error::denied)?).await?;
             if Some(provider)!=parent.get::<_,Option<Uuid>>("provider_deployment_id"){return Err(Error::denied());}
         }
+        if !proof_allows(&ancestor.ctx,&target_action,&target){return Err(Error::denied());}
+        if let Some(skill)=c.query_opt("SELECT s.id,s.created_by FROM calls c JOIN skills s ON s.id=c.skill_id WHERE c.id=$1",&[&row.get::<_,Uuid>("call_id")]).await?{
+            if !proof_allows(&ancestor.ctx,"skill.invoke",&Resource::new("skill",skill.get::<_,Uuid>("id"),Some(skill.get("created_by")))){return Err(Error::denied());}
+        }
+        let inputs:Vec<Uuid>=serde_json::from_value(row.get("read_blob_ids")).map_err(|_|Error::denied())?;
+        for blob in inputs{
+            let owner:Uuid=c.query_one("SELECT owner_id FROM blobs WHERE id=$1",&[&blob]).await?.get(0);
+            if !proof_allows(&ancestor.ctx,"blob.read",&Resource::new("blob",blob,Some(owner))){return Err(Error::denied());}
+        }
         until_ms=until_ms.min(ancestor.until_ms).min(expiry);
         let narrowing=Policy::for_context(c,&ctx);
         live=narrowing.intersection(&live,ancestor.ctx.proxy_paths.as_ref().ok_or_else(Error::denied)?).await?;
         live=narrowing.intersection(&live,&caps(&parent.get::<_,Value>("bounds"))?).await?;
+        extend_ceilings(&mut ceilings,&ancestor.ctx.proxy_ceilings)?;
+        extend_ceilings(&mut ceilings,&serde_json::from_value::<Vec<Value>>(parent.get("ceilings")).map_err(|_|Error::denied())?)?;
     }
+    stage(timing, "ancestors");
     let (approval, approver, approved_peer) =
         crate::host_blobs::approval_sources(c, app, row.get("deployment_id"), &row.get("manifest"))
             .await?;
-    let narrowed = Policy::for_context(c, &ctx);
-    let live = narrowed.intersection(&live, &caps(&maximum)?).await?;
-    let live = narrowed
-        .intersection(&live, &caps(&approval["rules"])?)
-        .await?;
-    let live = narrowed
-        .intersection(&live, &caps(&scopes_at_peer(&approver, approved_peer))?)
-        .await?;
+    extend_ceilings(
+        &mut ceilings,
+        &[
+            maximum,
+            approval["rules"].clone(),
+            scopes_at_peer(&approver, approved_peer),
+        ],
+    )?;
+    stage(timing, "approval");
+    ctx.proxy_ceilings = ceilings;
     ctx.proxy_paths = Some(live);
     Ok(Authority {
         ctx,
@@ -295,6 +322,10 @@ pub(crate) async fn authenticate(
             &caps(&bounds)?,
         )
         .await?;
+    extend_ceilings(
+        &mut authority.ctx.proxy_ceilings,
+        &serde_json::from_value::<Vec<Value>>(row.get("ceilings")).map_err(|_| Error::denied())?,
+    )?;
     authority.ctx.proxy_paths = Some(paths);
     Ok(authority.ctx)
 }
@@ -422,7 +453,7 @@ async fn ticket(
     let expires =
         chrono::DateTime::from_timestamp_millis(authority.until_ms.min(context.deadline_unix_ms))
             .ok_or_else(Error::denied)?;
-    c.execute("INSERT INTO host_call_tickets(id,parent_call_id,instance_id,generation,delegation_digest,verification_digest,rpc_context,bounds,provider_deployment_id,idempotency_key,fingerprint,expires_at,expected_skill,expected_contract,input_digest,requested_call_id,invocation,dependency_binding_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",&[&id,&authority.call,&workload.instance,&workload.generation,&app.auth.token_digest(&context.delegation_token),&app.auth.token_digest(&token),&json!({"deadline":context.deadline_unix_ms}),&bounds,&provider,&context.idempotency_key,&fingerprint,&expires,&skill,&expected_contract,&input_digest,&requested_call,&json!({"timeout_ms":invocation["timeout_ms"]}),&binding_id]).await?;
+    c.execute("INSERT INTO host_call_tickets(id,parent_call_id,instance_id,generation,delegation_digest,verification_digest,rpc_context,bounds,provider_deployment_id,idempotency_key,fingerprint,expires_at,expected_skill,expected_contract,input_digest,requested_call_id,invocation,dependency_binding_id,ceilings) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)",&[&id,&authority.call,&workload.instance,&workload.generation,&app.auth.token_digest(&context.delegation_token),&app.auth.token_digest(&token),&json!({"deadline":context.deadline_unix_ms}),&bounds,&provider,&context.idempotency_key,&fingerprint,&expires,&skill,&expected_contract,&input_digest,&requested_call,&json!({"timeout_ms":invocation["timeout_ms"]}),&binding_id,&json!(authority.ctx.proxy_ceilings)]).await?;
     Ok(token)
 }
 pub(crate) async fn new_call(
@@ -490,7 +521,7 @@ fn reasons(value: &Value) -> Vec<String> {
         .collect()
 }
 async fn target(c: &(impl GenericClient + Sync), skill: Uuid) -> Result<(Value, Resource, String)> {
-    let value = crate::skills::value(c, skill).await?;
+    let mut value = crate::skills::value(c, skill).await?;
     let definition = &value["definition"];
     if definition["target"]["kind"] == "capability" {
         let target = &definition["target"]["contract"];
@@ -514,19 +545,26 @@ async fn target(c: &(impl GenericClient + Sync), skill: Uuid) -> Result<(Value, 
     let installation = contracts::id(&value, "installation_id")?;
     let registry = crate::http_contracts::load(c, installation).await?;
     let op = registry.bind_skill(definition)?;
-    let owners=c.query("SELECT DISTINCT owner_id FROM deployments WHERE installation_id=$1 AND archived_at IS NULL AND spec->>'enabled'='true' ORDER BY owner_id",&[&installation]).await?;
-    let owner = if owners.len() == 1 {
-        Some(owners[0].get::<_, Uuid>(0))
+    let eligible=c.query("SELECT d.owner_id,d.id FROM instances i JOIN deployments d ON d.id=i.deployment_id JOIN installations n ON n.id=d.installation_id JOIN publishers p ON p.id=n.publisher_id WHERE n.id=$1 AND n.state='installed' AND p.status='trusted' AND i.phase='ready' AND i.generation=d.observed_generation AND d.phase='ready' AND i.health='alive' AND i.last_heartbeat_at>now()-interval '1 millisecond'*((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint+(n.manifest->'health'->>'timeout_ms')::bigint) AND d.spec->>'enabled'='true' AND d.archived_at IS NULL AND d.approval ? 'rules' ORDER BY i.id",&[&installation]).await?;
+    let owner = if eligible.len() == 1 {
+        Some(eligible[0].get::<_, Uuid>("owner_id"))
     } else {
         None
     };
+    let plugin = contracts::string(&definition["target"], "plugin_id")?.to_owned();
+    if eligible.len() != 1 {
+        value["availability"] = json!("unavailable");
+        value["reason_codes"] = json!([if eligible.is_empty() {
+            "PROVIDER_UNAVAILABLE"
+        } else {
+            "PROVIDER_AMBIGUOUS"
+        }]);
+    } else {
+        value["host_provider_deployment_id"] = json!(eligible[0].get::<_, Uuid>("id"));
+    }
     Ok((
         value.clone(),
-        Resource::new(
-            "plugin",
-            contracts::string(&definition["target"], "plugin_id")?,
-            owner,
-        ),
+        Resource::new("plugin", plugin, owner),
         op.route.action.clone(),
     ))
 }
@@ -606,12 +644,14 @@ pub(crate) async fn check_skill_access(
         &Resource::new("skill", skill, Some(owner)),
     )
     .await?;
-    if !auth::rules_allow(
-        &policy::rules(base.ctx.proxy_paths.as_ref().ok_or_else(Error::denied)?),
-        &action,
-        &resource,
-        base.ctx.peer,
-    ) {
+    if !base.ctx.proxy_allows(&action, &resource)
+        || !auth::rules_allow(
+            &policy::rules(base.ctx.proxy_paths.as_ref().ok_or_else(Error::denied)?),
+            &action,
+            &resource,
+            base.ctx.peer,
+        )
+    {
         return Err(Error::denied());
     }
     if value["definition_digest"] != request.expected_definition_digest {
@@ -733,12 +773,16 @@ pub(crate) async fn list_skill_candidates(
         cursor.offset += 1;
         let skill: Uuid = row.get("id");
         let owner: Uuid = row.get("created_by");
-        if !auth::rules_allow(
-            &policy::rules(base.ctx.proxy_paths.as_ref().ok_or_else(Error::denied)?),
-            "skill.read",
-            &Resource::new("skill", skill, Some(owner)),
-            base.ctx.peer,
-        ) {
+        if !base
+            .ctx
+            .proxy_allows("skill.read", &Resource::new("skill", skill, Some(owner)))
+            || !auth::rules_allow(
+                &policy::rules(base.ctx.proxy_paths.as_ref().ok_or_else(Error::denied)?),
+                "skill.read",
+                &Resource::new("skill", skill, Some(owner)),
+                base.ctx.peer,
+            )
+        {
             continue;
         }
         let value = crate::skills::value(&tx, skill).await?;
@@ -936,12 +980,14 @@ async fn prepare_skill(
         &Resource::new("skill", skill, Some(owner)),
     )
     .await?;
-    if !auth::rules_allow(
-        &policy::rules(auth.ctx.proxy_paths.as_ref().ok_or_else(Error::denied)?),
-        &action,
-        &resource,
-        auth.ctx.peer,
-    ) {
+    if !auth.ctx.proxy_allows(&action, &resource)
+        || !auth::rules_allow(
+            &policy::rules(auth.ctx.proxy_paths.as_ref().ok_or_else(Error::denied)?),
+            &action,
+            &resource,
+            auth.ctx.peer,
+        )
+    {
         return Err(Error::denied());
     }
     let maximum = value["definition"]["maximum_timeout_ms"]
@@ -951,6 +997,9 @@ async fn prepare_skill(
         - chrono::Utc::now().timestamp_millis())
     .clamp(1, 300000) as u64;
     let mut input = json!({"input":payload,"timeout_ms":timeout.min(maximum),"idempotency_key":context.idempotency_key});
+    if let Some(provider) = value.get("host_provider_deployment_id") {
+        input["provider_deployment_id"] = provider.clone();
+    }
     let fingerprint = contracts::digest(&serde_json::to_vec(
         &json!({"skill":skill,"definition_digest":value["definition_digest"],"input_digest":request.input_digest}),
     )?);
@@ -1271,4 +1320,35 @@ mod proof_tests {
             json!([])
         );
     }
+}
+
+pub(crate) fn extend_ceilings(ceilings: &mut Vec<Value>, additional: &[Value]) -> Result<()> {
+    for ceiling in additional {
+        if !ceiling.is_array() {
+            return Err(Error::denied());
+        }
+        if !ceilings.contains(ceiling) {
+            ceilings.push(ceiling.clone());
+        }
+    }
+    if ceilings.len() > 128 || serde_json::to_vec(ceilings)?.len() > 1048576 {
+        return Err(Error::exhausted());
+    }
+    Ok(())
+}
+
+fn proof_allows(ctx: &Context, action: &str, resource: &Resource) -> bool {
+    ctx.proxy_allows(action, resource)
+        && ctx.proxy_paths.as_ref().is_some_and(|paths| {
+            auth::rules_allow(&policy::rules(paths), action, resource, ctx.peer)
+        })
+}
+
+fn stage(start: std::time::Instant, name: &str) {
+    #[cfg(test)]
+    if std::env::var_os("XELAB_HOST_TIMING").is_some() {
+        eprintln!("HOST_PROOF {name}: {}ms", start.elapsed().as_millis());
+    }
+    #[cfg(not(test))]
+    let _ = (start, name);
 }
