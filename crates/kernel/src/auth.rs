@@ -36,6 +36,7 @@ pub struct Context {
     // Set only by trusted HTTP admission after exact Origin validation. Never
     // deserialize this field from a body, plugin header, or delegation.
     pub(crate) browser_origin: Option<String>,
+    pub(crate) proxy_paths: Option<Vec<crate::policy::Path>>,
 }
 #[derive(Clone)]
 pub struct Resource {
@@ -54,6 +55,7 @@ pub(crate) struct CurrentAuthority<'transaction, 'client> {
     request: Uuid,
     chain: Vec<Uuid>,
     browser_origin: Option<String>,
+    proxy_paths: Option<Vec<crate::policy::Path>>,
     paths: Vec<crate::policy::Path>,
     rules: Value,
     plugin_target: Option<(String, Option<Uuid>)>,
@@ -86,6 +88,7 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
             request: ctx.request,
             chain: ctx.chain.clone(),
             browser_origin: ctx.browser_origin.clone(),
+            proxy_paths: ctx.proxy_paths.clone(),
             paths,
             rules,
             plugin_target: None,
@@ -103,6 +106,7 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
             || self.request != ctx.request
             || self.chain != ctx.chain
             || self.browser_origin != ctx.browser_origin
+            || self.proxy_paths != ctx.proxy_paths
         {
             return Err(Error::denied());
         }
@@ -176,6 +180,7 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
             || self.request != ctx.request
             || self.chain != ctx.chain
             || self.browser_origin != ctx.browser_origin
+            || self.proxy_paths != ctx.proxy_paths
             || !rules_allow(&self.rules, action, resource, ctx.peer)
         {
             return Err(Error::denied());
@@ -294,6 +299,7 @@ impl Auth {
             request,
             chain,
             browser_origin: None,
+            proxy_paths: None,
         })
     }
     pub fn check_login_budget(&self, account: Uuid, peer: IpAddr) -> Result<()> {

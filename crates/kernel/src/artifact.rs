@@ -148,23 +148,20 @@ fn validate_profile_inner(manifest: &Value, allow_versioned: bool) -> Result<()>
         .and_then(Value::as_array)
         .is_some_and(|rules| {
             rules.iter().any(|r| {
-                r["required"] != false
-                    || !((r["rule"]["action"] == "secret.use"
-                        && r["rule"]["resource"]["kind"] == "secret")
-                        || (matches!(
-                            r["rule"]["action"].as_str(),
-                            Some("blob.read" | "blob.create")
-                        ) && r["rule"]["resource"]
-                            == serde_json::json!({"kind":"blob","match":"all"})))
+                !(r["required"] == false
+                    && r["rule"]["action"] == "secret.use"
+                    && r["rule"]["resource"]["kind"] == "secret"
+                    || crate::host_blobs::proxy_action(
+                        r["rule"]["action"].as_str().unwrap_or(""),
+                        r["rule"]["resource"]["kind"].as_str().unwrap_or(""),
+                    ))
                     || r["rule"]
                         .get("conditions")
                         .is_some_and(|v| !v.as_object().is_some_and(serde_json::Map::is_empty))
             })
         })
     {
-        return Err(Error::invalid(
-            "This profile permits only optional unconditional secret.use and Blob proxy requests",
-        ));
+        return Err(Error::invalid("Only unconditional supported HostService proxy requests and optional secret.use are accepted"));
     }
     crate::volumes::validate_mounts(manifest)?;
     if (versioned && !allow_versioned)

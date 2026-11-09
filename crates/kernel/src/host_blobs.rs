@@ -18,7 +18,7 @@ use std::{
 use tokio_postgres::GenericClient;
 use uuid::Uuid;
 
-fn caps(rules: &Value) -> Result<Vec<Path>> {
+pub(crate) fn caps(rules: &Value) -> Result<Vec<Path>> {
     rules
         .as_array()
         .ok_or_else(Error::denied)?
@@ -31,29 +31,87 @@ fn caps(rules: &Value) -> Result<Vec<Path>> {
         })
         .collect()
 }
-fn saved(value: Value) -> Result<Vec<Path>> {
+pub(crate) fn saved(value: Value) -> Result<Vec<Path>> {
     serde_json::from_value(value)
         .map_err(|_| Error::unavailable("Stored proxy source paths are invalid"))
 }
-fn requested(manifest: &Value, action: &str) -> bool {
-    manifest["requested_rules"].as_array().is_some_and(|rs| {
-        rs.iter().any(|r| {
-            r["required"] == false
-                && r["rule"]["action"] == action
-                && r["rule"]["resource"] == json!({"kind":"blob","match":"all"})
-                && r["rule"].get("conditions").is_none_or(|v| v == &json!({}))
-        })
-    })
+pub(crate) fn proxy_action(action: &str, kind: &str) -> bool {
+    matches!(
+        (action, kind),
+        ("blob.read" | "blob.create", "blob")
+            | ("capability.discover" | "capability.invoke", "capability")
+            | ("skill.read" | "skill.invoke", "skill")
+            | ("event.publish" | "event.subscribe", "event")
+            | (_, "plugin")
+    )
+}
+pub(crate) fn requested(manifest: &Value, action: &str) -> bool {
+    manifest["requested_rules"]
+        .as_array()
+        .is_some_and(|rs| rs.iter().any(|r| r["rule"]["action"] == action))
 }
 pub fn supported(approval: &Value) -> bool {
     approval["egress"] == json!([])
         && approval["rules"].as_array().is_some_and(|rs| {
             rs.iter().all(|r| {
-                matches!(r["action"].as_str(), Some("blob.read" | "blob.create"))
-                    && r["resource"]["kind"] == "blob"
-                    && r.get("conditions").is_none_or(|v| v == &json!({}))
+                proxy_action(
+                    r["action"].as_str().unwrap_or(""),
+                    r["resource"]["kind"].as_str().unwrap_or(""),
+                ) && r.get("conditions").is_none_or(|v| v == &json!({}))
             })
         })
+}
+fn rule_parts(rule: &Value) -> Vec<Value> {
+    if rule["resource"]["match"] != "ids" {
+        return vec![rule.clone()];
+    }
+    rule["resource"]["ids"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|id| {
+            let mut part = rule.clone();
+            part["resource"]["ids"] = json!([id]);
+            part
+        })
+        .collect()
+}
+async fn signed_approval(
+    c: &(impl GenericClient + Sync),
+    manifest: &Value,
+    approval: &Value,
+    peer: IpAddr,
+) -> Result<()> {
+    if !supported(approval) {
+        return Err(Error::invalid("Unsupported proxy approval"));
+    }
+    let requested: Vec<Path> = manifest["requested_rules"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|r| Path {
+            rule: r["rule"].clone(),
+            sources: Default::default(),
+        })
+        .collect();
+    let p = Policy::new(c, peer);
+    for approved in approval["rules"].as_array().unwrap() {
+        for rule in rule_parts(approved) {
+            let intersections = p.intersection(&caps(&json!([rule]))?, &requested).await?;
+            let normalize = |v: &Value| {
+                let mut v = v.clone();
+                v.as_object_mut().unwrap().remove("conditions");
+                v
+            };
+            if !intersections
+                .iter()
+                .any(|path| normalize(&path.rule) == normalize(&rule))
+            {
+                return Err(Error::denied());
+            }
+        }
+    }
+    Ok(())
 }
 pub async fn approve(
     c: &(impl GenericClient + Sync),
@@ -63,17 +121,7 @@ pub async fn approve(
     approval: &Value,
     owner: Uuid,
 ) -> Result<()> {
-    if !supported(approval)
-        || approval["rules"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| !requested(manifest, r["action"].as_str().unwrap()))
-    {
-        return Err(Error::invalid(
-            "Only explicitly requested Blob proxy rules with no egress are supported",
-        ));
-    }
+    signed_approval(c, manifest, approval, ctx.peer).await?;
     if approval["rules"] == json!([]) {
         c.execute(
             "DELETE FROM host_proxy_approvals WHERE deployment_id=$1",
@@ -101,7 +149,7 @@ pub async fn approve(
     c.execute("INSERT INTO host_proxy_approvals(deployment_id,credential_id,peer,approval_digest,source_paths,browser_origin) VALUES($1,$2,$3::text::inet,$4,$5,$6) ON CONFLICT(deployment_id) DO UPDATE SET credential_id=$2,peer=$3::text::inet,approval_digest=$4,source_paths=$5,browser_origin=$6,created_at=now()",&[&deployment,&ctx.credential,&peer,&digest,&json!(source_paths),&ctx.browser_origin]).await?;
     Ok(())
 }
-async fn approval_sources(
+pub(crate) async fn approval_sources(
     c: &(impl GenericClient + Sync),
     app: &App,
     deployment: Uuid,
@@ -109,14 +157,7 @@ async fn approval_sources(
 ) -> Result<(Value, Value, IpAddr)> {
     let row=c.query_opt("SELECT d.approval,d.owner_id,a.credential_id,host(a.peer) AS peer,a.approval_digest,a.source_paths,a.browser_origin FROM deployments d JOIN host_proxy_approvals a ON a.deployment_id=d.id WHERE d.id=$1",&[&deployment]).await?.ok_or_else(Error::denied)?;
     let approval: Value = row.get("approval");
-    if !supported(&approval)
-        || contracts::digest(&serde_json::to_vec(&approval)?)
-            != row.get::<_, String>("approval_digest")
-        || approval["rules"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| !requested(manifest, r["action"].as_str().unwrap()))
+    if contracts::digest(&serde_json::to_vec(&approval)?) != row.get::<_, String>("approval_digest")
     {
         return Err(Error::denied());
     }
@@ -124,6 +165,8 @@ async fn approval_sources(
         .get::<_, String>("peer")
         .parse()
         .map_err(|_| Error::denied())?;
+    signed_approval(c, manifest, &approval, peer).await?;
+    required_approval(c, manifest, &approval, peer).await?;
     let mut ctx = app
         .auth
         .resume(c, row.get("credential_id"), peer, Uuid::new_v4())
@@ -143,6 +186,39 @@ async fn approval_sources(
     }
     Ok((approval, live, peer))
 }
+async fn required_approval(
+    c: &(impl GenericClient + Sync),
+    manifest: &Value,
+    approval: &Value,
+    peer: IpAddr,
+) -> Result<()> {
+    let policy = Policy::new(c, peer);
+    let approved = caps(&approval["rules"])?;
+    for required in manifest["requested_rules"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["required"] == true)
+    {
+        for rule in rule_parts(&required["rule"]) {
+            let normalize = |v: &Value| {
+                let mut v = v.clone();
+                v.as_object_mut().unwrap().remove("conditions");
+                v
+            };
+            let covered = policy
+                .intersection(&caps(&json!([rule]))?, &approved)
+                .await?;
+            if !covered
+                .iter()
+                .any(|p| normalize(&p.rule) == normalize(&rule))
+            {
+                return Err(Error::denied());
+            }
+        }
+    }
+    Ok(())
+}
 pub async fn check_approval(
     c: &(impl GenericClient + Sync),
     app: &App,
@@ -156,6 +232,7 @@ pub async fn check_approval(
         )
         .await?
         .get(0);
+    required_approval(c, manifest, &approval, "127.0.0.1".parse().unwrap()).await?;
     if approval == json!({"rules":[],"egress":[]}) {
         return Ok(());
     }
@@ -163,7 +240,7 @@ pub async fn check_approval(
         .await
         .map(|_| ())
 }
-async fn proxy_access(
+pub(crate) async fn proxy_access(
     c: &(impl GenericClient + Sync),
     app: &App,
     deployment: Uuid,
@@ -368,13 +445,21 @@ async fn grant_call_inner(
     let skill = context.get::<_, Option<Uuid>>("skill_id");
     let http = context.get::<_, Option<Value>>("http_binding");
     let has_blobs = requested(manifest, "blob.read") || requested(manifest, "blob.create");
+    let has_proxy = manifest["requested_rules"].as_array().is_some_and(|rs| {
+        rs.iter().any(|r| {
+            proxy_action(
+                r["rule"]["action"].as_str().unwrap_or(""),
+                r["rule"]["resource"]["kind"].as_str().unwrap_or(""),
+            )
+        })
+    });
     let effectful = definition["side_effect"]
         .as_str()
         .is_some_and(|effect| effect != "none");
-    if !has_blobs && skill.is_none() && http.is_none() && !effectful {
+    if !has_proxy && skill.is_none() && http.is_none() && !effectful && ctx.proxy_paths.is_none() {
         return Ok(Vec::new());
     }
-    if has_blobs {
+    if has_proxy {
         check_approval(c, app, deployment, manifest).await?;
     }
     let mut ids = BTreeSet::new();
@@ -383,7 +468,22 @@ async fn grant_call_inner(
     }
     let (action, resource) = crate::broker::business_target(c, call).await?;
     let mut bounds = vec![json!({"action":action,"resource":resource.json()})];
-    let pinned = skill.is_some() || http.is_some() || effectful;
+    if has_proxy {
+        let approval: Value = c
+            .query_one(
+                "SELECT approval FROM deployments WHERE id=$1",
+                &[&deployment],
+            )
+            .await?
+            .get(0);
+        for rule in approval["rules"].as_array().ok_or_else(Error::denied)? {
+            if !matches!(rule["action"].as_str(), Some("blob.read" | "blob.create")) {
+                bounds.push(rule.clone());
+            }
+        }
+    }
+    let pinned =
+        skill.is_some() || http.is_some() || effectful || has_proxy || ctx.proxy_paths.is_some();
     if let Some(skill) = skill {
         bounds.push(json!({"action":"skill.invoke","resource":{"kind":"skill","match":"ids","ids":[skill]}}));
     }
@@ -514,7 +614,7 @@ pub(crate) async fn check_call_sources(
         // Legacy pure RPC reads keep their existing semantics. Effectful
         // ordinary RPC calls freeze the same charged proof as Skill calls.
         let effectful: bool = c.query_one("SELECT EXISTS(SELECT 1 FROM calls c JOIN capability_contracts p ON p.name=c.contract->>'name' AND p.version=c.contract->>'version' AND p.schema_digest=c.contract->>'schema_digest' WHERE c.id=$1 AND p.spec->>'side_effect' IN ('idempotent','queryable','non_repeatable'))", &[&call]).await?.get(0);
-        if !effectful {
+        if !effectful && row.get::<_, Option<Value>>("source_paths").is_none() {
             return Ok(());
         }
     }
@@ -1149,6 +1249,13 @@ pub(crate) fn rpc_error(mut status: tonic::Status) -> tonic::Status {
 pub(crate) fn transport_deadline<T>(
     request: &tonic::Request<T>,
 ) -> std::result::Result<tokio::time::Instant, tonic::Status> {
+    transport_deadline_with_limit(request, Duration::from_secs(300))
+}
+#[allow(clippy::result_large_err)]
+pub(crate) fn transport_deadline_with_limit<T>(
+    request: &tonic::Request<T>,
+    maximum: Duration,
+) -> std::result::Result<tokio::time::Instant, tonic::Status> {
     let duration = if let Some(raw) = request.metadata().get("grpc-timeout") {
         let raw = raw
             .to_str()
@@ -1173,7 +1280,7 @@ pub(crate) fn transport_deadline<T>(
             _ => return Err(tonic::Status::invalid_argument("Invalid gRPC deadline")),
         }
     } else {
-        Duration::from_secs(300)
+        maximum
     };
-    Ok(tokio::time::Instant::now() + duration.min(Duration::from_secs(300)))
+    Ok(tokio::time::Instant::now() + duration.min(maximum))
 }
