@@ -192,6 +192,15 @@ jobs:
           test -n "$digest"
           sudo ctr -n xelab-ci images tag docker.io/xelab-ci/host-blob:test "docker.io/xelab-ci/host-blob@$digest"
           echo "XELAB_TEST_HOST_BLOB_IMAGE=docker.io/xelab-ci/host-blob@$digest" >> "$GITHUB_ENV"
+          python3 examples/m4-consumer/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --provider-manifest examples/generated/xelab/plugin.json
+          docker build -t docker.io/xelab-ci/m4-consumer:test -f examples/m4-consumer/Dockerfile .
+          docker save docker.io/xelab-ci/m4-consumer:test -o examples/generated-m4-consumer/m4-consumer.tar
+          sudo ctr -n xelab-ci images import examples/generated-m4-consumer/m4-consumer.tar
+          digest=$(sudo ctr -n xelab-ci images list | awk '$1=="docker.io/xelab-ci/m4-consumer:test" {print $3}')
+          test -n "$digest"
+          sudo ctr -n xelab-ci images tag docker.io/xelab-ci/m4-consumer:test "docker.io/xelab-ci/m4-consumer@$digest"
+          echo "XELAB_TEST_M4_CONSUMER_IMAGE=docker.io/xelab-ci/m4-consumer@$digest" >> "$GITHUB_ENV"
+          echo "XELAB_M4_OCI_REQUIRED=1" >> "$GITHUB_ENV"
           python3 examples/http/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001
           docker build -t docker.io/xelab-ci/http:test -f examples/http/Dockerfile .
           python3 examples/http/container_probe.py --image docker.io/xelab-ci/http:test
@@ -232,6 +241,7 @@ jobs:
               ("generated-volume-upgrade", "image.tar", "XELAB_TEST_VOLUME_UPGRADE_IMAGE"),
               ("generated-volume-failed-upgrade", "image.tar", "XELAB_TEST_VOLUME_FAILED_UPGRADE_IMAGE"),
               ("generated-host-blob", "host-blob.tar", "XELAB_TEST_HOST_BLOB_IMAGE"),
+              ("generated-m4-consumer", "m4-consumer.tar", "XELAB_TEST_M4_CONSUMER_IMAGE"),
               (("http", "generated"), "http.tar", "XELAB_TEST_HTTP_IMAGE"),
               (("http", "generated-mixed"), "http.tar", "XELAB_TEST_HTTP_MIXED_IMAGE"),
           ]
@@ -293,13 +303,23 @@ jobs:
       - name: Real OCI API lifecycle and recovery
         env:
           XELAB_OCI_TEST: "1"
+          XELAB_M4_OCI_EVIDENCE: ${{ runner.temp }}/xelab-m4-oci.json
           XELAB_PLATFORM_SOURCE_RECEIPT: ${{ runner.temp }}/xelab-platform-source.json
         run: |
           python3 - <<'PYTEST'
-          import glob, os, subprocess
+          import glob, json, os, pathlib, subprocess
           binaries=[p for p in glob.glob("target/debug/deps/oci-*") if os.path.isfile(p) and os.access(p,os.X_OK)]
           assert len(binaries)==1,binaries
-          subprocess.run(["sudo","--preserve-env=XELAB_TEST_PLATFORM_SCHEMA_1_IMAGE,XELAB_TEST_PLATFORM_SCHEMA_2_IMAGE,XELAB_TEST_DATABASE_URL,XELAB_TEST_IMAGE,XELAB_TEST_UPGRADE_IMAGE,XELAB_TEST_FAILED_UPGRADE_IMAGE,XELAB_TEST_PYTHON_IMAGE,XELAB_TEST_HOST_BLOB_IMAGE,XELAB_TEST_S3_ENDPOINT,XELAB_PLATFORM_SOURCE_RECEIPT,XELAB_OCI_TEST",binaries[0],"--ignored","--nocapture"],check=True)
+          assert os.environ["XELAB_M4_OCI_REQUIRED"] == "1"
+          evidence = pathlib.Path(os.environ["XELAB_M4_OCI_EVIDENCE"])
+          evidence.unlink(missing_ok=True)
+          subprocess.run(["sudo","--preserve-env=XELAB_TEST_PLATFORM_SCHEMA_1_IMAGE,XELAB_TEST_PLATFORM_SCHEMA_2_IMAGE,XELAB_TEST_DATABASE_URL,XELAB_TEST_IMAGE,XELAB_TEST_UPGRADE_IMAGE,XELAB_TEST_FAILED_UPGRADE_IMAGE,XELAB_TEST_PYTHON_IMAGE,XELAB_TEST_HOST_BLOB_IMAGE,XELAB_TEST_M4_CONSUMER_IMAGE,XELAB_M4_OCI_REQUIRED,XELAB_M4_OCI_EVIDENCE,XELAB_TEST_S3_ENDPOINT,XELAB_PLATFORM_SOURCE_RECEIPT,XELAB_OCI_TEST",binaries[0],"--ignored","--nocapture"],check=True)
+          receipt = json.loads(subprocess.check_output(["sudo", "cat", "--", str(evidence)], text=True))
+          assert receipt["kind"] == "M4 actual signed OCI component"
+          assert receipt["required"] is True and receipt["passed"] is True
+          assert receipt["signed_image"] == os.environ["XELAB_TEST_M4_CONSUMER_IMAGE"]
+          assert len(receipt["child_calls"]) == 2
+          print("M4_OCI_REQUIRED_ACCEPTANCE_PASSED", json.dumps(receipt, sort_keys=True))
           PYTEST
       - name: Real XFS quota, volume lifecycle and private restore
         env:
@@ -341,6 +361,8 @@ jobs:
           trap 'rm -rf -- "$migration_reference_root"' EXIT
           /tmp/xelab-docs/bin/python -m grpc_tools.protoc -I docs/contracts/proto --python_out="$migration_reference_root" --grpc_python_out="$migration_reference_root" docs/contracts/proto/xelab/v1/common.proto docs/contracts/proto/xelab/v1/lifecycle.proto docs/contracts/proto/xelab/v1/capability.proto docs/contracts/proto/xelab/v1/host.proto docs/contracts/proto/xelab/v1/migration.proto
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$migration_reference_root:examples/echo-python" /tmp/xelab-docs/bin/python -m unittest discover -s examples/echo-python -p 'test_migration_*.py' -v
+      - name: M4 signed consumer schemas and protocol
+        run: PYTHONDONTWRITEBYTECODE=1 /tmp/xelab-docs/bin/python examples/m4-consumer/test_fixture.py
       - name: Lints
         if: always()
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
