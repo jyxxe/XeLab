@@ -22,7 +22,7 @@
 | 备份/恢复 | 部署一致性备份、新卷恢复/切换、整体离线源冻结、元数据/Blob/镜像/卷重建、权限重置、持久检查点与中断续作、格式备份登记 | 自动备份调度、正式 AWS/独立宿主恢复、不同格式升级/不兼容回退的完整正式演练；兼容对象存储始终 off_host=false |
 | 运维 | HTTPS 管理 API、独立 CLI、WebUI 配置/默认界面及停用恢复、离线备份/恢复与账户维护命令、探针、结构化错误日志、数据库审计、故障恢复测试 | UDS 控制通道、指标/Tracing 导出、自动备份、数据与 AI 平台；独立 WebUI 的精确整体门禁见持续进度 |
 
-当前公开安装 profile 接受单副本、无依赖、无扩展点且 data_schema_version 为 none 的普通插件；宿主权限申请仅保留现有可选 Secret/Blob profile。允许受控持久卷、签名 capability/HTTP Skill 候选、经验证的 http/static/webui 路由及固定 WebUI/UI Contribution 声明；页面必须有独立来源和对应签名准入，不因 UI 存在而授予业务权限。内部版本化格式的初始化、同格式切换和 Plan/Apply/Verify 见[格式监督器](../../docs/implementation/m2-format-transitions.md)；内部实现不等于公开准入或正式验收。业务 Schema 必须自包含，拒绝 $ref/$id 等引用。实例业务池满拒绝，事务锁准入等待和有界 SSE 缓冲不创建业务等待队列或持久任务，未实现操作明确报错。
+当前公开安装 profile 接受单副本、已声明的普通插件/能力依赖、无扩展点且 data_schema_version 为 none 的普通插件；宿主权限申请仅保留现有可选 Secret/Blob profile。允许受控持久卷、签名 capability/HTTP Skill 候选、经验证的 http/static/webui 路由及固定 WebUI/UI Contribution 声明；页面必须有独立来源和对应签名准入，不因 UI 存在而授予业务权限。内部版本化格式的初始化、同格式切换和 Plan/Apply/Verify 见[格式监督器](../../docs/implementation/m2-format-transitions.md)；内部实现不等于公开准入或正式验收。业务 Schema 必须自包含，拒绝 $ref/$id 等引用。实例业务池满拒绝，事务锁准入等待和有界 SSE 缓冲不创建业务等待队列或持久任务，未实现操作明确报错。
 
 `registerSkill/getSkill/listSkills/setSkillEnabled/archiveSkill/invokeSkill/streamSkill` 固定安装、不可变定义与 UUID，复用 Broker 并发、配额、来源链和 unknown 围栏。普通 capability 的 `none/idempotent/queryable/non_repeatable` 均支持首次单次和已声明流；从不自动重派业务。queryable 的 getCall 仅向原实例/代次发送 QueryResult，复核原来源，不切换提供者或重新 Invoke。内部版本化数据 profile 仍保留既有 none/idempotent 限制，公开版本化制品门禁关闭。HTTP Skill 固定签名 GET/HEAD/POST/PUT/PATCH/DELETE、声明成功状态和 Schema；无正文/204/HEAD 使用契约允许的 null，声明流接入已有 Skill SSE，不能由输入选 URL/方法。两类扩展已通过 #46/#47 精确真实 OCI 门禁，主线最终验收状态见持续进度与目标 #38。HostService 的 Skill 发现/解析/检查/调用 RPC 仍为 UNIMPLEMENTED，属于 M4；不等于公开 Skill API 未实现。边界和命令见 [Skill](../../docs/implementation/m3-skills.md)、[流式调用](../../docs/implementation/m3-skill-streams.md)、[HTTP](../../docs/implementation/m3-http.md)和[WebUI 整体门禁](../../docs/implementation/m3-webui.md)。
 
@@ -58,12 +58,12 @@ cargo fmt --all -- --check
 
 ```bash
 xelabctl validate-config --config /etc/xelab/kernel.toml
-xelabctl migrate --config /etc/xelab/kernel.toml --target 16
+xelabctl migrate --config /etc/xelab/kernel.toml --target 17
 xelabctl bootstrap --config /etc/xelab/kernel.toml --owner-name admin
 xelabd --config /etc/xelab/kernel.toml
 ```
 
-`validate-config` 只验证结构和本地约束；不宣称宿主检查已经通过。当前迁移目标为 16：
+`validate-config` 只验证结构和本地约束；不宣称宿主检查已经通过。当前迁移目标为 17：
 空库先建立原始基线，已有库先检查已应用的版本和校验和，再顺序执行追加迁移；
 重复执行仍核对布局与校验和。bootstrap 只允许空账户库，须在启动守护进程前执行。
 守护进程不会隐式迁移数据库。
@@ -167,7 +167,7 @@ CI 另在一次性 Linux 主机运行 `tests/oci.rs`：真实 containerd + Rust/
 - 自授 Grant 证明签发权限时，忽略同账户其他非引导自授绑定，只使用独立来源（外部 Grant、父级继承或初始 Owner）。这些自授绑定仍在最外层保留权限/来源记录；撤销独立来源后不能互相维持权限。此优化针对同账户自授，其他来源图仍受现有深度/路径边界限制。
 - 控制器启用与停用清理分别保存 `(created_at,id)` 游标与上界，每轮各最多 16 项，并在项间检查 250 ms 时间片。Probe 按实例代次复用、分批回收；已清理禁用记录不反复协调。完整行为、回归与单项延迟限制见 [Controller 稳定化](../../docs/implementation/m1-acceptance.md#controller-稳定化pr-4-遗留项)。
 
-升级前备份并停机，确认没有未完成任务，执行上面的 `--target 16` 后再启动。
+升级前备份并停机，确认没有未完成任务，执行上面的 `--target 17` 后再启动。
 旧二进制拒绝不匹配的元数据版本，不能直接回退；原生快照恢复同样要求精确布局。
 v1 已有的凭证/账户派生调用继续计入预算；旧版本未记录的实际 Grant 来源无法事后精确重建，因此已有受此漏洞影响的限次来源 Key 应在升级时撤销后重新签发，不把旧账本当成完整历史计费证据。v7 持久备份任务见 [备份任务记录](../../docs/implementation/m2-backup-jobs.md)，v8 新卷恢复和切换见 [恢复实现](../../docs/implementation/m2-restores.md)，v9 元数据快照、启动门禁与权限重置见 [离线恢复组件](../../docs/implementation/m2-platform-recovery.md)。
 v10–11 部署重建与卷克隆见[部署重建实现](../../docs/implementation/m2-deployment-upgrades.md)，
@@ -176,6 +176,7 @@ v13 格式备份登记见[登记组件](../../docs/implementation/m2-format-back
 v14 为恢复后的历史用户提供[维护窗口重新激活](../../docs/implementation/m2-recovered-accounts.md)，
 需要实际宿主 root、当前恢复 Owner 凭证和明确的目标修订；不恢复旧授权。
 v15 保存[原始 HTTP 契约与调用绑定](../../docs/implementation/m3-http-provenance.md)，v16 保存[OAuth/UI 状态](../../docs/implementation/m3-oauth-ui.md)；恢复仍撤销旧凭证、Client 和信任，历史记录不能复活权限。
+v17 保存[依赖固定绑定和升级计划](../../docs/implementation/m4-dependencies.md)，不改变既有权限快照；HostService 代理与持久事件仍由 M4 后续阶段交付。
 已验证的业务格式可随认证数据进行[整体备份/恢复](../../docs/implementation/m2-platform-formats.md)，保留逻辑卷和历史格式绑定；恢复仍禁用部署并撤销旧信任，不自动迁移或重新授权。
 内部[格式变更执行器](../../docs/implementation/m2-format-transitions.md)已经接通，
 正式备份下的完整迁移与故障验收尚未完成，公开版本化制品安装入口仍关闭。
