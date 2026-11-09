@@ -627,6 +627,9 @@ async fn host_real_mtls_skill_invocation_replay_stream_and_parent_lineage() {
 #[path = "host_proxy_transport_tests.rs"]
 mod capability_transport;
 
+#[path = "host_candidates_expiry_tests.rs"]
+mod candidates_expiry;
+
 #[tokio::test]
 async fn required_host_proxy_rules_need_complete_signed_current_approval() {
     let Some(f) = Fixture::new().await else {

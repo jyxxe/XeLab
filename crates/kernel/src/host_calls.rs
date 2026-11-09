@@ -765,16 +765,8 @@ pub(crate) async fn list_skill_candidates(
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
     let hash = app.auth.token_digest(&context.delegation_token);
-    let base = authority_digest(
-        &tx,
-        app,
-        workload,
-        context,
-        &hash,
-        0,
-        &mut ProofCache::default(),
-    )
-    .await?;
+    let mut cache = ProofCache::default();
+    let base = authority_digest(&tx, app, workload, context, &hash, 0, &mut cache).await?;
     let rows=tx.query("SELECT s.id,s.definition_digest,s.installation_id,s.created_by,n.plugin_id,s.revision,n.state,p.status FROM skills s JOIN installations n ON n.id=s.installation_id JOIN publishers p ON p.id=n.publisher_id WHERE n.plugin_id=ANY($1) AND s.definition->'target'->>'kind'='capability' AND s.definition->'target'->'contract'->>'name'=ANY($2) AND s.archived_at IS NULL ORDER BY n.plugin_id,s.definition->>'name',s.definition->>'version',s.id LIMIT 10001",&[&request.plugin_ids,&request.capability_names]).await?;
     if rows.len() > 10000 {
         return Err(Error::exhausted());
@@ -827,6 +819,7 @@ pub(crate) async fn list_skill_candidates(
         cursor = previous;
     }
     let mut items = Vec::new();
+    let mut returned_resources = Vec::new();
     for row in rows.iter().skip(cursor.offset) {
         cursor.offset += 1;
         let skill: Uuid = row.get("id");
@@ -851,6 +844,7 @@ pub(crate) async fn list_skill_candidates(
             continue;
         }
         let definition = &value["definition"];
+        returned_resources.push(Resource::new("skill", skill, Some(owner)));
         items.push(rpc::SkillCandidate {
             skill_id: skill.to_string(),
             name: contracts::string(definition, "name")?.into(),
@@ -876,6 +870,17 @@ pub(crate) async fn list_skill_candidates(
     } else {
         String::new()
     };
+    // Catalog/value queries can wait past a parent or source clock boundary
+    // while authorization mutations remain fenced. Rebuild current authority
+    // in the same transaction and require every returned object's original
+    // skill.read proof and independent ceilings immediately before delivery.
+    let current = authority_digest(&tx, app, workload, context, &hash, 0, &mut cache).await?;
+    if returned_resources
+        .iter()
+        .any(|resource| !proof_allows(&current.ctx, "skill.read", resource))
+    {
+        return Err(Error::denied());
+    }
     tx.commit().await?;
     Ok(rpc::ListSkillCandidatesResponse { items, next_cursor })
 }
@@ -903,15 +908,12 @@ pub(crate) async fn resolve(
     );
     let mut c = app.db.connect().await?;
     let tx = c.transaction().await?;
-    let auth = authority(
-        &tx,
-        app,
-        workload,
-        context,
-        "capability.discover",
-        &resource,
-    )
-    .await?;
+    let hash = app.auth.token_digest(&context.delegation_token);
+    let mut cache = ProofCache::default();
+    let auth = authority_digest(&tx, app, workload, context, &hash, 0, &mut cache).await?;
+    if !proof_allows(&auth.ctx, "capability.discover", &resource) {
+        return Err(Error::denied());
+    }
     let binding = crate::dependencies::resolve_host(
         &tx,
         &auth.ctx,
@@ -927,6 +929,13 @@ pub(crate) async fn resolve(
         contract: request.contract,
         expires_unix_ms: binding["expires_unix_ms"].as_i64().unwrap_or(auth.until_ms),
     };
+    // Request binding creation can wait after its original authorization. Keep
+    // the new binding and its opaque handle private until the actual parent,
+    // original sources and discovery ceilings are all still current.
+    let current = authority_digest(&tx, app, workload, context, &hash, 0, &mut cache).await?;
+    if !proof_allows(&current.ctx, "capability.discover", &resource) {
+        return Err(Error::denied());
+    }
     tx.commit().await?;
     Ok(result)
 }
@@ -1524,8 +1533,8 @@ fn stage(start: std::time::Instant, name: &str) {
     let _ = (start, name);
 }
 
-/// One Host authority walk, including its original approvers, under one shared
-/// authorization transaction fence. Never retain across requests/transactions.
+/// One Host RPC's authority walks, including its original approvers, under one
+/// shared authorization fence. Never retain across requests/transactions.
 #[derive(Default)]
 pub(crate) struct ProofCache {
     current: std::collections::HashMap<String, Vec<crate::policy::Path>>,
