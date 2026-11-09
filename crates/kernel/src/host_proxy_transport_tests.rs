@@ -836,3 +836,6 @@ async fn host_mtls_effectful_failure_exposes_admitted_call_without_redispatch() 
 
 #[path = "host_proxy_proof_tests.rs"]
 mod transaction_proofs;
+
+#[path = "host_resolve_expiry_tests.rs"]
+mod resolve_expiry;
