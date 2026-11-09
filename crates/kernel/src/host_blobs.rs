@@ -190,6 +190,7 @@ pub(crate) async fn approval_sources_current(
             && proof.browser_origin == ctx.browser_origin
             && proof.proxy_paths.is_none()
             && proof.proxy_ceilings.is_empty()
+            && proof.proxy_proof.is_none()
     }) {
         let _ = proof;
         policy.revalidate_current(&original, paths).await?
@@ -567,7 +568,18 @@ async fn grant_call_inner(
         .collect();
     let mut ceilings = ctx.proxy_ceilings.clone();
     if has_proxy {
-        crate::host_calls::extend_ceilings(&mut ceilings, &[json!(approved)])?;
+        let mut blob_bound: Vec<Value> = approved
+            .iter()
+            .filter(|rule| !matches!(rule["action"].as_str(), Some("blob.read" | "blob.create")))
+            .cloned()
+            .collect();
+        blob_bound.extend(
+            bounds
+                .iter()
+                .filter(|rule| matches!(rule["action"].as_str(), Some("blob.read" | "blob.create")))
+                .cloned(),
+        );
+        crate::host_calls::extend_ceilings(&mut ceilings, &[json!(approved), json!(blob_bound)])?;
     }
     let mut paths = p.intersection(&current, &caps(&json!(bounds))?).await?;
     if pinned {

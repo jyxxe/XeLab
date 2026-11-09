@@ -455,6 +455,31 @@ pub(crate) async fn check_admitted_http_binding(
     installed_candidate(c, installation, &definition).await
 }
 
+// Metadata-only half of an already admitted capability Skill proof. Callers
+// must separately require the exact original+current business/Skill sources.
+pub(crate) async fn check_admitted_capability_binding(
+    c: &(impl GenericClient + Sync),
+    skill: Uuid,
+    expected_digest: &str,
+    installation: Uuid,
+) -> Result<()> {
+    let row=c.query_opt("SELECT definition,definition_digest,installation_id,enabled,archived_at FROM skills WHERE id=$1 FOR SHARE",&[&skill]).await?.ok_or_else(Error::not_found)?;
+    let definition: Value = row.get("definition");
+    if !row.get::<_, bool>("enabled")
+        || row.get::<_, Option<DateTime<Utc>>>("archived_at").is_some()
+    {
+        return Err(Error::unavailable("Skill is disabled or archived"));
+    }
+    if row.get::<_, Uuid>("installation_id") != installation
+        || row.get::<_, String>("definition_digest") != expected_digest
+        || definition_digest(&definition)? != expected_digest
+        || definition["target"]["kind"] != "capability"
+    {
+        return Err(conflict());
+    }
+    installed_candidate(c, installation, &definition).await
+}
+
 async fn row_value(c: &(impl GenericClient + Sync), row: &Row) -> Result<Value> {
     let mut value = db::stamp(row);
     let definition: Value = row.get("definition");

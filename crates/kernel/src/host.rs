@@ -136,10 +136,11 @@ impl HostService for Host {
         let identity = workload(&request).map_err(crate::host_blobs::rpc_error)?;
         let deadline = crate::host_blobs::transport_deadline(&request)
             .map_err(crate::host_blobs::rpc_error)?;
-        let permit =
-            self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
-                Status::resource_exhausted("HostService proxy capacity is unavailable")
-            })?;
+        let permit = self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
+            crate::host_blobs::rpc_error(Status::resource_exhausted(
+                "HostService proxy capacity is unavailable",
+            ))
+        })?;
         let request = request.into_inner();
         let milliseconds = request
             .context
@@ -160,7 +161,9 @@ impl HostService for Host {
             ),
         )
         .await
-        .map_err(|_| Status::deadline_exceeded("HostService deadline elapsed"))?
+        .map_err(|_| {
+            crate::host_blobs::rpc_error(Status::deadline_exceeded("HostService deadline elapsed"))
+        })?
         .map_err(crate::host_calls::status)
         .map_err(crate::host_blobs::rpc_error)?;
         drop(permit);
@@ -173,10 +176,11 @@ impl HostService for Host {
         let identity = workload(&request).map_err(crate::host_blobs::rpc_error)?;
         let deadline = crate::host_blobs::transport_deadline(&request)
             .map_err(crate::host_blobs::rpc_error)?;
-        let permit =
-            self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
-                Status::resource_exhausted("HostService proxy capacity is unavailable")
-            })?;
+        let permit = self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
+            crate::host_blobs::rpc_error(Status::resource_exhausted(
+                "HostService proxy capacity is unavailable",
+            ))
+        })?;
         let request = request.into_inner();
         let milliseconds = request
             .context
@@ -197,7 +201,9 @@ impl HostService for Host {
             ),
         )
         .await
-        .map_err(|_| Status::deadline_exceeded("HostService deadline elapsed"))?
+        .map_err(|_| {
+            crate::host_blobs::rpc_error(Status::deadline_exceeded("HostService deadline elapsed"))
+        })?
         .map_err(crate::host_calls::status)
         .map_err(crate::host_blobs::rpc_error)?;
         drop(permit);
@@ -210,10 +216,11 @@ impl HostService for Host {
         let identity = workload(&request).map_err(crate::host_blobs::rpc_error)?;
         let deadline = crate::host_blobs::transport_deadline(&request)
             .map_err(crate::host_blobs::rpc_error)?;
-        let permit =
-            self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
-                Status::resource_exhausted("HostService proxy capacity is unavailable")
-            })?;
+        let permit = self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
+            crate::host_blobs::rpc_error(Status::resource_exhausted(
+                "HostService proxy capacity is unavailable",
+            ))
+        })?;
         let request = request.into_inner();
         let milliseconds = request
             .context
@@ -234,7 +241,9 @@ impl HostService for Host {
             ),
         )
         .await
-        .map_err(|_| Status::deadline_exceeded("HostService deadline elapsed"))?
+        .map_err(|_| {
+            crate::host_blobs::rpc_error(Status::deadline_exceeded("HostService deadline elapsed"))
+        })?
         .map_err(crate::host_calls::status)
         .map_err(crate::host_blobs::rpc_error)?;
         drop(permit);
@@ -247,10 +256,11 @@ impl HostService for Host {
         let identity = workload(&request).map_err(crate::host_blobs::rpc_error)?;
         let deadline = crate::host_blobs::transport_deadline(&request)
             .map_err(crate::host_blobs::rpc_error)?;
-        let permit =
-            self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
-                Status::resource_exhausted("HostService proxy capacity is unavailable")
-            })?;
+        let permit = self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
+            crate::host_blobs::rpc_error(Status::resource_exhausted(
+                "HostService proxy capacity is unavailable",
+            ))
+        })?;
         let request = request.into_inner();
         let milliseconds = request
             .context
@@ -271,7 +281,9 @@ impl HostService for Host {
             ),
         )
         .await
-        .map_err(|_| Status::deadline_exceeded("HostService deadline elapsed"))?
+        .map_err(|_| {
+            crate::host_blobs::rpc_error(Status::deadline_exceeded("HostService deadline elapsed"))
+        })?
         .map_err(crate::host_calls::status)
         .map_err(crate::host_blobs::rpc_error)?;
         drop(permit);
@@ -284,10 +296,11 @@ impl HostService for Host {
         let identity = workload(&request).map_err(crate::host_blobs::rpc_error)?;
         let deadline = crate::host_blobs::transport_deadline(&request)
             .map_err(crate::host_blobs::rpc_error)?;
-        let permit =
-            self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
-                Status::resource_exhausted("HostService proxy capacity is unavailable")
-            })?;
+        let permit = self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
+            crate::host_blobs::rpc_error(Status::resource_exhausted(
+                "HostService proxy capacity is unavailable",
+            ))
+        })?;
         let request = request.into_inner();
         let milliseconds = request
             .context
@@ -308,13 +321,14 @@ impl HostService for Host {
             ),
         )
         .await
-        .map_err(|_| Status::deadline_exceeded("HostService deadline elapsed"))?
+        .map_err(|_| {
+            crate::host_blobs::rpc_error(Status::deadline_exceeded("HostService deadline elapsed"))
+        })?
         .map_err(crate::host_calls::status)
         .map_err(crate::host_blobs::rpc_error)?;
         use futures_util::StreamExt;
-        let result = result.map(move |frame| {
+        let result = result.inspect(move |_| {
             let _held = &permit;
-            frame
         });
         Ok(Response::new(Box::pin(result)))
     }
@@ -325,10 +339,11 @@ impl HostService for Host {
         let identity = workload(&request).map_err(crate::host_blobs::rpc_error)?;
         let deadline = crate::host_blobs::transport_deadline(&request)
             .map_err(crate::host_blobs::rpc_error)?;
-        let permit =
-            self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
-                Status::resource_exhausted("HostService proxy capacity is unavailable")
-            })?;
+        let permit = self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
+            crate::host_blobs::rpc_error(Status::resource_exhausted(
+                "HostService proxy capacity is unavailable",
+            ))
+        })?;
         let request = request.into_inner();
         let milliseconds = request
             .context
@@ -349,7 +364,9 @@ impl HostService for Host {
             ),
         )
         .await
-        .map_err(|_| Status::deadline_exceeded("HostService deadline elapsed"))?
+        .map_err(|_| {
+            crate::host_blobs::rpc_error(Status::deadline_exceeded("HostService deadline elapsed"))
+        })?
         .map_err(crate::host_calls::status)
         .map_err(crate::host_blobs::rpc_error)?;
         drop(permit);
@@ -362,10 +379,11 @@ impl HostService for Host {
         let identity = workload(&request).map_err(crate::host_blobs::rpc_error)?;
         let deadline = crate::host_blobs::transport_deadline(&request)
             .map_err(crate::host_blobs::rpc_error)?;
-        let permit =
-            self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
-                Status::resource_exhausted("HostService proxy capacity is unavailable")
-            })?;
+        let permit = self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
+            crate::host_blobs::rpc_error(Status::resource_exhausted(
+                "HostService proxy capacity is unavailable",
+            ))
+        })?;
         let request = request.into_inner();
         let milliseconds = request
             .context
@@ -386,7 +404,9 @@ impl HostService for Host {
             ),
         )
         .await
-        .map_err(|_| Status::deadline_exceeded("HostService deadline elapsed"))?
+        .map_err(|_| {
+            crate::host_blobs::rpc_error(Status::deadline_exceeded("HostService deadline elapsed"))
+        })?
         .map_err(crate::host_calls::status)
         .map_err(crate::host_blobs::rpc_error)?;
         drop(permit);
@@ -399,10 +419,11 @@ impl HostService for Host {
         let identity = workload(&request).map_err(crate::host_blobs::rpc_error)?;
         let deadline = crate::host_blobs::transport_deadline(&request)
             .map_err(crate::host_blobs::rpc_error)?;
-        let permit =
-            self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
-                Status::resource_exhausted("HostService proxy capacity is unavailable")
-            })?;
+        let permit = self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
+            crate::host_blobs::rpc_error(Status::resource_exhausted(
+                "HostService proxy capacity is unavailable",
+            ))
+        })?;
         let request = request.into_inner();
         let milliseconds = request
             .context
@@ -423,13 +444,14 @@ impl HostService for Host {
             ),
         )
         .await
-        .map_err(|_| Status::deadline_exceeded("HostService deadline elapsed"))?
+        .map_err(|_| {
+            crate::host_blobs::rpc_error(Status::deadline_exceeded("HostService deadline elapsed"))
+        })?
         .map_err(crate::host_calls::status)
         .map_err(crate::host_blobs::rpc_error)?;
         use futures_util::StreamExt;
-        let result = result.map(move |frame| {
+        let result = result.inspect(move |_| {
             let _held = &permit;
-            frame
         });
         Ok(Response::new(Box::pin(result)))
     }
