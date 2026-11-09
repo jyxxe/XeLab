@@ -8,9 +8,15 @@ use crate::{
     policy::{self, Policy},
 };
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
+    pin::Pin,
+};
 use tokio_postgres::GenericClient;
 use uuid::Uuid;
+
+type ResolverFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
 pub async fn dependency_lock(c: &(impl GenericClient + Sync)) -> Result<()> {
     crate::db::call_lock(c).await?;
@@ -158,193 +164,193 @@ async fn selected(
     selected_filtered(c, Some(ctx), consumer, installation, None, None).await
 }
 
-async fn selected_filtered(
-    c: &(impl GenericClient + Sync),
-    ctx: Option<&Context>,
+fn selected_filtered<'a>(
+    c: &'a (impl GenericClient + Sync),
+    ctx: Option<&'a Context>,
     consumer: Uuid,
     installation: Uuid,
-    exact: Option<(&str, &Value, Option<Uuid>)>,
-    ceiling: Option<&Value>,
-) -> Result<(i64, Vec<Value>, Vec<String>)> {
+    exact: Option<(&'a str, &'a Value, Option<Uuid>)>,
+    ceiling: Option<&'a Value>,
+) -> ResolverFuture<'a, (i64, Vec<Value>, Vec<String>)> {
     // Resolver authorization is composed into controller and schema/upgrade
     // workers. Keep its state heap-owned across those nested async boundaries.
     Box::pin(async move {
-    let row = c.query_opt("SELECT d.revision,n.manifest FROM deployments d JOIN installations n ON n.id=$2 JOIN publishers p ON p.id=n.publisher_id WHERE d.id=$1 AND d.archived_at IS NULL AND n.state='installed' AND p.status='trusted'", &[&consumer,&installation]).await?.ok_or_else(Error::not_found)?;
-    let revision = row.get("revision");
-    let manifest: Value = row.get("manifest");
-    validate_manifest(&manifest)?;
-    let mut bindings = Vec::new();
-    let mut conflicts = Vec::new();
-    for dependency in manifest["dependencies"].as_array().into_iter().flatten() {
-        let alias = string(dependency, "name")?;
-        if exact.is_some_and(|(requested, _, _)| requested != alias) {
-            continue;
-        }
-        // Signed manifests/contract records are authoritative. Features come from
-        // the core-validated health observation, never a caller address.
-        let rows = c.query("SELECT d.id,d.installation_id,d.spec AS provider_spec,i.generation AS provider_generation,n.manifest,n.manifest_digest,n.plugin_id,n.version,i.id AS instance_id,p.name,p.version AS capability_version,p.features,k.schema_digest,k.spec,(p.availability='ready' AND p.observed_generation=i.generation AND p.observed_at>now()-interval '1 millisecond'*((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint+(n.manifest->'health'->>'timeout_ms')::bigint)) AS capability_ready,(i.last_heartbeat_at>now()-interval '1 millisecond'*((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint+(n.manifest->'health'->>'timeout_ms')::bigint)) AS plugin_ready FROM deployments d JOIN installations n ON n.id=d.installation_id JOIN publishers u ON u.id=n.publisher_id JOIN instances i ON i.deployment_id=d.id LEFT JOIN provider_records p ON p.instance_id=i.id LEFT JOIN capability_contracts k ON k.name=p.name AND k.version=p.version WHERE d.spec->>'enabled'='true' AND d.archived_at IS NULL AND n.state='installed' AND u.status='trusted' AND i.phase='ready' ORDER BY d.id,p.name,p.version,i.id LIMIT 4097", &[]).await?;
-        if rows.len() > 4096 {
-            return Err(Error::exhausted());
-        }
-        let mut chosen = None;
-        for candidate in rows {
-            if exact.is_some_and(|(_, _, fixed)| {
-                fixed.is_some_and(|provider| provider != candidate.get::<_, Uuid>("id"))
-            }) {
+        let row = c.query_opt("SELECT d.revision,n.manifest FROM deployments d JOIN installations n ON n.id=$2 JOIN publishers p ON p.id=n.publisher_id WHERE d.id=$1 AND d.archived_at IS NULL AND n.state='installed' AND p.status='trusted'", &[&consumer,&installation]).await?.ok_or_else(Error::not_found)?;
+        let revision = row.get("revision");
+        let manifest: Value = row.get("manifest");
+        validate_manifest(&manifest)?;
+        let mut bindings = Vec::new();
+        let mut conflicts = Vec::new();
+        for dependency in manifest["dependencies"].as_array().into_iter().flatten() {
+            let alias = string(dependency, "name")?;
+            if exact.is_some_and(|(requested, _, _)| requested != alias) {
                 continue;
             }
-            let plugin: String = candidate.get("plugin_id");
-            let target = string(dependency, "target")?;
-            let is_plugin = dependency["target_kind"] == "plugin";
-            let capability: Option<String> = candidate.get("name");
-            let version: Option<String> = candidate.get("capability_version");
-            let cap_ready = candidate
-                .get::<_, Option<bool>>("capability_ready")
-                .unwrap_or(false);
-            let plugin_ready = candidate
-                .get::<_, Option<bool>>("plugin_ready")
-                .unwrap_or(false)
-                || cap_ready;
-            if (is_plugin && (target != plugin || !plugin_ready))
-                || (!is_plugin && (capability.as_deref() != Some(target) || !cap_ready))
-            {
-                continue;
+            // Signed manifests/contract records are authoritative. Features come from
+            // the core-validated health observation, never a caller address.
+            let rows = c.query("SELECT d.id,d.installation_id,d.spec AS provider_spec,i.generation AS provider_generation,n.manifest,n.manifest_digest,n.plugin_id,n.version,i.id AS instance_id,p.name,p.version AS capability_version,p.features,k.schema_digest,k.spec,(p.availability='ready' AND p.observed_generation=i.generation AND p.observed_at>now()-interval '1 millisecond'*((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint+(n.manifest->'health'->>'timeout_ms')::bigint)) AS capability_ready,(i.last_heartbeat_at>now()-interval '1 millisecond'*((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint+(n.manifest->'health'->>'timeout_ms')::bigint)) AS plugin_ready FROM deployments d JOIN installations n ON n.id=d.installation_id JOIN publishers u ON u.id=n.publisher_id JOIN instances i ON i.deployment_id=d.id LEFT JOIN provider_records p ON p.instance_id=i.id LEFT JOIN capability_contracts k ON k.name=p.name AND k.version=p.version WHERE d.spec->>'enabled'='true' AND d.archived_at IS NULL AND n.state='installed' AND u.status='trusted' AND i.phase='ready' ORDER BY d.id,p.name,p.version,i.id LIMIT 4097", &[]).await?;
+            if rows.len() > 4096 {
+                return Err(Error::exhausted());
             }
-            let matched_version = if is_plugin {
-                candidate.get::<_, String>("version")
-            } else {
-                version.clone().unwrap()
-            };
-            if !version_matches(string(dependency, "version_range")?, &matched_version)? {
-                continue;
-            }
-            if exact.is_some() && !cap_ready {
-                continue;
-            }
-            let contract = if is_plugin && exact.is_none() {
-                Value::Null
-            } else {
-                json!({"name":capability.as_ref().unwrap(),"version":version.as_ref().unwrap(),"schema_digest":candidate.get::<_,Option<String>>("schema_digest").ok_or_else(||Error::conflict("Missing capability digest"))?})
-            };
-            if exact.is_some_and(|(requested, value, _)| requested == alias && *value != contract) {
-                continue;
-            }
-            let source: Value = candidate.get("manifest");
-            let features: Value = candidate
-                .get::<_, Option<Value>>("features")
-                .unwrap_or(json!([]));
-            if !contract.is_null() {
-                let Some(signed) = source["capabilities"]
-                    .as_array()
-                    .and_then(|caps| caps.iter().find(|cap| cap["contract"] == contract))
-                else {
-                    continue;
-                };
-                if Some(signed) != candidate.get::<_, Option<Value>>("spec").as_ref() {
+            let mut chosen = None;
+            for candidate in rows {
+                if exact.is_some_and(|(_, _, fixed)| {
+                    fixed.is_some_and(|provider| provider != candidate.get::<_, Uuid>("id"))
+                }) {
                     continue;
                 }
-            }
-            if dependency["features"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|feature| {
-                    !features
-                        .as_array()
-                        .is_some_and(|items| items.contains(feature))
-                })
-            {
-                continue;
-            }
-            let (action, resource) = if is_plugin {
-                ("plugin.read", Resource::new("plugin", plugin.clone(), None))
-            } else {
-                (
-                    "capability.discover",
-                    Resource::new(
-                        "capability",
-                        format!(
-                            "{}@{}",
-                            capability.as_ref().unwrap(),
-                            version.as_ref().unwrap()
-                        ),
-                        None,
-                    ),
-                )
-            };
-            if let Some(ctx) = ctx {
-                if ceiling
-                    .is_some_and(|rules| !auth::rules_allow(rules, action, &resource, ctx.peer))
+                let plugin: String = candidate.get("plugin_id");
+                let target = string(dependency, "target")?;
+                let is_plugin = dependency["target_kind"] == "plugin";
+                let capability: Option<String> = candidate.get("name");
+                let version: Option<String> = candidate.get("capability_version");
+                let cap_ready = candidate
+                    .get::<_, Option<bool>>("capability_ready")
+                    .unwrap_or(false);
+                let plugin_ready = candidate
+                    .get::<_, Option<bool>>("plugin_ready")
+                    .unwrap_or(false)
+                    || cap_ready;
+                if (is_plugin && (target != plugin || !plugin_ready))
+                    || (!is_plugin && (capability.as_deref() != Some(target) || !cap_ready))
                 {
                     continue;
                 }
-                match auth::authorize(c, ctx, action, &resource).await {
-                    Ok(()) => (),
-                    Err(error)
-                        if matches!(error.code, "PERMISSION_DENIED" | "INVALID_CREDENTIAL") =>
-                    {
-                        continue
-                    }
-                    Err(error) => return Err(error),
+                let matched_version = if is_plugin {
+                    candidate.get::<_, String>("version")
+                } else {
+                    version.clone().unwrap()
+                };
+                if !version_matches(string(dependency, "version_range")?, &matched_version)? {
+                    continue;
                 }
+                if exact.is_some() && !cap_ready {
+                    continue;
+                }
+                let contract = if is_plugin && exact.is_none() {
+                    Value::Null
+                } else {
+                    json!({"name":capability.as_ref().unwrap(),"version":version.as_ref().unwrap(),"schema_digest":candidate.get::<_,Option<String>>("schema_digest").ok_or_else(||Error::conflict("Missing capability digest"))?})
+                };
+                if exact
+                    .is_some_and(|(requested, value, _)| requested == alias && *value != contract)
+                {
+                    continue;
+                }
+                let source: Value = candidate.get("manifest");
+                let features: Value = candidate
+                    .get::<_, Option<Value>>("features")
+                    .unwrap_or(json!([]));
+                if !contract.is_null() {
+                    let Some(signed) = source["capabilities"]
+                        .as_array()
+                        .and_then(|caps| caps.iter().find(|cap| cap["contract"] == contract))
+                    else {
+                        continue;
+                    };
+                    if Some(signed) != candidate.get::<_, Option<Value>>("spec").as_ref() {
+                        continue;
+                    }
+                }
+                if dependency["features"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|feature| {
+                        !features
+                            .as_array()
+                            .is_some_and(|items| items.contains(feature))
+                    })
+                {
+                    continue;
+                }
+                let (action, resource) = if is_plugin {
+                    ("plugin.read", Resource::new("plugin", plugin.clone(), None))
+                } else {
+                    (
+                        "capability.discover",
+                        Resource::new(
+                            "capability",
+                            format!(
+                                "{}@{}",
+                                capability.as_ref().unwrap(),
+                                version.as_ref().unwrap()
+                            ),
+                            None,
+                        ),
+                    )
+                };
+                if let Some(ctx) = ctx {
+                    if ceiling
+                        .is_some_and(|rules| !auth::rules_allow(rules, action, &resource, ctx.peer))
+                    {
+                        continue;
+                    }
+                    match auth::authorize(c, ctx, action, &resource).await {
+                        Ok(()) => (),
+                        Err(error)
+                            if matches!(error.code, "PERMISSION_DENIED" | "INVALID_CREDENTIAL") =>
+                        {
+                            continue
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                chosen = Some(
+                    json!({"alias":alias,"contract":contract,"deployment_id":candidate.get::<_,Uuid>("id"),"instance_id":Value::Null,"binding_scope":dependency["binding_scope"],"required":dependency["required"],"failure_policy":dependency["failure_policy"],"provider_installation_id":candidate.get::<_,Uuid>("installation_id"),"provider_manifest_digest":candidate.get::<_,String>("manifest_digest"),"provider_plugin_id":plugin,"provider_spec":candidate.get::<_,Value>("provider_spec"),"provider_generation":candidate.get::<_,i64>("provider_generation"),"required_features":dependency["features"]}),
+                );
+                break;
             }
-            chosen = Some(
-                json!({"alias":alias,"contract":contract,"deployment_id":candidate.get::<_,Uuid>("id"),"instance_id":Value::Null,"binding_scope":dependency["binding_scope"],"required":dependency["required"],"failure_policy":dependency["failure_policy"],"provider_installation_id":candidate.get::<_,Uuid>("installation_id"),"provider_manifest_digest":candidate.get::<_,String>("manifest_digest"),"provider_plugin_id":plugin,"provider_spec":candidate.get::<_,Value>("provider_spec"),"provider_generation":candidate.get::<_,i64>("provider_generation"),"required_features":dependency["features"]}),
-            );
-            break;
+            if let Some(binding) = chosen {
+                bindings.push(binding);
+            } else if dependency["required"] == true {
+                conflicts.push(format!("required_dependency_unavailable:{alias}"));
+            }
         }
-        if let Some(binding) = chosen {
-            bindings.push(binding);
-        } else if dependency["required"] == true {
-            conflicts.push(format!("required_dependency_unavailable:{alias}"));
+        if exact.is_none() {
+            if let Err(error) = graph(c, consumer, &bindings).await {
+                conflicts.push(error.message.to_owned());
+            }
         }
-    }
-    if exact.is_none() {
-        if let Err(error) = graph(c, consumer, &bindings).await {
-            conflicts.push(error.message.to_owned());
+        if conflicts.len() > 64 {
+            conflicts.truncate(63);
+            conflicts.push("additional_dependency_conflicts_omitted".to_owned());
         }
-    }
-    if conflicts.len() > 64 {
-        conflicts.truncate(63);
-        conflicts.push("additional_dependency_conflicts_omitted".to_owned());
-    }
-    Ok((revision, bindings, conflicts))
+        Ok((revision, bindings, conflicts))
     })
-    .await
 }
 
-pub async fn plan(
-    c: &(impl GenericClient + Sync),
-    ctx: &Context,
+pub fn plan<'a>(
+    c: &'a (impl GenericClient + Sync),
+    ctx: &'a Context,
     deployment: Uuid,
     installation: Uuid,
-) -> Result<Value> {
+) -> ResolverFuture<'a, Value> {
     Box::pin(async move {
-    dependency_lock(c).await?;
-    let owner = c
-        .query_opt(
-            "SELECT owner_id FROM deployments WHERE id=$1 AND archived_at IS NULL",
-            &[&deployment],
+        dependency_lock(c).await?;
+        let owner = c
+            .query_opt(
+                "SELECT owner_id FROM deployments WHERE id=$1 AND archived_at IS NULL",
+                &[&deployment],
+            )
+            .await?
+            .ok_or_else(Error::not_found)?
+            .get::<_, Uuid>(0);
+        auth::authorize(
+            c,
+            ctx,
+            "plugin.dependencies.read",
+            &Resource::new("deployment", deployment, Some(owner)),
         )
-        .await?
-        .ok_or_else(Error::not_found)?
-        .get::<_, Uuid>(0);
-    auth::authorize(
-        c,
-        ctx,
-        "plugin.dependencies.read",
-        &Resource::new("deployment", deployment, Some(owner)),
-    )
-    .await?;
-    let (revision, bindings, conflicts) = selected(c, ctx, deployment, installation).await?;
-    let public: Vec<_> = bindings.into_iter().map(|binding| json!({"alias":binding["alias"],"contract":binding["contract"],"deployment_id":binding["deployment_id"],"instance_id":binding["instance_id"],"binding_scope":binding["binding_scope"]})).collect();
-    // Selected providers already exist and own their reservation. Referencing
-    // them does not create instances or duplicate their CPU/memory accounting.
-    let result = json!({"deployment_id":deployment,"revision":revision,"bindings":public,"required_cpu_millis":0,"required_memory_bytes":0,"conflicts":conflicts});
-    validate("DependencyPlan", &result)?;
-    Ok(result)
+        .await?;
+        let (revision, bindings, conflicts) = selected(c, ctx, deployment, installation).await?;
+        let public: Vec<_> = bindings.into_iter().map(|binding| json!({"alias":binding["alias"],"contract":binding["contract"],"deployment_id":binding["deployment_id"],"instance_id":binding["instance_id"],"binding_scope":binding["binding_scope"]})).collect();
+        // Selected providers already exist and own their reservation. Referencing
+        // them does not create instances or duplicate their CPU/memory accounting.
+        let result = json!({"deployment_id":deployment,"revision":revision,"bindings":public,"required_cpu_millis":0,"required_memory_bytes":0,"conflicts":conflicts});
+        validate("DependencyPlan", &result)?;
+        Ok(result)
     })
-    .await
 }
 
 pub async fn clear(c: &(impl GenericClient + Sync), deployment: Uuid) -> Result<()> {
@@ -388,12 +394,12 @@ pub async fn invalidate_dependents(c: &(impl GenericClient + Sync), provider: Uu
     Ok(())
 }
 
-pub async fn bind(
-    c: &(impl GenericClient + Sync),
-    _app: &App,
-    ctx: &Context,
+pub fn bind<'a>(
+    c: &'a (impl GenericClient + Sync),
+    _app: &'a App,
+    ctx: &'a Context,
     deployment: Uuid,
-) -> Result<()> {
+) -> ResolverFuture<'a, ()> {
     Box::pin(async move {
         dependency_lock(c).await?;
         let row = c
@@ -421,7 +427,6 @@ pub async fn bind(
             .await?;
         persist(c, ctx, deployment, installation, &bindings, &json!(paths)).await
     })
-    .await
 }
 
 async fn persist(
@@ -451,68 +456,68 @@ async fn insert_binding(
     Ok(())
 }
 
-pub async fn check_ready(
-    c: &(impl GenericClient + Sync),
-    _app: &App,
+pub fn check_ready<'a>(
+    c: &'a (impl GenericClient + Sync),
+    _app: &'a App,
     deployment: Uuid,
-) -> Result<()> {
+) -> ResolverFuture<'a, ()> {
     Box::pin(async move {
-    let mut queue = vec![(deployment, 0)];
-    let mut visited = BTreeSet::new();
-    while let Some((current, depth)) = queue.pop() {
-        if depth >= 16 || visited.len() >= 4096 {
-            return Err(Error::conflict("Dependency graph exceeds its bound"));
-        }
-        if !visited.insert(current) {
-            continue;
-        }
-        let row=c.query_opt("SELECT n.manifest,d.installation_id FROM deployments d JOIN installations n ON n.id=d.installation_id WHERE d.id=$1", &[&current]).await?.ok_or_else(Error::not_found)?;
-        let manifest: Value = row.get("manifest");
-        let installation: Uuid = row.get("installation_id");
-        for dependency in manifest["dependencies"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|d| d["required"] == true)
-        {
-            let alias = string(dependency, "name")?;
-            if dependency["binding_scope"] == "request" {
-                let (_, candidates, conflicts) =
-                    selected_filtered(c, None, current, installation, None, None).await?;
-                if !conflicts.is_empty() {
-                    return Err(Error::unavailable(
-                        "Required request dependency cannot resolve",
-                    ));
-                }
-                let candidate = candidates
-                    .iter()
-                    .find(|candidate| candidate["alias"] == alias)
-                    .ok_or_else(|| {
-                        Error::unavailable("Required request dependency is unavailable")
-                    })?;
-                candidate_ready(c, candidate).await?;
-                queue.push((id(candidate, "deployment_id")?, depth + 1));
+        let mut queue = vec![(deployment, 0)];
+        let mut visited = BTreeSet::new();
+        while let Some((current, depth)) = queue.pop() {
+            if depth >= 16 || visited.len() >= 4096 {
+                return Err(Error::conflict("Dependency graph exceeds its bound"));
+            }
+            if !visited.insert(current) {
                 continue;
             }
-            let binding=c.query_opt("SELECT b.*,host(b.peer) AS approved_peer FROM dependency_bindings b WHERE consumer_deployment_id=$1 AND alias=$2 AND bound_call IS NULL", &[&current,&alias]).await?.ok_or_else(||Error::unavailable("Required dependency has no fixed binding"))?;
-            if binding.get::<_, Option<Uuid>>("consumer_installation_id") != Some(installation) {
-                return Err(Error::conflict(
-                    "Consumer installation changed; explicit dependency rebind required",
-                ));
-            }
-            let checked = async { provider_ready(c, &binding).await }.await;
-            if let Err(error) = checked {
-                if binding.get::<_, String>("failure_policy") == "fail" {
-                    c.execute("UPDATE dependency_bindings SET failure_latched=true WHERE id=$1 OR parent_binding_id=$1", &[&binding.get::<_,Uuid>("id")]).await?;
+            let row=c.query_opt("SELECT n.manifest,d.installation_id FROM deployments d JOIN installations n ON n.id=d.installation_id WHERE d.id=$1", &[&current]).await?.ok_or_else(Error::not_found)?;
+            let manifest: Value = row.get("manifest");
+            let installation: Uuid = row.get("installation_id");
+            for dependency in manifest["dependencies"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|d| d["required"] == true)
+            {
+                let alias = string(dependency, "name")?;
+                if dependency["binding_scope"] == "request" {
+                    let (_, candidates, conflicts) =
+                        selected_filtered(c, None, current, installation, None, None).await?;
+                    if !conflicts.is_empty() {
+                        return Err(Error::unavailable(
+                            "Required request dependency cannot resolve",
+                        ));
+                    }
+                    let candidate = candidates
+                        .iter()
+                        .find(|candidate| candidate["alias"] == alias)
+                        .ok_or_else(|| {
+                            Error::unavailable("Required request dependency is unavailable")
+                        })?;
+                    candidate_ready(c, candidate).await?;
+                    queue.push((id(candidate, "deployment_id")?, depth + 1));
+                    continue;
                 }
-                return Err(error);
+                let binding=c.query_opt("SELECT b.*,host(b.peer) AS approved_peer FROM dependency_bindings b WHERE consumer_deployment_id=$1 AND alias=$2 AND bound_call IS NULL", &[&current,&alias]).await?.ok_or_else(||Error::unavailable("Required dependency has no fixed binding"))?;
+                if binding.get::<_, Option<Uuid>>("consumer_installation_id") != Some(installation)
+                {
+                    return Err(Error::conflict(
+                        "Consumer installation changed; explicit dependency rebind required",
+                    ));
+                }
+                let checked = async { provider_ready(c, &binding).await }.await;
+                if let Err(error) = checked {
+                    if binding.get::<_, String>("failure_policy") == "fail" {
+                        c.execute("UPDATE dependency_bindings SET failure_latched=true WHERE id=$1 OR parent_binding_id=$1", &[&binding.get::<_,Uuid>("id")]).await?;
+                    }
+                    return Err(error);
+                }
+                queue.push((binding.get::<_, Uuid>("provider_deployment_id"), depth + 1));
             }
-            queue.push((binding.get::<_, Uuid>("provider_deployment_id"), depth + 1));
         }
-    }
-    Ok(())
+        Ok(())
     })
-    .await
 }
 
 pub async fn optional_conditions(
@@ -578,140 +583,140 @@ async fn candidate_ready(c: &(impl GenericClient + Sync), binding: &Value) -> Re
     Ok(())
 }
 
-pub async fn resolve_host(
-    c: &(impl GenericClient + Sync),
-    ctx: &Context,
+pub fn resolve_host<'a>(
+    c: &'a (impl GenericClient + Sync),
+    ctx: &'a Context,
     consumer: Uuid,
     call: Uuid,
-    scope: &str,
-    contract: &Value,
-) -> Result<Value> {
+    scope: &'a str,
+    contract: &'a Value,
+) -> ResolverFuture<'a, Value> {
     Box::pin(async move {
-    validate("ContractRef", contract)?;
-    dependency_lock(c).await?;
-    let parent=c.query_opt("SELECT deadline_at FROM calls q JOIN instances i ON i.id=q.provider_instance_id JOIN deployments d ON d.id=i.deployment_id WHERE q.id=$1 AND i.deployment_id=$2 AND q.owner_id=$3 AND q.credential_id=$4 AND q.state='running' AND q.deadline_at>now() AND d.spec->>'enabled'='true' AND d.archived_at IS NULL", &[&call,&consumer,&ctx.subject,&ctx.credential]).await?.ok_or_else(Error::denied)?;
-    if scope != call.to_string() && scope != consumer.to_string() {
-        return Err(Error::denied());
-    }
-    let installation: Uuid = c
-        .query_one(
-            "SELECT installation_id FROM deployments WHERE id=$1 AND archived_at IS NULL",
-            &[&consumer],
-        )
-        .await?
-        .get(0);
-    let paths = json!(
-        Policy::for_context(c, ctx)
-            .credential(ctx.credential, 0)
+        validate("ContractRef", contract)?;
+        dependency_lock(c).await?;
+        let parent=c.query_opt("SELECT deadline_at FROM calls q JOIN instances i ON i.id=q.provider_instance_id JOIN deployments d ON d.id=i.deployment_id WHERE q.id=$1 AND i.deployment_id=$2 AND q.owner_id=$3 AND q.credential_id=$4 AND q.state='running' AND q.deadline_at>now() AND d.spec->>'enabled'='true' AND d.archived_at IS NULL", &[&call,&consumer,&ctx.subject,&ctx.credential]).await?.ok_or_else(Error::denied)?;
+        if scope != call.to_string() && scope != consumer.to_string() {
+            return Err(Error::denied());
+        }
+        let installation: Uuid = c
+            .query_one(
+                "SELECT installation_id FROM deployments WHERE id=$1 AND archived_at IS NULL",
+                &[&consumer],
+            )
             .await?
-    );
-    let resource = Resource::new(
-        "capability",
-        format!(
-            "{}@{}",
-            string(contract, "name")?,
-            string(contract, "version")?
-        ),
-        None,
-    );
-    auth::authorize(c, ctx, "capability.discover", &resource).await?;
-    let deadline: chrono::DateTime<chrono::Utc> = parent.get("deadline_at");
-    if let Some(existing)=c.query_opt("SELECT b.*,host(b.peer) AS approved_peer FROM dependency_bindings b WHERE consumer_deployment_id=$1 AND bound_call=$2 AND contract=$3 AND expires_at>now() ORDER BY alias LIMIT 1", &[&consumer,&call,&contract]).await?{
+            .get(0);
+        let paths = json!(
+            Policy::for_context(c, ctx)
+                .credential(ctx.credential, 0)
+                .await?
+        );
+        let resource = Resource::new(
+            "capability",
+            format!(
+                "{}@{}",
+                string(contract, "name")?,
+                string(contract, "version")?
+            ),
+            None,
+        );
+        auth::authorize(c, ctx, "capability.discover", &resource).await?;
+        let deadline: chrono::DateTime<chrono::Utc> = parent.get("deadline_at");
+        if let Some(existing)=c.query_opt("SELECT b.*,host(b.peer) AS approved_peer FROM dependency_bindings b WHERE consumer_deployment_id=$1 AND bound_call=$2 AND contract=$3 AND expires_at>now() ORDER BY alias LIMIT 1", &[&consumer,&call,&contract]).await?{
         if existing.get::<_,String>("binding_scope")=="request" && scope!=call.to_string(){return Err(Error::denied());}
         provider_ready(c,&existing).await?;
         return Ok(json!({"binding_id":existing.get::<_,Uuid>("id"),"provider_deployment_id":existing.get::<_,Uuid>("provider_deployment_id"),"contract":contract,"expires_at":deadline,"expires_unix_ms":deadline.timestamp_millis()}));
     }
-    let manifest: Value = c
-        .query_one(
-            "SELECT manifest FROM installations WHERE id=$1",
-            &[&installation],
-        )
-        .await?
-        .get(0);
-    let mut chosen = None;
-    let mut task_scope = false;
-    for dependency in manifest["dependencies"].as_array().into_iter().flatten() {
-        let alias = string(dependency, "name")?;
-        if dependency["target_kind"] == "capability"
-            && (dependency["target"] != contract["name"]
-                || !version_matches(
-                    string(dependency, "version_range")?,
-                    string(contract, "version")?,
-                )?)
-        {
-            continue;
-        }
-        if dependency["binding_scope"] == "task" {
-            task_scope = true;
-            continue;
-        }
-        if dependency["binding_scope"] == "request" && scope != call.to_string() {
-            continue;
-        }
-        let existing=c.query_opt("SELECT b.* FROM dependency_bindings b WHERE consumer_deployment_id=$1 AND alias=$2 AND bound_call IS NULL", &[&consumer,&alias]).await?;
-        let fixed = if dependency["binding_scope"] == "deployment" {
-            existing
-                .as_ref()
-                .map(|base| base.get::<_, Uuid>("provider_deployment_id"))
-        } else {
-            None
-        };
-        if dependency["binding_scope"] == "deployment" && fixed.is_none() {
-            continue;
-        }
-        let (_, candidates, _) = selected_filtered(
-            c,
-            Some(ctx),
-            consumer,
-            installation,
-            Some((alias, contract, fixed)),
-            None,
-        )
-        .await?;
-        let Some(candidate) = candidates.into_iter().next() else {
-            continue;
-        };
-        if dependency["binding_scope"] == "deployment" {
-            let Some(base) = existing else {
-                continue;
-            };
-            provider_ready(c, &base).await?;
-            if base.get::<_, Uuid>("provider_deployment_id") != id(&candidate, "deployment_id")? {
+        let manifest: Value = c
+            .query_one(
+                "SELECT manifest FROM installations WHERE id=$1",
+                &[&installation],
+            )
+            .await?
+            .get(0);
+        let mut chosen = None;
+        let mut task_scope = false;
+        for dependency in manifest["dependencies"].as_array().into_iter().flatten() {
+            let alias = string(dependency, "name")?;
+            if dependency["target_kind"] == "capability"
+                && (dependency["target"] != contract["name"]
+                    || !version_matches(
+                        string(dependency, "version_range")?,
+                        string(contract, "version")?,
+                    )?)
+            {
                 continue;
             }
-            chosen = Some((candidate, base.get::<_, Uuid>("id")));
+            if dependency["binding_scope"] == "task" {
+                task_scope = true;
+                continue;
+            }
+            if dependency["binding_scope"] == "request" && scope != call.to_string() {
+                continue;
+            }
+            let existing=c.query_opt("SELECT b.* FROM dependency_bindings b WHERE consumer_deployment_id=$1 AND alias=$2 AND bound_call IS NULL", &[&consumer,&alias]).await?;
+            let fixed = if dependency["binding_scope"] == "deployment" {
+                existing
+                    .as_ref()
+                    .map(|base| base.get::<_, Uuid>("provider_deployment_id"))
+            } else {
+                None
+            };
+            if dependency["binding_scope"] == "deployment" && fixed.is_none() {
+                continue;
+            }
+            let (_, candidates, _) = selected_filtered(
+                c,
+                Some(ctx),
+                consumer,
+                installation,
+                Some((alias, contract, fixed)),
+                None,
+            )
+            .await?;
+            let Some(candidate) = candidates.into_iter().next() else {
+                continue;
+            };
+            if dependency["binding_scope"] == "deployment" {
+                let Some(base) = existing else {
+                    continue;
+                };
+                provider_ready(c, &base).await?;
+                if base.get::<_, Uuid>("provider_deployment_id") != id(&candidate, "deployment_id")?
+                {
+                    continue;
+                }
+                chosen = Some((candidate, base.get::<_, Uuid>("id")));
+                break;
+            }
+            let base = if let Some(base) = existing {
+                base.get::<_, Uuid>("id")
+            } else {
+                insert_binding(c, ctx, consumer, installation, &candidate, &paths).await?;
+                c.query_one("SELECT id FROM dependency_bindings WHERE consumer_deployment_id=$1 AND alias=$2 AND bound_call IS NULL", &[&consumer,&alias]).await?.get(0)
+            };
+            chosen = Some((candidate, base));
             break;
         }
-        let base = if let Some(base) = existing {
-            base.get::<_, Uuid>("id")
-        } else {
-            insert_binding(c, ctx, consumer, installation, &candidate, &paths).await?;
-            c.query_one("SELECT id FROM dependency_bindings WHERE consumer_deployment_id=$1 AND alias=$2 AND bound_call IS NULL", &[&consumer,&alias]).await?.get(0)
-        };
-        chosen = Some((candidate, base));
-        break;
-    }
-    let (candidate, base) = chosen.ok_or_else(|| {
-        if task_scope {
-            Error::conflict("Task-scoped resolution requires the TaskEngine")
-        } else {
-            Error::unavailable("No authorized declared dependency provider is available")
-        }
-    })?;
-    candidate_ready(c, &candidate).await?;
-    let frozen=c.query("SELECT alias,required,provider_deployment_id FROM dependency_bindings WHERE consumer_deployment_id=$1 AND bound_call IS NULL", &[&consumer]).await?;
-    let mut proposed:Vec<Value>=frozen.into_iter().filter(|item|item.get::<_,String>("alias")!=string(&candidate,"alias").unwrap()).map(|item|json!({"required":item.get::<_,bool>("required"),"deployment_id":item.get::<_,Uuid>("provider_deployment_id")})).collect();
-    proposed.push(candidate.clone());
-    graph(c, consumer, &proposed).await?;
-    let binding = Uuid::new_v4();
-    let provider = id(&candidate, "deployment_id")?;
-    c.execute("INSERT INTO dependency_bindings(id,consumer_deployment_id,alias,provider_deployment_id,contract,binding_scope,consumer_installation_id,provider_installation_id,provider_manifest_digest,required,failure_policy,issuer_credential_id,subject_id,peer,browser_origin,source_paths,provider_spec,provider_generation,required_features,provider_plugin_id,bound_call,parent_binding_id,expires_at) SELECT $1,consumer_deployment_id,alias,$5,$6,binding_scope,consumer_installation_id,$7,$8,required,failure_policy,issuer_credential_id,subject_id,peer,browser_origin,source_paths,$9,$10,required_features,$11,$2,id,$3 FROM dependency_bindings WHERE id=$4", &[&binding,&call,&deadline,&base,&provider,&contract,&id(&candidate,"provider_installation_id")?,&string(&candidate,"provider_manifest_digest")?,&candidate["provider_spec"],&candidate["provider_generation"].as_i64(),&string(&candidate,"provider_plugin_id")?]).await?;
-    c.execute("UPDATE dependency_bindings SET issuer_credential_id=$2,subject_id=$3,peer=$4::text::inet,browser_origin=$5,source_paths=$6 WHERE id=$1", &[&binding,&ctx.credential,&ctx.subject,&ctx.peer.to_string(),&ctx.browser_origin,&paths]).await?;
-    Ok(
-        json!({"binding_id":binding,"provider_deployment_id":provider,"contract":contract,"expires_at":deadline,"expires_unix_ms":deadline.timestamp_millis()}),
-    )
+        let (candidate, base) = chosen.ok_or_else(|| {
+            if task_scope {
+                Error::conflict("Task-scoped resolution requires the TaskEngine")
+            } else {
+                Error::unavailable("No authorized declared dependency provider is available")
+            }
+        })?;
+        candidate_ready(c, &candidate).await?;
+        let frozen=c.query("SELECT alias,required,provider_deployment_id FROM dependency_bindings WHERE consumer_deployment_id=$1 AND bound_call IS NULL", &[&consumer]).await?;
+        let mut proposed:Vec<Value>=frozen.into_iter().filter(|item|item.get::<_,String>("alias")!=string(&candidate,"alias").unwrap()).map(|item|json!({"required":item.get::<_,bool>("required"),"deployment_id":item.get::<_,Uuid>("provider_deployment_id")})).collect();
+        proposed.push(candidate.clone());
+        graph(c, consumer, &proposed).await?;
+        let binding = Uuid::new_v4();
+        let provider = id(&candidate, "deployment_id")?;
+        c.execute("INSERT INTO dependency_bindings(id,consumer_deployment_id,alias,provider_deployment_id,contract,binding_scope,consumer_installation_id,provider_installation_id,provider_manifest_digest,required,failure_policy,issuer_credential_id,subject_id,peer,browser_origin,source_paths,provider_spec,provider_generation,required_features,provider_plugin_id,bound_call,parent_binding_id,expires_at) SELECT $1,consumer_deployment_id,alias,$5,$6,binding_scope,consumer_installation_id,$7,$8,required,failure_policy,issuer_credential_id,subject_id,peer,browser_origin,source_paths,$9,$10,required_features,$11,$2,id,$3 FROM dependency_bindings WHERE id=$4", &[&binding,&call,&deadline,&base,&provider,&contract,&id(&candidate,"provider_installation_id")?,&string(&candidate,"provider_manifest_digest")?,&candidate["provider_spec"],&candidate["provider_generation"].as_i64(),&string(&candidate,"provider_plugin_id")?]).await?;
+        c.execute("UPDATE dependency_bindings SET issuer_credential_id=$2,subject_id=$3,peer=$4::text::inet,browser_origin=$5,source_paths=$6 WHERE id=$1", &[&binding,&ctx.credential,&ctx.subject,&ctx.peer.to_string(),&ctx.browser_origin,&paths]).await?;
+        Ok(
+            json!({"binding_id":binding,"provider_deployment_id":provider,"contract":contract,"expires_at":deadline,"expires_unix_ms":deadline.timestamp_millis()}),
+        )
     })
-    .await
 }
 
 pub async fn check_host(
@@ -742,35 +747,34 @@ pub async fn check_host(
     Ok(row.get("provider_deployment_id"))
 }
 
-pub async fn stage_upgrade(
-    c: &(impl GenericClient + Sync),
-    ctx: &Context,
+pub fn stage_upgrade<'a>(
+    c: &'a (impl GenericClient + Sync),
+    ctx: &'a Context,
     consumer: Uuid,
     target: Uuid,
     operation: Uuid,
-) -> Result<()> {
+) -> ResolverFuture<'a, ()> {
     Box::pin(async move {
-    dependency_lock(c).await?;
-    let (_, bindings, conflicts) = selected(c, ctx, consumer, target).await?;
-    if !conflicts.is_empty() {
-        return Err(Error::conflict("Upgrade dependency plan has conflicts"));
-    }
-    let paths = Policy::for_context(c, ctx)
-        .credential(ctx.credential, 0)
-        .await?;
-    c.execute("INSERT INTO dependency_upgrade_plans(operation_id,consumer_deployment_id,target_installation_id,bindings,source_paths) VALUES($1,$2,$3,$4,$5)", &[&operation,&consumer,&target,&json!(bindings),&json!(paths)]).await?;
-    invalidate_dependents(c, consumer).await?;
-    Ok(())
+        dependency_lock(c).await?;
+        let (_, bindings, conflicts) = selected(c, ctx, consumer, target).await?;
+        if !conflicts.is_empty() {
+            return Err(Error::conflict("Upgrade dependency plan has conflicts"));
+        }
+        let paths = Policy::for_context(c, ctx)
+            .credential(ctx.credential, 0)
+            .await?;
+        c.execute("INSERT INTO dependency_upgrade_plans(operation_id,consumer_deployment_id,target_installation_id,bindings,source_paths) VALUES($1,$2,$3,$4,$5)", &[&operation,&consumer,&target,&json!(bindings),&json!(paths)]).await?;
+        invalidate_dependents(c, consumer).await?;
+        Ok(())
     })
-    .await
 }
 
-pub async fn check_upgrade(
-    c: &(impl GenericClient + Sync),
-    app: &App,
-    ctx: &Context,
+pub fn check_upgrade<'a>(
+    c: &'a (impl GenericClient + Sync),
+    app: &'a App,
+    ctx: &'a Context,
     operation: Uuid,
-) -> Result<()> {
+) -> ResolverFuture<'a, ()> {
     Box::pin(async move {
         let Some(row) = c
             .query_opt(
@@ -824,16 +828,15 @@ pub async fn check_upgrade(
         )
         .await
     })
-    .await
 }
 
-pub async fn publish_upgrade(
-    c: &(impl GenericClient + Sync),
-    app: &App,
-    ctx: &Context,
+pub fn publish_upgrade<'a>(
+    c: &'a (impl GenericClient + Sync),
+    app: &'a App,
+    ctx: &'a Context,
     consumer: Uuid,
     operation: Uuid,
-) -> Result<()> {
+) -> ResolverFuture<'a, ()> {
     Box::pin(async move {
         dependency_lock(c).await?;
         check_upgrade(c, app, ctx, operation).await?;
@@ -858,7 +861,6 @@ pub async fn publish_upgrade(
         )
         .await
     })
-    .await
 }
 
 #[cfg(test)]
