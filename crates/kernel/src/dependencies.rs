@@ -166,6 +166,9 @@ async fn selected_filtered(
     exact: Option<(&str, &Value, Option<Uuid>)>,
     ceiling: Option<&Value>,
 ) -> Result<(i64, Vec<Value>, Vec<String>)> {
+    // Resolver authorization is composed into controller and schema/upgrade
+    // workers. Keep its state heap-owned across those nested async boundaries.
+    Box::pin(async move {
     let row = c.query_opt("SELECT d.revision,n.manifest FROM deployments d JOIN installations n ON n.id=$2 JOIN publishers p ON p.id=n.publisher_id WHERE d.id=$1 AND d.archived_at IS NULL AND n.state='installed' AND p.status='trusted'", &[&consumer,&installation]).await?.ok_or_else(Error::not_found)?;
     let revision = row.get("revision");
     let manifest: Value = row.get("manifest");
@@ -306,6 +309,8 @@ async fn selected_filtered(
         conflicts.push("additional_dependency_conflicts_omitted".to_owned());
     }
     Ok((revision, bindings, conflicts))
+    })
+    .await
 }
 
 pub async fn plan(
@@ -314,6 +319,7 @@ pub async fn plan(
     deployment: Uuid,
     installation: Uuid,
 ) -> Result<Value> {
+    Box::pin(async move {
     dependency_lock(c).await?;
     let owner = c
         .query_opt(
@@ -337,6 +343,8 @@ pub async fn plan(
     let result = json!({"deployment_id":deployment,"revision":revision,"bindings":public,"required_cpu_millis":0,"required_memory_bytes":0,"conflicts":conflicts});
     validate("DependencyPlan", &result)?;
     Ok(result)
+    })
+    .await
 }
 
 pub async fn clear(c: &(impl GenericClient + Sync), deployment: Uuid) -> Result<()> {
@@ -386,31 +394,34 @@ pub async fn bind(
     ctx: &Context,
     deployment: Uuid,
 ) -> Result<()> {
-    dependency_lock(c).await?;
-    let row = c
-        .query_one(
-            "SELECT installation_id,owner_id FROM deployments WHERE id=$1",
-            &[&deployment],
+    Box::pin(async move {
+        dependency_lock(c).await?;
+        let row = c
+            .query_one(
+                "SELECT installation_id,owner_id FROM deployments WHERE id=$1",
+                &[&deployment],
+            )
+            .await?;
+        auth::authorize(
+            c,
+            ctx,
+            "plugin.enable",
+            &Resource::new("deployment", deployment, Some(row.get("owner_id"))),
         )
         .await?;
-    auth::authorize(
-        c,
-        ctx,
-        "plugin.enable",
-        &Resource::new("deployment", deployment, Some(row.get("owner_id"))),
-    )
-    .await?;
-    let installation: Uuid = row.get("installation_id");
-    let (_, bindings, conflicts) = selected(c, ctx, deployment, installation).await?;
-    if !conflicts.is_empty() {
-        return Err(Error::conflict(
-            "Dependency plan has conflicts; inspect resolveDependencies",
-        ));
-    }
-    let paths = Policy::for_context(c, ctx)
-        .credential(ctx.credential, 0)
-        .await?;
-    persist(c, ctx, deployment, installation, &bindings, &json!(paths)).await
+        let installation: Uuid = row.get("installation_id");
+        let (_, bindings, conflicts) = selected(c, ctx, deployment, installation).await?;
+        if !conflicts.is_empty() {
+            return Err(Error::conflict(
+                "Dependency plan has conflicts; inspect resolveDependencies",
+            ));
+        }
+        let paths = Policy::for_context(c, ctx)
+            .credential(ctx.credential, 0)
+            .await?;
+        persist(c, ctx, deployment, installation, &bindings, &json!(paths)).await
+    })
+    .await
 }
 
 async fn persist(
@@ -445,6 +456,7 @@ pub async fn check_ready(
     _app: &App,
     deployment: Uuid,
 ) -> Result<()> {
+    Box::pin(async move {
     let mut queue = vec![(deployment, 0)];
     let mut visited = BTreeSet::new();
     while let Some((current, depth)) = queue.pop() {
@@ -499,6 +511,8 @@ pub async fn check_ready(
         }
     }
     Ok(())
+    })
+    .await
 }
 
 pub async fn optional_conditions(
@@ -572,6 +586,7 @@ pub async fn resolve_host(
     scope: &str,
     contract: &Value,
 ) -> Result<Value> {
+    Box::pin(async move {
     validate("ContractRef", contract)?;
     dependency_lock(c).await?;
     let parent=c.query_opt("SELECT deadline_at FROM calls q JOIN instances i ON i.id=q.provider_instance_id JOIN deployments d ON d.id=i.deployment_id WHERE q.id=$1 AND i.deployment_id=$2 AND q.owner_id=$3 AND q.credential_id=$4 AND q.state='running' AND q.deadline_at>now() AND d.spec->>'enabled'='true' AND d.archived_at IS NULL", &[&call,&consumer,&ctx.subject,&ctx.credential]).await?.ok_or_else(Error::denied)?;
@@ -695,6 +710,8 @@ pub async fn resolve_host(
     Ok(
         json!({"binding_id":binding,"provider_deployment_id":provider,"contract":contract,"expires_at":deadline,"expires_unix_ms":deadline.timestamp_millis()}),
     )
+    })
+    .await
 }
 
 pub async fn check_host(
@@ -732,6 +749,7 @@ pub async fn stage_upgrade(
     target: Uuid,
     operation: Uuid,
 ) -> Result<()> {
+    Box::pin(async move {
     dependency_lock(c).await?;
     let (_, bindings, conflicts) = selected(c, ctx, consumer, target).await?;
     if !conflicts.is_empty() {
@@ -743,6 +761,8 @@ pub async fn stage_upgrade(
     c.execute("INSERT INTO dependency_upgrade_plans(operation_id,consumer_deployment_id,target_installation_id,bindings,source_paths) VALUES($1,$2,$3,$4,$5)", &[&operation,&consumer,&target,&json!(bindings),&json!(paths)]).await?;
     invalidate_dependents(c, consumer).await?;
     Ok(())
+    })
+    .await
 }
 
 pub async fn check_upgrade(
@@ -751,56 +771,59 @@ pub async fn check_upgrade(
     ctx: &Context,
     operation: Uuid,
 ) -> Result<()> {
-    let Some(row) = c
-        .query_opt(
-            "SELECT * FROM dependency_upgrade_plans WHERE operation_id=$1",
-            &[&operation],
-        )
-        .await?
-    else {
-        return Ok(());
-    };
-    let saved: Vec<policy::Path> =
-        serde_json::from_value(row.get("source_paths")).map_err(|_| Error::denied())?;
-    let live = policy::rules(
-        &Policy::for_context(c, ctx)
-            .revalidate(&saved, ctx.credential)
-            .await?,
-    );
-    let bindings: Value = row.get("bindings");
-    for binding in bindings.as_array().ok_or_else(Error::denied)? {
-        let (action, resource) = if binding["contract"].is_null() {
-            (
-                "plugin.read",
-                Resource::new("plugin", string(binding, "provider_plugin_id")?, None),
+    Box::pin(async move {
+        let Some(row) = c
+            .query_opt(
+                "SELECT * FROM dependency_upgrade_plans WHERE operation_id=$1",
+                &[&operation],
             )
-        } else {
-            (
-                "capability.discover",
-                Resource::new(
-                    "capability",
-                    format!(
-                        "{}@{}",
-                        string(&binding["contract"], "name")?,
-                        string(&binding["contract"], "version")?
-                    ),
-                    None,
-                ),
-            )
+            .await?
+        else {
+            return Ok(());
         };
-        if !auth::rules_allow(&live, action, &resource, ctx.peer) {
-            return Err(Error::denied());
+        let saved: Vec<policy::Path> =
+            serde_json::from_value(row.get("source_paths")).map_err(|_| Error::denied())?;
+        let live = policy::rules(
+            &Policy::for_context(c, ctx)
+                .revalidate(&saved, ctx.credential)
+                .await?,
+        );
+        let bindings: Value = row.get("bindings");
+        for binding in bindings.as_array().ok_or_else(Error::denied)? {
+            let (action, resource) = if binding["contract"].is_null() {
+                (
+                    "plugin.read",
+                    Resource::new("plugin", string(binding, "provider_plugin_id")?, None),
+                )
+            } else {
+                (
+                    "capability.discover",
+                    Resource::new(
+                        "capability",
+                        format!(
+                            "{}@{}",
+                            string(&binding["contract"], "name")?,
+                            string(&binding["contract"], "version")?
+                        ),
+                        None,
+                    ),
+                )
+            };
+            if !auth::rules_allow(&live, action, &resource, ctx.peer) {
+                return Err(Error::denied());
+            }
+            if binding["required"] == true {
+                candidate_ready(c, binding).await?;
+                check_ready(c, app, id(binding, "deployment_id")?).await?;
+            }
         }
-        if binding["required"] == true {
-            candidate_ready(c, binding).await?;
-            check_ready(c, app, id(binding, "deployment_id")?).await?;
-        }
-    }
-    graph(
-        c,
-        row.get("consumer_deployment_id"),
-        bindings.as_array().unwrap(),
-    )
+        graph(
+            c,
+            row.get("consumer_deployment_id"),
+            bindings.as_array().unwrap(),
+        )
+        .await
+    })
     .await
 }
 
@@ -811,27 +834,30 @@ pub async fn publish_upgrade(
     consumer: Uuid,
     operation: Uuid,
 ) -> Result<()> {
-    dependency_lock(c).await?;
-    check_upgrade(c, app, ctx, operation).await?;
-    let Some(row) = c
-        .query_opt(
-            "SELECT * FROM dependency_upgrade_plans WHERE operation_id=$1",
-            &[&operation],
+    Box::pin(async move {
+        dependency_lock(c).await?;
+        check_upgrade(c, app, ctx, operation).await?;
+        let Some(row) = c
+            .query_opt(
+                "SELECT * FROM dependency_upgrade_plans WHERE operation_id=$1",
+                &[&operation],
+            )
+            .await?
+        else {
+            clear(c, consumer).await?;
+            return Ok(());
+        };
+        let bindings: Value = row.get("bindings");
+        persist(
+            c,
+            ctx,
+            consumer,
+            row.get("target_installation_id"),
+            bindings.as_array().ok_or_else(Error::denied)?,
+            &row.get::<_, Value>("source_paths"),
         )
-        .await?
-    else {
-        clear(c, consumer).await?;
-        return Ok(());
-    };
-    let bindings: Value = row.get("bindings");
-    persist(
-        c,
-        ctx,
-        consumer,
-        row.get("target_installation_id"),
-        bindings.as_array().ok_or_else(Error::denied)?,
-        &row.get::<_, Value>("source_paths"),
-    )
+        .await
+    })
     .await
 }
 
