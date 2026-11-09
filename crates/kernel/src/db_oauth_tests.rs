@@ -38,7 +38,14 @@ async fn actual_postgres_v15_oauth_migration_preserves_checksums_and_empty_resto
     db.migrate().await.unwrap();
     db.migrate().await.unwrap();
     db.check().await.unwrap();
-    assert_eq!(SCHEMA_VERSION, 16);
+    let versions: Vec<i64> = c
+        .query("SELECT version FROM schema_migrations ORDER BY version", &[])
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(versions, (1..=SCHEMA_VERSION as i64).collect::<Vec<_>>());
     let after: Vec<(i64, String)> = c
         .query(
             "SELECT version,checksum FROM schema_migrations WHERE version<=15 ORDER BY version",

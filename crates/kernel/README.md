@@ -176,6 +176,7 @@ v13 格式备份登记见[登记组件](../../docs/implementation/m2-format-back
 v14 为恢复后的历史用户提供[维护窗口重新激活](../../docs/implementation/m2-recovered-accounts.md)，
 需要实际宿主 root、当前恢复 Owner 凭证和明确的目标修订；不恢复旧授权。
 v15 保存[原始 HTTP 契约与调用绑定](../../docs/implementation/m3-http-provenance.md)，v16 保存[OAuth/UI 状态](../../docs/implementation/m3-oauth-ui.md)；恢复仍撤销旧凭证、Client 和信任，历史记录不能复活权限。
+v17 保存[依赖固定绑定和升级计划](../../docs/implementation/m4-dependencies.md)，不改变既有权限快照；HostService 代理与持久事件仍由 M4 后续阶段交付。
 已验证的业务格式可随认证数据进行[整体备份/恢复](../../docs/implementation/m2-platform-formats.md)，保留逻辑卷和历史格式绑定；恢复仍禁用部署并撤销旧信任，不自动迁移或重新授权。
 内部[格式变更执行器](../../docs/implementation/m2-format-transitions.md)已经接通，
 正式备份下的完整迁移与故障验收尚未完成，公开版本化制品安装入口仍关闭。
