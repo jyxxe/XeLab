@@ -397,7 +397,9 @@ pub(crate) async fn grant_http_call(
     // These paths were just intersected from the transaction-local current
     // proof and restricted to charged issuers under this same auth fence.
     let rules = policy::rules(&paths);
-    if !auth::rules_allow(&rules, &action, &resource, ctx.peer) {
+    if !ctx.proxy_allows(&action, &resource)
+        || !auth::rules_allow(&rules, &action, &resource, ctx.peer)
+    {
         return Err(Error::denied());
     }
     if let Some(row) = c
@@ -468,20 +470,6 @@ async fn grant_call_inner(
     }
     let (action, resource) = crate::broker::business_target(c, call).await?;
     let mut bounds = vec![json!({"action":action,"resource":resource.json()})];
-    if has_proxy {
-        let approval: Value = c
-            .query_one(
-                "SELECT approval FROM deployments WHERE id=$1",
-                &[&deployment],
-            )
-            .await?
-            .get(0);
-        for rule in approval["rules"].as_array().ok_or_else(Error::denied)? {
-            if !matches!(rule["action"].as_str(), Some("blob.read" | "blob.create")) {
-                bounds.push(rule.clone());
-            }
-        }
-    }
     let pinned =
         skill.is_some() || http.is_some() || effectful || has_proxy || ctx.proxy_paths.is_some();
     if let Some(skill) = skill {
@@ -539,13 +527,46 @@ async fn grant_call_inner(
     } else {
         p.credential(ctx.credential, 0).await?
     };
+    let approval: Value = c
+        .query_one(
+            "SELECT approval FROM deployments WHERE id=$1",
+            &[&deployment],
+        )
+        .await?
+        .get(0);
+    let approved = approval["rules"].as_array().cloned().unwrap_or_default();
+    let proxy_paths: Vec<Path> = current
+        .iter()
+        .filter(|path| {
+            approved
+                .iter()
+                .any(|rule| rule["action"] == path.rule["action"])
+        })
+        .cloned()
+        .collect();
+    let mut ceilings = ctx.proxy_ceilings.clone();
+    if has_proxy {
+        crate::host_calls::extend_ceilings(&mut ceilings, &[json!(approved)])?;
+    }
     let mut paths = p.intersection(&current, &caps(&json!(bounds))?).await?;
     if pinned {
         paths = charged_business_paths(c, ctx, call, paths).await?;
     }
+    if serde_json::to_vec(&proxy_paths)?.len() > 1048576
+        || serde_json::to_vec(&paths)?.len() > 4194304
+    {
+        return Err(Error::exhausted());
+    }
     let peer = ctx.peer.to_string();
     c.execute("INSERT INTO host_rpc_contexts(call_id,peer,source_paths,read_blob_ids,browser_origin) VALUES($1,$2::text::inet,$3,$4,$5)",&[&call,&peer,&json!(paths),&json!(ids),&ctx.browser_origin]).await?;
-    c.execute("UPDATE execution_delegations SET maximum_rules=$2 WHERE id=(SELECT delegation_id FROM calls WHERE id=$1)",&[&call,&policy::rules(&paths)]).await?;
+    c.execute(
+        "UPDATE host_rpc_contexts SET proxy_source_paths=$2,proxy_ceilings=$3 WHERE call_id=$1",
+        &[&call, &json!(proxy_paths), &json!(ceilings)],
+    )
+    .await?;
+    let mut maximum = paths.clone();
+    maximum.extend(proxy_paths);
+    c.execute("UPDATE execution_delegations SET maximum_rules=$2 WHERE id=(SELECT delegation_id FROM calls WHERE id=$1)",&[&call,&policy::rules(&maximum)]).await?;
     Ok(paths)
 }
 // Lifetime limits are checked when Broker chooses/charges each business proof.
@@ -657,15 +678,22 @@ pub(crate) async fn check_call_sources(
         let resource = Resource::new("blob", id, Some(blob.get("owner_id")));
         // `paths` is the intersection of current rights and the original
         // frozen Blob proof. A newly acquired grant cannot unlock old results.
-        if !auth::rules_allow(&rules, "blob.read", &resource, ctx.peer) {
+        if !ctx.proxy_allows("blob.read", &resource)
+            || !auth::rules_allow(&rules, "blob.read", &resource, ctx.peer)
+        {
             return Err(Error::denied());
         }
     }
-    if !auth::rules_allow(&rules, &action, &resource, ctx.peer) {
+    if !ctx.proxy_allows(&action, &resource)
+        || !auth::rules_allow(&rules, &action, &resource, ctx.peer)
+    {
         return Err(Error::denied());
     }
     if let Some(skill) = skill {
-        if !auth::rules_allow(
+        if !ctx.proxy_allows(
+            "skill.invoke",
+            &Resource::new("skill", skill, row.get("created_by")),
+        ) || !auth::rules_allow(
             &rules,
             "skill.invoke",
             &Resource::new("skill", skill, row.get("created_by")),
@@ -701,7 +729,8 @@ async fn authority(
     {
         return Err(Error::unavailable("Kernel is not ready"));
     }
-    db::auth_lock(c, false).await?;
+    db::call_lock(c).await?;
+    crate::dependencies::dependency_lock(c).await?;
     let request: Uuid = context
         .request_id
         .parse()
@@ -821,7 +850,7 @@ async fn authority(
         peer,
     )
     .await?;
-    let until_ms = row
+    let mut until_ms = row
         .get::<_, chrono::DateTime<chrono::Utc>>("until")
         .timestamp_millis();
     if until_ms <= chrono::Utc::now().timestamp_millis() {
@@ -830,6 +859,29 @@ async fn authority(
             "Call deadline exceeded",
             axum::http::StatusCode::GATEWAY_TIMEOUT,
         ));
+    }
+    let child: bool = c
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM host_child_calls WHERE child_call_id=$1)",
+            &[&row.get::<_, Uuid>("call_id")],
+        )
+        .await?
+        .get(0);
+    if child {
+        let parent = crate::host_calls::authority(
+            c,
+            app,
+            crate::host_calls::Workload {
+                instance: workload.instance,
+                generation: workload.generation,
+            },
+            context,
+            action,
+            &resource,
+        )
+        .await?;
+        until_ms = until_ms.min(parent.until_ms);
+        ctx = parent.ctx;
     }
     Ok(Authority {
         ctx,

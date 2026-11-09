@@ -775,7 +775,7 @@ pub async fn allows(
     action: &str,
     resource: &Resource,
 ) -> Result<bool> {
-    if !registered(c, action, &resource.kind).await? {
+    if !ctx.proxy_allows(action, resource) || !registered(c, action, &resource.kind).await? {
         return Ok(false);
     }
     let paths = Policy::for_context(c, ctx)
@@ -794,6 +794,7 @@ pub async fn resource_owner(c: &impl GenericClient, kind: &str, id: &str) -> Res
         "instance"=>"SELECT d.owner_id FROM instances i JOIN deployments d ON d.id=i.deployment_id WHERE i.id::text=$1",
         "operation"=>"SELECT owner_id FROM operations WHERE id::text=$1",
         "call"=>"SELECT owner_id FROM calls WHERE id::text=$1",
+        "skill"=>"SELECT created_by FROM skills WHERE id::text=$1",
         "task"=>"SELECT owner_id FROM tasks WHERE id::text=$1",
         "workflow"=>"SELECT owner_id FROM workflows WHERE id::text=$1",
         "schedule"=>"SELECT owner_id FROM schedules WHERE id::text=$1",

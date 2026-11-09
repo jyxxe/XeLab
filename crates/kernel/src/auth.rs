@@ -37,6 +37,14 @@ pub struct Context {
     // deserialize this field from a body, plugin header, or delegation.
     pub(crate) browser_origin: Option<String>,
     pub(crate) proxy_paths: Option<Vec<crate::policy::Path>>,
+    pub(crate) proxy_ceilings: Vec<Value>,
+}
+impl Context {
+    pub(crate) fn proxy_allows(&self, action: &str, resource: &Resource) -> bool {
+        self.proxy_ceilings
+            .iter()
+            .all(|ceiling| rules_allow(ceiling, action, resource, self.peer))
+    }
 }
 #[derive(Clone)]
 pub struct Resource {
@@ -56,6 +64,7 @@ pub(crate) struct CurrentAuthority<'transaction, 'client> {
     chain: Vec<Uuid>,
     browser_origin: Option<String>,
     proxy_paths: Option<Vec<crate::policy::Path>>,
+    proxy_ceilings: Vec<Value>,
     paths: Vec<crate::policy::Path>,
     rules: Value,
     plugin_target: Option<(String, Option<Uuid>)>,
@@ -89,6 +98,7 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
             chain: ctx.chain.clone(),
             browser_origin: ctx.browser_origin.clone(),
             proxy_paths: ctx.proxy_paths.clone(),
+            proxy_ceilings: ctx.proxy_ceilings.clone(),
             paths,
             rules,
             plugin_target: None,
@@ -107,6 +117,7 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
             || self.chain != ctx.chain
             || self.browser_origin != ctx.browser_origin
             || self.proxy_paths != ctx.proxy_paths
+            || self.proxy_ceilings != ctx.proxy_ceilings
         {
             return Err(Error::denied());
         }
@@ -161,7 +172,9 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
     ) -> Result<()> {
         self.verify(transaction, ctx)?;
         self.check_resource(resource)?;
-        if rules_allow(&self.rules, action, resource, ctx.peer) {
+        if ctx.proxy_allows(action, resource)
+            && rules_allow(&self.rules, action, resource, ctx.peer)
+        {
             Ok(())
         } else {
             Err(Error::denied())
@@ -181,6 +194,8 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
             || self.chain != ctx.chain
             || self.browser_origin != ctx.browser_origin
             || self.proxy_paths != ctx.proxy_paths
+            || self.proxy_ceilings != ctx.proxy_ceilings
+            || !ctx.proxy_allows(action, resource)
             || !rules_allow(&self.rules, action, resource, ctx.peer)
         {
             return Err(Error::denied());
@@ -300,6 +315,7 @@ impl Auth {
             chain,
             browser_origin: None,
             proxy_paths: None,
+            proxy_ceilings: Vec::new(),
         })
     }
     pub fn check_login_budget(&self, account: Uuid, peer: IpAddr) -> Result<()> {
