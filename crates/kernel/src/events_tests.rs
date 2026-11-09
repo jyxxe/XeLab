@@ -1483,3 +1483,90 @@ fn event_retry_schedule_contract_reaches_sixty_second_ceiling() {
         );
     }
 }
+
+#[tokio::test]
+async fn actual_postgres_event_expired_publisher_waiting_for_storage_fence_cannot_commit() {
+    let Some(f) = EventFixture::new().await else {
+        return;
+    };
+    // Initialize limits and warm schema compilation before the bounded expiry.
+    f.publish("storage-fence-warmup", 1).await;
+    let mut blocker = f.base.app.db.connect().await.unwrap();
+    let blocker_pid: i32 = blocker
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let admin = f.base.app.db.connect().await.unwrap();
+    let expiry:chrono::DateTime<chrono::Utc>=admin.query_one("UPDATE credentials SET expires_at=clock_timestamp()+interval '5 seconds' WHERE id=$1 RETURNING expires_at",&[&f.ctx.credential]).await.unwrap().get(0);
+    let held = blocker.transaction().await.unwrap();
+    materialize(&held).await.unwrap();
+    let before: i64 = admin
+        .query_one(
+            "SELECT count(*) FROM outbox WHERE topic='kernel.event.publish'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let app = f.base.app.clone();
+    let ctx = f.ctx.clone();
+    let body = f.body("expired-while-storage-blocked", 2);
+    let (sent_pid, received_pid) = tokio::sync::oneshot::channel();
+    let writer = tokio::spawn(async move {
+        let mut c = app.db.connect().await.unwrap();
+        let pid: i32 = c
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        sent_pid.send(pid).unwrap();
+        let tx = c.transaction().await.unwrap();
+        db::auth_lock(&tx, false).await.unwrap();
+        let result = append(&tx, &app.auth, &ctx, &body).await;
+        if result.is_ok() {
+            tx.commit().await.unwrap();
+        } else {
+            tx.rollback().await.unwrap();
+        }
+        result
+    });
+    let writer_pid = received_pid.await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let blocked: bool = admin
+                .query_one(
+                    "SELECT $1=ANY(pg_blocking_pids($2))",
+                    &[&blocker_pid, &writer_pid],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if blocked {
+                break;
+            }
+            assert!(
+                !writer.is_finished(),
+                "publisher failed before reaching its storage fence"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("publisher did not reach the held storage fence before its initial credential expired");
+    let remaining = (expiry - chrono::Utc::now()).num_milliseconds().max(0) as u64;
+    tokio::time::sleep(std::time::Duration::from_millis(remaining + 100)).await;
+    held.commit().await.unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), writer)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        result.is_err(),
+        "an expired publisher cannot commit after a delayed storage fence"
+    );
+    let counts=admin.query_one("SELECT (SELECT count(*) FROM events WHERE dedupe_key='expired-while-storage-blocked'),(SELECT count(*) FROM event_dedupe WHERE dedupe_key='expired-while-storage-blocked'),(SELECT count(*) FROM outbox WHERE topic='kernel.event.publish')",&[]).await.unwrap();
+    assert_eq!(counts.get::<_, i64>(0), 0);
+    assert_eq!(counts.get::<_, i64>(1), 0);
+    assert_eq!(counts.get::<_, i64>(2), before);
+}

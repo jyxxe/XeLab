@@ -435,27 +435,134 @@ impl HostService for Host {
     }
     async fn publish_event(
         &self,
-        _: Request<rpc::PublishEventRequest>,
+        request: Request<rpc::PublishEventRequest>,
     ) -> std::result::Result<Response<rpc::PublishEventResponse>, Status> {
-        Err(Status::unimplemented(
-            "Method is unavailable in this kernel profile",
-        ))
+        let identity = workload(&request).map_err(crate::host_blobs::rpc_error)?;
+        let transport = crate::host_blobs::transport_deadline(&request)
+            .map_err(crate::host_blobs::rpc_error)?;
+        let permit = self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
+            crate::host_blobs::rpc_error(Status::resource_exhausted(
+                "HostService event capacity is unavailable",
+            ))
+        })?;
+        let request = request.into_inner();
+        let milliseconds = request
+            .context
+            .as_ref()
+            .map(|context| context.deadline_unix_ms - chrono::Utc::now().timestamp_millis())
+            .unwrap_or(0)
+            .clamp(0, 10000) as u64;
+        let deadline =
+            transport.min(tokio::time::Instant::now() + Duration::from_millis(milliseconds));
+        let result = tokio::time::timeout_at(
+            deadline,
+            crate::host_events::publish(
+                &self.app,
+                crate::host_calls::Workload {
+                    instance: identity.instance,
+                    generation: identity.generation,
+                },
+                request,
+            ),
+        )
+        .await
+        .map_err(|_| {
+            crate::host_blobs::rpc_error(Status::deadline_exceeded(
+                "HostService event deadline elapsed",
+            ))
+        })?
+        .map_err(crate::host_calls::status)
+        .map_err(crate::host_blobs::rpc_error)?;
+        drop(permit);
+        Ok(Response::new(result))
     }
     async fn subscribe(
         &self,
-        _: Request<rpc::SubscribeRequest>,
+        request: Request<rpc::SubscribeRequest>,
     ) -> std::result::Result<Response<Self::SubscribeStream>, Status> {
-        Err(Status::unimplemented(
-            "Method is unavailable in this kernel profile",
-        ))
+        let identity = workload(&request).map_err(crate::host_blobs::rpc_error)?;
+        let transport =
+            crate::host_blobs::transport_deadline_with_limit(&request, Duration::from_secs(3600))
+                .map_err(crate::host_blobs::rpc_error)?;
+        let permit = self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
+            crate::host_blobs::rpc_error(Status::resource_exhausted(
+                "HostService event capacity is unavailable",
+            ))
+        })?;
+        let request = request.into_inner();
+        let milliseconds = request
+            .context
+            .as_ref()
+            .map(|context| context.deadline_unix_ms - chrono::Utc::now().timestamp_millis())
+            .unwrap_or(0)
+            .clamp(0, 10000) as u64;
+        let setup =
+            transport.min(tokio::time::Instant::now() + Duration::from_millis(milliseconds));
+        let result = tokio::time::timeout_at(
+            setup,
+            crate::host_events::subscribe(
+                self.app.clone(),
+                crate::host_calls::Workload {
+                    instance: identity.instance,
+                    generation: identity.generation,
+                },
+                request,
+                transport,
+            ),
+        )
+        .await
+        .map_err(|_| {
+            crate::host_blobs::rpc_error(Status::deadline_exceeded(
+                "HostService event setup deadline elapsed",
+            ))
+        })?
+        .map_err(crate::host_calls::status)
+        .map_err(crate::host_blobs::rpc_error)?;
+        drop(permit);
+        Ok(Response::new(result))
     }
     async fn ack_event(
         &self,
-        _: Request<rpc::AckEventRequest>,
+        request: Request<rpc::AckEventRequest>,
     ) -> std::result::Result<Response<rpc::Ack>, Status> {
-        Err(Status::unimplemented(
-            "Method is unavailable in this kernel profile",
-        ))
+        let identity = workload(&request).map_err(crate::host_blobs::rpc_error)?;
+        let transport = crate::host_blobs::transport_deadline(&request)
+            .map_err(crate::host_blobs::rpc_error)?;
+        let permit = self.proxy_slots.clone().try_acquire_owned().map_err(|_| {
+            crate::host_blobs::rpc_error(Status::resource_exhausted(
+                "HostService event capacity is unavailable",
+            ))
+        })?;
+        let request = request.into_inner();
+        let milliseconds = request
+            .context
+            .as_ref()
+            .map(|context| context.deadline_unix_ms - chrono::Utc::now().timestamp_millis())
+            .unwrap_or(0)
+            .clamp(0, 2000) as u64;
+        let deadline =
+            transport.min(tokio::time::Instant::now() + Duration::from_millis(milliseconds));
+        let result = tokio::time::timeout_at(
+            deadline,
+            crate::host_events::ack(
+                &self.app,
+                crate::host_calls::Workload {
+                    instance: identity.instance,
+                    generation: identity.generation,
+                },
+                request,
+            ),
+        )
+        .await
+        .map_err(|_| {
+            crate::host_blobs::rpc_error(Status::deadline_exceeded(
+                "HostService event deadline elapsed",
+            ))
+        })?
+        .map_err(crate::host_calls::status)
+        .map_err(crate::host_blobs::rpc_error)?;
+        drop(permit);
+        Ok(Response::new(result))
     }
     async fn read_blob(
         &self,

@@ -20,6 +20,7 @@ pub mod events;
 pub mod host;
 pub mod host_blobs;
 pub(crate) mod host_calls;
+pub(crate) mod host_events;
 pub mod http_contracts;
 pub mod identity;
 pub mod migration_rpc;
