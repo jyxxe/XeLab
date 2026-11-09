@@ -231,9 +231,9 @@ async fn postgres_host_business_cache_rechecks_external_issuer_expiry_without_lo
             "the business issuer must not be hidden inside a proxy action source"
         );
         let expires: chrono::DateTime<chrono::Utc> = if let Some(credential) = credential {
-            preparation.query_one("UPDATE credentials SET expires_at=clock_timestamp()+interval '3 seconds' WHERE id=$1 RETURNING expires_at",&[&credential]).await.unwrap().get(0)
+            preparation.query_one("UPDATE credentials SET expires_at=clock_timestamp()+interval '15 seconds' WHERE id=$1 RETURNING expires_at",&[&credential]).await.unwrap().get(0)
         } else {
-            preparation.query_one("UPDATE accounts SET expires_at=clock_timestamp()+interval '3 seconds' WHERE id=$1 RETURNING expires_at",&[&issuer]).await.unwrap().get(0)
+            preparation.query_one("UPDATE accounts SET expires_at=clock_timestamp()+interval '15 seconds' WHERE id=$1 RETURNING expires_at",&[&issuer]).await.unwrap().get(0)
         };
         preparation.commit().await.unwrap();
         let tx = c.transaction().await.unwrap();

@@ -930,6 +930,7 @@ struct Prepared {
     input: Value,
     key: String,
     skill: Option<Uuid>,
+    until_ms: i64,
 }
 async fn prepare_capability(
     app: &App,
@@ -1002,6 +1003,7 @@ async fn prepare_capability(
         input,
         key: call_key(auth.call, &context.idempotency_key),
         skill: None,
+        until_ms: auth.until_ms,
     };
     tx.commit().await?;
     Ok(prepared)
@@ -1103,6 +1105,7 @@ async fn prepare_skill(
         input,
         key: call_key(auth.call, &context.idempotency_key),
         skill: Some(skill),
+        until_ms: auth.until_ms,
     };
     tx.commit().await?;
     Ok(prepared)
@@ -1229,6 +1232,14 @@ pub(crate) async fn invoke_skill_stream(
     stream(app, prepared).await
 }
 async fn stream(app: std::sync::Arc<App>, prepared: Prepared) -> Result<RpcStream> {
+    let remaining = prepared
+        .until_ms
+        .saturating_sub(chrono::Utc::now().timestamp_millis())
+        .max(0) as u64;
+    let until = tokio::time::Instant::now()
+        + Duration::from_millis(
+            remaining.min(prepared.input["timeout_ms"].as_u64().unwrap_or(30000)),
+        );
     let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
     let (output, source) = tokio::sync::mpsc::channel(2);
     let producer = std::sync::Arc::new(crate::skill_streams::Output::new_host(sender));
@@ -1249,7 +1260,15 @@ async fn stream(app: std::sync::Arc<App>, prepared: Prepared) -> Result<RpcStrea
             Some(&actor),
         )
         .await;
-        actor.finish(result).await;
+        actor
+            .finish(result.map(|value| {
+                if value.get("call").is_some() {
+                    value
+                } else {
+                    json!({"call":value})
+                }
+            }))
+            .await;
     });
     tokio::spawn(async move {
         let mut sequence = 0;
@@ -1313,8 +1332,11 @@ async fn stream(app: std::sync::Arc<App>, prepared: Prepared) -> Result<RpcStrea
             let mut item = source.recv().await?;
             let mut stop = false;
             if let Ok(chunk) = item.as_ref() {
+                let budget = until
+                    .saturating_duration_since(tokio::time::Instant::now())
+                    .min(Duration::from_secs(10));
                 let check = async {
-                    let mut c = app.db.connect_scoped(Duration::from_secs(2)).await?;
+                    let mut c = app.db.connect_scoped(budget).await?;
                     let tx = c.transaction().await?;
                     db::call_lock(&tx).await?;
                     let ctx =
@@ -1327,7 +1349,7 @@ async fn stream(app: std::sync::Arc<App>, prepared: Prepared) -> Result<RpcStrea
                     tx.commit().await?;
                     Ok::<(), Error>(())
                 };
-                if let Err(error) = tokio::time::timeout(Duration::from_secs(2), check)
+                if let Err(error) = tokio::time::timeout(budget, check)
                     .await
                     .unwrap_or_else(|_| {
                         Err(Error::unavailable("Host delivery authorization deadline"))
@@ -1340,7 +1362,37 @@ async fn stream(app: std::sync::Arc<App>, prepared: Prepared) -> Result<RpcStrea
             Some((item, (source, app, token, stop)))
         },
     );
-    Ok(Box::pin(guarded))
+    Ok(with_deadline(Box::pin(guarded), until))
+}
+
+/// A single captured deadline covers waiting, proof work and queued delivery.
+/// This wrapper is also applied to the original transport/context bound.
+pub(crate) fn with_deadline(stream: RpcStream, until: tokio::time::Instant) -> RpcStream {
+    use futures_util::StreamExt;
+    Box::pin(futures_util::stream::unfold(
+        Some(stream),
+        move |stream| async move {
+            let mut stream = stream?;
+            let expired = || {
+                status(Error::new(
+                    "DEADLINE_EXCEEDED",
+                    "Host stream deadline elapsed",
+                    axum::http::StatusCode::GATEWAY_TIMEOUT,
+                ))
+            };
+            if tokio::time::Instant::now() >= until {
+                return Some((Err(expired()), None));
+            }
+            match tokio::time::timeout_at(until, stream.next()).await {
+                Ok(Some(item)) if tokio::time::Instant::now() < until => {
+                    let next = if item.is_err() { None } else { Some(stream) };
+                    Some((item, next))
+                }
+                Ok(None) => None,
+                _ => Some((Err(expired()), None)),
+            }
+        },
+    ))
 }
 
 #[allow(clippy::result_large_err)]
@@ -1520,15 +1572,11 @@ impl ProofCache {
                 .intersection(std::slice::from_ref(path), &identical_sources)
                 .await?;
             if proved.iter().any(|p| p.rule == path.rule) {
-                // This fresh credential proof has the exact same source IDs,
-                // and covers the entire frozen rule under the same owner
-                // profile. All original sources are already proved; preserve
-                // every current alternative when applying the frozen scope.
-                live.extend(
-                    policy
-                        .intersection(std::slice::from_ref(path), &current)
-                        .await?,
-                );
+                // The fresh proof has the exact original sources and covers
+                // the entire frozen rule under the same owner profile. Any
+                // narrower intersection with additional conjunctive sources
+                // is dominated by this already-proved original path.
+                live.push(path.clone());
             } else {
                 pending.push(path.clone());
             }

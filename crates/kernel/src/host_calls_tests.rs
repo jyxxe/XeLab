@@ -3,6 +3,54 @@
 use super::*;
 use crate::host_calls::{self, Workload};
 
+#[tokio::test]
+async fn host_stream_deadline_covers_waiting_and_ready_queued_payloads() {
+    use futures_util::StreamExt;
+    let chunk = rpc::InvokeChunk {
+        call_id: Uuid::new_v4().to_string(),
+        sequence: 1,
+        body: Some(rpc::invoke_chunk::Body::ItemJson(b"{}".to_vec())),
+    };
+    let mut queued = host_calls::with_deadline(
+        Box::pin(tokio_stream::iter([Ok(chunk.clone())])),
+        tokio::time::Instant::now() - Duration::from_millis(1),
+    );
+    assert_eq!(
+        queued.next().await.unwrap().unwrap_err().code(),
+        tonic::Code::DeadlineExceeded
+    );
+    assert!(queued.next().await.is_none());
+    let mut idle = host_calls::with_deadline(
+        Box::pin(futures_util::stream::pending()),
+        tokio::time::Instant::now() + Duration::from_millis(10),
+    );
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), idle.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err()
+            .code(),
+        tonic::Code::DeadlineExceeded
+    );
+    assert!(idle.next().await.is_none());
+    // A synchronous producer can return Ready after monopolizing its runtime
+    // thread past the deadline; the final clock check must still hide its data.
+    let ready_late = futures_util::stream::once(async move {
+        std::thread::sleep(Duration::from_millis(20));
+        Ok(chunk)
+    });
+    let mut late = host_calls::with_deadline(
+        Box::pin(ready_late),
+        tokio::time::Instant::now() + Duration::from_millis(10),
+    );
+    assert_eq!(
+        late.next().await.unwrap().unwrap_err().code(),
+        tonic::Code::DeadlineExceeded
+    );
+    assert!(late.next().await.is_none());
+}
+
 async fn proxy(f: &Fixture, deployment: Uuid, extra: Vec<Value>) {
     let mut c = f.app.db.connect().await.unwrap();
     let tx = c.transaction().await.unwrap();

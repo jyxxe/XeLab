@@ -19,6 +19,7 @@ use axum::{
     Json, Router,
 };
 use ed25519_dalek::pkcs8::DecodePublicKey;
+use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -271,324 +272,331 @@ async fn cors_response(app: &App, headers: &HeaderMap, result: &mut Response) {
     }
 }
 
-async fn handle_core(
+// Return before polling the composed operation state so HTTP workers do not
+// embed the largest transaction future in every enclosing async frame.
+fn handle_core<'a>(
     app: Arc<App>,
     peer: SocketAddr,
     request_id: Uuid,
     request: Request<Body>,
-    response_operation: Option<&str>,
-) -> Response {
-    if !operation(request.method().as_str(), request.uri().path()).is_some_and(|(op, _)| {
-        matches!(
-            op["operationId"].as_str(),
-            Some("getLiveness" | "getReadiness")
-        )
-    }) {
-        let security = if matches!(response_operation, Some("login" | "activateAccount")) {
-            crate::plugin_http_gateway::fresh_credential_security(&app, request.headers())
-        } else {
-            crate::plugin_http_gateway::request_security(
-                &app,
-                peer.ip(),
-                request_id,
-                request.method(),
-                request.headers(),
+    response_operation: Option<&'a str>,
+) -> BoxFuture<'a, Response> {
+    Box::pin(async move {
+        if !operation(request.method().as_str(), request.uri().path()).is_some_and(|(op, _)| {
+            matches!(
+                op["operationId"].as_str(),
+                Some("getLiveness" | "getReadiness")
             )
-            .await
-        };
-        if let Err(error) = security {
-            return response(
-                json!({"error":error.detail(),"request_id":request_id}),
-                error.status.as_u16(),
-                request_id,
-            );
-        }
-    }
-    if operation(request.method().as_str(), request.uri().path())
-        .is_some_and(|(operation, _)| operation["operationId"] == "streamSkill")
-    {
-        return match crate::skill_streams::handle(app, peer, request_id, request).await {
-            Ok(response) => response,
-            Err(error) => response(
-                json!({"error":error.detail(),"request_id":request_id}),
-                error.status.as_u16(),
-                request_id,
-            ),
-        };
-    }
-    let blob = operation(request.method().as_str(), request.uri().path())
-        .is_some_and(|(op, _)| crate::blobs::handles(op["operationId"].as_str().unwrap_or("")));
-    if blob {
-        match crate::blobs::handle(app.clone(), peer, request_id, request).await {
-            Ok(response) => return response,
-            Err(error) => {
+        }) {
+            let security = if matches!(response_operation, Some("login" | "activateAccount")) {
+                crate::plugin_http_gateway::fresh_credential_security(&app, request.headers())
+            } else {
+                crate::plugin_http_gateway::request_security(
+                    &app,
+                    peer.ip(),
+                    request_id,
+                    request.method(),
+                    request.headers(),
+                )
+                .await
+            };
+            if let Err(error) = security {
                 return response(
                     json!({"error":error.detail(),"request_id":request_id}),
                     error.status.as_u16(),
                     request_id,
-                )
+                );
             }
         }
-    }
-    match dispatch(&app, peer, request_id, request).await {
-        Ok((v, s)) => {
-            let token = trusted_session_token(response_operation, &v);
-            let csrf = token.map(|token| app.auth.csrf_token(token));
-            let cookie=token.map(|token|format!("__Host-xelab_auth={token}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=3600"));
-            let mut r = response(v, s, request_id);
-            if let Some(cookie) = cookie {
-                r.headers_mut()
-                    .insert("set-cookie", cookie.parse().unwrap());
-            }
-            if let Some(csrf) = csrf {
-                r.headers_mut()
-                    .insert("x-csrf-token", csrf.parse().unwrap());
-            }
-            r
+        if operation(request.method().as_str(), request.uri().path())
+            .is_some_and(|(operation, _)| operation["operationId"] == "streamSkill")
+        {
+            return match crate::skill_streams::handle(app, peer, request_id, request).await {
+                Ok(response) => response,
+                Err(error) => response(
+                    json!({"error":error.detail(),"request_id":request_id}),
+                    error.status.as_u16(),
+                    request_id,
+                ),
+            };
         }
-        Err(e) => {
-            tracing::warn!(request_id=%request_id,reason_code=e.code,"Request rejected");
-            let status = e.status;
-            let mut r = response(
-                json!({"error":e.detail(),"request_id":request_id}),
-                status.as_u16(),
-                request_id,
-            );
-            if e.code == "RATE_LIMITED" {
-                r.headers_mut().insert("retry-after", "60".parse().unwrap());
+        let blob = operation(request.method().as_str(), request.uri().path())
+            .is_some_and(|(op, _)| crate::blobs::handles(op["operationId"].as_str().unwrap_or("")));
+        if blob {
+            match crate::blobs::handle(app.clone(), peer, request_id, request).await {
+                Ok(response) => return response,
+                Err(error) => {
+                    return response(
+                        json!({"error":error.detail(),"request_id":request_id}),
+                        error.status.as_u16(),
+                        request_id,
+                    )
+                }
             }
-            r
         }
-    }
+        match dispatch(&app, peer, request_id, request).await {
+            Ok((v, s)) => {
+                let token = trusted_session_token(response_operation, &v);
+                let csrf = token.map(|token| app.auth.csrf_token(token));
+                let cookie=token.map(|token|format!("__Host-xelab_auth={token}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=3600"));
+                let mut r = response(v, s, request_id);
+                if let Some(cookie) = cookie {
+                    r.headers_mut()
+                        .insert("set-cookie", cookie.parse().unwrap());
+                }
+                if let Some(csrf) = csrf {
+                    r.headers_mut()
+                        .insert("x-csrf-token", csrf.parse().unwrap());
+                }
+                r
+            }
+            Err(e) => {
+                tracing::warn!(request_id=%request_id,reason_code=e.code,"Request rejected");
+                let status = e.status;
+                let mut r = response(
+                    json!({"error":e.detail(),"request_id":request_id}),
+                    status.as_u16(),
+                    request_id,
+                );
+                if e.code == "RATE_LIMITED" {
+                    r.headers_mut().insert("retry-after", "60".parse().unwrap());
+                }
+                r
+            }
+        }
+    })
 }
 
-async fn dispatch(
-    app: &App,
+fn dispatch<'a>(
+    app: &'a App,
     peer: SocketAddr,
     request_id: Uuid,
     request: Request<Body>,
-) -> Result<(Value, u16)> {
-    let (method, uri, headers) = (
-        request.method().to_string(),
-        request.uri().clone(),
-        request.headers().clone(),
-    );
-    let path = uri.path();
-    if path.contains('%') || path.contains("//") {
-        return Err(Error::invalid("Noncanonical API path"));
-    }
-    let (op, params) = operation(&method, path).ok_or_else(Error::not_found)?;
-    let name = op["operationId"].as_str().unwrap();
-    if name == "getLiveness" {
-        return Ok((
-            json!({"status":"ok","spec_version":crate::SPEC_VERSION}),
-            200,
-        ));
-    }
-    if name == "getReadiness" {
-        if !app.ready.load(Ordering::SeqCst)
-            || app.leader.is_closed()
-            || app.db.check().await.is_err()
-        {
-            return Err(Error::unavailable("Kernel reconciliation is incomplete"));
+) -> BoxFuture<'a, Result<(Value, u16)>> {
+    Box::pin(async move {
+        let (method, uri, headers) = (
+            request.method().to_string(),
+            request.uri().clone(),
+            request.headers().clone(),
+        );
+        let path = uri.path();
+        if path.contains('%') || path.contains("//") {
+            return Err(Error::invalid("Noncanonical API path"));
         }
-        return Ok((
-            json!({"status":"ok","spec_version":crate::SPEC_VERSION}),
-            200,
-        ));
-    }
-    let browser_origin = crate::oauth_http::request_origin(&headers)?;
-    let bytes = to_bytes(request.into_body(), 4194304).await.map_err(|_| {
-        Error::new(
-            "PAYLOAD_TOO_LARGE",
-            "Request body exceeds 4 MiB",
-            StatusCode::PAYLOAD_TOO_LARGE,
-        )
-    })?;
-    let body = if op.get("requestBody").is_some() {
-        if header(&headers, "content-type")?.split(';').next() != Some("application/json") {
-            return Err(Error::new(
-                "UNSUPPORTED_MEDIA_TYPE",
-                "Expected application/json",
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        let (op, params) = operation(&method, path).ok_or_else(Error::not_found)?;
+        let name = op["operationId"].as_str().unwrap();
+        if name == "getLiveness" {
+            return Ok((
+                json!({"status":"ok","spec_version":crate::SPEC_VERSION}),
+                200,
             ));
         }
-        let value = strict_json(&bytes, 4194304)?;
-        let model = op["requestBody"]["content"]["application/json"]["schema"]["$ref"]
-            .as_str()
-            .and_then(|s| s.rsplit('/').next())
-            .ok_or_else(|| Error::invalid("This operation is not supported"))?;
-        validate(model, &value)?;
-        value
-    } else {
-        if !bytes.is_empty() {
-            return Err(Error::invalid("Unexpected request body"));
+        if name == "getReadiness" {
+            if !app.ready.load(Ordering::SeqCst)
+                || app.leader.is_closed()
+                || app.db.check().await.is_err()
+            {
+                return Err(Error::unavailable("Kernel reconciliation is incomplete"));
+            }
+            return Ok((
+                json!({"status":"ok","spec_version":crate::SPEC_VERSION}),
+                200,
+            ));
         }
-        Value::Null
-    };
-    for parameter in op["parameters"].as_array().unwrap() {
-        let source = parameter["in"].as_str().unwrap_or("");
-        if source == "header" && parameter["required"] == true {
-            let field = parameter["name"].as_str().unwrap();
-            if field.eq_ignore_ascii_case("if-match") && !headers.contains_key("if-match") {
+        let browser_origin = crate::oauth_http::request_origin(&headers)?;
+        let bytes = to_bytes(request.into_body(), 4194304).await.map_err(|_| {
+            Error::new(
+                "PAYLOAD_TOO_LARGE",
+                "Request body exceeds 4 MiB",
+                StatusCode::PAYLOAD_TOO_LARGE,
+            )
+        })?;
+        let body = if op.get("requestBody").is_some() {
+            if header(&headers, "content-type")?.split(';').next() != Some("application/json") {
                 return Err(Error::new(
-                    "PRECONDITION_REQUIRED",
-                    "If-Match is required",
-                    StatusCode::PRECONDITION_REQUIRED,
+                    "UNSUPPORTED_MEDIA_TYPE",
+                    "Expected application/json",
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 ));
             }
-            let value = header(&headers, field)?;
-            contracts::validate_business(&parameter["schema"], &json!(value))?;
+            let value = strict_json(&bytes, 4194304)?;
+            let model = op["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+                .as_str()
+                .and_then(|s| s.rsplit('/').next())
+                .ok_or_else(|| Error::invalid("This operation is not supported"))?;
+            validate(model, &value)?;
+            value
+        } else {
+            if !bytes.is_empty() {
+                return Err(Error::invalid("Unexpected request body"));
+            }
+            Value::Null
+        };
+        for parameter in op["parameters"].as_array().unwrap() {
+            let source = parameter["in"].as_str().unwrap_or("");
+            if source == "header" && parameter["required"] == true {
+                let field = parameter["name"].as_str().unwrap();
+                if field.eq_ignore_ascii_case("if-match") && !headers.contains_key("if-match") {
+                    return Err(Error::new(
+                        "PRECONDITION_REQUIRED",
+                        "If-Match is required",
+                        StatusCode::PRECONDITION_REQUIRED,
+                    ));
+                }
+                let value = header(&headers, field)?;
+                contracts::validate_business(&parameter["schema"], &json!(value))?;
+            }
         }
-    }
-    if name == "deleteVolume" {
-        crate::volumes::confirm_delete(&params, uri.query().unwrap_or(""))?;
-    }
-    if name == "activateAccount" {
-        let mut c = app.db.connect().await?;
-        let tx = c.transaction().await?;
-        db::auth_lock(&tx, true).await?;
-        let value = identity::activate(&tx, &app.auth, &body, peer.ip(), request_id).await?;
-        tx.commit().await?;
-        return Ok((value, 200));
-    }
-    if name == "login" {
-        let mut c = app.db.connect().await?;
-        let tx = c.transaction().await?;
-        db::auth_lock(&tx, false).await?;
-        let result = app
-            .auth
-            .login(
-                &tx,
-                id(&body, "account_id")?,
-                string(&body, "password")?.to_owned(),
+        if name == "deleteVolume" {
+            crate::volumes::confirm_delete(&params, uri.query().unwrap_or(""))?;
+        }
+        if name == "activateAccount" {
+            let mut c = app.db.connect().await?;
+            let tx = c.transaction().await?;
+            db::auth_lock(&tx, true).await?;
+            let value = identity::activate(&tx, &app.auth, &body, peer.ip(), request_id).await?;
+            tx.commit().await?;
+            return Ok((value, 200));
+        }
+        if name == "login" {
+            let mut c = app.db.connect().await?;
+            let tx = c.transaction().await?;
+            db::auth_lock(&tx, false).await?;
+            let result = app
+                .auth
+                .login(
+                    &tx,
+                    id(&body, "account_id")?,
+                    string(&body, "password")?.to_owned(),
+                    peer.ip(),
+                    request_id,
+                )
+                .await;
+            tx.commit().await?;
+            return result.map(|v| (v, 200));
+        }
+        if app.leader.is_closed() {
+            return Err(Error::unavailable("Controller leadership is lost"));
+        }
+        if !headers.contains_key("authorization")
+            && matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE")
+            && headers.get("origin").and_then(|v| v.to_str().ok())
+                != Some(app.config.text("server", "public_origin"))
+        {
+            return Err(Error::denied());
+        }
+        let token = bearer(&headers)?;
+        if name == "invokeCapability" {
+            if !app.ready.load(Ordering::SeqCst) {
+                return Err(Error::unavailable("Kernel is not ready"));
+            }
+            return broker::invoke_from_http(
+                app,
+                token,
                 peer.ip(),
                 request_id,
+                &body,
+                header(&headers, "idempotency-key")?,
+                None,
+                browser_origin,
             )
-            .await;
-        tx.commit().await?;
-        return result.map(|v| (v, 200));
-    }
-    if app.leader.is_closed() {
-        return Err(Error::unavailable("Controller leadership is lost"));
-    }
-    if !headers.contains_key("authorization")
-        && matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE")
-        && headers.get("origin").and_then(|v| v.to_str().ok())
-            != Some(app.config.text("server", "public_origin"))
-    {
-        return Err(Error::denied());
-    }
-    let token = bearer(&headers)?;
-    if name == "invokeCapability" {
-        if !app.ready.load(Ordering::SeqCst) {
-            return Err(Error::unavailable("Kernel is not ready"));
+            .await
+            .map(|v| (v, 200));
         }
-        return broker::invoke_from_http(
-            app,
-            token,
-            peer.ip(),
-            request_id,
-            &body,
-            header(&headers, "idempotency-key")?,
-            None,
-            browser_origin,
-        )
-        .await
-        .map(|v| (v, 200));
-    }
-    if name == "invokeSkill" {
-        if !app.ready.load(Ordering::SeqCst) {
-            return Err(Error::unavailable("Kernel is not ready"));
+        if name == "invokeSkill" {
+            if !app.ready.load(Ordering::SeqCst) {
+                return Err(Error::unavailable("Kernel is not ready"));
+            }
+            return broker::invoke_from_http(
+                app,
+                token,
+                peer.ip(),
+                request_id,
+                &body,
+                header(&headers, "idempotency-key")?,
+                Some(path_id(&params, "skill_id")?),
+                browser_origin,
+            )
+            .await
+            .map(|value| (value, 200));
         }
-        return broker::invoke_from_http(
-            app,
-            token,
-            peer.ip(),
-            request_id,
-            &body,
-            header(&headers, "idempotency-key")?,
-            Some(path_id(&params, "skill_id")?),
-            browser_origin,
+        // QueryResult performs bounded network work between two short authority
+        // transactions. Never retain this dispatcher's authorization lock over RPC.
+        if name == "getCall" {
+            return crate::broker_query::get_call(
+                app,
+                &headers,
+                peer,
+                request_id,
+                path_id(&params, "call_id")?,
+            )
+            .await
+            .map(|value| (value, 200));
+        }
+        let mut c = app.db.connect().await?;
+        let tx = c.transaction().await?;
+        let mutating = matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
+        db::auth_lock(
+            &tx,
+            (mutating
+                && (identity::handles(name)
+                    || secrets::handles(name)
+                    || crate::skills::handles(name)
+                    || crate::oauth::clients::handles(name)
+                    || crate::webui::handles(name)
+                    || crate::ui::handles(name)
+                    || crate::deployments::handles(name)))
+                || matches!(name, "getQuota" | "trustPublisher" | "revokePublisher"),
         )
-        .await
-        .map(|value| (value, 200));
-    }
-    // QueryResult performs bounded network work between two short authority
-    // transactions. Never retain this dispatcher's authorization lock over RPC.
-    if name == "getCall" {
-        return crate::broker_query::get_call(
-            app,
+        .await?;
+        let ctx = crate::oauth_http::credential_context(
+            &tx,
+            &app.auth,
             &headers,
             peer,
             request_id,
-            path_id(&params, "call_id")?,
-        )
-        .await
-        .map(|value| (value, 200));
-    }
-    let mut c = app.db.connect().await?;
-    let tx = c.transaction().await?;
-    let mutating = matches!(method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
-    db::auth_lock(
-        &tx,
-        (mutating
-            && (identity::handles(name)
-                || secrets::handles(name)
-                || crate::skills::handles(name)
-                || crate::oauth::clients::handles(name)
-                || crate::webui::handles(name)
-                || crate::ui::handles(name)
-                || crate::deployments::handles(name)))
-            || matches!(name, "getQuota" | "trustPublisher" | "revokePublisher"),
-    )
-    .await?;
-    let ctx = crate::oauth_http::credential_context(
-        &tx,
-        &app.auth,
-        &headers,
-        peer,
-        request_id,
-        app.config.text("server", "public_origin"),
-    )
-    .await?;
-    if matches!(
-        name,
-        "resolveDependencies"
-            | "createDeployment"
-            | "setDeploymentEnabled"
-            | "updateDeployment"
-            | "upgradeDeployment"
-            | "rollbackDeployment"
-    ) {
-        crate::dependencies::dependency_lock(&tx).await?;
-    }
-    let key = if mutating {
-        Some(header(&headers, "idempotency-key")?)
-    } else {
-        None
-    };
-    let canonical = serde_json::to_vec(
-        &json!({"body":body,"if_match":headers.get("if-match").and_then(|v|v.to_str().ok())}),
-    )?;
-    let fingerprint = if identity::sensitive(name)
-        || name == "changePassword"
-        || secrets::writes_value(name)
-    {
-        contracts::digest(&app.auth.token_digest(
-            std::str::from_utf8(&canonical).map_err(|_| Error::invalid("Invalid fingerprint"))?,
-        ))
-    } else {
-        contracts::digest(&canonical)
-    };
-    if let Some(key) = key {
-        let lock = format!("{}:{}:{method}:{path}:{key}", ctx.subject, ctx.credential);
-        tx.query_one(
-            "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
-            &[&lock],
+            app.config.text("server", "public_origin"),
         )
         .await?;
-        if let Some(row)=tx.query_opt("SELECT fingerprint,safe_response,response_status,sensitive,resource_id FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method=$3 AND path=$4 AND key=$5 AND expires_at>now()",&[&ctx.subject,&ctx.credential,&method,&path,&key]).await?{
+        if matches!(
+            name,
+            "resolveDependencies"
+                | "createDeployment"
+                | "setDeploymentEnabled"
+                | "updateDeployment"
+                | "upgradeDeployment"
+                | "rollbackDeployment"
+        ) {
+            crate::dependencies::dependency_lock(&tx).await?;
+        }
+        let key = if mutating {
+            Some(header(&headers, "idempotency-key")?)
+        } else {
+            None
+        };
+        let canonical = serde_json::to_vec(
+            &json!({"body":body,"if_match":headers.get("if-match").and_then(|v|v.to_str().ok())}),
+        )?;
+        let fingerprint =
+            if identity::sensitive(name) || name == "changePassword" || secrets::writes_value(name)
+            {
+                contracts::digest(
+                    &app.auth.token_digest(
+                        std::str::from_utf8(&canonical)
+                            .map_err(|_| Error::invalid("Invalid fingerprint"))?,
+                    ),
+                )
+            } else {
+                contracts::digest(&canonical)
+            };
+        if let Some(key) = key {
+            let lock = format!("{}:{}:{method}:{path}:{key}", ctx.subject, ctx.credential);
+            tx.query_one(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+                &[&lock],
+            )
+            .await?;
+            if let Some(row)=tx.query_opt("SELECT fingerprint,safe_response,response_status,sensitive,resource_id FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method=$3 AND path=$4 AND key=$5 AND expires_at>now()",&[&ctx.subject,&ctx.credential,&method,&path,&key]).await?{
             if row.get::<_,String>("fingerprint")!=fingerprint{return Err(Error::new("IDEMPOTENCY_CONFLICT","Idempotency key fingerprint differs",StatusCode::CONFLICT));}
             if row.get::<_,bool>("sensitive") {
                 authorize_operation(&tx,&ctx,name,&params,&body).await?;
@@ -612,24 +620,24 @@ async fn dispatch(
             }
             return Err(Error::conflict("Operation has no replayable response"));
         }
-    }
-    if let Err(error) = authorize_operation(&tx, &ctx, name, &params, &body).await {
-        db::audit(
-            &tx,
-            ctx.subject,
-            Some(ctx.credential),
-            request_id,
-            name,
-            &identity::audit_resource(name, &params, ctx.subject, &Value::Null),
-            "denied",
-            error.code,
-        )
-        .await?;
-        tx.commit().await?;
-        return Err(error);
-    }
-    tx.batch_execute("SAVEPOINT mutation").await?;
-    let execution=async {
+        }
+        if let Err(error) = authorize_operation(&tx, &ctx, name, &params, &body).await {
+            db::audit(
+                &tx,
+                ctx.subject,
+                Some(ctx.credential),
+                request_id,
+                name,
+                &identity::audit_resource(name, &params, ctx.subject, &Value::Null),
+                "denied",
+                error.code,
+            )
+            .await?;
+            tx.commit().await?;
+            return Err(error);
+        }
+        tx.batch_execute("SAVEPOINT mutation").await?;
+        let execution=async {
     let result = if identity::handles(name) {
         identity::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
     } else if crate::plugin_catalog::handles(name) {
@@ -914,65 +922,66 @@ async fn dispatch(
     };
     Ok::<_,Error>(result)
     }.await;
-    let result = match execution {
-        Ok(value) => value,
-        Err(e) => {
-            tx.batch_execute("ROLLBACK TO SAVEPOINT mutation").await?;
+        let result = match execution {
+            Ok(value) => value,
+            Err(e) => {
+                tx.batch_execute("ROLLBACK TO SAVEPOINT mutation").await?;
+                db::audit(
+                    &tx,
+                    ctx.subject,
+                    Some(ctx.credential),
+                    request_id,
+                    name,
+                    &identity::audit_resource(name, &params, ctx.subject, &Value::Null),
+                    "failed",
+                    e.code,
+                )
+                .await?;
+                tx.commit().await?;
+                return Err(e);
+            }
+        };
+        if mutating {
             db::audit(
                 &tx,
                 ctx.subject,
                 Some(ctx.credential),
                 request_id,
                 name,
-                &identity::audit_resource(name, &params, ctx.subject, &Value::Null),
-                "failed",
-                e.code,
+                &identity::audit_resource(name, &params, ctx.subject, &result.0),
+                "succeeded",
+                "COMMITTED",
             )
             .await?;
-            tx.commit().await?;
-            return Err(e);
+            let key = key.unwrap();
+            tx.execute("DELETE FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method=$3 AND path=$4 AND key=$5 AND expires_at<=now()",&[&ctx.subject,&ctx.credential,&method,&path,&key]).await?;
+            let sensitive = identity::sensitive(name);
+            let resource = if name == "createChildAccount" {
+                result.0["account"]["id"].as_str()
+            } else {
+                result.0["credential"]["id"].as_str()
+            }
+            .map(str::to_owned);
+            let safe = if sensitive {
+                None
+            } else {
+                Some(result.0.clone())
+            };
+            tx.execute("INSERT INTO idempotency_records(subject_id,credential_id,method,path,key,fingerprint,response_status,safe_response,sensitive,resource_id,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now()+interval '24 hours',now())",&[&ctx.subject,&ctx.credential,&method,&path,&key,&fingerprint,&(result.1 as i32),&safe,&sensitive,&resource]).await?;
         }
-    };
-    if mutating {
-        db::audit(
-            &tx,
-            ctx.subject,
-            Some(ctx.credential),
-            request_id,
-            name,
-            &identity::audit_resource(name, &params, ctx.subject, &result.0),
-            "succeeded",
-            "COMMITTED",
-        )
-        .await?;
-        let key = key.unwrap();
-        tx.execute("DELETE FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method=$3 AND path=$4 AND key=$5 AND expires_at<=now()",&[&ctx.subject,&ctx.credential,&method,&path,&key]).await?;
-        let sensitive = identity::sensitive(name);
-        let resource = if name == "createChildAccount" {
-            result.0["account"]["id"].as_str()
-        } else {
-            result.0["credential"]["id"].as_str()
+        if let Some(model) = op["responses"][result.1.to_string()]["content"]["application/json"]
+            ["schema"]["$ref"]
+            .as_str()
+            .and_then(|r| r.rsplit('/').next())
+        {
+            validate(model, &result.0)?;
         }
-        .map(str::to_owned);
-        let safe = if sensitive {
-            None
-        } else {
-            Some(result.0.clone())
-        };
-        tx.execute("INSERT INTO idempotency_records(subject_id,credential_id,method,path,key,fingerprint,response_status,safe_response,sensitive,resource_id,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now()+interval '24 hours',now())",&[&ctx.subject,&ctx.credential,&method,&path,&key,&fingerprint,&(result.1 as i32),&safe,&sensitive,&resource]).await?;
-    }
-    if let Some(model) = op["responses"][result.1.to_string()]["content"]["application/json"]
-        ["schema"]["$ref"]
-        .as_str()
-        .and_then(|r| r.rsplit('/').next())
-    {
-        validate(model, &result.0)?;
-    }
-    if app.leader.is_closed() {
-        return Err(Error::unavailable("Controller leadership is lost"));
-    }
-    tx.commit().await?;
-    Ok(result)
+        if app.leader.is_closed() {
+            return Err(Error::unavailable("Controller leadership is lost"));
+        }
+        tx.commit().await?;
+        Ok(result)
+    })
 }
 
 async fn authorize_operation(
