@@ -193,7 +193,7 @@ async fn authority_digest(
         return Err(Error::denied());
     }
     stage(timing, "business_binding");
-    let (proxy_current, mut live) = cache
+    let (_, mut live) = cache
         .revalidate(c, &ctx, None, &saved(row.get("proxy_source_paths"))?)
         .await?;
     stage(timing, "proxy_sources");
@@ -245,7 +245,7 @@ async fn authority_digest(
         app,
         row.get("deployment_id"),
         &row.get("manifest"),
-        Some((&ctx, &proxy_current)),
+        Some(cache),
     )
     .await?;
     extend_ceilings(
@@ -1518,8 +1518,10 @@ fn stage(start: std::time::Instant, name: &str) {
     let _ = (start, name);
 }
 
+/// One Host authority walk, including its original approvers, under one shared
+/// authorization transaction fence. Never retain across requests/transactions.
 #[derive(Default)]
-struct ProofCache {
+pub(crate) struct ProofCache {
     current: std::collections::HashMap<String, Vec<crate::policy::Path>>,
     paths: usize,
 }
@@ -1539,7 +1541,7 @@ impl TestProofCache {
     }
 }
 impl ProofCache {
-    async fn revalidate(
+    pub(crate) async fn revalidate(
         &mut self,
         c: &(impl GenericClient + Sync),
         ctx: &Context,
@@ -1606,6 +1608,7 @@ impl ProofCache {
         let owner = resource.filter(|r| r.kind == "plugin");
         let key = serde_json::to_string(&json!([
             ctx.credential,
+            ctx.subject,
             ctx.peer.to_string(),
             ctx.browser_origin,
             owner.map(|r| (&r.kind, &r.id, r.owner))
