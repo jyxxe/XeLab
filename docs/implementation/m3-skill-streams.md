@@ -113,7 +113,9 @@ PostgreSQL 测试需要独立的 `XELAB_TEST_DATABASE_URL`。
 
 ## 尚未交付
 
-`HostService.InvokeSkillStream` 等插件侧 Skill 方法仍明确 UNIMPLEMENTED；
-HTTP Skill、MPR、Extension、Workflow、BatchEngine、OAuth、WebUI 和 UI 桥不属于本切片。
+`HostService.InvokeSkillStream` 等插件侧 Skill 方法现由 [M4 HostService](m4-host.md)实现，
+实际验证和集成门禁见 [M4 验收记录](m4-acceptance.md)。
+HTTP Skill、OAuth、WebUI 和 UI 桥见各自实现文档；
+MPR、Extension、Workflow 和 BatchEngine 仍未交付。
 AWS 与独立宿主正式验收继续按[持续目标](m3-progress.md)标为 DEFERRED，
 不降低备份认证、4C16G 预留或公开制品门禁。
