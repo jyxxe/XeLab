@@ -4,12 +4,14 @@ import hashlib
 import json
 import os
 import pathlib
+import socket
 import ssl
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 from server import BASE_PATH, DEFAULTS, State, WebUIServer, https_origin, validate_config
 
@@ -37,6 +39,58 @@ def create_test_identities(root):
                 "-days", "1", "-extfile", extension)
     (root / "tls.crt").write_bytes((root / "server.crt").read_bytes())
     (root / "tls.key").write_bytes((root / "server.key").read_bytes())
+    # A correct URI is insufficient when its certificate is not signed by the
+    # workload CA. Reuse a fixture key, never a trusted certificate.
+    (root / "untrusted.key").write_bytes((root / "foreign.key").read_bytes())
+    openssl("req", "-new", "-x509", "-key", root / "untrusted.key", "-days", "1",
+            "-out", root / "untrusted.crt", "-subj", "/CN=Untrusted Kernel",
+            "-addext", "subjectAltName=URI:spiffe://xelab.local/kernel",
+            "-addext", "extendedKeyUsage=clientAuth")
+
+
+class ObservedAcceptSocket:
+    """Observe real TCP acceptance without replacing TLS or the HTTP handler."""
+    def __init__(self, wrapped):
+        self.wrapped = wrapped
+        self.condition = threading.Condition()
+        self.accepted = 0
+
+    def accept(self):
+        result = self.wrapped.accept()
+        with self.condition:
+            self.accepted += 1
+            self.condition.notify_all()
+        return result
+
+    def wait_accepted(self, count):
+        with self.condition:
+            return self.condition.wait_for(lambda: self.accepted >= count, timeout=2)
+
+    def __getattr__(self, name):
+        return getattr(self.wrapped, name)
+
+
+class ObservedWebUIServer(WebUIServer):
+    def __init__(self, *args):
+        self.worker_condition = threading.Condition()
+        self.active_workers = 0
+        super().__init__(*args)
+        self.socket = ObservedAcceptSocket(self.socket)
+
+    def process_request_thread(self, request, client_address):
+        with self.worker_condition:
+            self.active_workers += 1
+            self.worker_condition.notify_all()
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            with self.worker_condition:
+                self.active_workers -= 1
+                self.worker_condition.notify_all()
+
+    def wait_workers(self, count, timeout=2):
+        with self.worker_condition:
+            return self.worker_condition.wait_for(lambda: self.active_workers == count, timeout=timeout)
 
 
 class ConfigTests(unittest.TestCase):
@@ -120,7 +174,7 @@ class HTTPTests(unittest.TestCase):
         cls.public.mkdir()
         (cls.public / "index.html").write_text('<!doctype html><title>WebUI component</title><script type="module" src="./app.js"></script>')
         (cls.public / "app.js").write_text('document.title="WebUI";')
-        cls.server = WebUIServer(("127.0.0.1", 0), State(), cls.root, cls.public)
+        cls.server = ObservedWebUIServer(("127.0.0.1", 0), State(), cls.root, cls.public)
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
 
@@ -194,10 +248,133 @@ class HTTPTests(unittest.TestCase):
             self.assertEqual(self.request(method=method)[0], 405)
 
     def test_real_mtls_refuses_missing_or_foreign_identity(self):
-        for identity in [None, "foreign"]:
+        for identity in [None, "foreign", "untrusted"]:
             with self.subTest(identity=identity):
                 with self.assertRaises((ssl.SSLError, http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError)):
                     self.request(identity=identity)
+                self.assert_all_connection_slots_released()
+        self.assertEqual(self.request()[0], 200)
+
+    def held_handshakes(self, count):
+        connections = []
+        try:
+            for _ in range(count):
+                connection = socket.create_connection(self.server.server_address, timeout=2)
+                connections.append(connection)
+                # A partial TLS record leaves the real server handshake pending.
+                connection.sendall(b"\x16")
+            return connections
+        except BaseException:
+            for connection in connections:
+                connection.close()
+            raise
+
+    def assert_all_connection_slots_released(self):
+        self.assertTrue(self.server.wait_workers(0))
+        acquired = 0
+        try:
+            while acquired < 33 and self.server.connections.acquire(blocking=False):
+                acquired += 1
+            self.assertEqual(acquired, 32)
+        finally:
+            for _ in range(acquired):
+                self.server.connections.release()
+
+    def test_slow_tls_handshakes_do_not_block_a_legal_static_request(self):
+        self.assert_all_connection_slots_released()
+        accepted = self.server.socket.accepted
+        stalled = self.held_handshakes(1)
+        try:
+            # The first connection has actually left the listen backlog before
+            # queuing another slow peer and the authenticated HTTP request.
+            self.assertTrue(self.server.socket.wait_accepted(accepted + 1))
+            stalled.extend(self.held_handshakes(1))
+            self.assertEqual(self.request(path=BASE_PATH + "runtime-config.js")[0], 200)
+            # Successful HTTP did not require either slow client to finish TLS.
+            self.assertTrue(all(connection.fileno() >= 0 for connection in stalled))
+            self.assertGreaterEqual(self.server.active_workers, 2)
+        finally:
+            for connection in stalled:
+                connection.close()
+        self.assert_all_connection_slots_released()
+
+    def test_tls_handshakes_share_the_existing_32_connection_bound(self):
+        self.assert_all_connection_slots_released()
+        stalled = self.held_handshakes(32)
+        try:
+            self.assertTrue(self.server.wait_workers(32))
+            self.assertFalse(self.server.connections.acquire(blocking=False))
+            with self.assertRaises((OSError, http.client.RemoteDisconnected)):
+                self.request()
+            self.assertEqual(self.server.active_workers, 32)
+        finally:
+            for connection in stalled:
+                connection.close()
+        self.assert_all_connection_slots_released()
+        self.assertEqual(self.request()[0], 200)
+        self.assert_all_connection_slots_released()
+
+    def test_tls_handshake_timeout_releases_its_slot_without_http(self):
+        self.assert_all_connection_slots_released()
+        stalled = self.held_handshakes(1)
+        try:
+            self.assertTrue(self.server.wait_workers(1))
+            # Observe the production two-second handshake deadline; this extra
+            # second only bounds the fixture's wait for worker cleanup.
+            self.assertTrue(self.server.wait_workers(0, timeout=3))
+            self.assertEqual(stalled[0].recv(1), b"")
+        finally:
+            stalled[0].close()
+        self.assert_all_connection_slots_released()
+        self.assertEqual(self.request()[0], 200)
+
+    def test_worker_start_failure_closes_socket_and_releases_its_permit(self):
+        self.assert_all_connection_slots_released()
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            with socket.create_connection(listener.getsockname(), timeout=2) as peer:
+                request, address = listener.accept()
+                try:
+                    with mock.patch("socketserver.threading.Thread.start", side_effect=RuntimeError("worker start failed")):
+                        with self.assertRaises(RuntimeError):
+                            self.server.process_request(request, address)
+                    self.assertEqual(request.fileno(), -1)
+                    self.assertEqual(peer.recv(1), b"")
+                finally:
+                    request.close()
+        self.assert_all_connection_slots_released()
+        self.assertEqual(self.request()[0], 200)
+
+    def test_new_connections_observe_rotated_workload_certificate(self):
+        def peer_certificate():
+            connection = self.connection()
+            try:
+                connection.connect()
+                certificate = connection.sock.getpeercert(binary_form=True)
+                connection.request("GET", BASE_PATH)
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                response.read()
+                return certificate
+            finally:
+                connection.close()
+
+        before = peer_certificate()
+        replacement = self.root / "renewed.crt"
+        subprocess.run(["openssl", "x509", "-req", "-in", str(self.root / "server.csr"),
+                        "-CA", str(self.root / "ca.crt"), "-CAkey", str(self.root / "ca.key"),
+                        "-set_serial", "123456789", "-out", str(replacement), "-days", "1",
+                        "-extfile", str(self.root / "server.ext")],
+                       check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        original = (self.root / "tls.crt").read_bytes()
+        try:
+            replacement.replace(self.root / "tls.crt")
+            self.assertNotEqual(peer_certificate(), before)
+        finally:
+            (self.root / "tls.crt").write_bytes(original)
+        self.assertEqual(peer_certificate(), before)
+        self.assert_all_connection_slots_released()
 
     def test_disabled_or_uninitialized_lifecycle_refuses_assets(self):
         self.server.state = State()

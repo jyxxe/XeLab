@@ -105,6 +105,7 @@ class KernelHTTPServer(http.server.ThreadingHTTPServer):
 
     def __init__(self, address, state, identity, static_path=None):
         self.state = state
+        self.connections = threading.BoundedSemaphore(16)
         self.identity = pathlib.Path(identity)
         self.static = pathlib.Path(static_path or pathlib.Path(__file__).with_name("index.html")).read_bytes()
         self.etag = '"sha256:' + hashlib.sha256(self.static).hexdigest() + '"'
@@ -117,26 +118,48 @@ class KernelHTTPServer(http.server.ThreadingHTTPServer):
         self.instance = os.environ.get("XELAB_INSTANCE_ID", "00000000-0000-4000-8000-000000000001")
         super().__init__(address, Handler)
 
-    def get_request(self):
-        connection, address = self.socket.accept()
-        connection.settimeout(2)
+    def process_request(self, request, client_address):
+        if not self.connections.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
         try:
-            # A fresh context per handshake reloads atomically rotated leaves.
-            tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            tls.minimum_version = ssl.TLSVersion.TLSv1_2
-            tls.verify_mode = ssl.CERT_REQUIRED
-            tls.load_verify_locations(cafile=self.identity / "ca.crt")
-            tls.load_cert_chain(self.identity / "tls.crt", self.identity / "tls.key")
-            tls.set_alpn_protocols(["http/1.1"])
-            connection = tls.wrap_socket(connection, server_side=True)
-            identities = connection.getpeercert().get("subjectAltName", ())
-            if ("URI", KERNEL_IDENTITY) not in identities:
-                raise ssl.SSLError("Kernel identity required")
-            connection.settimeout(5)
-            return connection, address
-        except (OSError, ValueError):
-            connection.close()
+            super().process_request(request, client_address)
+        except BaseException:
+            try:
+                self.shutdown_request(request)
+            finally:
+                self.connections.release()
             raise
+
+    def process_request_thread(self, request, client_address):
+        connection = request
+        try:
+            try:
+                # One permit covers TCP, TLS and HTTP. Slow handshakes cannot
+                # hold the accept loop ahead of other bounded workers.
+                connection.settimeout(2)
+                # Fresh contexts observe atomically rotated workload leaves.
+                tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                tls.minimum_version = ssl.TLSVersion.TLSv1_2
+                tls.verify_mode = ssl.CERT_REQUIRED
+                tls.load_verify_locations(cafile=self.identity / "ca.crt")
+                tls.load_cert_chain(self.identity / "tls.crt", self.identity / "tls.key")
+                tls.set_alpn_protocols(["http/1.1"])
+                connection = tls.wrap_socket(connection, server_side=True)
+                identities = connection.getpeercert().get("subjectAltName", ())
+                if ("URI", KERNEL_IDENTITY) not in identities:
+                    raise ssl.SSLError("Kernel identity required")
+                connection.settimeout(5)
+            except (OSError, ValueError):
+                return
+            super().process_request_thread(connection, client_address)
+        finally:
+            # Pre-handler TLS failures also close. Standard HTTP cleanup may
+            # already have closed the socket; the permit is released once.
+            try:
+                self.shutdown_request(connection)
+            finally:
+                self.connections.release()
 
 
 class Handler(http.server.BaseHTTPRequestHandler):

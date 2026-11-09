@@ -96,6 +96,112 @@ class ShellBrowser(unittest.TestCase):
         self.page.locator("#launcher-close").click()
         self.page.get_by_role("button", name="打开固定贡献 " + value["spec"]["title"], exact=True).wait_for()
 
+    def reference_widget(self):
+        self.fixture.real_reference = True
+        for identifier, kind in [("echo_window", "window"), ("echo_widget", "widget")]:
+            value = contribution(identifier, kind)
+            value["plugin_id"] = "org.xelab.ui-reference"
+            value["spec"].update(title="Reference echo" if kind == "window" else "Echo widget", entry_path="/window.html" if kind == "window" else "/widget.html", refresh_interval_seconds=0)
+            value["spec"]["skill_bindings"][0].update(name="org.xelab.ui-reference.echo", modes=["call"])
+            value["bindings"][0].update(skill_id=desktop.SKILL, modes=["call"])
+            value["frame_url"] = desktop.PLUGIN + "/ui/org.xelab.ui-reference" + value["spec"]["entry_path"]
+            value["contribution_digest"] = "sha256:" + hashlib.sha256(json.dumps(value["spec"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            self.fixture.contributions[identifier] = value
+        self.fixture.open()
+        self.open_launcher()
+        self.page.get_by_role("button", name="启动插件页面", exact=True).click()
+        listing = self.page.locator('.window[data-app="contributions"]')
+        with self.page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith(desktop.PLUGIN + "/ui/org.xelab.ui-reference/widget.html")) as mounted:
+            listing.get_by_role("button", name="添加桌面组件", exact=True).click()
+        widget = mounted.value
+        widget.wait_for_function("() => document.querySelector('#call')?.disabled === false")
+        listing.get_by_role("button", name="关闭插件页面", exact=True).click()
+        widget.evaluate("""() => {window.__windowResponses=[];const m=Object.fromEntries(new URLSearchParams(location.hash.slice(1)));addEventListener('message',event=>{const value=event.data;if(event.source===parent&&event.origin===m.parent_origin&&value?.protocol===m.protocol&&value?.view_id===m.view_id&&value?.channel_nonce===m.channel_nonce&&value.type==='response'&&value.method==='window.open')window.__windowResponses.push({ok:value.ok,at:performance.now(),view_valid:/^[a-f0-9-]{36}$/i.test(value.result?.view_id||'')});});}""")
+        return widget
+
+    def test_reference_window_open_avoids_redundant_lookup_with_original_ten_second_deadline(self):
+        # Actual app/Host/reference code; only Core HTTP is a routed adapter.
+        # Individual legal metadata reads take 3s, never exceeding their 10s
+        # budget. The old serial duplicate caused a valid response after 12s.
+        self.page.add_init_script("""(() => {const original=window.fetch.bind(window);window.__windowProbe={delay:0,start:0,requests:[]};window.fetch=async(input,options)=>{const url=new URL(typeof input==='string'?input:input.url||String(input),location.href),p=window.__windowProbe;if(p.delay&&url.pathname.startsWith('/api/platform/v1/ui/contributions/')){const row={kind:url.pathname.endsWith('/echo_widget')?'widget':'window',before_window:!document.querySelector('#windows section.window[data-app$=":echo_window"]'),start:Math.round(performance.now()-p.start)};p.requests.push(row);await new Promise(resolve=>setTimeout(resolve,p.delay));const response=await original(input,options);row.end=Math.round(performance.now()-p.start);row.status=response.status;return response;}return original(input,options);};})();""")
+        widget = self.reference_widget()
+        widget.evaluate("() => {window.__windowStarted=performance.now();}")
+        self.page.evaluate("() => {window.__windowProbe.start=performance.now();window.__windowProbe.delay=3000;}")
+        with self.page.expect_event("framenavigated", timeout=25000, predicate=lambda frame: frame.url.startswith(desktop.PLUGIN + "/ui/org.xelab.ui-reference/window.html")) as opened:
+            widget.locator("#open-window").click()
+        widget.get_by_text("The host opened this deployment’s echo window.", exact=True).wait_for(timeout=25000)
+        opened.value.wait_for_function("() => document.querySelector('#call')?.disabled === false")
+        response = widget.evaluate("() => window.__windowResponses.map(row=>({...row,at:Math.round(row.at-window.__windowStarted)}))")
+        self.assertEqual(len(response), 1)
+        self.assertTrue(response[0]["ok"] and response[0]["view_valid"])
+        self.assertLess(response[0]["at"], 10000, "The existing reference deadline remains unchanged")
+        metadata = self.page.evaluate("() => window.__windowProbe.requests")
+        before = [row for row in metadata if row["kind"] == "window" and row["before_window"]]
+        self.assertEqual(len(before), 1, "Bridge's checked target must not be fetched twice before opening")
+        self.assertGreaterEqual(sum(row["kind"] == "window" and not row["before_window"] for row in metadata), 2, "Target mount and handshake still check current authority")
+        self.assertTrue(all(row.get("status", 200) == 200 for row in metadata))
+        report = {}
+        audit = desktop.DRIVER.WindowOpenAudit(desktop.CORE, desktop.DEPLOYMENT, report)
+        audit.start()
+        audit.snapshot(widget)
+        safe = report["window_open_observation"]["widget_snapshot"]
+        audit.end()
+        self.assertEqual(safe["state_class"], "window_open_succeeded")
+        print(json.dumps({"component": "actual_window_bridge_core_adapter", "metadata_delay_ms": 3000, "window_response_ms": response[0]["at"], "pre_open_target_lookups": len(before), "target_ready": True}, sort_keys=True))
+
+    def test_closed_widget_cannot_create_late_window_across_reference_digest_await(self):
+        widget = self.reference_widget()
+        self.page.evaluate("""() => {const original=crypto.subtle.digest.bind(crypto.subtle);window.__hashWaiting=false;window.__hashFinished=false;crypto.subtle.digest=async(algorithm,value)=>{const input=new TextDecoder().decode(value);if(input.startsWith('[')&&input.includes('\"alias\"')){window.__hashWaiting=true;await new Promise(resolve=>{window.__releaseHash=resolve;});}const result=await original(algorithm,value);if(window.__hashWaiting)window.__hashFinished=true;return result;};}""")
+        widget.locator("#open-window").click()
+        self.page.wait_for_function("() => window.__hashWaiting")
+        # Remove the actual source widget while the account stays logged in;
+        # sessionEpoch alone cannot protect this asynchronous boundary.
+        self.page.locator("#widgets .widget-card").get_by_role("button", name="移除", exact=True).click()
+        self.page.wait_for_function("() => document.querySelectorAll('#widgets .widget-card').length === 0")
+        self.page.get_by_role("button", name="退出", exact=True).wait_for()
+        self.page.evaluate("() => window.__releaseHash()")
+        self.page.wait_for_function("() => window.__hashFinished")
+        self.page.evaluate("() => Promise.resolve()")
+        self.assertEqual(self.page.locator('#windows section.window[data-app$=":echo_window"]').count(), 0)
+        self.assertFalse(any(call["method"] == "POST" for call in self.fixture.calls))
+
+    def test_window_open_keeps_current_target_permission_and_fixed_deployment_checks(self):
+        widget = self.reference_widget()
+        target = self.fixture.contributions["echo_window"]
+        path = f"/api/platform/v1/ui/contributions/{target['deployment_id']}/echo_window"
+        self.fixture.denied.add(path)
+        widget.locator("#open-window").click()
+        widget.wait_for_function("() => window.__windowResponses.length === 1")
+        self.assertFalse(widget.evaluate("() => window.__windowResponses[0].ok"))
+        self.assertEqual(self.page.locator('#windows section.window[data-app$=":echo_window"]').count(), 0)
+        self.fixture.denied.remove(path)
+        target["deployment_id"] = "00000000-0000-4000-8000-000000000099"
+        widget.locator("#open-window").click()
+        widget.wait_for_function("() => window.__windowResponses.length === 2")
+        self.assertFalse(widget.evaluate("() => window.__windowResponses[1].ok"))
+        self.assertEqual(self.page.locator('#windows section.window[data-app$=":echo_window"]').count(), 0)
+
+    def test_target_mount_rechecks_permission_before_loading_business_page(self):
+        widget = self.reference_widget()
+        target = self.fixture.contributions["echo_window"]
+        target_requests, target_navigations = [], []
+        self.page.on("framenavigated", lambda frame: target_navigations.append(True) if frame.url.startswith(target["frame_url"]) else None)
+
+        def metadata(route):
+            target_requests.append(True)
+            if len(target_requests) == 1:
+                route.fallback()
+            else:
+                self.reply(route, {"error": {"code": "PERMISSION_DENIED", "message": "component mount proof denied", "retryable": False}}, 403)
+
+        self.page.route(desktop.CORE + f"/api/platform/v1/ui/contributions/{target['deployment_id']}/echo_window", metadata)
+        widget.locator("#open-window").click()
+        window = self.page.locator('#windows section.window[data-app$=":echo_window"]')
+        window.get_by_role("heading", name="无权限", exact=True).wait_for()
+        self.assertEqual(len(target_requests), 2, "The checked target is independently reauthorized at mount")
+        self.assertEqual(window.locator("iframe").count(), 0)
+        self.assertEqual(target_navigations, [], "No target business document loads after the current mount proof is denied")
+
     def test_launcher_search_pages_and_pin_open_unpin_fixed_contribution(self):
         first, second = self.window_contribution(), self.window_contribution("second")
         self.launcher_pages = {None: {"items": [first], "next_cursor": "component-next"},

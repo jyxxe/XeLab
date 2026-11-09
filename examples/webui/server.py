@@ -180,26 +180,6 @@ class WebUIServer(http.server.ThreadingHTTPServer):
         self.assets[BASE_PATH + "callback"] = self.assets[BASE_PATH + "index.html"]
         super().__init__(address, Handler)
 
-    def get_request(self):
-        connection, address = self.socket.accept()
-        connection.settimeout(2)
-        try:
-            # New contexts observe atomically rotated workload certificates.
-            tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            tls.minimum_version = ssl.TLSVersion.TLSv1_2
-            tls.verify_mode = ssl.CERT_REQUIRED
-            tls.load_verify_locations(cafile=self.identity / "ca.crt")
-            tls.load_cert_chain(self.identity / "tls.crt", self.identity / "tls.key")
-            tls.set_alpn_protocols(["http/1.1"])
-            connection = tls.wrap_socket(connection, server_side=True)
-            if ("URI", KERNEL_IDENTITY) not in connection.getpeercert().get("subjectAltName", ()):
-                raise ssl.SSLError("Kernel identity required")
-            connection.settimeout(5)
-            return connection, address
-        except (OSError, ValueError):
-            connection.close()
-            raise
-
     def process_request(self, request, client_address):
         if not self.connections.acquire(blocking=False):
             self.shutdown_request(request)
@@ -207,14 +187,40 @@ class WebUIServer(http.server.ThreadingHTTPServer):
         try:
             super().process_request(request, client_address)
         except BaseException:
-            self.connections.release()
+            try:
+                self.shutdown_request(request)
+            finally:
+                self.connections.release()
             raise
 
     def process_request_thread(self, request, client_address):
+        connection = request
         try:
-            super().process_request_thread(request, client_address)
+            try:
+                # The existing permit covers TCP, TLS and HTTP. Handshake work
+                # must not hold the accept loop ahead of other bounded workers.
+                connection.settimeout(2)
+                # New contexts observe atomically rotated workload certificates.
+                tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                tls.minimum_version = ssl.TLSVersion.TLSv1_2
+                tls.verify_mode = ssl.CERT_REQUIRED
+                tls.load_verify_locations(cafile=self.identity / "ca.crt")
+                tls.load_cert_chain(self.identity / "tls.crt", self.identity / "tls.key")
+                tls.set_alpn_protocols(["http/1.1"])
+                connection = tls.wrap_socket(connection, server_side=True)
+                if ("URI", KERNEL_IDENTITY) not in connection.getpeercert().get("subjectAltName", ()):
+                    raise ssl.SSLError("Kernel identity required")
+                connection.settimeout(5)
+            except (OSError, ValueError):
+                return
+            super().process_request_thread(connection, client_address)
         finally:
-            self.connections.release()
+            # Also close pre-handler TLS failures; closing twice after the
+            # standard handler cleanup is harmless and keeps this slot bounded.
+            try:
+                self.shutdown_request(connection)
+            finally:
+                self.connections.release()
 
 
 class Handler(http.server.BaseHTTPRequestHandler):

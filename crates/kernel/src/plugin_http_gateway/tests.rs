@@ -588,3 +588,282 @@ async fn full_ingress_pool_refuses_before_credentials_or_body_collection() {
     .is_err());
     assert_eq!(pool.available_permits(), 1);
 }
+
+// Actual PostgreSQL lock scheduling and the independent reference HTTPS
+// listener; installation/readiness are metadata fixtures, not OCI evidence.
+#[tokio::test]
+async fn static_transport_progresses_while_authority_waits_and_rechecks_before_delivery() {
+    for revoke in [false, true] {
+        static_authority_transport_barrier(revoke).await;
+    }
+}
+
+async fn static_authority_transport_barrier(revoke: bool) {
+    use rcgen::{
+        BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, KeyPair, SanType,
+    };
+    use std::{fs, os::unix::fs::PermissionsExt, process::Stdio};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let Some(f) = crate::backups::tests::Fixture::new().await else {
+        return;
+    };
+    let root = f.app.config.root();
+    let ca_key = KeyPair::generate().unwrap();
+    let mut params = CertificateParams::new(vec!["static-monitor-test-ca".into()]).unwrap();
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    let ca = params.self_signed(&ca_key).unwrap();
+    fs::write(root.join("monitor-ca.crt"), ca.pem()).unwrap();
+    fs::write(root.join("monitor-ca.key"), ca_key.serialize_pem()).unwrap();
+    fs::set_permissions(
+        root.join("monitor-ca.key"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let mut value = f.app.config.value.clone();
+    value["security"]["workload_ca_cert_file"] = json!(root.join("monitor-ca.crt"));
+    value["security"]["workload_ca_key_file"] = json!(root.join("monitor-ca.key"));
+    value["runtime"]["network_cidr"] = json!("127.41.0.0/16");
+    value["server"]["host_rpc_listen"] = json!("127.41.0.1:7443");
+    value["ui_gateway"] =
+        json!({"base_domain":"static-monitor.example","public_port":443,"shell_origins":[]});
+    let config = Config::from_value(value).unwrap();
+    crate::tls::issue(&config, None, &root.join("kernel-identity")).unwrap();
+    let app = Arc::new(App {
+        config: config.clone(),
+        db: f.app.db.clone(),
+        auth: f.app.auth.clone(),
+        runtime: crate::runtime::Runtime::new(config),
+        leader: f.app.leader.clone(),
+        ready: std::sync::atomic::AtomicBool::new(true),
+        shutdown: std::sync::atomic::AtomicBool::new(false),
+        blob_uploads: Semaphore::new(4),
+    });
+    let connection = app.db.connect().await.unwrap();
+    let row = connection
+        .query_one(
+            "SELECT id,owner_id,installation_id FROM deployments LIMIT 1",
+            &[],
+        )
+        .await
+        .unwrap();
+    let deployment: Uuid = row.get("id");
+    let owner: Uuid = row.get("owner_id");
+    let installation: Uuid = row.get("installation_id");
+    let instance = Uuid::new_v4();
+    let manifest = json!({"plugin_id":"org.xelab.http-echo","routes":[{"path_prefix":"/ui/org.xelab.http-echo/","kind":"static","methods":["GET","HEAD"],"required_action":"plugin.ui.open","maximum_body_bytes":0,"timeout_ms":10000,"authentication":"public"}],"health":{"interval_ms":5000,"failure_threshold":3,"timeout_ms":2000},"concurrency":{"max_active_requests":1,"max_queue_requests":0,"queue_timeout_ms":100}});
+    let approval = json!({"rules":[],"egress":[]});
+    connection
+        .execute(
+            "UPDATE installations SET manifest=$2 WHERE id=$1",
+            &[&installation, &manifest],
+        )
+        .await
+        .unwrap();
+    connection.execute("UPDATE deployments SET approval=$2,spec='{\"enabled\":true}',phase='ready',observed_generation=1 WHERE id=$1", &[&deployment,&approval]).await.unwrap();
+    connection.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,last_heartbeat_at,created_at,updated_at) VALUES($1,$2,1,0,'ready','alive','{}',now(),now(),now())", &[&instance,&deployment]).await.unwrap();
+    let ctx = app
+        .auth
+        .authenticate(
+            &connection,
+            &f.token,
+            "127.0.0.1".parse().unwrap(),
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    approve(&connection, &ctx, deployment, &manifest, &approval, owner)
+        .await
+        .unwrap();
+    let runtime = root.join("runtime").join(instance.to_string());
+    let identity = runtime.join("identity");
+    fs::create_dir_all(&identity).unwrap();
+    fs::write(
+        runtime.join("network.json"),
+        serde_json::to_vec(&json!({"instance":instance,"peer":"127.41.0.2"})).unwrap(),
+    )
+    .unwrap();
+    let key = KeyPair::generate().unwrap();
+    let mut params = CertificateParams::new(vec![format!("i-{instance}-g-1.xelab.local")]).unwrap();
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    params.subject_alt_names.push(SanType::URI(
+        format!("spiffe://xelab.local/instance/{instance}/generation/1")
+            .try_into()
+            .unwrap(),
+    ));
+    let certificate = params.signed_by(&key, &ca, &ca_key).unwrap();
+    fs::write(identity.join("tls.crt"), certificate.pem()).unwrap();
+    fs::write(identity.join("tls.key"), key.serialize_pem()).unwrap();
+    fs::write(identity.join("ca.crt"), ca.pem()).unwrap();
+    // Gate the real TCP accept before TLS, without changing either the
+    // production two-second connect timeout or ten-second signed route bound.
+    let script = r#"
+import sys
+sys.path.insert(0,sys.argv[1])
+from http_server import State,KernelHTTPServer,Handler
+class Gate:
+ def __init__(self,socket):self.socket=socket
+ def __getattr__(self,name):return getattr(self.socket,name)
+ def accept(self):
+  value=self.socket.accept()
+  print('ACCEPTED',flush=True)
+  if sys.stdin.readline()!='GO\n':raise RuntimeError('barrier closed')
+  return value
+original=Handler.do_GET
+def checked(self):
+ print('HTTP_GET',flush=True)
+ original(self)
+ self.wfile.flush()
+ print('BODY_EOF',flush=True)
+Handler.do_GET=checked
+state=State();state.initialize()
+server=KernelHTTPServer(('127.41.0.2',8080),state,sys.argv[2])
+server.socket=Gate(server.socket)
+print('READY',flush=True)
+server.serve_forever()
+"#;
+    let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/http");
+    let mut server = tokio::process::Command::new("python3")
+        .arg("-c")
+        .arg(script)
+        .arg(examples)
+        .arg(identity)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(server.stdout.take().unwrap()).lines();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .as_deref(),
+        Some("READY")
+    );
+    let request_app = app.clone();
+    let request = tokio::spawn(async move {
+        static_page(
+            request_app,
+            "127.0.0.1".parse().unwrap(),
+            Uuid::new_v4(),
+            deployment,
+            &Method::GET,
+            "/ui/org.xelab.http-echo/index.html",
+            &HeaderMap::new(),
+            tokio::time::Instant::now(),
+            None,
+        )
+        .await
+    });
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .as_deref(),
+        Some("ACCEPTED")
+    );
+    let mut writer = app
+        .db
+        .connect_scoped(Duration::from_secs(10))
+        .await
+        .unwrap();
+    let writer_pid: i32 = writer
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    let tx = writer.transaction().await.unwrap();
+    db::auth_lock(&tx, true).await.unwrap();
+    let monitor_pid: i32 = tokio::time::timeout(Duration::from_secs(2),async {
+        loop {
+            let queued = connection.query_opt("SELECT pid FROM pg_locks WHERE locktype='advisory' AND NOT granted AND $1=ANY(pg_blocking_pids(pid)) LIMIT 1", &[&writer_pid]).await.unwrap();
+            if let Some(row) = queued {break row.get(0);}
+            tokio::task::yield_now().await;
+        }
+    }).await.expect("the static authority reader must actually queue behind the held PostgreSQL writer");
+    let started = std::time::Instant::now();
+    server
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"GO\n")
+        .await
+        .unwrap();
+    // The writer remains held. The actual TLS client must continue its
+    // handshake, send GET and receive a finite response despite that reader.
+    let get = tokio::time::timeout(Duration::from_secs(2), lines.next_line()).await;
+    assert!(
+        get.is_ok(),
+        "the queued authority read stopped polling the actual TLS/HTTP transport"
+    );
+    assert_eq!(get.unwrap().unwrap().as_deref(), Some("HTTP_GET"));
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .as_deref(),
+        Some("BODY_EOF")
+    );
+    // Observe a different backend waiting on the completion fence: this also
+    // proves the core client consumed EOF, rather than inferring that from the
+    // server's completed write. Keep the writer held until that transition.
+    tokio::time::timeout(Duration::from_secs(2),async {
+        loop {
+            let queued: bool = connection.query_one("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted AND pid<>$2 AND $1=ANY(pg_blocking_pids(pid)))", &[&writer_pid,&monitor_pid]).await.unwrap().get(0);
+            if queued {break;}
+            tokio::task::yield_now().await;
+        }
+    }).await.expect("core transport EOF must reach its completion fence while authority remains blocked");
+    assert!(
+        !request.is_finished(),
+        "no response may be delivered while its complete authority check is blocked"
+    );
+    if revoke {
+        tx.execute(
+            "DELETE FROM plugin_http_approvals WHERE deployment_id=$1",
+            &[&deployment],
+        )
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(5), request)
+        .await
+        .unwrap()
+        .unwrap();
+    if revoke {
+        let error =
+            response.expect_err("a completed upstream body must not bypass current route approval");
+        assert_eq!(error.code, "PERMISSION_DENIED");
+        assert_eq!(error.status, StatusCode::FORBIDDEN);
+    } else {
+        let response = response.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1_048_576).await.unwrap();
+        assert_eq!(
+            bytes.as_ref(),
+            include_bytes!("../../../../examples/http/index.html")
+        );
+    }
+    let leases: i64 = connection
+        .query_one(
+            "SELECT count(*) FROM plugin_http_requests WHERE instance_id=$1",
+            &[&instance],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        leases, 0,
+        "physical EOF releases the lease only after the original completion fence"
+    );
+    println!(
+        "Actual PostgreSQL writer-held TLS/HTTP progress: revoke={revoke}, elapsed_ms={}",
+        started.elapsed().as_millis()
+    );
+    server.kill().await.unwrap();
+}

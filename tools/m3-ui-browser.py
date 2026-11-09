@@ -172,6 +172,104 @@ class LoginBootstrapAudit:
         self.snapshot(page, label, "failure")
 
 
+class WindowOpenAudit:
+    """Read-only, bounded window.open diagnostics; never an acceptance gate."""
+    limit = 32
+
+    def __init__(self, core, deployment, report):
+        self.core, self.report = core, report
+        self.paths = {f"/api/platform/v1/ui/contributions/{deployment}/echo_widget": "source",
+                      f"/api/platform/v1/ui/contributions/{deployment}/echo_window": "target"}
+        self.requests, self.started, self.active = {}, None, False
+
+    def start(self):
+        self.started, self.active = time.monotonic(), True
+        self.requests.clear()
+        self.observation = {"stage": "window_open_click", "metadata_requests": [], "dropped_requests": 0}
+        self.report["window_open_observation"] = self.observation
+
+    def observe(self, event, value):
+        try:
+            if event == "request":
+                self.request(value)
+            elif event == "response":
+                self.response(value)
+            else:
+                self.terminal(value, event == "failed")
+        except Exception as error:
+            if self.active:
+                self.observation["diagnostic_error_bucket"] = error_bucket(error)
+
+    def elapsed(self):
+        return min(max(int((time.monotonic() - self.started) * 1000), 0), 300000)
+
+    def request(self, request):
+        if not self.active or request in self.requests:
+            return
+        parsed = urllib.parse.urlsplit(request.url)
+        role = self.paths.get(parsed.path)
+        if request.method != "GET" or url_origin(request.url) != self.core or role is None or parsed.query:
+            return
+        if len(self.requests) >= self.limit:
+            self.observation["dropped_requests"] = min(self.observation["dropped_requests"] + 1, 65535)
+            return
+        state = {"role": role, "start_ms": self.elapsed(), "response_ms": None, "finished_ms": None,
+                 "failed_ms": None, "status": None, "failure_category": None}
+        self.requests[request] = state
+        self.observation["metadata_requests"].append(state)
+
+    def response(self, response):
+        state = self.requests.get(response.request) if self.active else None
+        if state is not None and state["response_ms"] is None:
+            state["response_ms"] = self.elapsed()
+            state["status"] = response.status if 100 <= response.status <= 599 else 0
+
+    def terminal(self, request, failed):
+        state = self.requests.get(request) if self.active else None
+        key = "failed_ms" if failed else "finished_ms"
+        if state is not None and state[key] is None:
+            state[key] = self.elapsed()
+            if failed:
+                state["failure_category"] = selected_failure_category(request.failure)
+
+    def snapshot(self, widget):
+        snapshot = {"dom_available": False}
+        self.observation["widget_snapshot"] = snapshot
+        try:
+            snapshot["detached"] = widget.is_detached()
+            if snapshot["detached"]:
+                return
+            # Reduce arbitrary DOM text to fixed labels inside the browser.
+            # Neither plugin text, URL, identifiers nor exception text leave it.
+            value = widget.locator("html").evaluate("""() => {
+              const state=document.querySelector('#state'), text=state?.textContent||'';
+              const codes=['DEADLINE_EXCEEDED','CHANNEL_CLOSED','BACKEND_ERROR','PROTOCOL_ERROR',
+                'PERMISSION_DENIED','BINDING_UNAVAILABLE','RATE_LIMITED'];
+              const code=codes.find(code=>text.startsWith(code+':'));
+              const stateClass=text==='The host opened this deployment’s echo window.'?'window_open_succeeded':
+                text==='Skill call completed.'?'previous_skill_completed':code||'other';
+              return {state_class:stateClass,state_exists:!!state,state_hidden:!!state?.hidden,
+                state_visible:!!state&&state.getClientRects().length>0&&getComputedStyle(state).visibility!=='hidden',
+                open_exists:!!document.querySelector('#open-window'),
+                open_disabled:document.querySelector('#open-window')?.disabled,
+                call_disabled:document.querySelector('#call')?.disabled,
+                connected:document.documentElement.isConnected,
+                document_visible:document.visibilityState==='visible'};
+            }""", timeout=1000)
+            snapshot["dom_available"] = True
+            labels = ("window_open_succeeded", "previous_skill_completed", "DEADLINE_EXCEEDED", "CHANNEL_CLOSED",
+                      "BACKEND_ERROR", "PROTOCOL_ERROR", "PERMISSION_DENIED", "BINDING_UNAVAILABLE", "RATE_LIMITED")
+            snapshot["state_class"] = value.get("state_class") if value.get("state_class") in labels else "other"
+            for key in ("state_exists", "state_hidden", "state_visible", "open_exists", "open_disabled", "call_disabled", "connected", "document_visible"):
+                snapshot[key] = value.get(key) if isinstance(value.get(key), bool) else None
+        except Exception as error:
+            snapshot["diagnostic_error_bucket"] = error_bucket(error)
+
+    def end(self):
+        self.observation["elapsed_ms"] = self.elapsed()
+        self.active = False
+
+
 class SkillBodyAudit:
     """Read actual selected response bodies outside Playwright event callbacks."""
     def __init__(self, core, skill, report, observed):
@@ -354,10 +452,8 @@ def wait_for_observers(page, observed, bodies=None):
             raise CheckFailed("network_observation_did_not_settle")
 
 
-def wait_for_widget_window(page, widget, frame, deployment_id, contribution_id="echo_window", report=None):
-    observation = {}
-    if report is not None:
-        report["window_open_observation"] = observation
+def wait_for_widget_window(page, widget, frame, deployment_id, contribution_id="echo_window", report=None, audit=None):
+    observation = {} if report is None else report.setdefault("window_open_observation", {})
     try:
         observation["stage"] = "widget_ack"
         widget.get_by_text("The host opened this deployment’s echo window.", exact=True).wait_for()
@@ -372,7 +468,12 @@ def wait_for_widget_window(page, widget, frame, deployment_id, contribution_id="
         return opened.locator("iframe").element_handle().content_frame() == frame
     except Exception as error:
         observation["error_bucket"] = error_bucket(error)
+        if audit is not None:
+            audit.snapshot(widget)
         raise
+    finally:
+        if audit is not None:
+            audit.end()
 
 
 def close_windows(page, report, observed=None, bodies=None):
@@ -495,6 +596,7 @@ def run(config, report):
     bodies = SkillBodyAudit(core, config["skill_id"], report, observed)
     calls = bodies.calls
     bootstrap = LoginBootstrapAudit(core, ui, reference, report)
+    window_open = WindowOpenAudit(core, config["reference_deployment_id"], report)
 
     def observe_request(request, context_label=None):
         observed["active_request_observers"] += 1
@@ -563,6 +665,10 @@ def run(config, report):
         result.on("requestfailed", lambda request: bootstrap.terminal(request, label, True))
         result.on("requestfinished", bodies.finished)
         result.on("requestfailed", bodies.failed)
+        result.on("request", lambda request: window_open.observe("request", request))
+        result.on("response", lambda response: window_open.observe("response", response))
+        result.on("requestfinished", lambda request: window_open.observe("finished", request))
+        result.on("requestfailed", lambda request: window_open.observe("failed", request))
         result.on("page", lambda page: page.on("pageerror", lambda _: observed.__setitem__("page_errors", observed["page_errors"] + 1)))
         return result
 
@@ -772,14 +878,16 @@ def run(config, report):
         close_windows(page, report, observed, bodies)
         widget = contribution_frame(page, "echo_widget")
         echo(widget, "Actual OCI widget Skill call", "widget_bridge_calls_real_http_skill", 4)
-        report["window_open_observation"] = {"stage": "window_open_click"}
+        window_open.start()
         try:
             with page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith(reference_base + "window.html")) as opened:
                 widget.locator("#open-window").click()
         except Exception as error:
             report["window_open_observation"]["error_bucket"] = error_bucket(error)
+            window_open.snapshot(widget)
+            window_open.end()
             raise
-        require(wait_for_widget_window(page, widget, opened.value, config["reference_deployment_id"], report=report)
+        require(wait_for_widget_window(page, widget, opened.value, config["reference_deployment_id"], report=report, audit=window_open)
                 and url_origin(opened.value.url) == reference, "widget_opens_same_fixed_deployment_window")
         wait_for_observers(page, observed, bodies)
         require(report["http"]["actual_skill_successes"] >= 3, "owner_actual_skill_requests_observed")

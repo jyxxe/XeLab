@@ -91,30 +91,51 @@ class KernelHTTPServer(http.server.ThreadingHTTPServer):
 
     def __init__(self, address, state, identity, public=None):
         self.state, self.identity = state, pathlib.Path(identity)
+        self.connections = threading.BoundedSemaphore(16)
         root = pathlib.Path(public or pathlib.Path(__file__).with_name("public"))
         # The immutable image supplies this finite map. Requests never select
         # filesystem paths and cannot fall through to a generic file server.
         self.files = {STATIC_PREFIX + name: (kind, (root / name).read_bytes()) for name, kind in STATIC_FILES.items()}
         super().__init__(address, Handler)
 
-    def get_request(self):
-        connection, address = self.socket.accept()
-        connection.settimeout(2)
+    def process_request(self, request, client_address):
+        if not self.connections.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
         try:
-            tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            tls.minimum_version = ssl.TLSVersion.TLSv1_2
-            tls.verify_mode = ssl.CERT_REQUIRED
-            tls.load_verify_locations(cafile=self.identity / "ca.crt")
-            tls.load_cert_chain(self.identity / "tls.crt", self.identity / "tls.key")
-            tls.set_alpn_protocols(["http/1.1"])
-            connection = tls.wrap_socket(connection, server_side=True)
-            if ("URI", "spiffe://xelab.local/kernel") not in connection.getpeercert().get("subjectAltName", ()):
-                raise ssl.SSLError("Kernel identity required")
-            connection.settimeout(5)
-            return connection, address
-        except (OSError, ValueError):
-            connection.close()
+            super().process_request(request, client_address)
+        except BaseException:
+            try:
+                self.shutdown_request(request)
+            finally:
+                self.connections.release()
             raise
+
+    def process_request_thread(self, request, client_address):
+        connection = request
+        try:
+            try:
+                # Bound TCP, TLS and HTTP together; a slow handshake must not
+                # serialize acceptance ahead of the other sixteen workers.
+                connection.settimeout(2)
+                tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                tls.minimum_version = ssl.TLSVersion.TLSv1_2
+                tls.verify_mode = ssl.CERT_REQUIRED
+                tls.load_verify_locations(cafile=self.identity / "ca.crt")
+                tls.load_cert_chain(self.identity / "tls.crt", self.identity / "tls.key")
+                tls.set_alpn_protocols(["http/1.1"])
+                connection = tls.wrap_socket(connection, server_side=True)
+                if ("URI", "spiffe://xelab.local/kernel") not in connection.getpeercert().get("subjectAltName", ()):
+                    raise ssl.SSLError("Kernel identity required")
+                connection.settimeout(5)
+            except (OSError, ValueError):
+                return
+            super().process_request_thread(connection, client_address)
+        finally:
+            try:
+                self.shutdown_request(connection)
+            finally:
+                self.connections.release()
 
 
 class Handler(http.server.BaseHTTPRequestHandler):

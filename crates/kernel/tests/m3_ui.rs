@@ -528,6 +528,8 @@ impl tracing::field::Visit for ControllerFields {
                 "http_probe",
                 "transport_setup",
                 "fetch",
+                "fetch_timeout",
+                "fetch_error",
                 "authority_monitor",
                 "lease_complete",
             ],
@@ -657,6 +659,8 @@ fn controller_diagnostics_are_bounded_and_role_mapped_without_raw_fields() {
         }
         tracing::info!(target: "xelab.controller_transition", code="UNCERTAIN_WORK_FENCE", stage="recovery", deployment_id=%deployment, instance_id=%instance, call_unknown=0i64, static_unknown=1i64);
         tracing::info!(target: "xelab.static_transition", code="STATIC_UNSETTLED", stage="authority_monitor", deployment_id=%deployment, elapsed_ms=10001u64, phase_ms=3000u64, secret="never-print");
+        tracing::info!(target: "xelab.static_transition", code="STATIC_UNSETTLED", stage="fetch_timeout", deployment_id=%deployment, secret="never-print");
+        tracing::info!(target: "xelab.static_transition", code="STATIC_UNSETTLED", stage="fetch_error", deployment_id=%deployment, secret="never-print");
     });
     let safe = collector.snapshot(&[DiagnosticTarget {
         role: "ui_reference",
@@ -666,16 +670,18 @@ fn controller_diagnostics_are_bounded_and_role_mapped_without_raw_fields() {
     assert_eq!(safe["status"], "init_failed");
     assert_eq!(safe["init_failures"], 1);
     assert_eq!(safe["events"].as_array().unwrap().len(), 32);
-    assert_eq!(safe["dropped"], 3);
+    assert_eq!(safe["dropped"], 5);
     assert_eq!(safe["events"][0]["role"], "unknown");
     assert_eq!(safe["events"][0]["code"], "other");
     assert_eq!(safe["events"][31]["role"], "ui_reference");
-    assert_eq!(safe["events"][30]["code"], "UNCERTAIN_WORK_FENCE");
-    assert_eq!(safe["events"][30]["static_unknown"], 1);
-    assert_eq!(safe["events"][31]["code"], "STATIC_UNSETTLED");
-    assert_eq!(safe["events"][31]["stage"], "authority_monitor");
-    assert_eq!(safe["events"][31]["elapsed_ms"], 10001);
-    assert_eq!(safe["events"][31]["phase_ms"], 3000);
+    assert_eq!(safe["events"][28]["code"], "UNCERTAIN_WORK_FENCE");
+    assert_eq!(safe["events"][28]["static_unknown"], 1);
+    assert_eq!(safe["events"][29]["code"], "STATIC_UNSETTLED");
+    assert_eq!(safe["events"][29]["stage"], "authority_monitor");
+    assert_eq!(safe["events"][29]["elapsed_ms"], 10001);
+    assert_eq!(safe["events"][29]["phase_ms"], 3000);
+    assert_eq!(safe["events"][30]["stage"], "fetch_timeout");
+    assert_eq!(safe["events"][31]["stage"], "fetch_error");
     let encoded = serde_json::to_string(&safe).unwrap();
     for forbidden in [
         "never-print".to_owned(),
