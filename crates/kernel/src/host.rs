@@ -345,7 +345,7 @@ impl HostService for Host {
         .map_err(crate::host_calls::status)
         .map_err(crate::host_blobs::rpc_error)?;
         use futures_util::StreamExt;
-        let result = result.inspect(move |_| {
+        let result = crate::host_calls::with_deadline(result, bound).inspect(move |_| {
             let _held = &permit;
         });
         Ok(Response::new(Box::pin(result)))
@@ -477,7 +477,7 @@ impl HostService for Host {
         .map_err(crate::host_calls::status)
         .map_err(crate::host_blobs::rpc_error)?;
         use futures_util::StreamExt;
-        let result = result.inspect(move |_| {
+        let result = crate::host_calls::with_deadline(result, bound).inspect(move |_| {
             let _held = &permit;
         });
         Ok(Response::new(Box::pin(result)))

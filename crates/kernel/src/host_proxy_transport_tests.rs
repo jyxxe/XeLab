@@ -585,16 +585,23 @@ async fn host_queued_stream_frame_rechecks_proxy_authority_at_first_poll() {
     .await
     .unwrap();
     let mut succeeded = false;
-    for _ in 0..100 {
+    // Admission and completion retain the real Invoke budget. This polling
+    // bound only waits for the fixture's successful queue, before revocation.
+    for _ in 0..1500 {
         if let Some(row) = c
             .query_opt("SELECT state FROM calls WHERE id=$1", &[&child])
             .await
             .unwrap()
         {
-            if row.get::<_, String>(0) == "succeeded" {
+            let state = row.get::<_, String>(0);
+            if state == "succeeded" {
                 succeeded = true;
                 break;
             }
+            assert_eq!(
+                state, "running",
+                "producer failed before queueing its result"
+            );
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
