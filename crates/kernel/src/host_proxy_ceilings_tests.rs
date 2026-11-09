@@ -178,6 +178,7 @@ async fn host_mtls_ids_approval_and_owned_by_caller_intersect_without_widening()
     let input = serde_json::to_vec(&json!({"source":source})).unwrap();
     let result = client
         .invoke_skill(rpc::SkillInvokeRequest {
+            call_id: None,
             context: Some(context.clone()),
             skill_id: target.to_string(),
             input_digest: contracts::digest(&input),

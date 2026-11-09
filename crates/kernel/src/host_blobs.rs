@@ -1309,6 +1309,7 @@ pub(crate) fn rpc_error(mut status: tonic::Status) -> tonic::Status {
             retryable: false,
             retry_after_ms: 0,
             violations: Vec::new(),
+            resource_id: String::new(),
         };
         status.metadata_mut().insert_bin(
             "xelab-error-bin",

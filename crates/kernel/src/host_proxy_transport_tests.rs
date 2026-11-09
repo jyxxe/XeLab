@@ -631,3 +631,166 @@ async fn host_queued_stream_frame_rechecks_proxy_authority_at_first_poll() {
 
 #[path = "host_proxy_ceilings_tests.rs"]
 mod layered_ceilings;
+
+fn structured_error(status: &tonic::Status) -> rpc::ErrorDetail {
+    use prost::Message;
+    let metadata = status
+        .metadata()
+        .get_bin("xelab-error-bin")
+        .expect("Host error includes its typed detail");
+    rpc::ErrorDetail::decode(metadata.to_bytes().unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn host_mtls_effectful_failure_exposes_admitted_call_without_redispatch() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let (consumer, consumer_instance) = f.workload().await;
+    proxy(&f, consumer, proxy_rules()).await;
+    let (provider, provider_instance) = f.workload().await;
+    let c = f.app.db.connect().await.unwrap();
+    let installation: Uuid = c
+        .query_one(
+            "SELECT installation_id FROM deployments WHERE id=$1",
+            &[&provider],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let mut manifest: Value = c
+        .query_one(
+            "SELECT manifest FROM installations WHERE id=$1",
+            &[&installation],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    manifest["capabilities"][0]["side_effect"] = json!("non_repeatable");
+    crate::artifact::validate_profile(&manifest).unwrap();
+    c.execute(
+        "UPDATE installations SET manifest=$2 WHERE id=$1",
+        &[&installation, &manifest],
+    )
+    .await
+    .unwrap();
+    let (skill, _) = skill(&f, provider).await;
+    let source = f.source(b"effectful failure input".to_vec()).await;
+    let (parent, context) = f.delegation(consumer, consumer_instance, source).await;
+    let (plugin, downstream) = echo(&f, provider_instance).await;
+    plugin.fail_after_dispatch.store(true, Ordering::SeqCst);
+    let host = tokio::spawn(crate::host::serve(f.app.clone()));
+    let mut client = f
+        .client(f.client_identity(&format!(
+            "spiffe://xelab.local/instance/{consumer_instance}/generation/7"
+        )))
+        .await;
+    let input = serde_json::to_vec(&json!({"source":source})).unwrap();
+    // The fixed UUID is known before sending, so it remains usable even if no
+    // gRPC status or metadata arrives. This test receives a real mTLS status;
+    // it does not pretend to observe metadata after a completely lost response.
+    let known = Uuid::new_v4();
+    let request = rpc::SkillInvokeRequest {
+        context: Some(context.clone()),
+        skill_id: skill.to_string(),
+        input_digest: contracts::digest(&input),
+        input_json: input.clone(),
+        call_id: Some(known.to_string()),
+    };
+    let failed = client.invoke_skill(request.clone()).await.unwrap_err();
+    let detail = structured_error(&failed);
+    assert_eq!(detail.resource_id, known.to_string());
+    assert_eq!(plugin.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        c.query_one("SELECT state FROM calls WHERE id=$1", &[&known])
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        "unknown"
+    );
+    assert_eq!(
+        c.query_one(
+            "SELECT parent_call_id FROM host_child_calls WHERE child_call_id=$1",
+            &[&known]
+        )
+        .await
+        .unwrap()
+        .get::<_, Uuid>(0),
+        parent
+    );
+    let replay = client.invoke_skill(request.clone()).await.unwrap_err();
+    assert_eq!(structured_error(&replay).resource_id, known.to_string());
+    assert_eq!(
+        plugin.calls.load(Ordering::SeqCst),
+        1,
+        "unknown non-repeatable calls cannot be dispatched again by a stable replay"
+    );
+    let inspected = f
+        .call(
+            "getCall",
+            &[("call_id", known)],
+            Value::Null,
+            None,
+            "inspect-effectful-unknown",
+            None,
+        )
+        .await;
+    assert_eq!(inspected.0, 200, "{}", inspected.1);
+    assert_eq!(inspected.1["state"], "unknown");
+    // Schema errors happen before durable admission and must not pretend that
+    // the caller's proposed UUID identifies an admitted business operation.
+    let rejected = Uuid::new_v4();
+    let mut invalid = request.clone();
+    invalid.call_id = Some(rejected.to_string());
+    invalid.context.as_mut().unwrap().idempotency_key = Uuid::new_v4().to_string();
+    invalid.input_json = serde_json::to_vec(&json!({"source":17})).unwrap();
+    invalid.input_digest = contracts::digest(&invalid.input_json);
+    let preadmission = client.invoke_skill(invalid).await.unwrap_err();
+    assert!(structured_error(&preadmission).resource_id.is_empty());
+    assert_eq!(
+        c.query_one("SELECT count(*) FROM calls WHERE id=$1", &[&rejected])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0
+    );
+    assert_eq!(plugin.calls.load(Ordering::SeqCst), 1);
+    let mut legacy = request.clone();
+    legacy.call_id = None;
+    legacy.context.as_mut().unwrap().idempotency_key = Uuid::new_v4().to_string();
+    let first = client.invoke_skill(legacy.clone()).await.unwrap_err();
+    let assigned = structured_error(&first).resource_id;
+    let assigned_id: Uuid = assigned
+        .parse()
+        .expect("legacy admitted errors also expose the core-assigned UUID");
+    assert_ne!(assigned_id, known);
+    assert_eq!(
+        c.query_one("SELECT state FROM calls WHERE id=$1", &[&assigned_id])
+            .await
+            .unwrap()
+            .get::<_, String>(0),
+        "unknown"
+    );
+    assert_eq!(
+        structured_error(&client.invoke_skill(legacy).await.unwrap_err()).resource_id,
+        assigned
+    );
+    assert_eq!(plugin.calls.load(Ordering::SeqCst), 2);
+    proxy(
+        &f,
+        consumer,
+        proxy_rules()
+            .into_iter()
+            .filter(|rule| rule["action"] != "skill.invoke")
+            .collect(),
+    )
+    .await;
+    let denied = client.invoke_skill(request).await.unwrap_err();
+    assert!(
+        structured_error(&denied).resource_id.is_empty(),
+        "a denied caller cannot obtain an admitted call reference through error replay"
+    );
+    assert_eq!(plugin.calls.load(Ordering::SeqCst), 2);
+    host.abort();
+    downstream.abort();
+}

@@ -14,7 +14,7 @@
 
 ## 前置条件、执行及失败语义
 
-向下游转发取消和背压；帧大小、顺序与终态规则同 CapabilityService.InvokeStream；持续鉴权不能仅检查首帧。
+向下游转发取消和背压；帧大小、顺序与终态规则同 CapabilityService.InvokeStream；持续鉴权不能仅检查首帧。 已准入Call引用与错误元数据沿用Invoke；传输丢失时按调用前固定的call_id核实，不从缺少resource_id推断未执行。
 
 ## 请求字段
 
