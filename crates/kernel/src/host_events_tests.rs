@@ -74,6 +74,43 @@ async fn host_event_mtls_publication_dedupe_namespace_and_live_parent_fences() {
         payload_json: serde_json::to_vec(&json!({"value":7})).unwrap(),
         dedupe_key: "event-one".into(),
     };
+    // Signed workload identity cannot turn an expired untrusted RPC deadline
+    // into a debug overflow or a positive timeout on any event method.
+    for expired_deadline in [-1, i64::MIN] {
+        let mut expired = context.clone();
+        expired.deadline_unix_ms = expired_deadline;
+        let mut publication = request.clone();
+        publication.context = Some(expired.clone());
+        assert_eq!(
+            client.publish_event(publication).await.unwrap_err().code(),
+            tonic::Code::DeadlineExceeded
+        );
+        assert_eq!(
+            client
+                .subscribe(rpc::SubscribeRequest {
+                    context: Some(expired.clone()),
+                    subscription_id: Uuid::new_v4().to_string(),
+                })
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::DeadlineExceeded
+        );
+        assert_eq!(
+            client
+                .ack_event(rpc::AckEventRequest {
+                    context: Some(expired),
+                    subscription_id: Uuid::new_v4().to_string(),
+                    delivery_id: Uuid::new_v4().to_string(),
+                    lease_token: "expired-deadline".into(),
+                    outcome: 1,
+                })
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::DeadlineExceeded
+        );
+    }
     let first = client
         .publish_event(request.clone())
         .await

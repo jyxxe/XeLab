@@ -471,7 +471,11 @@ impl HostService for Host {
         let milliseconds = request
             .context
             .as_ref()
-            .map(|context| context.deadline_unix_ms - chrono::Utc::now().timestamp_millis())
+            .map(|context| {
+                context
+                    .deadline_unix_ms
+                    .saturating_sub(chrono::Utc::now().timestamp_millis())
+            })
             .unwrap_or(0)
             .clamp(0, 10000) as u64;
         let deadline =
@@ -515,7 +519,11 @@ impl HostService for Host {
         let milliseconds = request
             .context
             .as_ref()
-            .map(|context| context.deadline_unix_ms - chrono::Utc::now().timestamp_millis())
+            .map(|context| {
+                context
+                    .deadline_unix_ms
+                    .saturating_sub(chrono::Utc::now().timestamp_millis())
+            })
             .unwrap_or(0)
             .clamp(0, 10000) as u64;
         let setup =
@@ -559,7 +567,11 @@ impl HostService for Host {
         let milliseconds = request
             .context
             .as_ref()
-            .map(|context| context.deadline_unix_ms - chrono::Utc::now().timestamp_millis())
+            .map(|context| {
+                context
+                    .deadline_unix_ms
+                    .saturating_sub(chrono::Utc::now().timestamp_millis())
+            })
             .unwrap_or(0)
             .clamp(0, 2000) as u64;
         let deadline =

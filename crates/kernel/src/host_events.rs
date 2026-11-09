@@ -99,7 +99,10 @@ pub(crate) async fn publish(
     let resource = events::resource(&request.topic);
     let authority =
         host_calls::authority(&tx, app, workload, context, "event.publish", &resource).await?;
-    let until = authority.until_ms.min(context.deadline_unix_ms) - Utc::now().timestamp_millis();
+    let until = authority
+        .until_ms
+        .min(context.deadline_unix_ms)
+        .saturating_sub(Utc::now().timestamp_millis());
     if until <= 0 {
         return Err(Error::new(
             "DEADLINE_EXCEEDED",
@@ -192,7 +195,10 @@ pub(crate) async fn ack(
     let resource = events::resource(contracts::string(&spec, "topic")?);
     let authority =
         host_calls::authority(&tx, app, workload, context, "event.subscribe", &resource).await?;
-    let until = authority.until_ms.min(context.deadline_unix_ms) - Utc::now().timestamp_millis();
+    let until = authority
+        .until_ms
+        .min(context.deadline_unix_ms)
+        .saturating_sub(Utc::now().timestamp_millis());
     if until <= 0 {
         return Err(Error::new(
             "DEADLINE_EXCEEDED",
@@ -376,8 +382,10 @@ pub(crate) async fn subscribe(
     let authority =
         host_calls::authority(&tx, &app, workload, &context, "event.subscribe", &resource).await?;
     events::check_subscription(&tx, &app.auth, &authority.ctx, subscription).await?;
-    let milliseconds =
-        authority.until_ms.min(context.deadline_unix_ms) - Utc::now().timestamp_millis();
+    let milliseconds = authority
+        .until_ms
+        .min(context.deadline_unix_ms)
+        .saturating_sub(Utc::now().timestamp_millis());
     if milliseconds <= 0 {
         return Err(Error::new(
             "DEADLINE_EXCEEDED",
