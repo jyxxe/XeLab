@@ -28,6 +28,7 @@ let launcherError = null;
 let launcherEpoch = 0;
 let layer = 10;
 let accountId = null;
+let accountIdentityReadAt = null;
 let preferences = null;
 let preferenceEtag = null;
 let toastTimer;
@@ -93,6 +94,7 @@ function clearPrivateViews() {
   sessionEpoch++;
   const key = layoutKey();
   accountId = null;
+  accountIdentityReadAt = null;
   if (key) localStorage.removeItem(key);
   for (const win of [...windows.values()]) closeWindow(win, false);
   for (const widget of widgetViews.values()) widget.dispose();
@@ -644,12 +646,80 @@ async function settings(win) {
   win.content.replaceChildren(toolbar(win,'桌面设置'),form);
 }
 async function unavailable(win) {win.content.replaceChildren(toolbar(win,win.app.title),state('unavailable','当前版本尚不可用','Batch、Workflow、微插件与知识库属于后续执行系统。此桌面未伪造任务、数据或成功响应。'));}
+function overviewText(value) { return typeof value === 'string' && value ? (value.length>160?`${value.slice(0,160)}…（已截断）`:value) : '未提供'; }
+function overviewNumber(value, unit) {
+  return Number.isSafeInteger(value) && value >= 0 ? `${value.toLocaleString('zh-CN')} ${unit}` : '未提供';
+}
+function overviewField(label, value) { return node('div',{},node('dt',{},label),node('dd',{},value)); }
+function overviewStamp(source, data) {
+  return node('p',{class:'overview-source'},`来源：核心 · ${source}；本机读取（UTC）：${new Date().toISOString()}${typeof data?.updated_at==='string'?`；记录更新时间：${overviewText(data.updated_at)}`:''}`);
+}
+function overviewNode(data) {
+  if (!data || typeof data!=='object' || Array.isArray(data)) throw Object.assign(new Error('节点响应不完整，无法展示资源。'),{code:'INVALID_RESPONSE'});
+  const metrics=node('dl',{class:'overview-metrics'},
+    overviewField('宿主 CPU',overviewNumber(data?.host_cpu_millis,'mCPU')),
+    overviewField('宿主内存',overviewNumber(data?.host_memory_bytes,'bytes')),
+    overviewField('插件 CPU 池',overviewNumber(data?.plugin_cpu_pool_millis,'mCPU')),
+    overviewField('插件内存池',overviewNumber(data?.plugin_memory_pool_bytes,'bytes')),
+    overviewField('已准入 CPU',overviewNumber(data?.reserved_cpu_millis,'mCPU')),
+    overviewField('已准入内存',overviewNumber(data?.reserved_memory_bytes,'bytes')),
+    overviewField('新实例准入',typeof data?.admission_enabled==='boolean'?(data.admission_enabled?'已启用':'已停用'):'未提供'));
+  return [overviewStamp('节点状态',data),metrics];
+}
+function overviewPage(data, kind) {
+  if (!Array.isArray(data?.items) || data.items.length>50 || !(data.next_cursor===null || (typeof data.next_cursor==='string' && data.next_cursor.length>0 && data.next_cursor.length<=2048)) || data.items.some(item=>!item || typeof item!=='object' || Array.isArray(item))) {
+    throw Object.assign(new Error('列表响应不完整，无法判断当前页。'),{code:'INVALID_RESPONSE'});
+  }
+  const items=data.items, more=data.next_cursor!==null;
+  const source=kind==='deployment'?'部署列表':'实例列表';
+  const result=[overviewStamp(source),node('p',{class:'overview-page-note'},`当前页 ${items.length} 项${more?'；还有后续页，不能代表总数':'；没有后续页'}`)];
+  if (!items.length) result.push(state('empty',`当前页没有可见${kind==='deployment'?'部署':'实例'}`,'此结果以当前账户授权和本次查询为准。'));
+  else {
+    const list=node('div',{class:'overview-list'});
+    for (const item of items) {
+      const title=kind==='deployment'?overviewText(item?.spec?.display_name):overviewText(item?.id);
+      const conditions=Array.isArray(item?.conditions)&&item.conditions.length<=32&&item.conditions.every(value=>typeof value==='string'&&value.length<=80)?item.conditions:null;
+      const summary=kind==='deployment'
+        ? `状态：${overviewText(item?.phase)} · 条件：${conditions?(conditions.length?conditions.join('、'):'无已报告条件'):'未提供'}`
+        : `状态：${overviewText(item?.phase)} · 健康：${overviewText(item?.health)}`;
+      list.append(node('article',{class:'overview-item'},node('strong',{},title),node('span',{},summary),node('small',{},`记录更新：${overviewText(item?.updated_at)}`)));
+    }
+    result.push(list);
+  }
+  return result;
+}
+async function overview(win) {
+  const signal=win.controller.signal;
+  const identity=node('section',{class:'overview-card'},node('h3',{},'连接与身份'),
+    node('p',{},oauth.loggedIn?'本地登录会话存在；服务端授权以每次请求为准。':'未登录。'),
+    node('p',{class:'code'},`核心：${runtimeConfig.core_origin}`),
+    node('p',{},accountId?`当前账户：${accountId}（来自唯一可见的活动会话主体）`:'当前账户未确认；会话信息可能尚未加载或不可见。'),
+    node('p',{class:'overview-source'},accountIdentityReadAt?`来源：本地会话与核心本人会话列表；本人会话读取（UTC）：${accountIdentityReadAt}`:'来源：本地会话；本人会话读取时间不可用。'));
+  const section=(title)=>node('section',{class:'overview-card'},node('h3',{},title),node('div',{'aria-live':'polite'},state('loading','正在读取…')));
+  const nodeCard=section('节点与资源'), deploymentCard=section('部署'), instanceCard=section('实例');
+  const note=node('section',{class:'overview-card overview-note'},node('h3',{},'历史与操作'),
+    node('p',{},'当前没有可用的历史指标或 Operation 列表；已知操作可通过 UUID 查询。'),
+    button('查询 Operation',()=>openWindow(apps.find(app=>app.id==='tasks'))));
+  win.content.replaceChildren(toolbar(win,'总览'),node('p',{class:'muted'},'按需读取当前授权可见的数据；不会自动轮询或推断未返回的状态。'),node('div',{class:'overview-grid'},identity,nodeCard,deploymentCard,instanceCard,note));
+  const active=()=>!signal.aborted&&windows.has(win.id);
+  const load=async(card,name,source,options,render)=>{
+    const target=card.querySelector('[aria-live]');
+    try {const response=await request(name,{...options,signal});if(active())target.replaceChildren(...render(response.data));}
+    catch(error){if(active())target.replaceChildren(overviewStamp(source),failure(error));}
+  };
+  await Promise.all([
+    load(nodeCard,'getNode','节点状态',{},overviewNode),
+    load(deploymentCard,'listDeployments','部署列表',{query:{limit:50}},data=>overviewPage(data,'deployment')),
+    load(instanceCard,'listInstances','实例列表',{query:{limit:50}},data=>overviewPage(data,'instance')),
+  ]);
+}
 async function tasks(win) {
   const input=node('input',{'aria-label':'Operation UUID',placeholder:'已接受操作的 UUID'});
   const result=node('div');
   win.content.replaceChildren(toolbar(win,'任务与能力'),node('p',{},'查询核心已经接受的 Operation；结果以其持久终态为准。'),node('div',{class:'inline-field'},input,button('查询 Operation',async()=>{result.replaceChildren(state('loading','查询中…'));try{const response=await request('getOperation',{params:{operation_id:input.value.trim()},signal:win.controller.signal});result.replaceChildren(raw(response.data));}catch(error){result.replaceChildren(failure(error));}})),result,state('unavailable','Batch / Workflow / 微插件 / 知识库尚不可用','未安装或实现的后续执行系统没有可展示的运行结果。'));
 }
 const apps = [
+  {id:'overview',title:'总览',icon:'◫',render:overview},
   {id:'plugins',title:'插件中心',icon:'◈',render:plugins},
   {id:'skills',title:'Skill',icon:'S',render:skills},
   {id:'accounts',title:'账户与权限',icon:'◎',render:accounts},
@@ -739,6 +809,7 @@ async function boot() {
     $('#login').textContent='退出';$('#welcome').hidden=true;$('#connection').textContent='正在验证连接…';
     try {
       const sessions=await request('listSessions',{query:{limit:200}});
+      accountIdentityReadAt=new Date().toISOString();
       const subjects=[...new Set(rows(sessions.data).filter(item=>item.status==='active').map(item=>item.account_id))];
       if(subjects.length===1) accountId=subjects[0];
     } catch { /* Authorization may intentionally exclude session metadata. */ }

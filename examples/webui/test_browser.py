@@ -9,7 +9,8 @@ import pathlib
 import unittest
 from urllib.parse import parse_qs, urlencode, urlparse
 
-from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeoutError
+from jsonschema import Draft202012Validator, FormatChecker
+from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeoutError, Error as BrowserError, expect
 from test_bridge import contribution, FRAME, PLUGIN
 
 PUBLIC = pathlib.Path(__file__).parent / "public"
@@ -32,6 +33,31 @@ def preferences():
             "spec": {"theme": {"mode": "system", "reduce_motion": False, "reduce_transparency": False},
                      "dock": {"position": "bottom", "auto_hide": False, "pinned": []},
                      "widgets": [], "restore_windows": True}}
+
+
+def overview_fixtures():
+    limits = {"cpu_millis": 500, "memory_bytes": 134217728, "ephemeral_bytes": 1048576, "pids": 64}
+    node = {"id": ACCOUNT, "revision": 1, "created_at": NOW, "updated_at": NOW,
+            "config": {"kernel_cpu_millis": 4000, "kernel_memory_bytes": 17179869184,
+                       "system_cpu_millis": 1000, "system_memory_bytes": 1073741824,
+                       "shutdown_grace_ms": 30000},
+            "host_cpu_millis": 8000, "host_memory_bytes": 34359738368,
+            "plugin_cpu_pool_millis": 3000, "plugin_memory_pool_bytes": 16106127360,
+            "reserved_cpu_millis": 500, "reserved_memory_bytes": 134217728, "admission_enabled": True}
+    deployment = {"id": DEPLOYMENT, "revision": 1, "created_at": NOW, "updated_at": NOW,
+                  "spec": {"installation_id": ACCOUNT, "display_name": "Fixture deployment",
+                           "enabled": True, "replicas": 1, "limits": limits,
+                           "config": {"secret": "OVERVIEW-PRIVATE-CONFIG"}, "volume_ids": []},
+                  "observed_generation": 1, "phase": "degraded", "conditions": ["NETWORK_PENDING"]}
+    instance = {"id": SKILL, "revision": 1, "created_at": NOW, "updated_at": NOW,
+                "deployment_id": DEPLOYMENT, "generation": 1, "runtime_id": "fixture-runtime",
+                "phase": "ready", "health": "alive", "limits": limits,
+                "last_heartbeat_at": NOW, "restart_count": 0}
+    return {
+        "/api/platform/v1/node": (200, node),
+        "/api/platform/v1/deployments": (200, {"items": [deployment], "next_cursor": "fixture-next"}),
+        "/api/platform/v1/instances": (200, {"items": [instance], "next_cursor": None}),
+    }
 
 
 class DesktopBrowser(unittest.TestCase):
@@ -200,6 +226,24 @@ class DesktopBrowser(unittest.TestCase):
         window = self.page.locator(".window").last
         window.wait_for()
         return window
+
+    def route_overview(self, responses, observed):
+        def adapter(route):
+            request = route.request
+            parsed = urlparse(request.url)
+            if (f"{parsed.scheme}://{parsed.netloc}" != CORE or request.method == "OPTIONS"
+                    or parsed.path not in responses):
+                route.fallback()
+                return
+            observed.append((request.method, parsed.path, parse_qs(parsed.query)))
+            status, body = responses[parsed.path]
+            route.fulfill(status=status, content_type="application/json", headers={
+                "access-control-allow-origin": SHELL,
+                "access-control-allow-headers": "authorization,content-type,if-match,idempotency-key",
+                "access-control-allow-methods": "GET,POST,PUT,DELETE,PATCH,OPTIONS",
+                "access-control-expose-headers": "etag,x-request-id",
+            }, body=json.dumps(body))
+        self.page.route("**/*", adapter)
 
     def skill_body_audit(self):
         # Core here is an explicit routed component adapter. The same observer
@@ -711,6 +755,156 @@ class DesktopBrowser(unittest.TestCase):
         self.assertEqual(len([call for call in self.calls if call["path"] == "/oauth/token"]), 1)
         self.assertEqual(editor.locator('.code').text_content(), original_key)
         self.assertTrue(self.page.get_by_role("button", name="退出", exact=True).is_visible())
+
+    def test_overview_reads_authorized_data_refreshes_and_hides_config(self):
+        responses, observed = overview_fixtures(), []
+        self.route_overview(responses, observed)
+        self.open()
+        window = self.app("总览")
+        identity = window.get_by_role("heading", name="连接与身份", exact=True).locator("..")
+        node = window.get_by_role("heading", name="节点与资源", exact=True).locator("..")
+        deployments = window.get_by_role("heading", name="部署", exact=True).locator("..")
+        instances = window.get_by_role("heading", name="实例", exact=True).locator("..")
+        expect(node).to_contain_text("8,000 mCPU")
+        expect(node).to_contain_text("来源：核心 · 节点状态")
+        expect(node).to_contain_text("本机读取（UTC）")
+        expect(node).to_contain_text(NOW)
+        expect(deployments).to_contain_text("Fixture deployment")
+        expect(deployments).to_contain_text("NETWORK_PENDING")
+        expect(deployments).to_contain_text("还有后续页，不能代表总数")
+        expect(instances).to_contain_text("状态：ready · 健康：alive")
+        expect(window).to_contain_text("当前没有可用的历史指标或 Operation 列表")
+        expect(window).to_contain_text(f"当前账户：{ACCOUNT}")
+        expect(window).to_contain_text("来源：本地会话与核心本人会话列表；本人会话读取（UTC）：")
+        identity_source = identity.locator(".overview-source").inner_text()
+        self.assertNotIn("OVERVIEW-PRIVATE-CONFIG", self.page.content())
+        self.assertNotIn("OVERVIEW-PRIVATE-CONFIG", self.page.evaluate("JSON.stringify(localStorage)"))
+        self.assertEqual(len(observed), 3)
+        self.assertTrue(all(method == "GET" for method, _, _ in observed))
+        self.assertTrue(all(query.get("limit") == ["50"] for _, path, query in observed if path.endswith(("/deployments", "/instances"))))
+
+        responses["/api/platform/v1/node"][1]["host_cpu_millis"] = 12000
+        responses["/api/platform/v1/deployments"][1]["items"][0]["spec"]["display_name"] = '<img src=x onerror="alert(1)">'
+        window.get_by_role("button", name="刷新", exact=True).click()
+        expect(node).to_contain_text("12,000 mCPU")
+        expect(deployments).to_contain_text('<img src=x onerror="alert(1)">')
+        self.assertEqual(deployments.locator("img").count(), 0)
+        expect(instances).to_contain_text("健康：alive")
+        expect(identity.locator(".overview-source")).to_have_text(identity_source)
+        self.assertEqual(sum(call["path"] == "/api/platform/v1/sessions" for call in self.calls), 1)
+        self.assertEqual(len(observed), 6)
+        window.get_by_role("button", name="查询 Operation", exact=True).click()
+        tasks = self.page.get_by_role("dialog", name="任务与知识库", exact=True)
+        expect(tasks.get_by_label("Operation UUID")).to_be_visible()
+        self.assertEqual(len(observed), 6)
+        self.assertFalse(any(call["path"].startswith("/api/platform/v1/operations/") for call in self.calls))
+
+    def test_overview_response_fixtures_match_openapi(self):
+        spec = json.loads((pathlib.Path(__file__).resolve().parents[2] / "docs/contracts/openapi.json").read_text())
+        fixtures = overview_fixtures()
+        for path, schema_name in (("/api/platform/v1/node", "NodeStatus"),
+                                  ("/api/platform/v1/deployments", "DeploymentPage"),
+                                  ("/api/platform/v1/instances", "InstancePage")):
+            schema = {"$ref": "#/components/schemas/" + schema_name, "components": spec["components"]}
+            Draft202012Validator(schema, format_checker=FormatChecker()).validate(fixtures[path][1])
+
+    def test_overview_partial_denial_empty_and_unavailable_are_distinct(self):
+        responses, observed = overview_fixtures(), []
+        responses["/api/platform/v1/node"] = (403, {"error": {"code": "PERMISSION_DENIED", "message": "fixture denied"}})
+        responses["/api/platform/v1/deployments"] = (200, {"items": [], "next_cursor": None})
+        responses["/api/platform/v1/instances"] = (503, {"error": {"code": "NOT_READY", "message": "fixture unavailable"}})
+        self.route_overview(responses, observed)
+        self.open()
+        window = self.app("总览")
+        node = window.get_by_role("heading", name="节点与资源", exact=True).locator("..")
+        deployments = window.get_by_role("heading", name="部署", exact=True).locator("..")
+        instances = window.get_by_role("heading", name="实例", exact=True).locator("..")
+        expect(node.get_by_role("heading", name="无权限", exact=True)).to_be_visible()
+        expect(node).to_contain_text("来源：核心 · 节点状态")
+        expect(deployments.get_by_role("heading", name="当前页没有可见部署", exact=True)).to_be_visible()
+        expect(instances.get_by_role("heading", name="当前不可用", exact=True)).to_be_visible()
+        self.assertEqual(len(observed), 3)
+
+    def test_overview_unknown_identity_and_malformed_page_are_not_empty_success(self):
+        responses, observed = overview_fixtures(), []
+        responses["/api/platform/v1/instances"] = (200, {"items": []})
+        self.denied.add("/api/platform/v1/sessions")
+        self.route_overview(responses, observed)
+        self.open()
+        window = self.app("总览")
+        expect(window).to_contain_text("当前账户未确认")
+        expect(window).to_contain_text("本人会话读取时间不可用")
+        instances = window.get_by_role("heading", name="实例", exact=True).locator("..")
+        expect(instances).to_contain_text("INVALID_RESPONSE")
+        self.assertNotIn("没有后续页", instances.inner_text())
+        responses["/api/platform/v1/instances"] = (200, {"items": [{}] * 51, "next_cursor": None})
+        window.get_by_role("button", name="刷新", exact=True).click()
+        expect(instances).to_contain_text("INVALID_RESPONSE")
+        self.assertNotIn("没有后续页", instances.inner_text())
+
+    def test_overview_refresh_discards_an_aborted_older_response(self):
+        responses, observed, held = overview_fixtures(), [], []
+        self.route_overview(responses, observed)
+        self.open()
+        old_node = dict(responses["/api/platform/v1/node"][1])
+        def hold_first(route):
+            parsed = urlparse(route.request.url)
+            if (f"{parsed.scheme}://{parsed.netloc}" == CORE and parsed.path == "/api/platform/v1/node"
+                    and route.request.method == "GET" and not held):
+                held.append(route)
+            else:
+                route.fallback()
+        self.page.route("**/*", hold_first)
+        window = self.app("总览")
+        node = window.get_by_role("heading", name="节点与资源", exact=True).locator("..")
+        for _ in range(100):
+            if held:
+                break
+            self.page.wait_for_timeout(10)
+        self.assertEqual(len(held), 1)
+        responses["/api/platform/v1/node"][1]["host_cpu_millis"] = 12000
+        window.get_by_role("button", name="刷新", exact=True).click()
+        expect(node).to_contain_text("12,000 mCPU")
+        try:
+            held[0].fulfill(status=200, content_type="application/json",
+                            headers={"access-control-allow-origin": SHELL}, body=json.dumps(old_node))
+        except BrowserError:
+            pass  # Chromium may already have canceled the intercepted request.
+        expect(node).to_contain_text("12,000 mCPU")
+        self.assertNotIn("8,000 mCPU", node.inner_text())
+        expect(self.page.locator("#connection")).to_have_text("已连接核心")
+
+    def test_overview_401_clears_private_views(self):
+        responses, observed = overview_fixtures(), []
+        self.route_overview(responses, observed)
+        self.open()
+        window = self.app("总览")
+        expect(window).to_contain_text("Fixture deployment")
+        responses["/api/platform/v1/node"] = (401, {"error": {"code": "INVALID_CREDENTIAL", "message": "fixture expired"}})
+        window.get_by_role("button", name="刷新", exact=True).click()
+        expect(self.page.get_by_role("button", name="登录", exact=True)).to_be_visible()
+        expect(self.page.locator('.window[data-app="overview"]')).to_have_count(0)
+        self.assertNotIn("Fixture deployment", self.page.content())
+
+    def test_overview_mobile_keyboard_and_no_horizontal_overflow(self):
+        responses, observed = overview_fixtures(), []
+        self.route_overview(responses, observed)
+        self.page.set_viewport_size({"width": 390, "height": 760})
+        self.open()
+        opener = self.page.get_by_role("button", name="打开总览", exact=True)
+        opener.focus()
+        self.page.keyboard.press("Enter")
+        window = self.page.get_by_role("dialog", name="总览", exact=True)
+        expect(window.locator(".window-title")).to_be_focused()
+        expect(window).to_contain_text("Fixture deployment")
+        for name in ("关闭总览", "最小化总览", "最大化或恢复总览", "刷新"):
+            self.page.keyboard.press("Tab")
+            expect(window.get_by_role("button", name=name, exact=True)).to_be_focused()
+        for card in window.locator('.overview-card').all():
+            box = card.bounding_box()
+            self.assertIsNotNone(box)
+            self.assertGreaterEqual(box["x"], 0)
+            self.assertLessEqual(box["x"] + box["width"], 390)
 
 
 if __name__ == "__main__":
