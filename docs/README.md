@@ -2,7 +2,7 @@
 
 > 规格版本 **2.8.0**。本目录定义系统规格；实际已实现范围见 [Kernel README](../crates/kernel/README.md)，不能把本目录的规范描述当作实现证明。现行规格替代原 plan/v0.md，原文完整保存在 archive。
 
-平台采用微内核、独立 CPU 容器、能力契约；单节点 Linux；内核至少预留 **4 vCPU / 16 GiB**，宿主基础设施另行预留；WebUI 为独立插件。角色包含 Guest，支持版本化权限组、多级子账户及派生 API Key。
+平台采用微内核、独立 CPU 容器、能力契约；单节点 Linux；默认 standard 内核至少预留 **4 vCPU / 16 GiB**，宿主基础设施另行预留；可显式选择面向 **1 vCPU / 512MiB 整机**的 [compact profile](implementation/compact-node.md)（稳定性长测待执行）；WebUI 为独立插件。角色包含 Guest，支持版本化权限组、多级子账户及派生 API Key。
 
 ## 阅读入口
 

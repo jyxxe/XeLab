@@ -43,7 +43,16 @@ pub struct App {
     pub blob_uploads: tokio::sync::Semaphore,
 }
 pub fn router(app: Arc<App>) -> Router {
-    Router::new().fallback(handle).with_state(app)
+    let compact = app.config.compact();
+    let router = Router::new().fallback(handle).with_state(app);
+    if compact {
+        router.layer(axum::middleware::from_fn_with_state(
+            crate::compact_http::Budget::new(),
+            crate::compact_http::limit,
+        ))
+    } else {
+        router
+    }
 }
 
 pub(crate) fn operation(
@@ -416,10 +425,11 @@ fn dispatch<'a>(
             ));
         }
         let browser_origin = crate::oauth_http::request_origin(&headers)?;
-        let bytes = to_bytes(request.into_body(), 4194304).await.map_err(|_| {
+        let maximum = app.config.json_limit(4194304);
+        let bytes = to_bytes(request.into_body(), maximum).await.map_err(|_| {
             Error::new(
                 "PAYLOAD_TOO_LARGE",
-                "Request body exceeds 4 MiB",
+                "Request body exceeds this node's JSON limit",
                 StatusCode::PAYLOAD_TOO_LARGE,
             )
         })?;
@@ -431,7 +441,7 @@ fn dispatch<'a>(
                     StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 ));
             }
-            let value = strict_json(&bytes, 4194304)?;
+            let value = strict_json(&bytes, maximum)?;
             let model = op["requestBody"]["content"]["application/json"]["schema"]["$ref"]
                 .as_str()
                 .and_then(|s| s.rsplit('/').next())

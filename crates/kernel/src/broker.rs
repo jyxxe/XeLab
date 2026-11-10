@@ -374,7 +374,11 @@ fn invoke_inner<'a>(
         return Err(Error::new("OUTCOME_UNKNOWN","Prior call is not a confirmed success; query its call ID",axum::http::StatusCode::CONFLICT).with_resource(call_id));
     }
         let bytes = serde_json::to_vec(&input["input"])?;
-        if bytes.len() > unsigned(&definition["maximum_input_bytes"])? as usize {
+        if bytes.len()
+            > app
+                .config
+                .json_limit(unsigned(&definition["maximum_input_bytes"])? as usize)
+        {
             return Err(Error::invalid("Capability input exceeds its byte limit"));
         }
         validate_business(&definition["input_schema"], &input["input"])?;
@@ -528,7 +532,8 @@ fn invoke_inner<'a>(
             let address = app.runtime.address(instance)?;
             let channel = tls::channel(&app.config, instance, generation, &address).await?;
             let mut client = CapabilityServiceClient::new(channel).max_decoding_message_size(
-                stream.map(|s| s.maximum_rpc_response()).unwrap_or(16778240),
+                app.config
+                    .rpc_limit(stream.map(|s| s.maximum_rpc_response()).unwrap_or(16778240)),
             );
             let mut context = controller::context(Some(ctx.subject));
             context.request_id = ctx.request.to_string();
@@ -581,7 +586,7 @@ fn invoke_inner<'a>(
                     sequence = chunk.sequence;
                     match chunk.body {
                         Some(rpc::invoke_chunk::Body::ItemJson(bytes)) => {
-                            let item = strict_json(&bytes, 1024 * 1024)?;
+                            let item = strict_json(&bytes, app.config.json_limit(1024 * 1024))?;
                             validate_business(&definition["stream_item_schema"], &item)?;
                             if let Some(skill) = skill.as_ref() {
                                 validate_business(&skill.definition["stream_item_schema"], &item)?;
@@ -633,7 +638,8 @@ fn invoke_inner<'a>(
             }
             let output = strict_json(
                 &response.output_json,
-                unsigned(&definition["maximum_output_bytes"])? as usize,
+                app.config
+                    .json_limit(unsigned(&definition["maximum_output_bytes"])? as usize),
             )?;
             validate_business(&definition["output_schema"], &output)?;
             if let Some(skill) = &skill {

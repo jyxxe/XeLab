@@ -384,6 +384,9 @@ async fn execute_inner(
                 .to_std()
                 .unwrap_or(Duration::ZERO),
     );
+    if input.bytes.len() > app.config.json_limit(op.route.maximum_body_bytes) {
+        return Err(plugin_http::too_large());
+    }
     let headers = op.request(&input.headers, &input.bytes)?;
     crate::plugin_http_gateway::check_approval_prepared(
         &tx,
@@ -444,7 +447,10 @@ async fn execute_inner(
     let body = if input.bytes.is_empty() {
         Value::Null
     } else {
-        strict_json(&input.bytes, op.route.maximum_body_bytes)?
+        strict_json(
+            &input.bytes,
+            app.config.json_limit(op.route.maximum_body_bytes),
+        )?
     };
     let fingerprint = crate::skills::definition_digest(
         &json!({"installation":target.installation,"deployment":target.deployment,"operation":op.id,"digest":op.contract_digest,"input":body,"headers":header_fingerprint,"skill_input":input.skill_input}),
@@ -645,26 +651,20 @@ async fn execute_inner(
             }
             return Ok((value, None));
         }
-        let mut source = response.bytes_stream();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = source.next().await {
-            let chunk = chunk.map_err(|error| {
-                if error.is_timeout() {
-                    expired()
-                } else {
-                    Error::unavailable("HTTP response ended early")
-                }
-            })?;
-            if chunk.len() > plugin_http::MAXIMUM_RESPONSE_BYTES.saturating_sub(bytes.len()) {
-                return Err(plugin_http::too_large());
-            }
-            bytes.extend_from_slice(&chunk);
-        }
+        let bytes = plugin_http::transport::collect(
+            response,
+            app.config.json_limit(plugin_http::MAXIMUM_RESPONSE_BYTES),
+        )
+        .await?
+        .bytes;
         let safe_headers = op.response(status, &safe_headers, &bytes)?;
         let body = if bytes.is_empty() {
             Value::Null
         } else {
-            strict_json(&bytes, plugin_http::MAXIMUM_RESPONSE_BYTES)?
+            strict_json(
+                &bytes,
+                app.config.json_limit(plugin_http::MAXIMUM_RESPONSE_BYTES),
+            )?
         };
         if let Some(skill) = &skill {
             if !status.is_success() {
@@ -1155,6 +1155,7 @@ async fn read_events(
     let mut buffer = Vec::new();
     let mut sequence = 0;
     let mut completed = None;
+    let maximum_frame = app.config.json_limit(1048576);
     while let Some(chunk) = source.next().await {
         let chunk = chunk.map_err(|error| {
             if error.is_timeout() {
@@ -1163,7 +1164,7 @@ async fn read_events(
                 Error::unavailable("HTTP event stream ended early")
             }
         })?;
-        if chunk.len() > 1048576 {
+        if chunk.len() > maximum_frame {
             return Err(plugin_http::too_large());
         }
         buffer.extend_from_slice(&chunk);
@@ -1182,7 +1183,7 @@ async fn read_events(
             let Some((end, separator)) = split else {
                 break;
             };
-            if end + separator > 1048576 {
+            if end + separator > maximum_frame {
                 return Err(plugin_http::too_large());
             }
             let bytes: Vec<_> = buffer.drain(..end + separator).collect();
@@ -1216,7 +1217,7 @@ async fn read_events(
             if fields.len() != 3 {
                 return Err(Error::invalid("SSE frame is incomplete"));
             }
-            let value = strict_json(fields["data"].as_bytes(), 1048576)?;
+            let value = strict_json(fields["data"].as_bytes(), maximum_frame)?;
             validate("StreamEvent", &value)?;
             target.operation()?.responses[&200]
                 .schema
@@ -1292,7 +1293,7 @@ async fn read_events(
                 output.emit(&value).await?;
             }
         }
-        if buffer.len() > 1048576 {
+        if buffer.len() > maximum_frame {
             return Err(plugin_http::too_large());
         }
     }

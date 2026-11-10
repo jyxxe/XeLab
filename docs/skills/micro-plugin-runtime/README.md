@@ -16,7 +16,7 @@ MPR 1.2.0的微部署settings与这些固定定义分开：`resources.cpu_millis
 
 network_enabled默认false，Prepare/Ready和pure执行仍可继续；controlled-http-v1 Invoke在false时于worker创建及发送前返回PERMISSION_DENIED，violations.field=network_enabled，不消耗sequence或触发fallback。true仍须正确profile、权限、固定HttpBinding和平台策略，不赋予任意fetch/socket；每次ProxyHttp检查开关、enabled及generation。
 
-父MPR默认4000mCPU/4294967296字节（4vCPU/4GiB），工作池3500mCPU/3758096384字节（3584MiB）、控制CPU500m及控制内存128MiB、缓存256MiB；默认最多4个不同微部署同时活跃，总活动槽4只是上限。batch仍按同一Skill和当前代次准入，不扩张或借用内核4C/16GiB预留。
+父MPR默认4000mCPU/4294967296字节（4vCPU/4GiB），工作池3500mCPU/3758096384字节（3584MiB）、控制CPU500m及控制内存128MiB、缓存256MiB；默认最多4个不同微部署同时活跃，总活动槽4只是上限。batch仍按同一Skill和当前代次准入，不扩张或借用所选 profile 的内核预留。
 
 调用需skill.invoke、具体micro_plugin UUID上的micro.invoke、父普通deployment上的micro.runtime.use及完整当前来源链。仅有运行时管理权不能调用任意微插件，Key可精确限制微ID和Skill UUID；不会退回通用capability.invoke绕过。
 

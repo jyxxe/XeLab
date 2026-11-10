@@ -13,7 +13,7 @@ use xelab_kernel::{
     config::{require_host_admin, Config},
     controller,
     db::Db,
-    error::Result,
+    error::{Error, Result},
     runtime::Runtime,
     tls,
 };
@@ -22,37 +22,110 @@ use xelab_kernel::{
 struct Args {
     #[arg(long, default_value = "/etc/xelab/kernel.toml")]
     config: PathBuf,
+    #[arg(long, hide = true)]
+    inherited_host_lease: Option<InheritedHostLease>,
 }
-#[tokio::main]
-async fn main() {
+
+#[derive(Clone, Debug)]
+struct InheritedHostLease {
+    fd: i32,
+    cpu: i64,
+    memory: i64,
+}
+
+impl std::str::FromStr for InheritedHostLease {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        let invalid = "Invalid inherited host lease";
+        let mut fields = value.split(':');
+        let fd = fields.next().ok_or(invalid)?.parse().map_err(|_| invalid)?;
+        let cpu = fields.next().ok_or(invalid)?.parse().map_err(|_| invalid)?;
+        let memory = fields.next().ok_or(invalid)?.parse().map_err(|_| invalid)?;
+        if fd < 3 || cpu <= 0 || memory <= 0 || fields.next().is_some() {
+            return Err(invalid);
+        }
+        Ok(Self { fd, cpu, memory })
+    }
+}
+fn main() {
     xelab_kernel::init_crypto();
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
-    if let Err(e) = start(Args::parse()).await {
+    if let Err(e) = run(Args::parse()) {
         eprintln!("{e}");
         std::process::exit(7);
     }
 }
-async fn start(args: Args) -> Result<()> {
+fn run(args: Args) -> Result<()> {
     require_host_admin()?;
-    let mut config = Config::load(&args.config)?;
-    Runtime::new(config.clone()).retain_daemon_host_lease()?;
+    // This descriptor has no Rust owner in the new process image. Adopt it
+    // before reading configuration, and restore CLOEXEC before any adapters run.
+    let inherited_lease = args
+        .inherited_host_lease
+        .as_ref()
+        .map(|inherited| unsafe { Runtime::inherited_host_lease(inherited.fd) })
+        .transpose()?;
+    let config = Config::load(&args.config)?;
+    let runtime = Runtime::new(config.clone());
+    let lease = match inherited_lease {
+        Some(lease) => lease,
+        None => runtime.host_lease()?,
+    };
+    let capacity = if let Some(inherited) = args.inherited_host_lease {
+        if !config.compact() {
+            return Err(Error::invalid(
+                "Inherited startup requires the compact profile",
+            ));
+        }
+        let capacity = admission::compact_host_capacity((inherited.cpu, inherited.memory))?;
+        // Validate and reapply the newly loaded file's limits in case it changed
+        // across exec. Persisted resource budgets are applied by preflight later.
+        runtime.prepare_kernel_cgroup(capacity.0, capacity.1)?;
+        capacity
+    } else {
+        let capacity = admission::host_capacity()?;
+        if config.compact() {
+            runtime.prepare_kernel_cgroup(capacity.0, capacity.1)?;
+            return Runtime::reexec_compact(&lease, &args.config, capacity);
+        }
+        capacity
+    };
+    Runtime::retain_host_lease(lease)?;
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder.enable_all();
+    if config.compact() {
+        // Archive/encryption pipelines need several simultaneous blocking jobs.
+        builder.worker_threads(1).max_blocking_threads(8);
+    }
+    builder.build()?.block_on(start(config, capacity))
+}
+async fn start(mut config: Config, (cpu, memory): (i64, i64)) -> Result<()> {
     let (dsn, key) = config.secrets()?;
-    let db = Db::new(dsn)?;
+    let mut db = Db::new(dsn)?;
+    if config.compact() {
+        db = db.with_connection_limit(16);
+    }
     db.check().await?;
     let leader = Arc::new(db.leader().await?);
-    let (cpu, memory) = admission::host_capacity()?;
     let mut c = db.connect().await?;
     let tx = c.transaction().await?;
     xelab_kernel::auth::seed_roles(&tx).await?;
     admission::initialize(&tx, &config.value["resources"], cpu, memory).await?;
     tx.commit().await?;
-    config.value["resources"] = c
+    let persisted: serde_json::Value = c
         .query_one("SELECT config FROM node_budget", &[])
         .await?
         .get(0);
+    if (persisted["profile"] == "compact") != config.compact() {
+        return Err(xelab_kernel::error::Error::conflict(
+            "Resource profile differs from persisted node budget; use the existing profile",
+        ));
+    }
+    config.value["resources"] = persisted;
+    drop(c);
     let runtime = Runtime::new(config.clone());
     runtime.preflight(cpu, memory).await?;
     tls::issue(&config, None, &config.root().join("kernel-identity"))?;
@@ -65,7 +138,7 @@ async fn start(args: Args) -> Result<()> {
         leader,
         ready: AtomicBool::new(false),
         shutdown: AtomicBool::new(false),
-        blob_uploads: tokio::sync::Semaphore::new(4),
+        blob_uploads: tokio::sync::Semaphore::new(if config.compact() { 1 } else { 4 }),
     });
     let worker = tokio::spawn(controller::run(app.clone()));
     let volume_worker = tokio::spawn(xelab_kernel::volumes::run(app.clone()));
@@ -132,4 +205,30 @@ async fn start(args: Args) -> Result<()> {
             .await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_startup_descriptor_requires_complete_positive_capacity() {
+        let value: InheritedHostLease = "3:1000:536870912".parse().unwrap();
+        assert_eq!((value.fd, value.cpu, value.memory), (3, 1000, 536870912));
+        for invalid in [
+            "",
+            "3",
+            "3:1000",
+            "2:1000:536870912",
+            "-1:1000:536870912",
+            "3:0:536870912",
+            "3:1000:0",
+            "3:1000:-1",
+            "3:1000:536870912:extra",
+            "9999999999999999999:1000:536870912",
+            "3:invalid:536870912",
+        ] {
+            assert!(invalid.parse::<InheritedHostLease>().is_err(), "{invalid}");
+        }
+    }
 }

@@ -67,7 +67,7 @@ BatchEngine复用授权/Broker及租约fence算法，单独调度持久化Skill�
 
 Prepare/Invoke/Release只接收内核mTLS请求，不发布用户直连路由；Cancel/QueryResult复用CapabilityService，MPR健康与启停复用普通PluginLifecycle。准备句柄是可重建的运行状态，不是授权票据。父实例重启后原句柄失效，微控制器重新Prepare固定版本，不改绑其他运行时。
 
-准入顺序为MPR父实例槽/内存，再是微部署槽/执行预算；所有活动微执行及MPR自身开销共同受父部署限制。微插件不创建新OCI容器，不重复预留节点插件池，也不借内核4C16G。详见[微插件架构](micro-plugins.md)。
+准入顺序为MPR父实例槽/内存，再是微部署槽/执行预算；所有活动微执行及MPR自身开销共同受父部署限制。微插件不创建新OCI容器，不重复预留节点插件池，也不借所选 profile 的内核预留。详见[微插件架构](micro-plugins.md)。
 
 ## 扩展控制与执行边界
 

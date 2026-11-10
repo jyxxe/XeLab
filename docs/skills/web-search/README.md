@@ -25,7 +25,7 @@
 
 开关关闭时Prepare/Ready仍允许，搜索Invoke在创建worker/发送前返回PERMISSION_DENIED（violations.field=network_enabled），不占sequence、不fallback，也不返回SEARCH_NO_PROVIDER。开关true仍只允许固定profile及绑定/平台策略批准的API代理，不提供任意fetch/socket。
 
-默认resources为250mCPU/256MiB，所有该微部署worker共享逐微cgroup合计硬上限；默认活动并发1、硬上限4，JS heap默认16MiB为每VM子上限。资源由核心适配器实施，MPR无宿主cgroup权限，无每微OCI；父MPR默认4000mCPU/4294967296字节（4vCPU/4GiB），工作池3500mCPU/3758096384字节（3584MiB），控制CPU500m、控制内存128MiB及缓存256MiB，内存合计3968MiB。先受4个硬活动槽限制，默认最多4个不同微部署活跃，不借内核4C/16GiB。
+默认resources为250mCPU/256MiB，所有该微部署worker共享逐微cgroup合计硬上限；默认活动并发1、硬上限4，JS heap默认16MiB为每VM子上限。资源由核心适配器实施，MPR无宿主cgroup权限，无每微OCI；父MPR默认4000mCPU/4294967296字节（4vCPU/4GiB），工作池3500mCPU/3758096384字节（3584MiB），控制CPU500m、控制内存128MiB及缓存256MiB，内存合计3968MiB。先受4个硬活动槽限制，默认最多4个不同微部署活跃，不借所选 profile 的内核预留。
 
 手动修改resources或联网开关须先停用并排空，PUT settings携If-Match及Idempotency-Key；其余运行状态返回STATE_CONFLICT。更新generation/revision、旧句柄失效，原limits、微版本、父绑定与Skill定义不变，重新启用后按新设置准入。
 
