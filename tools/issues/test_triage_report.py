@@ -114,6 +114,15 @@ class TriageTests(unittest.TestCase):
             self.assertNotIn(SECRET, out + err)
             self.assertIn("<redacted>", out)
 
+    def test_control_characters_in_titles_do_not_reach_text_output(self):
+        api = FakeAPI(issues=[issue(1, "safe\x1b[31m\x9b\u202e title")])
+        code, out, err = call_main(api)
+        self.assertEqual(code, 0)
+        for value in ("\x1b", "\x9b", "\u202e"):
+            self.assertNotIn(value, out + err)
+        self.assertIn("safe", out)
+        self.assertNotIn("\x1b", render_text(build_report(api)))
+
     def test_duplicate_candidates_are_not_definitive(self):
         api = FakeAPI(issues=[issue(1, "[feature] Add Foo tool"), issue(2, "[bug] add   foo TOOL!"),
                               issue(3, "offline oci artifact checker"), issue(4, "offline oci artifact validator"),

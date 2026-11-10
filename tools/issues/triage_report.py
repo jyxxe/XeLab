@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
@@ -51,6 +52,12 @@ def pages(api, path):
 
 def redact(text):
     return CREDENTIAL.sub("<redacted>", text)
+
+
+def safe_text(value):
+    """Replace terminal/format control characters from untrusted issue titles."""
+    return "".join(" " if unicodedata.category(char) in {"Cc", "Cf", "Cs"} else char
+                   for char in value)
 
 
 def normalize_title(title):
@@ -102,7 +109,7 @@ def build_report(api):
         claims = claim_candidates(api, item["number"])
         issues.append({
             "number": item["number"],
-            "title": redact(item["title"])[:120],
+            "title": safe_text(redact(item["title"]))[:120],
             "url": item["html_url"],
             "labels": labels,
             "status": status,

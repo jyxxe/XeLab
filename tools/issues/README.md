@@ -27,7 +27,7 @@ python3 tools/issues/triage_report.py --repo OWNER/NAME --json
 - 认领候选只匹配评论中的 `认领申请` / `/claim` 标记，仅输出账号、时间、评论 URL，
   不输出评论正文；多人候选标记 `multiple_claimants`，不是裁定。
 - 重复候选来自相同规范化标题或高重合关键词（`duplicates_are_definitive=false`）。
-- 标题中形似凭证的字符串替换为 `<redacted>`；不读取也不打印 Token 值。
+- 标题中形似凭证的字符串替换为 `<redacted>`；控制/格式字符在报告文本中替换为空格；不读取也不打印 Token 值。
 
 示例输出（合成数据，非真实仓库状态）：[example-triage-report.txt](example-triage-report.txt)、
 [example-triage-report.json](example-triage-report.json)。
