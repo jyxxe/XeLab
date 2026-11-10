@@ -645,7 +645,7 @@ async function settings(win) {
       // was in flight. Do not replace its locally observed version with one
       // whose ordering we cannot establish.
       if(typeof savedEtag!=='string' || !/^"rev-[1-9][0-9]*"$/.test(savedEtag) || (preferenceEtag!==sentEtag && preferenceEtag!==savedEtag)) {
-        notice.textContent='本次保存已完成，但期间偏好版本发生变化；请核实并重新读取核心偏好。';
+        notice.textContent='本次保存已完成，但期间偏好版本发生变化；请先记录未保存的更改，再核实并重新读取核心偏好。';
       } else {
         preferences=result.data;preferenceEtag=savedEtag;
         if(JSON.stringify(preview)===canonicalIntent) {
@@ -656,7 +656,7 @@ async function settings(win) {
     }
     catch(error){
       notice.replaceChildren(failure(error));
-      if((error.status??error.http_status)===412) notice.append(node('span',{},'请先核实此前保存结果，重新读取核心偏好后再明确创建新的保存意图。'));
+      if((error.status??error.http_status)===412) notice.append(node('span',{},'请先记录未保存的更改并核实此前保存结果，重新读取核心偏好后再明确创建新的保存意图。'));
     }finally{save.disabled=false;}
   },{class:'primary'});
   form.append(node('label',{},'主题',mode),colors,check('减少动画','reduce_motion'),check('减少透明度','reduce_transparency'),node('label',{},'Dock 位置',dock),node('label',{class:'check'},autoHide,'自动隐藏 Dock'),notice,node('div',{class:'toolbar'},save,button('恢复已保存偏好',()=> {preview=preferences?structuredClone(preferences.spec):defaults();applyTheme();loadApp(win);})),node('p',{class:'code'},`核心：${runtimeConfig.core_origin}\n公共 Client：${runtimeConfig.client_id}`));
