@@ -13,11 +13,19 @@
 | server | listen、public_origin、tls_cert_file、tls_key_file、unix_socket、host_rpc_listen | TLS 网关、本机入口及受控插件 HostService |
 | database | dsn_file | 从 0600 文件读取连接参数，不放到 API 或日志 |
 | runtime | socket、namespace、network_cidr | 运行时连接及专用插件网络；namespace 不替代网络/权限隔离 |
-| resources | NodeConfig 全字段 | 内核至少 4000m/16GiB，系统基础设施另预留 |
+| resources | NodeConfig 全字段 | 可选 profile 默认 standard；compact 的容量与并发限制见下文 |
 | storage | root_path、quota_backend、off_host_backup_uri | 专属目录、硬配额、宿主外备份目的地 |
 | security | token_hmac_key_file、master_key_file、workload_ca_cert_file、workload_ca_key_file | 凭证/加密主密钥及工作负载CA私钥禁止插件挂载；仅CA公证书可共享 |
 | quota_defaults | QuotaSpec | 新根的配额初始策略，下级仍受祖先累计限制 |
 | ui_gateway（可选） | base_domain、public_port、shell_origins | iframe独立源映射；DNS/TLS由部署者配置，缺失仅使UI贡献unavailable |
+
+## compact 节点
+
+保持旧配置省略 `resources.profile` 的 standard 行为。只有显式设置 `profile = "compact"` 才采用内核 500mCPU/192MiB、系统 250mCPU/256MiB 的最低预留及有界运行参数。完整示例见 [kernel-compact.toml](../contracts/examples/kernel-compact.toml)，数据库建议见 [postgresql-compact.conf](../contracts/examples/postgresql-compact.conf)。
+
+目标为 1 vCPU/512MiB 整机；实测有效内存至少 480MiB，插件池从实测容量扣除，最小系统不默认启用 WebUI。profile在新节点初始化时选择；与已有node_budget不一致时启动拒绝，在线更新不能切换profile。已有节点须使用显式迁移（尚未提供）或新节点，不能仅改文件再重启。安装、鉴权、审计、TLS、cgroup 和持久性门禁保持有效。详见 [compact 运行与验收](../implementation/compact-node.md)。
+
+compact启动仍使用同一条 `xelabd --config ...` 命令：先持有宿主排他租约、保存原有效容量、设置内核cgroup限额并入组，再exec自身一次。租约跨exec保持，第二阶段在组内建立Schema/Tokio/数据库状态，复核实际成员及宿主/祖先容量；先用TOML启动限额，之后应用已持久化的同profile预算。共享文件页可能仍计于原组，稳定性验收还须采集整机内存及daemon RSS/HWM，不能只看kernel的memory.current。
 
 ## 启动顺序
 

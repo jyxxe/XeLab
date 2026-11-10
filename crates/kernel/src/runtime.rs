@@ -9,7 +9,13 @@ use serde_json::{json, Value};
 use std::{
     fs,
     net::Ipv4Addr,
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    os::{
+        fd::{AsRawFd, FromRawFd, RawFd},
+        unix::{
+            fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+            process::CommandExt,
+        },
+    },
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -29,6 +35,95 @@ pub struct Observation {
 #[path = "runtime_images.rs"]
 mod images;
 pub use images::ImageArchive;
+
+static DAEMON_HOST_LEASE: std::sync::OnceLock<fs::File> = std::sync::OnceLock::new();
+
+fn lease_directory(directory: &Path, owner: u32) -> Result<()> {
+    let meta = directory.symlink_metadata()?;
+    if !meta.is_dir() || meta.uid() != owner || meta.mode() & 0o022 != 0 {
+        return Err(Error::invalid("Unsafe host lease directory"));
+    }
+    Ok(())
+}
+
+fn lease_metadata(meta: &fs::Metadata, owner: u32) -> Result<()> {
+    if !meta.is_file() || meta.uid() != owner || meta.nlink() != 1 || meta.mode() & 0o077 != 0 {
+        return Err(Error::invalid("Unsafe host lease file"));
+    }
+    Ok(())
+}
+
+fn lock_lease(file: &fs::File) -> Result<()> {
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(Error::conflict("Another kernel owns this host"));
+    }
+    Ok(())
+}
+
+fn host_lease_at(directory: &Path, owner: u32) -> Result<fs::File> {
+    fs::create_dir_all(directory)?;
+    lease_directory(directory, owner)?;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(directory.join("kernel.lock"))?;
+    lease_metadata(&file.metadata()?, owner)?;
+    lock_lease(&file)?;
+    Ok(file)
+}
+
+// The caller transfers ownership of a live inherited descriptor. Checking its
+// number first avoids constructing File from an invalid or standard descriptor.
+unsafe fn inherited_lease_at(fd: RawFd, directory: &Path, owner: u32) -> Result<fs::File> {
+    if fd < 3 || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+        return Err(Error::invalid("Invalid inherited host lease descriptor"));
+    }
+    let file = unsafe { fs::File::from_raw_fd(fd) };
+    // No subsequently launched adapter or plugin may inherit the daemon lock.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    lease_directory(directory, owner)?;
+    let actual = file.metadata()?;
+    lease_metadata(&actual, owner)?;
+    if actual.mode() & 0o777 != 0o600 {
+        return Err(Error::invalid("Unsafe inherited host lease permissions"));
+    }
+    let expected = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(directory.join("kernel.lock"))?
+        .metadata()?;
+    lease_metadata(&expected, owner)?;
+    if actual.dev() != expected.dev() || actual.ino() != expected.ino() {
+        return Err(Error::invalid(
+            "Inherited host lease does not match the host lock",
+        ));
+    }
+    // flock belongs to the open file description and survives exec. Acquiring
+    // it again is idempotent only for that description; a competing owner fails.
+    lock_lease(&file)?;
+    Ok(file)
+}
+
+fn exec_with_lease(command: &mut std::process::Command, lease: &fs::File) -> Result<()> {
+    let fd = lease.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let error = command.exec();
+    // exec only returns on failure. Restore the previous descriptor policy
+    // before returning; the borrowed file continues to own the lock.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags) } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Err(error.into())
+}
 
 fn binary(name: &str) -> Result<PathBuf> {
     for root in ["/usr/sbin", "/usr/bin", "/sbin", "/bin", "/usr/local/bin"] {
@@ -96,49 +191,51 @@ impl Runtime {
         command("ctr", &all, Duration::from_secs(60)).await
     }
     pub fn host_lease(&self) -> Result<fs::File> {
-        use std::os::fd::AsRawFd;
-        use std::os::unix::fs::OpenOptionsExt;
         require_host_admin()?;
-        let directory = Path::new("/run/xelab");
-        fs::create_dir_all(directory)?;
-        let meta = directory.symlink_metadata()?;
-        if meta.file_type().is_symlink() || meta.uid() != 0 || meta.mode() & 0o022 != 0 {
-            return Err(Error::invalid("Unsafe host lease directory"));
-        }
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(directory.join("kernel.lock"))?;
-        let meta = file.metadata()?;
-        if !meta.is_file() || meta.uid() != 0 || meta.nlink() != 1 || meta.mode() & 0o077 != 0 {
-            return Err(Error::invalid("Unsafe host lease file"));
-        }
-        // The descriptor remains alive until all runtime work has been canceled.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(Error::conflict("Another kernel owns this host"));
-        }
-        Ok(file)
+        host_lease_at(Path::new("/run/xelab"), 0)
+    }
+    /// Adopt the descriptor passed by the compact startup exec.
+    ///
+    /// # Safety
+    /// `fd` must be an exclusively owned descriptor inherited across exec. This
+    /// function takes ownership of valid nonstandard descriptors, even on error.
+    pub unsafe fn inherited_host_lease(fd: RawFd) -> Result<fs::File> {
+        require_host_admin()?;
+        unsafe { inherited_lease_at(fd, Path::new("/run/xelab"), 0) }
+    }
+    /// Replace the first startup image to release anonymous allocations made
+    /// before cgroup migration. Shared file-backed pages can retain prior charges.
+    /// The same open lock description survives exec, with no unlocked interval.
+    pub fn reexec_compact(lease: &fs::File, config: &Path, capacity: (i64, i64)) -> Result<()> {
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command
+            .arg("--config")
+            .arg(config)
+            .arg("--inherited-host-lease")
+            .arg(format!(
+                "{}:{}:{}",
+                lease.as_raw_fd(),
+                capacity.0,
+                capacity.1
+            ));
+        exec_with_lease(&mut command, lease)
     }
     /// A Tokio runtime can still be joining filesystem workers after async main
     /// returns. Keep the daemon's lease until process exit, so another kernel
     /// cannot enter that shutdown window and reuse its storage namespace.
     pub fn retain_daemon_host_lease(&self) -> Result<()> {
-        static LEASE: std::sync::OnceLock<fs::File> = std::sync::OnceLock::new();
-        let lease = self.host_lease()?;
-        LEASE
+        Self::retain_host_lease(self.host_lease()?)
+    }
+    pub fn retain_host_lease(lease: fs::File) -> Result<()> {
+        DAEMON_HOST_LEASE
             .set(lease)
             .map_err(|_| Error::conflict("Daemon host lease was already retained"))
     }
-    pub async fn preflight(&self, cpu: i64, memory: i64) -> Result<()> {
+    /// Synchronous so compact startup can enter its allocation budget before
+    /// creating Tokio, opening the database, or compiling runtime validators.
+    pub fn prepare_kernel_cgroup(&self, cpu: i64, memory: i64) -> Result<()> {
         require_host_admin()?;
         admission::pool(&self.config.value["resources"], cpu, memory)?;
-        for name in ["ctr", "ip", "nft"] {
-            binary(name)?;
-        }
         if !fs::read_to_string("/sys/fs/cgroup/cgroup.controllers")?
             .split_whitespace()
             .any(|x| x == "memory")
@@ -146,6 +243,58 @@ impl Runtime {
             return Err(Error::unavailable(
                 "cgroups v2 memory controller is unavailable",
             ));
+        }
+        let root = Path::new("/sys/fs/cgroup/xelab");
+        fs::create_dir_all(root)?;
+        fs::write(
+            "/sys/fs/cgroup/cgroup.subtree_control",
+            "+cpu +memory +pids",
+        )?;
+        fs::write(root.join("cgroup.subtree_control"), "+cpu +memory +pids")?;
+        fs::create_dir_all(root.join("kernel"))?;
+        // Compact limits protect the system pool from control-plane growth.
+        // Explicitly clear them when a standard node reuses this cgroup.
+        fs::write(
+            root.join("kernel/memory.max"),
+            if self.config.compact() {
+                self.config.value["resources"]["kernel_memory_bytes"].to_string()
+            } else {
+                "max".into()
+            },
+        )?;
+        fs::write(
+            root.join("kernel/cpu.max"),
+            if self.config.compact() {
+                format!(
+                    "{} 100000",
+                    self.config.value["resources"]["kernel_cpu_millis"]
+                        .as_u64()
+                        .unwrap()
+                        * 100
+                )
+            } else {
+                "max 100000".into()
+            },
+        )?;
+        fs::write(
+            root.join("kernel/memory.swap.max"),
+            if self.config.compact() { "0" } else { "max" },
+        )?;
+        fs::write(
+            root.join("kernel/memory.min"),
+            self.config.value["resources"]["kernel_memory_bytes"].to_string(),
+        )?;
+        fs::write(
+            root.join("kernel/cgroup.procs"),
+            std::process::id().to_string(),
+        )?;
+        Ok(())
+    }
+    pub async fn preflight(&self, cpu: i64, memory: i64) -> Result<()> {
+        require_host_admin()?;
+        admission::pool(&self.config.value["resources"], cpu, memory)?;
+        for name in ["ctr", "ip", "nft"] {
+            binary(name)?;
         }
         self.ctr(&strs(&["version"])).await?;
         let network: ipnet::Ipv4Net = self
@@ -184,23 +333,9 @@ impl Runtime {
         }
         fs::create_dir_all(self.config.root())?;
         fs::set_permissions(self.config.root(), fs::Permissions::from_mode(0o700))?;
+        self.prepare_kernel_cgroup(cpu, memory)?;
         let root = Path::new("/sys/fs/cgroup/xelab");
-        fs::create_dir_all(root)?;
-        fs::write(
-            "/sys/fs/cgroup/cgroup.subtree_control",
-            "+cpu +memory +pids",
-        )?;
-        fs::write(root.join("cgroup.subtree_control"), "+cpu +memory +pids")?;
-        fs::create_dir_all(root.join("kernel"))?;
         fs::create_dir_all(root.join("plugins"))?;
-        fs::write(
-            root.join("kernel/memory.min"),
-            self.config.value["resources"]["kernel_memory_bytes"].to_string(),
-        )?;
-        fs::write(
-            root.join("kernel/cgroup.procs"),
-            std::process::id().to_string(),
-        )?;
         let (pc, pm) = admission::pool(&self.config.value["resources"], cpu, memory)?;
         if pc > 0 {
             fs::write(root.join("plugins/cpu.max"), format!("{} 100000", pc * 100))?;
@@ -882,6 +1017,139 @@ fn add_volume_mounts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::fd::IntoRawFd;
+
+    #[test]
+    fn compact_lease_adoption_checks_identity_and_preserves_parent_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = unsafe { libc::geteuid() };
+        let parent = host_lease_at(directory.path(), owner).unwrap();
+        let inherited = parent.try_clone().unwrap().into_raw_fd();
+        assert_eq!(unsafe { libc::fcntl(inherited, libc::F_SETFD, 0) }, 0);
+        let adopted = unsafe { inherited_lease_at(inherited, directory.path(), owner) }.unwrap();
+        assert_ne!(
+            unsafe { libc::fcntl(adopted.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
+            0
+        );
+        drop(adopted);
+        assert!(host_lease_at(directory.path(), owner).is_err());
+
+        let other = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+        other
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))
+            .unwrap();
+        assert!(unsafe {
+            inherited_lease_at(
+                other.as_file().try_clone().unwrap().into_raw_fd(),
+                directory.path(),
+                owner,
+            )
+        }
+        .is_err());
+        // Rejecting an unrelated descriptor must neither close the caller's
+        // other owner nor unlock the correct host lease.
+        assert!(other.as_file().metadata().is_ok());
+        assert!(host_lease_at(directory.path(), owner).is_err());
+        assert!(unsafe { inherited_lease_at(-1, directory.path(), owner) }.is_err());
+        assert!(unsafe { inherited_lease_at(0, directory.path(), owner) }.is_err());
+
+        fs::set_permissions(
+            directory.path().join("kernel.lock"),
+            fs::Permissions::from_mode(0o640),
+        )
+        .unwrap();
+        assert!(unsafe {
+            inherited_lease_at(
+                parent.try_clone().unwrap().into_raw_fd(),
+                directory.path(),
+                owner,
+            )
+        }
+        .is_err());
+        fs::set_permissions(
+            directory.path().join("kernel.lock"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        assert!(host_lease_at(directory.path(), owner).is_err());
+        drop(parent);
+        assert!(host_lease_at(directory.path(), owner).is_ok());
+    }
+
+    #[test]
+    fn compact_failed_exec_restores_cloexec_and_retains_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = unsafe { libc::geteuid() };
+        let lease = host_lease_at(directory.path(), owner).unwrap();
+        let flags = unsafe { libc::fcntl(lease.as_raw_fd(), libc::F_GETFD) };
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
+        let mut command = std::process::Command::new(directory.path().join("missing-executable"));
+        assert!(exec_with_lease(&mut command, &lease).is_err());
+        assert_eq!(
+            unsafe { libc::fcntl(lease.as_raw_fd(), libc::F_GETFD) },
+            flags
+        );
+        assert!(host_lease_at(directory.path(), owner).is_err());
+        drop(lease);
+        assert!(host_lease_at(directory.path(), owner).is_ok());
+    }
+
+    #[test]
+    fn compact_host_lease_survives_real_exec_without_unlocking() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "runtime::tests::compact_lease_exec_child",
+                "--nocapture",
+            ])
+            .env("XELAB_TEST_LEASE_DIR", directory.path())
+            .env_remove("XELAB_TEST_INHERITED_LEASE")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            fs::read_to_string(directory.path().join("after-exec")).unwrap(),
+            "locked"
+        );
+    }
+
+    #[test]
+    fn compact_lease_exec_child() {
+        let Some(directory) = std::env::var_os("XELAB_TEST_LEASE_DIR") else {
+            return;
+        };
+        let directory = PathBuf::from(directory);
+        let owner = unsafe { libc::geteuid() };
+        if let Ok(fd) = std::env::var("XELAB_TEST_INHERITED_LEASE") {
+            let lease =
+                unsafe { inherited_lease_at(fd.parse().unwrap(), &directory, owner) }.unwrap();
+            assert_ne!(
+                unsafe { libc::fcntl(lease.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
+                0
+            );
+            assert!(host_lease_at(&directory, owner).is_err());
+            fs::write(directory.join("after-exec"), "locked").unwrap();
+        } else {
+            let lease = host_lease_at(&directory, owner).unwrap();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "runtime::tests::compact_lease_exec_child",
+                    "--nocapture",
+                ])
+                .env("XELAB_TEST_LEASE_DIR", &directory)
+                .env("XELAB_TEST_INHERITED_LEASE", lease.as_raw_fd().to_string());
+            panic!("exec failed: {:?}", exec_with_lease(&mut command, &lease));
+        }
+    }
+
     #[test]
     fn omitted_oci_defaults_are_equivalent_but_added_privileges_are_not() {
         let expected = json!({"process":{"terminal":false,"capabilities":{"bounding":[],"effective":[],"inheritable":[],"permitted":[],"ambient":[]}}});

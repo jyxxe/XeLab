@@ -26,6 +26,25 @@ fn completed(binding: &Binding, output: Value) -> rpc::InvokeResponse {
 }
 
 #[test]
+fn compact_query_result_rejects_large_json_before_model_validation() {
+    let mut binding = fixed();
+    binding.capability["maximum_output_bytes"] = json!(16777216);
+    let result = completed(&binding, json!({"message": "x".repeat(256 * 1024)}));
+    let wire = rpc::QueryResultResponse {
+        state: rpc::ExecutionState::Succeeded as i32,
+        outcome: Some(rpc::query_result_response::Outcome::Completed(result)),
+    };
+    assert_eq!(
+        decode_bounded(&binding, wire.clone(), 256 * 1024)
+            .err()
+            .unwrap()
+            .code,
+        "PAYLOAD_TOO_LARGE"
+    );
+    assert!(decode(&binding, wire).unwrap().is_some());
+}
+
+#[test]
 fn query_result_is_a_strict_state_outcome_pair_and_missing_is_unknown() {
     use rpc::{query_result_response::Outcome as Wire, ExecutionState as State};
     let binding = fixed();
