@@ -176,15 +176,28 @@ def main():
         if log.is_file():
             raw=log.read_bytes()
             reasons={}
+            background_errors={}
+            expected_background_messages={
+                'Blob cleanup is incomplete','Blob orphan cleanup is incomplete',
+                'Volume reconciliation is incomplete','Controller reconciliation failed'}
             for line in raw.decode(errors='replace').splitlines():
-                try: code=json.loads(line).get('fields',{}).get('reason_code')
+                try:
+                    fields=json.loads(line).get('fields',{})
+                    code=fields.get('reason_code')
+                    message=fields.get('message')
+                    if message in expected_background_messages:
+                        background_errors[message]=background_errors.get(message,0)+1
                 except (ValueError,AttributeError):
                     found=re.match(r'^([A-Z][A-Z0-9_]+):',line)
                     code=found.group(1) if found else None
                 if isinstance(code,str) and re.fullmatch(r'[A-Z][A-Z0-9_]{0,79}',code):
                     reasons[code]=reasons.get(code,0)+1
             write(out/'daemon-log-summary.json',{'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest(),
-                'reason_code_counts':reasons,'raw_log_uploaded':False})
+                'reason_code_counts':reasons,'background_worker_failure_counts':background_errors,
+                'raw_log_uploaded':False})
+            if background_errors:
+                result=1
+                status['background_worker_failures']=True
         status['driver_exit_code']=result
         write(out/'driver-status.json',status)
         uid,gid=int(os.environ['SUDO_UID']),int(os.environ['SUDO_GID'])

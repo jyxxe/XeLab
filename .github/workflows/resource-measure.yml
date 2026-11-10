@@ -38,7 +38,7 @@ jobs:
         env:
           PG_CONTAINER_ID: ${{ job.services.postgres.id }}
           XELAB_MEASURE_DATABASE_URL: "host=127.0.0.1 port=5432 user=xelab password=test-only-password dbname=xelab_test"
-        run: sudo --preserve-env=PG_CONTAINER_ID,XELAB_MEASURE_DATABASE_URL bash tools/resource-measure/run-ci.sh "$GITHUB_WORKSPACE" "$RUNNER_TEMP/xelab-resource-measure" "$(rustc --version)"
+        run: sudo --preserve-env=PG_CONTAINER_ID,XELAB_MEASURE_DATABASE_URL bash tools/resource-measure/run-ci.sh "$GITHUB_WORKSPACE" /var/lib/xelab-resource-measure "$(rustc --version)"
       - name: Upload numeric measurements
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
