@@ -14,7 +14,7 @@
 | `revision` | integer | 是 | minimum=`1`; maximum=`2147483647` | 乐观锁版本，每次持久化变更加一 |
 | `created_at` | string | 是 | format=`"date-time"`; minLength=`1`; maxLength=`40` | 创建时间，UTC |
 | `updated_at` | string | 是 | format=`"date-time"`; minLength=`1`; maxLength=`40` | 最近变更时间，UTC |
-| `config` | [NodeConfig](NodeConfig.md) | 是 | 见类型定义 | 本机资源预算；内核最低预留不能调低 |
+| `config` | [NodeConfig](NodeConfig.md) | 是 | 见类型定义 | 本机资源预算；profile 省略为 standard，compact 为整机至少 1 vCPU/512 MiB 的低并发档位；稳定性须另行宿主验收。 |
 | `host_cpu_millis` | integer | 是 | minimum=`1`; maximum=`1048576` | 发现的宿主 CPU 容量 |
 | `host_memory_bytes` | integer | 是 | minimum=`1`; maximum=`9007199254740991` | 宿主物理内存 |
 | `plugin_cpu_pool_millis` | integer | 是 | minimum=`0`; maximum=`1048576` | 扣除内核和系统预留后的 CPU 容量 |

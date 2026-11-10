@@ -1,5 +1,7 @@
 # 真实 AWS 格式迁移组件演练入口
 
+本页保留的4C16G容量要求及既有证据属于 `standard` profile；[compact 1C512MiB](compact-node.md) 有独立准入与整机验收，不复用本页容量结论。
+
 [实施目录](README.md) · [格式监督器](m2-format-transitions.md) · [备份任务](m2-backup-jobs.md)
 
 本入口运行真实 AWS S3、签名 OCI、mTLS 与新建 XFS 项目的完整组件路径：

@@ -11,13 +11,20 @@ CPU 使用 millicpu，1000 表示 1 vCPU 时间预算。内存、临时盘、持
 ```text
 plugin_cpu_pool = host_cpu - kernel_reserved_cpu - system_reserved_cpu
 plugin_memory_pool = host_memory - kernel_reserved_memory - system_reserved_memory
-kernel_reserved_cpu >= 4000 millicpu
-kernel_reserved_memory >= 17179869184 bytes
+kernel/system minima depend on resources.profile (see below)
 sum(active_instance_cpu_limits) <= plugin_cpu_pool
 sum(active_instance_memory_limits) <= plugin_memory_pool
 ```
 
 内核池包含核心网关、控制器、授权、任务控制、管理 API；宿主池包含 OS、containerd、独立 PostgreSQL 与日志后端；WebUI 和所有业务实例进入插件池。每个进程必须明确归属，避免漏算或重复计入。
+
+## 节点资源 profile
+
+`resources.profile` 可选，省略解释为 `standard`，保持已有部署的内核最低 4000mCPU / 16GiB；系统预留另算。显式 `compact` 面向小规模、无界面的 API/CLI 节点：内核至少 500mCPU / 192MiB，系统至少 250mCPU / 256MiB，宿主目标为 1 vCPU / 512MiB。
+
+compact 宿主 CPU 有效容量至少 1000m；考虑启动期固件/内核保留，实际可见内存经祖先 cgroup 上限求交后至少 480MiB。预算始终使用实测容量，不把不可用的内存加回插件池：512MiB 有效容量时插件池为 250m / 64MiB，480MiB 时为 250m / 32MiB。提高任一预留继续缩小插件池。
+
+两种 profile 都不超售。compact 不降低制品声明/签名限额，不缩小数据库持久性或隔离要求；WebUI、MPR、AI 等须另有可容纳其签名资源的插件池。最小机器以无 WebUI 的 API/CLI 为基线。`compact` 的实际并发限制和整机稳定性验收见 [compact 节点](../implementation/compact-node.md)；1C512MiB 无 swap 整机长测尚待执行，不能把通过准入当作稳定认证。
 
 ## 准入步骤
 
@@ -25,11 +32,11 @@ sum(active_instance_memory_limits) <= plugin_memory_pool
 
 资源不足不创建额外实例；异步操作进入 waiting_resources 并保留 Operation 原因，同步预检返回 RESOURCE_EXHAUSTED。共享依赖实例只计一次，消费者数量不复制预留。
 
-节点配置更新以 NodeStatus ETag 为前置条件，不能降低内核最低预留，也不能把插件池缩到已使用预留以下。超额时返回 409，管理员先停用或缩减实例。
+节点配置更新以 NodeStatus ETag 为前置条件，不能降低所选 profile 的内核/系统最低预留，也不能把插件池缩到已使用预留以下。超额时返回 409，管理员先停用或缩减实例。
 
 ## 强制实施
 
-插件父 cgroup 设置合计 CPU/内存上限，实例设置各自限额；内核资源组实施内存保护。CPU weight 不等于保留四核；物理核独占需另行 cpuset 配置。系统未纳管负载必须计入 system_reserved，否则预算保证前提不成立。
+插件父 cgroup 设置合计 CPU/内存上限，实例设置各自限额；内核资源组实施内存保护。CPU weight 不等于独占 CPU 时间；物理核独占需另行 cpuset 配置。系统未纳管负载必须计入 system_reserved，否则预算保证前提不成立。
 
 内核自身超出预留的增长需另行提高预留/余量；规格不承诺无限负载下控制面始终可用。实现控制语义以 [Linux cgroup v2](https://docs.kernel.org/admin-guide/cgroup-v2.html) 为依据。
 
@@ -43,7 +50,7 @@ workloads容量按活跃微部署计量：首个worker启动前原子预留该�
 
 cpu.max控制时间带宽，250m不是独占四分之一物理核或最低性能承诺；memory.max控制cgroup计量内存，包含RSS、页缓存等，不能当作JS heap。引擎heap/stack/输入输出缓冲乘允许并发须不超过组memory；native/共享页与监督器开销仍按实际计量和hardmax管理。worker虚拟地址空间1GiB不等同RSS，不按其乘worker数预留。
 
-微设置只能在停用、disabled且排空worker/Prepare/queued后按ETag调整，更新revision/generation并使旧句柄失效；settings不改变微制品/原limits/父绑定/候选Skill。提高资源须重新通过父workloads准入，不扩大节点插件池或借内核至少4C16G。详见[MPR配置](../preset-plugins/micro-plugin-runtime/configuration.md)。
+微设置只能在停用、disabled且排空worker/Prepare/queued后按ETag调整，更新revision/generation并使旧句柄失效；settings不改变微制品/原limits/父绑定/候选Skill。提高资源须重新通过父workloads准入，不扩大节点插件池或借所选 profile 的内核预留。详见[MPR配置](../preset-plugins/micro-plugin-runtime/configuration.md)。
 
 ## 扩展的计账归属
 

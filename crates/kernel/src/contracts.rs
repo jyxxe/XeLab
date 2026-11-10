@@ -33,7 +33,9 @@ pub fn validate(name: &str, input: &Value) -> Result<()> {
         if openapi()["components"]["schemas"].get(name).is_none() {
             return Err(Error::invalid("Unknown model"));
         }
-        let doc = json!({"$ref":format!("#/components/schemas/{name}"), "components":openapi()["components"]});
+        let doc = with_schema_dependencies(json!({
+            "$ref": format!("#/components/schemas/{}", pointer_segment(name))
+        }))?;
         let v = Arc::new(
             jsonschema::JSONSchema::options()
                 .with_draft(jsonschema::Draft::Draft202012)
@@ -50,6 +52,85 @@ pub fn validate(name: &str, input: &Value) -> Result<()> {
     } else {
         Err(Error::invalid("Value does not match the existing contract"))
     }
+}
+
+/// Attach only the checked-in models reachable from this schema. Each cached
+/// validator owns its root document, so including the entire catalog in every
+/// root needlessly retains hundreds of copies of unrelated model definitions.
+/// References keep their original paths, including cycles and model subpaths.
+pub(crate) fn with_schema_dependencies(schema: Value) -> Result<Value> {
+    schema_dependencies(schema, &openapi()["components"]["schemas"])
+}
+
+fn pointer_segment(name: &str) -> String {
+    name.replace('~', "~0").replace('/', "~1")
+}
+
+fn schema_dependencies(mut schema: Value, catalog: &Value) -> Result<Value> {
+    let root = schema
+        .as_object_mut()
+        .ok_or_else(|| Error::invalid("Contract schema must be an object"))?;
+    if root.contains_key("components") {
+        return Err(Error::invalid(
+            "Contract schema cannot replace the model catalog",
+        ));
+    }
+    let mut pending = Vec::new();
+    model_references(&schema, catalog, &mut pending)?;
+    let mut models = Map::new();
+    while let Some(name) = pending.pop() {
+        if models.contains_key(&name) {
+            continue;
+        }
+        let model = catalog
+            .get(&name)
+            .ok_or_else(|| Error::invalid("Unknown model reference"))?;
+        model_references(model, catalog, &mut pending)?;
+        // Record a model before visiting its dependencies so recursive schemas
+        // terminate without flattening or weakening their reference semantics.
+        models.insert(name, model.clone());
+    }
+    schema["components"] = json!({"schemas": models});
+    Ok(schema)
+}
+
+fn model_references(value: &Value, catalog: &Value, pending: &mut Vec<String>) -> Result<()> {
+    match value {
+        Value::Object(map) => {
+            for (key, value) in map {
+                match key.as_str() {
+                    "$ref" => {
+                        let reference = value
+                            .as_str()
+                            .and_then(|s| s.strip_prefix("#/components/schemas/"))
+                            .ok_or_else(|| {
+                                Error::invalid("Only local model references are supported")
+                            })?;
+                        let raw_name = reference.split('/').next().unwrap_or_default();
+                        let name = raw_name.replace("~1", "/").replace("~0", "~");
+                        if name.is_empty()
+                            || pointer_segment(&name) != raw_name
+                            || catalog.pointer(&format!("/{reference}")).is_none()
+                        {
+                            return Err(Error::invalid("Invalid or missing model reference"));
+                        }
+                        pending.push(name);
+                    }
+                    "$id" | "$dynamicRef" | "$recursiveRef" => {
+                        return Err(Error::invalid("Contract reference scopes are unsupported"));
+                    }
+                    _ => model_references(value, catalog, pending)?,
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                model_references(value, catalog, pending)?;
+            }
+        }
+        _ => (),
+    }
+    Ok(())
 }
 
 pub fn compile_business(schema: &Value) -> Result<jsonschema::JSONSchema> {
@@ -263,6 +344,106 @@ pub fn id(v: &Value, key: &str) -> Result<uuid::Uuid> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_dependency_closure_preserves_cycles_and_subpaths() {
+        let catalog = json!({
+            "Node": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["value"],
+                "properties": {
+                    "value": {"$ref": "#/components/schemas/Scalar/$defs/value"},
+                    "next": {"$ref": "#/components/schemas/Node"}
+                }
+            },
+            "Scalar": {"$defs": {"value": {"type": "integer", "minimum": 0}}},
+            "Unrelated": {"$ref": "https://invalid.example/schema"}
+        });
+        let document =
+            schema_dependencies(json!({"$ref": "#/components/schemas/Node"}), &catalog).unwrap();
+        assert_eq!(
+            document["components"]["schemas"].as_object().unwrap().len(),
+            2
+        );
+        assert!(document["components"]["schemas"].get("Unrelated").is_none());
+        let compiled = jsonschema::JSONSchema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .compile(&document)
+            .unwrap();
+        assert!(compiled.is_valid(&json!({"value": 1, "next": {"value": 2}})));
+        assert!(!compiled.is_valid(&json!({"value": 1, "next": {"value": -1}})));
+        assert!(!compiled.is_valid(&json!({"value": 1, "extra": true})));
+    }
+
+    #[test]
+    fn model_dependencies_reject_unresolvable_or_external_references() {
+        let catalog = json!({"Known": {"type": "string"}});
+        for reference in [
+            "https://invalid.example/schema",
+            "file:///etc/passwd",
+            "other.json#/components/schemas/Known",
+            "#/components/schemas/Missing",
+            "#/components/schemas/Known/$defs/missing",
+            "#/components/schemas/Kn~2own",
+            "#/components/schemas/",
+            "#",
+        ] {
+            assert!(schema_dependencies(json!({"$ref": reference}), &catalog).is_err());
+        }
+        assert!(schema_dependencies(json!({"$ref": 42}), &catalog).is_err());
+        for keyword in ["$id", "$dynamicRef", "$recursiveRef"] {
+            let mut schema = json!({"type": "object"});
+            schema[keyword] = json!("https://invalid.example/schema");
+            assert!(schema_dependencies(schema, &catalog).is_err());
+        }
+        assert!(schema_dependencies(json!({"components": {}}), &catalog).is_err());
+        let catalog = json!({"Known": {"properties": {"nested": {"$ref": "file:///etc/passwd"}}}});
+        assert!(
+            schema_dependencies(json!({"$ref": "#/components/schemas/Known"}), &catalog).is_err()
+        );
+    }
+
+    #[test]
+    fn model_dependency_names_use_json_pointer_escaping() {
+        let catalog = json!({"path/~value": {"type": "integer"}});
+        let document = schema_dependencies(
+            json!({"$ref": "#/components/schemas/path~1~0value"}),
+            &catalog,
+        )
+        .unwrap();
+        assert_eq!(document["components"]["schemas"], catalog);
+    }
+
+    #[test]
+    fn every_model_compiles_with_a_compact_dependency_document() {
+        let catalog = &openapi()["components"]["schemas"];
+        let models = catalog.as_object().unwrap();
+        let full_bytes = serde_json::to_vec(catalog).unwrap().len() * models.len();
+        let mut retained_bytes = 0;
+        for name in models.keys() {
+            let document = with_schema_dependencies(json!({
+                "$ref": format!("#/components/schemas/{}", pointer_segment(name))
+            }))
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+            retained_bytes += serde_json::to_vec(&document).unwrap().len();
+            jsonschema::JSONSchema::options()
+                .with_draft(jsonschema::Draft::Draft202012)
+                .should_validate_formats(true)
+                .compile(&document)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+        }
+        assert!(
+            retained_bytes < full_bytes / 10,
+            "model documents retain {retained_bytes} bytes versus {full_bytes} with the full catalog"
+        );
+        assert!(validate(
+            "HealthStatus",
+            &json!({"status": "ok", "spec_version": "2.8.0"})
+        )
+        .is_ok());
+    }
+
     #[test]
     fn duplicate_and_trailing_json_are_rejected() {
         for input in [

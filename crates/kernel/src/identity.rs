@@ -585,9 +585,7 @@ pub async fn activate(
         }
     }
     let password = string(body, "password")?.to_owned();
-    let hash = tokio::task::spawn_blocking(move || auth::password_hash(&password))
-        .await
-        .map_err(|_| Error::unavailable("Password hashing failed"))??;
+    let hash = auth::password_work(move || auth::password_hash(&password)).await?;
     c.execute("UPDATE accounts SET status='active',password_hash=$2,activation_digest=NULL,activation_expires_at=NULL,revision=revision+1,updated_at=now() WHERE id=$1", &[&account,&hash]).await?;
     changed(c, account).await?;
     crate::account_recovery::consume(c, account, &digest).await?;
@@ -811,15 +809,14 @@ pub async fn execute(
             let hash: String = row.get(1);
             let current = string(body, "current_password")?.to_owned();
             let next = string(body, "new_password")?.to_owned();
-            let hash = tokio::task::spawn_blocking(move || {
+            let hash = auth::password_work(move || {
                 let old = PasswordHash::new(&hash).map_err(|_| Error::credential())?;
                 Argon2::default()
                     .verify_password(current.as_bytes(), &old)
                     .map_err(|_| Error::credential())?;
                 auth::password_hash(&next)
             })
-            .await
-            .map_err(|_| Error::unavailable("Password hashing failed"))??;
+            .await?;
             auth.login_succeeded(account, ctx.peer)?;
             c.execute("UPDATE accounts SET password_hash=$2,revision=revision+1,updated_at=now() WHERE id=$1", &[&account,&hash]).await?;
             c.execute("UPDATE credentials SET status='revoked',revision=revision+1,updated_at=now() WHERE owner_id=$1 AND kind IN ('session','oauth_access','oauth_refresh') AND status='active'", &[&account]).await?;

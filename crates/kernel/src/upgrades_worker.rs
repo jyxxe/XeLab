@@ -697,6 +697,9 @@ async fn fail_stopped(
     Ok(())
 }
 pub async fn run(app: Arc<App>) {
+    let active_limit = if app.config.compact() { 1 } else { 2 };
+    let poll = Duration::from_millis(if app.config.compact() { 1000 } else { 250 });
+    let mut queue = crate::maintenance::Queue::default();
     let mut active: HashMap<Uuid, tokio::sync::oneshot::Receiver<()>> = HashMap::new();
     loop {
         if app.shutdown.load(Ordering::SeqCst) || app.leader.is_closed() {
@@ -710,13 +713,46 @@ pub async fn run(app: Arc<App>) {
         });
         if app.ready.load(Ordering::SeqCst) {
             if let Ok(c) = app.db.connect().await {
-                if let Ok(rows)=c.query("SELECT operation_id,deployment_id FROM deployment_upgrade_jobs j WHERE state NOT IN ('succeeded','failed') OR EXISTS(SELECT 1 FROM deployment_storage_holds h WHERE h.operation_id=j.operation_id) ORDER BY updated_at,operation_id LIMIT 4",&[]).await{
-            for row in rows {let operation:Uuid=row.get(0);if active.len()>=2||active.contains_key(&operation){continue;}let deployment:Uuid=row.get(1);let (sender,receiver)=tokio::sync::oneshot::channel();active.insert(operation,receiver);let owner=app.clone();
-                tokio::spawn(async move{if let Ok(Some(fence))=db::deployment_fence(&owner.db,deployment).await{if let Err(error)=process(&owner,operation,&fence).await{if fail_stopped(&owner,operation,&fence,error).await.is_err(){tracing::error!(reason_code="UPGRADE_CLEANUP_PENDING");}}}let _=sender.send(());});
+                if let Ok(rows) = queue
+                    .candidates(&c, crate::maintenance::Kind::Upgrade, app.config.compact())
+                    .await
+                {
+                    for row in rows {
+                        let operation: Uuid = row.get(0);
+                        if active.len() >= active_limit || active.contains_key(&operation) {
+                            continue;
+                        }
+                        let Some(maintenance) = crate::maintenance::try_start(
+                            app.config.compact(),
+                            crate::maintenance::Kind::Upgrade,
+                        ) else {
+                            continue;
+                        };
+                        queue.attempted(operation);
+                        let deployment: Uuid = row.get(1);
+                        let (sender, receiver) = tokio::sync::oneshot::channel();
+                        active.insert(operation, receiver);
+                        let owner = app.clone();
+                        tokio::spawn(async move {
+                            let _maintenance = maintenance;
+                            if let Ok(Some(fence)) =
+                                db::deployment_fence(&owner.db, deployment).await
+                            {
+                                if let Err(error) = process(&owner, operation, &fence).await {
+                                    if fail_stopped(&owner, operation, &fence, error)
+                                        .await
+                                        .is_err()
+                                    {
+                                        tracing::error!(reason_code = "UPGRADE_CLEANUP_PENDING");
+                                    }
+                                }
+                            }
+                            let _ = sender.send(());
+                        });
+                    }
+                }
             }
         }
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::sleep(poll).await;
     }
 }

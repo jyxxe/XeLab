@@ -245,7 +245,15 @@ async fn resolve_binding(
     }))
 }
 
+#[cfg(test)]
 fn decode(binding: &Binding, response: rpc::QueryResultResponse) -> Result<Option<Outcome>> {
+    decode_bounded(binding, response, usize::MAX)
+}
+fn decode_bounded(
+    binding: &Binding,
+    response: rpc::QueryResultResponse,
+    maximum: usize,
+) -> Result<Option<Outcome>> {
     use rpc::{query_result_response::Outcome as Wire, ExecutionState};
     match (ExecutionState::try_from(response.state), response.outcome) {
         (Ok(ExecutionState::Succeeded), Some(Wire::Completed(response))) => {
@@ -258,7 +266,7 @@ fn decode(binding: &Binding, response: rpc::QueryResultResponse) -> Result<Optio
             }
             let output = strict_json(
                 &response.output_json,
-                unsigned(&binding.capability["maximum_output_bytes"])? as usize,
+                (unsigned(&binding.capability["maximum_output_bytes"])? as usize).min(maximum),
             )?;
             validate_business(&binding.capability["output_schema"], &output)?;
             if let Some((_, _, skill)) = &binding.skill {
@@ -358,8 +366,8 @@ pub(crate) async fn get_call(
             deadline.saturating_duration_since(tokio::time::Instant::now()),
         )
         .await?;
-        let mut client =
-            CapabilityServiceClient::new(channel).max_decoding_message_size(16_778_240);
+        let mut client = CapabilityServiceClient::new(channel)
+            .max_decoding_message_size(app.config.rpc_limit(16_778_240));
         let mut rpc_context = crate::controller::context(Some(binding.subject));
         rpc_context.request_id = request.to_string();
         rpc_context.delegation_token = token;
@@ -371,7 +379,11 @@ pub(crate) async fn get_call(
             idempotency_key: binding.key.clone(),
         });
         request.set_timeout(deadline.saturating_duration_since(tokio::time::Instant::now()));
-        decode(&binding, client.query_result(request).await?.into_inner())
+        decode_bounded(
+            &binding,
+            client.query_result(request).await?.into_inner(),
+            app.config.json_limit(16_777_216),
+        )
     })
     .await;
     let mut connection = app.db.connect_scoped(QUERY_LIMIT).await?;

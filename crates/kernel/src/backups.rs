@@ -642,10 +642,13 @@ pub(crate) async fn job(app: &App, operation: Uuid) -> Result<tokio_postgres::Ro
 /// not cancel a job or release its deployment fence while file workers run.
 pub async fn run(app: std::sync::Arc<App>) {
     use std::{sync::atomic::Ordering, time::Duration};
+    let active_limit = if app.config.compact() { 1 } else { 2 };
+    let poll = Duration::from_millis(if app.config.compact() { 1000 } else { 250 });
     let pool =
         crate::storage::backup_transfer::Pool::with_journal(std::sync::Arc::new(JobJournal {
             app: app.clone(),
         }));
+    let mut queue = crate::maintenance::Queue::default();
     let mut active: HashMap<Uuid, tokio::sync::oneshot::Receiver<()>> = HashMap::new();
     let mut cleanup: Option<tokio::sync::oneshot::Receiver<()>> = None;
     let mut cleaned = tokio::time::Instant::now() - Duration::from_secs(30);
@@ -661,22 +664,43 @@ pub async fn run(app: std::sync::Arc<App>) {
         });
         if app.ready.load(Ordering::SeqCst) {
             if let Ok(c) = app.db.connect().await {
-                if let Ok(rows)=c.query("SELECT operation_id,deployment_id FROM storage_recovery_jobs j WHERE state NOT IN ('succeeded','failed') OR EXISTS(SELECT 1 FROM deployment_storage_holds h WHERE h.operation_id=j.operation_id) ORDER BY updated_at,operation_id LIMIT 4",&[]).await {
+                if let Ok(rows) = queue
+                    .candidates(&c, crate::maintenance::Kind::Backup, app.config.compact())
+                    .await
+                {
                     for row in rows {
-                        let operation:Uuid=row.get(0);
-                        if active.len()>=2 || active.contains_key(&operation) {continue;}
-                        let deployment:Uuid=row.get(1);
-                        let (sender,receiver)=tokio::sync::oneshot::channel();
-                        active.insert(operation,receiver);
-                        let owner=app.clone();
-                        let pool=pool.clone();
+                        let operation: Uuid = row.get(0);
+                        if active.len() >= active_limit || active.contains_key(&operation) {
+                            continue;
+                        }
+                        let Some(maintenance) = crate::maintenance::try_start(
+                            app.config.compact(),
+                            crate::maintenance::Kind::Backup,
+                        ) else {
+                            continue;
+                        };
+                        queue.attempted(operation);
+                        let deployment: Uuid = row.get(1);
+                        let (sender, receiver) = tokio::sync::oneshot::channel();
+                        active.insert(operation, receiver);
+                        let owner = app.clone();
+                        let pool = pool.clone();
                         tokio::spawn(async move {
-                            if let Ok(Some(fence))=db::deployment_fence(&owner.db,deployment).await {
-                                if let Err(error)=process(&owner,operation,&fence,&pool).await {
-                                    if fail_stopped(&owner,operation,&fence,error).await.is_err() {tracing::error!(reason_code="BACKUP_CLEANUP_PENDING");}
+                            let _maintenance = maintenance;
+                            if let Ok(Some(fence)) =
+                                db::deployment_fence(&owner.db, deployment).await
+                            {
+                                if let Err(error) = process(&owner, operation, &fence, &pool).await
+                                {
+                                    if fail_stopped(&owner, operation, &fence, error)
+                                        .await
+                                        .is_err()
+                                    {
+                                        tracing::error!(reason_code = "BACKUP_CLEANUP_PENDING");
+                                    }
                                 }
                             }
-                            let _=sender.send(());
+                            let _ = sender.send(());
                         });
                     }
                 }
@@ -690,20 +714,27 @@ pub async fn run(app: std::sync::Arc<App>) {
                 cleanup = None;
             }
             if cleanup.is_none() && cleaned.elapsed() >= Duration::from_secs(30) {
-                cleaned = tokio::time::Instant::now();
-                let owner = app.clone();
-                let (sender, receiver) = tokio::sync::oneshot::channel();
-                cleanup = Some(receiver);
-                tokio::spawn(async move {
-                    // Inventory and abort are replay safe; pending flags remain
-                    // set to catch a late response from a lost initiate request.
-                    let _ = tokio::time::timeout(Duration::from_secs(60), cleanup_uploads(&owner))
-                        .await;
-                    let _ = sender.send(());
-                });
+                if let Some(maintenance) = crate::maintenance::try_start(
+                    app.config.compact(),
+                    crate::maintenance::Kind::Cleanup,
+                ) {
+                    cleaned = tokio::time::Instant::now();
+                    let owner = app.clone();
+                    let (sender, receiver) = tokio::sync::oneshot::channel();
+                    cleanup = Some(receiver);
+                    tokio::spawn(async move {
+                        let _maintenance = maintenance;
+                        // Inventory and abort are replay safe; pending flags remain
+                        // set to catch a late response from a lost initiate request.
+                        let _ =
+                            tokio::time::timeout(Duration::from_secs(60), cleanup_uploads(&owner))
+                                .await;
+                        let _ = sender.send(());
+                    });
+                }
             }
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::sleep(poll).await;
     }
 }
 
