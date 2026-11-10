@@ -126,6 +126,50 @@ test('write dispatch preserves exact ETag/idempotency proof, stable backend erro
   assert.equal(count, 1);
 });
 
+test('caller cancellation reasons are classified consistently before headers and during the body', async t => {
+  const reasons = ['private cancellation detail', new Error('private cancellation detail'),
+    new DOMException('private cancellation detail', 'TimeoutError'), null];
+  for (const stage of ['headers', 'body']) {
+    for (const [index, reason] of reasons.entries()) {
+      await t.test(`${stage}, reason ${index}`, async () => {
+        const controller = new AbortController();
+        let requests = 0;
+        const api = new ApiClient(config, { accessToken: async () => 'token' }, {
+          fetcher: async (_url, options) => {
+            requests++;
+            assert.equal(options.headers.get('idempotency-key'), 'original-intent-key');
+            if (stage === 'headers') {
+              controller.abort(reason);
+              throw options.signal.reason;
+            }
+            return new Response(new ReadableStream({start(stream) {
+              stream.enqueue(new TextEncoder().encode('{'));
+              queueMicrotask(() => {
+                controller.abort(reason);
+                stream.error(options.signal.reason);
+              });
+            }}), {headers: {'content-type': 'application/json'}});
+          },
+        });
+        await assert.rejects(() => api.invoke('invokeSkill', {
+          params: {skill_id: id}, body: {input: {}}, idempotencyKey: 'original-intent-key',
+          signal: controller.signal,
+        }), error => error instanceof ApiError && error.code === 'CANCELED'
+          && !error.message.includes('private cancellation detail'));
+        assert.equal(requests, 1, 'a canceled write must not be replayed');
+      });
+    }
+  }
+});
+
+test('a connection failure without an aborted signal remains a connection failure', async () => {
+  const api = new ApiClient(config, { accessToken: async () => 'token' }, {
+    fetcher: async () => { throw new TypeError('private transport detail'); },
+  });
+  await assert.rejects(() => api.invoke('listSkills'), error => error.code === 'CONNECTION_FAILED'
+    && !error.message.includes('private transport detail'));
+});
+
 test('a revoked OAuth credential invalidates local session state before reporting 401', async () => {
   let loggedOut = false;
   const api = new ApiClient(config, { accessToken: async () => 'revoked-token', logout: () => { loggedOut = true; } }, {
