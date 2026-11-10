@@ -18,6 +18,19 @@
     {"markdown": "> - ```\n>   [fake](#bad)\n>   ```\n\n[real](#good)","destinations": ["#good"]},
     {"markdown": "- item\n    ```\n    [fake](#bad)\n    ```\n\n[real](#good)","destinations": ["#good"]},
     {"markdown": "- ```\n  [fake](#bad)\n[outside](#good)","destinations": ["#good"]},
-    {"markdown": "- > ```\n  > [fake](#bad)\n[outside](#good)","destinations": ["#good"]}
+    {"markdown": "- > ```\n  > [fake](#bad)\n[outside](#good)","destinations": ["#good"]},
+    {"markdown": "`prefix\nexample <pre> text\nsuffix`\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": "`prefix\ntext <!-- not closed\nsuffix`\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": "> `prefix\n> example <pre> text\n> suffix` [real](#good)","destinations": ["#good"]},
+    {"markdown": "- `prefix\n  example <pre> text\n  suffix` [real](#good)","destinations": ["#good"]},
+    {"markdown": "<pre>\n`literal\n<a id=\"inside-pre-code\"></a>\nsuffix`\n</pre>\n\n[valid](#inside-pre-code)","destinations": ["#inside-pre-code"]},
+    {"markdown": "`prefix\n[code]: #bad\nsuffix`\n\n[foo][code]","destinations": []},
+    {"markdown": "paragraph\n[para]: #bad\n\n[foo][para]","destinations": []},
+    {"markdown": "> paragraph\n> [quote]: #bad\n\n[foo][quote]","destinations": []},
+    {"markdown": "# Heading\n[allowed]: #good\n\n[foo][allowed]","destinations": ["#good"]},
+    {"markdown": "> # Heading\n> [quoteallowed]: #good\n\n[foo][quoteallowed]","destinations": ["#good"]},
+    {"markdown": "- [list]: #good\n\n[foo][list]","destinations": ["#good"]},
+    {"markdown": "- item\n  [inpara]: #bad\n\n[foo][inpara]","destinations": []},
+    {"markdown": "- ## Heading\n  [inhead]: #good\n\n[foo][inhead]","destinations": ["#good"]}
   ]
 }

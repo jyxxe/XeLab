@@ -369,6 +369,64 @@ suffix`
         _, errors = check_markdown_links(source, self.root)
         self.assertEqual(errors, ['broken Markdown anchor source.md -> #hidden'])
 
+    def test_html_fragments_in_multiline_code_do_not_hide_later_links(self):
+        cases = [
+            ('`prefix\nexample <pre> text\nsuffix`\n\n[real](#missing)', '#missing'),
+            ('`prefix\ntext <!-- not closed\nsuffix`\n\n[real](#missing)', '#missing'),
+            ('> `prefix\n> example <pre> text\n> suffix` [real](#missing)', '#missing'),
+            ('- `prefix\n  example <pre> text\n  suffix` [real](#missing)', '#missing'),
+        ]
+        for content, target in cases:
+            with self.subTest(content=content):
+                source = self.write('source.md', content)
+                _, errors = check_markdown_links(source, self.root)
+                self.assertEqual(errors, [f'broken Markdown anchor source.md -> {target}'])
+
+    def test_multiline_backticks_inside_html_pre_preserve_real_anchors(self):
+        source = self.write('source.md', '''<pre>
+`literal
+<a id="inside-pre-code"></a>
+suffix`
+</pre>
+
+[valid](#inside-pre-code)
+''')
+        _, errors = check_markdown_links(source, self.root)
+        self.assertEqual(errors, [])
+
+    def test_reference_definitions_do_not_interrupt_paragraphs_or_code(self):
+        source = self.write('source.md', '''`prefix
+[fake-code]: #absent-code
+suffix`
+
+[not a link][fake-code]
+
+paragraph
+[fake-paragraph]: #absent-paragraph
+
+[not a link][fake-paragraph]
+
+> paragraph
+> [fake-quote]: #absent-quote
+
+[not a link][fake-quote]
+
+# Heading
+[allowed]: #missing-allowed
+
+[valid reference][allowed]
+
+> # Heading
+> [quoted-allowed]: #missing-quoted
+
+[valid reference][quoted-allowed]
+''')
+        _, errors = check_markdown_links(source, self.root)
+        self.assertEqual(errors, [
+            'broken Markdown anchor source.md -> #missing-allowed',
+            'broken Markdown anchor source.md -> #missing-quoted',
+        ])
+
     def test_external_images_and_non_markdown_fragments_remain_out_of_scope(self):
         self.write('schema.json', '{}')
         source = self.write('source.md', '''# Valid

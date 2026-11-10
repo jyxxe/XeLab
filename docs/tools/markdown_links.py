@@ -11,6 +11,7 @@ FENCE = re.compile(r'^ {0,3}(`{3,}|~{3,})')
 QUOTE_MARKER = re.compile(r' {0,3}>[ \t]?')
 LIST_MARKER = re.compile(r'^ {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+')
 LIST_QUOTE = re.compile(r'^ {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+(?=>)')
+REFERENCE_START = re.compile(r'^ {0,3}\[[^\]]+\]:')
 INLINE_CODE = re.compile(r'(?<![\\`]) (?:\\\\)* (`+) (?!`) (.*?) (?<!`) \1 (?!`)', re.X)
 HTML_TAG = re.compile(r'''</?[A-Za-z][A-Za-z0-9-]*(?:\s+(?:[^>"']|"[^"]*"|'[^']*')*)?\s*/?>''')
 ATX = re.compile(r'^ {0,3}#{1,6}(?:[ \t]+(.*)|[ \t]*)$')
@@ -72,7 +73,7 @@ def _can_continue_paragraph(line):
         return False
     if re.match(r'^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$', line):
         return False
-    return not (re.match(r'^ {0,3}\[[^\]]+\]:', line) or HTML_BLOCK_START.match(line))
+    return not (REFERENCE_START.match(line) or HTML_BLOCK_START.match(line))
 
 
 def _strip_inert_html(line, state, preserve_pre=False):
@@ -111,6 +112,7 @@ def _strip_inert_html(line, state, preserve_pre=False):
 
 def without_code(value, preserve_pre=False):
     """Blank code blocks and HTML comments without joining surrounding lines."""
+    value = _mask_multiline_code(value, preserve_structure=True)
     lines = []
     fence = None
     fence_depth = 0
@@ -327,7 +329,7 @@ def _is_escaped(text, pos):
     return (pos - start) % 2 == 1
 
 
-def _mask_multiline_code(text):
+def _mask_multiline_code(text, preserve_structure=False):
     """Mask multiline code spans within a paragraph without crossing block boundaries."""
     spans = []
     start = None
@@ -335,12 +337,42 @@ def _mask_multiline_code(text):
     offset = 0
     previous_depth = None
     previous_paragraph = False
+    literal_tag = None
+    literal_depth = 0
     for line in text.splitlines(keepends=True):
         raw = line.rstrip('\r\n')
         depth, quoted = _blockquote(raw)
+        if literal_tag is not None and depth < literal_depth:
+            literal_tag = None
+        if literal_tag is not None:
+            if re.search(r'</' + literal_tag + r'\s*>', quoted, re.I):
+                literal_tag = None
+            if start is not None:
+                spans.append((start, end))
+                start = None
+            previous_depth = None
+            previous_paragraph = False
+            offset += len(line)
+            continue
+        literal = re.match(r'^ {0,3}<(pre|script|style|textarea)\b', quoted, re.I)
+        if literal:
+            tag = literal.group(1).lower()
+            if not re.search(r'</' + tag + r'\s*>', quoted, re.I):
+                literal_tag = tag
+                literal_depth = depth
+            if start is not None:
+                spans.append((start, end))
+                start = None
+            previous_depth = None
+            previous_paragraph = False
+            offset += len(line)
+            continue
         list_start = LIST_MARKER.match(quoted.expandtabs(4)) or LIST_QUOTE.match(raw.expandtabs(4))
         paragraph = _can_continue_paragraph(quoted)
         lazy = (previous_depth is not None and depth < previous_depth and previous_paragraph)
+        if (REFERENCE_START.match(quoted) and start is not None and not list_start
+                and (depth == previous_depth or lazy)):
+            paragraph = True
         if (not paragraph or list_start or
                 (previous_depth is not None and depth != previous_depth and not lazy)):
             if start is not None:
@@ -375,9 +407,28 @@ def _mask_multiline_code(text):
             first = runs[index].start()
             last = runs[closing].end()
             if '\n' in segment[first:last]:
-                for pos in range(begin + first, begin + last):
-                    if masked[pos] != '\n':
-                        masked[pos] = ' '
+                first += begin
+                last += begin
+                if not preserve_structure:
+                    for pos in range(first, last):
+                        if masked[pos] != '\n':
+                            masked[pos] = ' '
+                else:
+                    cursor = first
+                    while cursor < last:
+                        line_start = text.rfind('\n', 0, cursor) + 1
+                        newline = text.find('\n', cursor, last)
+                        line_end = last if newline < 0 else newline
+                        raw = text[line_start:line_end]
+                        _, quoted = _blockquote(raw)
+                        indent = len(raw) - len(raw.lstrip(' \t'))
+                        prefix = max(indent, len(raw) - len(quoted))
+                        mask_start = max(cursor, line_start + prefix)
+                        for pos in range(mask_start, line_end):
+                            masked[pos] = ' '
+                        if mask_start < line_end:
+                            masked[mask_start] = 'x'
+                        cursor = line_end if newline < 0 else newline + 1
             index = closing + 1
     return ''.join(masked)
 
@@ -470,20 +521,32 @@ def _reference_label(value):
 def _reference_definitions(text):
     definitions = {}
     remaining = []
+    paragraph_open = False
+    previous_depth = None
     for line in text.splitlines(keepends=True):
-        _, quoted = _blockquote(line)
-        match = re.match(r'^ {0,3}\[', quoted)
-        end = _bracket_end(quoted, match.end() - 1) if match else None
-        if end is not None and end + 1 < len(quoted) and quoted[end + 1] == ':':
-            label = _reference_label(quoted[match.end():end])
-            value = quoted[end + 2:].rstrip('\r\n').strip()
+        depth, quoted = _blockquote(line)
+        list_start = LIST_MARKER.match(quoted)
+        if (previous_depth is not None and depth > previous_depth) or list_start:
+            paragraph_open = False
+        candidate = quoted[list_start.end():] if list_start else quoted
+        match = re.match(r'^ {0,3}\[', candidate) if not paragraph_open else None
+        end = _bracket_end(candidate, match.end() - 1) if match else None
+        if end is not None and end + 1 < len(candidate) and candidate[end + 1] == ':':
+            label = _reference_label(candidate[match.end():end])
+            value = candidate[end + 2:].rstrip('\r\n').strip()
             wrapped = '(' + value + ')'
             parsed = _destination(wrapped, 0) if value else None
             if label and end - match.end() <= 999 and parsed and parsed[1] == len(wrapped):
                 definitions.setdefault(label, parsed[0])
                 remaining.append(''.join('\n' if char == '\n' else ' ' for char in line))
+                previous_depth = depth
                 continue
         remaining.append(line)
+        if REFERENCE_START.match(candidate):
+            paragraph_open = True
+        else:
+            paragraph_open = _can_continue_paragraph(quoted)
+        previous_depth = depth if quoted.strip() else None
     return definitions, ''.join(remaining)
 
 
