@@ -645,15 +645,18 @@ async function settings(win) {
 }
 async function unavailable(win) {win.content.replaceChildren(toolbar(win,win.app.title),state('unavailable','当前版本尚不可用','Batch、Workflow、微插件与知识库属于后续执行系统。此桌面未伪造任务、数据或成功响应。'));}
 function operationCard(op,onRefresh) {
-  const status=op.status||'unknown';const succeeded=status==='succeeded',failed=status==='failed',pending=status==='pending';
-  const badge=node('span',{class:'badge','data-status':status},status);
-  const card=node('article',{class:'card operation-card','data-status':status});
+  const state=op.state||'unknown';const succeeded=state==='succeeded',failed=state==='failed';
+  const active=['pending','running','cancel_requested'].includes(state),canceled=state==='canceled';
+  const visual=succeeded?'succeeded':failed?'failed':active?'pending':canceled?'canceled':'unknown';
+  const badge=node('span',{class:'badge','data-status':visual},state);
+  const card=node('article',{class:'card operation-card','data-status':visual});
   const header=node('div',{class:'operation-header'},node('h3',{},'Operation ',badge),node('div',{class:'operation-actions'},button('复制 ID',()=>{navigator.clipboard?.writeText(op.id).then(()=>toast('Operation ID 已复制')).catch(()=>toast('复制失败'))},{'aria-label':'复制 Operation ID'}),button('刷新',onRefresh)));
-  const meta=node('div',{class:'operation-meta'},node('p',{class:'code'},op.id),op.created_at?node('p',{},`创建时间：${new Date(op.created_at).toLocaleString('zh-CN')}`):null,op.updated_at?node('p',{},`更新时间：${new Date(op.updated_at).toLocaleString('zh-CN')}`):null);
+  const meta=node('div',{class:'operation-meta'},node('p',{class:'code'},op.id),op.created_at?node('p',{},`创建时间：${new Date(op.created_at).toLocaleString('zh-CN')}`):null,op.updated_at?node('p',{},`更新时间：${new Date(op.updated_at).toLocaleString('zh-CN')}`):null,Number.isInteger(op.progress_percent)?node('p',{},`进度：${op.progress_percent}%`):null);
   const body=node('div',{class:'operation-body'});
-  if(succeeded&&op.result){body.append(node('h4',{},'执行结果'),node('p',{class:'muted'},'核心返回的实际结果；终态为 succeeded。'),raw(op.result));}
-  else if(failed&&op.error){body.append(node('h4',{},'失败原因'),node('p',{class:'muted'},`错误代码：${op.error.code||'UNKNOWN'}`),node('p',{},op.error.message||'操作失败，未返回详细原因。'),op.error.detail?raw(op.error.detail):null);}
-  else if(pending){body.append(node('p',{class:'muted'},'操作已接受，正在执行中。请稍后刷新查询终态。'));}
+  if(succeeded&&op.result!==null){body.append(node('h4',{},'执行结果'),node('p',{class:'muted'},'核心返回的实际结果；终态为 succeeded。'),raw(op.result));}
+  else if(failed&&op.error){body.append(node('h4',{},'失败原因'),node('p',{class:'muted'},`错误代码：${op.error.code||'UNKNOWN'}`),node('p',{},op.error.message||'操作失败，未返回详细原因。'),Array.isArray(op.error.violations)&&op.error.violations.length?raw(op.error.violations):null);}
+  else if(active){body.append(node('p',{class:'muted'},`操作正在执行中（${state}）。请稍后刷新查询终态。`));}
+  else if(canceled){body.append(node('p',{class:'muted'},'操作已取消；请核实是否已产生部分副作用。'));}
   else{body.append(node('p',{class:'muted'},'状态未知或核心未返回预期的结果/错误字段。'));}
   const toggle=button('查看完整原始 JSON',()=>{const full=card.querySelector('.operation-raw');if(full.hidden){full.hidden=false;toggle.textContent='隐藏原始 JSON';}else{full.hidden=true;toggle.textContent='查看完整原始 JSON';}});
   const rawSection=node('div',{class:'operation-raw',hidden:true},raw(op));
