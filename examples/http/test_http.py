@@ -93,6 +93,9 @@ class HTTPTests(unittest.TestCase):
             extension.write_text("subjectAltName=" + san + "\nextendedKeyUsage=" + purpose + "\n")
             openssl("x509", "-req", "-in", cls.root / (name + ".csr"), "-CA", cls.root / "ca.crt", "-CAkey", cls.root / "ca.key",
                     "-CAcreateserial", "-out", cls.root / (name + ".crt"), "-days", "1", "-extfile", extension)
+        # CI's Python predates strict-by-default verification; assert the PKI shape here.
+        openssl("verify", "-x509_strict", "-purpose", "sslserver", "-CAfile", cls.root / "ca.crt",
+                cls.root / "server.crt")
         (cls.root / "tls.crt").write_bytes((cls.root / "server.crt").read_bytes())
         (cls.root / "tls.key").write_bytes((cls.root / "server.key").read_bytes())
         (cls.root / "untrusted.key").write_bytes((cls.root / "foreign.key").read_bytes())
