@@ -81,6 +81,36 @@ class CompactEvidenceTests(unittest.TestCase):
         self.assertEqual(parsed, {'VmRSS': 96 * compact.MIB,
                                   'VmHWM': 128 * compact.MIB, 'VmSwap': 0})
 
+    def test_snapshot_rejects_python_cpu_override_for_whole_node(self):
+        texts = {
+            '/proc/42/cgroup': '0::/xelab/kernel',
+            '/proc/sys/kernel/random/boot_id': 'boot-a',
+            '/sys/devices/system/cpu/online': '0-3',
+            '/proc/meminfo': 'MemTotal: 512000 kB\nMemAvailable: 100000 kB\nSwapTotal: 0 kB',
+            '/proc/42/status': 'VmRSS: 10 kB\nVmHWM: 20 kB\nVmSwap: 0 kB',
+            '/proc/swaps': 'Filename Type Size Used Priority',
+            '/proc/vmstat': 'oom_kill 0',
+            '/proc/pressure/memory': '',
+            '/proc/pressure/cpu': '',
+        }
+        with patch('os.cpu_count', return_value=1), \
+                patch('run03.process_identity', return_value=(42, 1234)), \
+                patch('run03.read_text', side_effect=lambda path: texts[str(path)]), \
+                patch('run03.cgroup_snapshot', return_value={}):
+            sample = compact.snapshot(42)
+        self.assertEqual(sample['online_cpus'], 4)
+        self.assertIn('whole-node test requires one online CPU',
+                      compact.shape_errors(sample['meminfo'], sample['online_cpus'], 0, False))
+
+    def test_kernel_online_cpu_list_parses_ranges_and_fails_closed(self):
+        for value, expected in (('0', 1), ('2', 1), ('0-3,8,10-11', 7)):
+            with self.subTest(value=value), patch('run03.read_text', return_value=value):
+                self.assertEqual(compact.online_cpu_count(), expected)
+        for value in ('', '0--1', '5-3', '0,0', '0-3,3', '2,1', '0-3,', 'cpu0'):
+            with self.subTest(value=value), patch('run03.read_text', return_value=value):
+                with self.assertRaises(ValueError):
+                    compact.online_cpu_count()
+
     def test_startup_peak_failure_retains_peak_in_summary(self):
         resources, sample = self.fixture()
         sample['daemon_memory']['VmHWM'] = 193 * compact.MIB
