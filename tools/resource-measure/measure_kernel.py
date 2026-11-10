@@ -29,6 +29,10 @@ class Blocked(Exception):
     """Only fixed, non-secret reason codes may be passed to this exception."""
 
 
+class MissingObservation(Blocked):
+    pass
+
+
 def require(condition, code):
     if not condition:
         raise Blocked(code)
@@ -40,8 +44,12 @@ def fingerprint(info):
 
 
 def read_fd_at(directory, name, limit=4 * 1024 * 1024):
-    fd = os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
-                 dir_fd=directory)
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                     dir_fd=directory)
+    except FileNotFoundError:
+        # Names are fixed observation fields chosen by this collector.
+        raise MissingObservation("missing_observation_" + name) from None
     with os.fdopen(fd, "rb") as stream:
         data = stream.read(limit + 1)
     require(len(data) <= limit, "observation_too_large")
@@ -259,7 +267,17 @@ class PinnedDaemon:
             cgroup[name] = value
         cgroup["memory_counter_monotonic_ns"] = time.monotonic_ns()
         cgroup["memory.stat"] = integers(read_fd_at(self.cgroupfd, "memory.stat"))
-        cgroup["io.stat"] = io_stat(read_fd_at(self.cgroupfd, "io.stat"))
+        try:
+            cgroup["io.stat"] = io_stat(read_fd_at(self.cgroupfd, "io.stat"))
+            cgroup["io.stat_availability"] = {"available": True}
+        except MissingObservation as error:
+            if str(error) != "missing_observation_io.stat":
+                raise
+            # Runtime requires/enables cpu, memory and pids, not io. Absence
+            # of this optional diagnostic is evidence, never a zero I/O count.
+            cgroup["io.stat"] = None
+            cgroup["io.stat_availability"] = {
+                "available": False, "reason": "io.stat_not_exposed_by_kernel_cgroup"}
         cgroup["memory.events"] = required_keys(
             integers(read_fd_at(self.cgroupfd, "memory.events")),
             {"low", "high", "max", "oom", "oom_kill"})
@@ -396,6 +414,7 @@ def main():
                   "phase_peak": "maximum sampled memory.current, not a continuous peak",
                   "memory_peak_and_vm_hwm": "lifetime high-water values, not this phase's peaks",
                   "kernel_cgroup": "all processes in actual /xelab/kernel; not plugin cgroups",
+                  "cgroup_io": "optional io.stat is null with availability=false if not exposed; process I/O counters remain required",
                   "load": "none generated; optional run03 calls must be started separately"}}
     stage = "initialize"
     exit_code = 1
