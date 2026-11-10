@@ -126,6 +126,12 @@ def baseline():
         edges,link_errors=check_markdown_links(file,ROOT,anchor_cache)
         ERRORS.extend(link_errors)
         graph[file.resolve()]=edges
+    # Extend link coverage without changing the original size or reachability graph.
+    extra_md=[ROOT/'CONTRIBUTING.md',ROOT/'SECURITY.md',ROOT/'crates/kernel/README.md']
+    extra_md+=sorted((ROOT/'examples').rglob('*.md'))
+    for file in extra_md:
+        _,link_errors=check_markdown_links(file,ROOT,anchor_cache)
+        ERRORS.extend(link_errors)
     seen=set();pending=[(DOCS/'README.md').resolve()]
     while pending:
         p=pending.pop()

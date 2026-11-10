@@ -38,6 +38,9 @@ python3 docs/tools/validate_docs.py
 字符、连接标点、`-` 和部分字母形符号，空格转 `-`，其余符号删除；重复标题按文档
 顺序加 `-1` 等后缀。单个目的地最多支持 32 层平衡括号。
 
+链接检查还覆盖根目录的贡献与安全指南、Kernel README 和 `examples/` 下的 Markdown；
+这些新增页面不参与原有的 `docs/` 可达性或人工阅读页行数检查，`PASS` 中的页面数仍只统计 `docs/`。
+
 还识别 HTML 中的 `<a name="...">` 和常见安全标签的 `id`，包括 `<pre>`、`<code>`
 和其中实际的 HTML 锚点；自定义锚点区分大小写，不影响标题去重。`#top` 视为页首。
 围栏、缩进和 `<pre>` 代码块中的 Markdown 文字、同一段落内的反引号代码（包括跨行）、
@@ -51,8 +54,10 @@ GitHub Markdown API 的离线链接样例，以及其标题文本结合 github-s
 锚点样例；运行测试本身不联网：
 
 ```bash
-python3 -m unittest discover -s docs/tools -p 'test_markdown_links.py' -v
+python3 -m unittest discover -s docs/tools -p 'test_*.py' -v
 ```
+
+覆盖范围的严格模式回归需要上述严格检查依赖；未安装时该项测试会跳过。
 
 严格模式额外校验 OpenAPI、所有 JSON Schema、请求与手工样例、TOML、Proto 编译及方法集合、SQL 语法。所有检查均只读，不连接部署、运行插件或应用数据库迁移。
 
