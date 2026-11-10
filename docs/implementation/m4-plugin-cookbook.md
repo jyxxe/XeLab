@@ -50,8 +50,8 @@
 |---|---|---|
 | 1 | [installPlugin](../api/operations/plugins/installPlugin.md) `POST /api/platform/v1/installations` | 导入已签名 OCI 制品 |
 | 2 | [createDeployment](../api/operations/plugins/createDeployment.md) `POST /api/platform/v1/deployments` | `installation_id`、`limits`、`config={}`、`volume_ids=[]`；`enabled` 默认 false |
-| 3 | [approvePlugin](../api/operations/plugins/approvePlugin.md) `PUT /api/platform/v1/deployments/{id}/approval` | `rules` 覆盖上述六个代理动作，`egress=[]` |
-| 4 | [setDeploymentEnabled](../api/operations/plugins/setDeploymentEnabled.md) `PUT /api/platform/v1/deployments/{id}/enabled` | 启用事务重新解析并固定全部依赖绑定；缺强依赖、强环或超 16 层整份拒绝 |
+| 3 | [approvePlugin](../api/operations/plugins/approvePlugin.md) `PUT /api/platform/v1/deployments/{deployment_id}/approval` | `rules` 覆盖上述六个代理动作，`egress=[]` |
+| 4 | [setDeploymentEnabled](../api/operations/plugins/setDeploymentEnabled.md) `PUT /api/platform/v1/deployments/{deployment_id}/enabled` | 启用事务重新解析并固定全部依赖绑定；缺强依赖、强环或超 16 层整份拒绝 |
 | 5 | [createSubscription](../api/operations/events/createSubscription.md) `POST /api/platform/v1/subscriptions` | `{"topic":"org.xelab.m4-consumer.completed","name":"run-results","start":"latest"}` |
 | 6 | [invokeCapability](../api/operations/capabilities/invokeCapability.md) `POST /api/platform/v1/calls` | `contract=org.xelab.m4-consumer.run@1.0.0`；`input={"message","skill_id","subscription_id"}` |
 
