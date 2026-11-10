@@ -69,7 +69,7 @@ def strict_json(raw, maximum):
 def safe_components(relative):
     parts = PurePosixPath(relative).parts
     if not parts or any(part in {".", "..", "/"} or "\\" in part
-                        or any(unicodedata.category(c) == "Cc" for c in part)
+                        or any(unicodedata.category(c) in {"Cc", "Cf", "Cs"} for c in part)
                         for part in parts):
         raise CheckError("unsafe artifact path: " + repr(relative))
     return parts
@@ -135,7 +135,7 @@ class TarReader:
             normalized = str(PurePosixPath(name))
             if name.startswith("/") or normalized != name.rstrip("/") or any(
                     part in {".", ".."} for part in PurePosixPath(name).parts) or "\\" in name or any(
-                    unicodedata.category(c) == "Cc" for c in name):
+                    unicodedata.category(c) in {"Cc", "Cf", "Cs"} for c in name):
                 raise CheckError("unsafe tar member name: " + repr(name))
             if normalized in seen:
                 raise CheckError("duplicate tar member: " + repr(name))
@@ -169,7 +169,7 @@ class UnsupportedFormat(Exception):
 
 def single_line_string(value):
     return isinstance(value, str) and value != "" and not any(
-        unicodedata.category(c) == "Cc" for c in value)
+        unicodedata.category(c) in {"Cc", "Cf", "Cs"} for c in value)
 
 
 def check_manifest(reader):

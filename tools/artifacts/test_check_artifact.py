@@ -276,18 +276,19 @@ class BoundaryTests(ArtifactCase):
         directory = self.echo()
         manifest = self.manifest(directory)
         manifest["plugin_id"] = "org.xelab.echo\x1b[31m"
-        manifest["capabilities"][0]["contract"]["name"] = "evil\x1b[31m\x9b"
+        manifest["capabilities"][0]["contract"]["name"] = "evil\x1b[31m\x9b\u202e"
         self.write_manifest(directory, manifest)
         report = build_report(directory)
         self.assertNotIn("plugin_id", report)
         text = render_text(report)
         self.assertNotIn("\x1b", text)
         self.assertNotIn("\x9b", text)
+        self.assertNotIn("\u202e", text)
 
     def test_control_characters_in_http_operation_id_are_rejected(self):
         directory = self.http()
         manifest = self.manifest(directory)
-        manifest["skills"][0]["target"]["http_operation_id"] = "missing\x1b[31m\x9b"
+        manifest["skills"][0]["target"]["http_operation_id"] = "missing\x1b[31m\x9b\u202e"
         self.write_manifest(directory, manifest)
         report = build_report(directory)
         self.assertEqual(report["status"], "inconsistent")
@@ -295,6 +296,7 @@ class BoundaryTests(ArtifactCase):
         text = render_text(report)
         self.assertNotIn("\x1b", text)
         self.assertNotIn("\x9b", text)
+        self.assertNotIn("\u202e", text)
 
 
 if __name__ == "__main__":
