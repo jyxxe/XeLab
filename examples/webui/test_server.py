@@ -26,7 +26,8 @@ def create_test_identities(root):
 
     openssl("req", "-new", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
             "-keyout", root / "ca.key", "-out", root / "ca.crt", "-subj", "/CN=WebUI Component CA",
-            "-addext", "basicConstraints=critical,CA:TRUE")
+            "-addext", "basicConstraints=critical,CA:TRUE",
+            "-addext", "keyUsage=critical,keyCertSign,cRLSign")
     for name, san, purpose in [("server", "DNS:localhost,IP:127.0.0.1", "serverAuth"),
                                ("kernel", "URI:spiffe://xelab.local/kernel", "clientAuth"),
                                ("foreign", "URI:spiffe://xelab.local/instance/foreign", "clientAuth")]:

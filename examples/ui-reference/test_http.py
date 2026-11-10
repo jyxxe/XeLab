@@ -72,7 +72,7 @@ class HTTPTests(unittest.TestCase):
         def openssl(*args):
             subprocess.run(["openssl", *map(str, args)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        openssl("req", "-new", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-keyout", cls.root / "ca.key", "-out", cls.root / "ca.crt", "-subj", "/CN=Disposable UI Reference CA", "-addext", "basicConstraints=critical,CA:TRUE")
+        openssl("req", "-new", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-keyout", cls.root / "ca.key", "-out", cls.root / "ca.crt", "-subj", "/CN=Disposable UI Reference CA", "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign")
         for name, san, purpose in [
             ("server", "DNS:localhost,IP:127.0.0.1,URI:spiffe://xelab.local/instance/00000000-0000-4000-8000-000000000001/generation/1", "serverAuth"),
             ("kernel", "URI:spiffe://xelab.local/kernel", "clientAuth"),
