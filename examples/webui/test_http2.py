@@ -487,7 +487,15 @@ class Http2BrowserReader(unittest.TestCase):
                 else:
                     self.assertFalse(response_seen)
                     self.assertEqual(case.get("chunks", 0), 0)
-                self.assertEqual(self.stats()["posts"] - before, 1)
+                accepted = self.stats()["posts"] - before
+                # A header-stage deadline/abort can win before Chromium sends the
+                # HTTP/2 stream, so zero accepted POSTs is valid. Body-stage
+                # cases already observed a response and must have one POST.
+                # At most one accepted POST still proves there was no retry.
+                if kind.startswith("body"):
+                    self.assertEqual(accepted, 1)
+                else:
+                    self.assertIn(accepted, (0, 1))
 
     def test_custom_caller_cancellation_before_headers_and_during_body(self):
         for kind in ("headerscancel", "bodycancel"):
