@@ -1050,23 +1050,30 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         app.runtime.running(instance).await.unwrap(),
         "another plugin survives the OOM"
     );
-    // The kill can stop the python container itself. The controller notices on
-    // its next two-second reconcile and may apply restart backoff, so a stopped
-    // task here is a restart in progress, not a failed isolation check. Wait for
-    // the replacement task instead of exec-ing into the stop window.
+    // A killed init makes containerd briefly report a stale RUNNING state, and
+    // the controller only notices on its next two-second reconcile. Require a
+    // stable task before exec-ing, then fail explicitly if the restart budget
+    // is exhausted or the task does not return.
     let restarted = tokio::time::timeout(Duration::from_secs(60), async {
-        while !app.runtime.running(python_instance).await.unwrap() {
-            let row = c
+        let mut stable = 0;
+        while stable < 10 {
+            let phase: String = c
                 .query_one(
                     "SELECT phase FROM instances WHERE id=$1",
                     &[&python_instance],
                 )
                 .await
-                .unwrap();
+                .unwrap()
+                .get(0);
             assert!(
-                row.get::<_, String>(0) != "failed",
+                phase != "failed",
                 "the OOM victim exhausted its restart budget instead of restarting"
             );
+            if app.runtime.running(python_instance).await.unwrap() {
+                stable += 1;
+            } else {
+                stable = 0;
+            }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     })
