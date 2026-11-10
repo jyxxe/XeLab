@@ -275,6 +275,20 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(report["head"]["sha"], HEAD)
         self.assertEqual(report["base"]["sha"], BASE)
 
+    def test_example_report_tracks_current_schema(self):
+        with open(os.path.join(os.path.dirname(__file__), "example-report.json"), encoding="utf-8") as handle:
+            example = json.load(handle)
+        protection = {"required_status_checks": {"contexts": ["CI"]}}
+        report = build_report(FakeAPI(
+            workflows=[workflow()], reviews=[review()], protection=protection,
+            threads=lambda cursor: ([], None)), 1)
+        self.assertEqual(example["schema"], pr_status.SCHEMA)
+        self.assertEqual(set(example), set(report))
+        for section in ("base", "head", "checks", "required_checks", "reviews", "review_threads"):
+            self.assertEqual(set(example[section]), set(report[section]), section)
+        self.assertEqual(set(example["reviews"]["entries"][0]), set(report["reviews"]["entries"][0]))
+        self.assertEqual(set(example["checks"]["workflow_runs"][0]), set(report["checks"]["workflow_runs"][0]))
+
     def test_text_distinguishes_checks_from_merge_approval(self):
         text = render_text(build_report(FakeAPI(runs=[run()]), 1))
         self.assertIn("checks: passed", text)
