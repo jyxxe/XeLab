@@ -236,8 +236,14 @@ export class ApiClient {
         credentials: 'omit', mode: 'cors', redirect: 'error', cache: 'no-store', referrerPolicy: 'no-referrer',
       });
     } catch (error) {
-      if (error?.name === 'AbortError') throw new ApiError('CANCELED', '请求已取消；副作用状态须按原幂等键核实。');
-      if (error?.name === 'TimeoutError') throw new ApiError('DEADLINE_EXCEEDED', '等待核心超时；副作用状态须按原幂等键核实。', 504);
+      // Fetch may reject with any caller-supplied abort reason. Prefer the
+      // actual signals, matching body-read classification below.
+      if (signal?.aborted || (!deadline.aborted && error?.name === 'AbortError')) {
+        throw new ApiError('CANCELED', '请求已取消；副作用状态须按原幂等键核实。');
+      }
+      if (deadline.aborted || error?.name === 'TimeoutError') {
+        throw new ApiError('DEADLINE_EXCEEDED', '等待核心超时；副作用状态须按原幂等键核实。', 504);
+      }
       throw new ApiError('CONNECTION_FAILED', '无法连接核心；未自动重试，请按原幂等键核实副作用。');
     }
     const requestId = response.headers.get('x-request-id');
