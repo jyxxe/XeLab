@@ -191,6 +191,7 @@ text
 </pre>
 <table><tr><td id="valid-cell">cell</td></tr></table>
 <abbr id="stripped">text</abbr><td id="orphan-cell">cell</td>
+
 [em](#em-anchor) [code](#code-anchor) [section](#section-anchor)
 [detail](#detail-anchor) [summary](#summary-anchor)
 [pre](#pre-id) [inside](#inside-pre)
@@ -204,6 +205,47 @@ text
             'broken Markdown anchor source.md -> #orphan-cell',
             'broken Markdown anchor source.md -> #missing',
         ])
+
+    def test_raw_html_blocks_do_not_parse_markdown_links(self):
+        source = self.write('source.md', '''# Present
+<div>
+[div](#missing-div)
+</div>
+
+<table>
+<tr><td>[table](#missing-table)</td></tr>
+</table>
+
+<details>
+<summary>x</summary>
+[details](#missing-details)
+</details>
+
+<div>[block-inline](#missing-block-inline)</div>
+
+<span>[inline](#missing-inline)</span>
+
+[real](#missing-real)
+''')
+        _, errors = check_markdown_links(source, self.root)
+        self.assertEqual(errors, [
+            'broken Markdown anchor source.md -> #missing-inline',
+            'broken Markdown anchor source.md -> #missing-real',
+        ])
+
+    def test_headings_in_raw_html_blocks_do_not_create_anchors(self):
+        source = self.write('source.md', '''<div>
+# fake
+</div>
+
+# real
+[fake](#fake) [real](#real)
+''')
+        anchors = markdown_anchors(source.read_text(encoding='utf-8'))
+        self.assertIn('real', anchors)
+        self.assertNotIn('fake', anchors)
+        _, errors = check_markdown_links(source, self.root)
+        self.assertEqual(errors, ['broken Markdown anchor source.md -> #fake'])
 
     def test_indented_list_link_is_still_checked(self):
         source = self.write('source.md', '''# Existing

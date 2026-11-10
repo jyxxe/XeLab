@@ -17,13 +17,19 @@ HTML_TAG = re.compile(r'''</?[A-Za-z][A-Za-z0-9-]*(?:\s+(?:[^>"']|"[^"]*"|'[^']*
 ATX = re.compile(r'^ {0,3}#{1,6}(?:[ \t]+(.*)|[ \t]*)$')
 SETEXT = re.compile(r'^ {0,3}(?:=+|-+)[ \t]*$')
 INERT_HTML = re.compile(r'<!--|<(pre|script|style|textarea)\b[^>]*>', re.I)
-HTML_BLOCK_START = re.compile(
-    r'^ {0,3}<(?:/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|'
+HTML_BLOCK_TAGS = (
+    r'address|article|aside|base|basefont|blockquote|body|caption|center|'
     r'col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|'
     r'form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|'
     r'menuitem|nav|noframes|ol|optgroup|option|p|param|pre|script|search|section|style|'
-    r'summary|table|tbody|td|textarea|tfoot|th|thead|title|tr|track|ul)(?=[ \t/>]|$)|!|\?)',
+    r'summary|table|tbody|td|textarea|tfoot|th|thead|title|tr|track|ul'
+)
+HTML_BLOCK_START = re.compile(
+    r'^ {0,3}<(?:/?(?:' + HTML_BLOCK_TAGS + r')(?=[ \t/>]|$)|!|\?)',
     re.I,
+)
+HTML_BLOCK_TAG = re.compile(
+    r'^ {0,3}</?(?:' + HTML_BLOCK_TAGS + r')(?=[ \t/>]|$)', re.I
 )
 
 
@@ -108,6 +114,41 @@ def _strip_inert_html(line, state, preserve_pre=False):
             result.append(match.group())
         pos = match.end()
     return ''.join(result), state
+
+
+def _mask_html_blocks(value):
+    """Blank raw HTML blocks while leaving inline HTML and its Markdown visible."""
+    lines = value.splitlines(keepends=True)
+    result = []
+    block = False
+    block_depth = 0
+    previous_blank = True
+    for line in lines:
+        raw = line.rstrip('\r\n')
+        depth, quoted = _blockquote(raw)
+        if block and depth < block_depth:
+            block = False
+        if block:
+            result.append(re.sub(r'[^\r\n]', ' ', line))
+            if not quoted.strip():
+                block = False
+                previous_blank = True
+            continue
+        if HTML_BLOCK_TAG.match(quoted):
+            block = True
+            block_depth = depth
+            result.append(re.sub(r'[^\r\n]', ' ', line))
+            previous_blank = False
+            continue
+        if previous_blank and HTML_TAG.fullmatch(quoted.strip()):
+            block = True
+            block_depth = depth
+            result.append(re.sub(r'[^\r\n]', ' ', line))
+            previous_blank = False
+            continue
+        result.append(line)
+        previous_blank = not quoted.strip()
+    return ''.join(result)
 
 
 def without_code(value, preserve_pre=False):
@@ -290,6 +331,7 @@ class _ExplicitAnchors(HTMLParser):
 def markdown_anchors(content):
     """Collect supported heading and explicit anchors; custom anchors do not deduplicate headings."""
     text = _mask_multiline_code(without_code(content))
+    text = _mask_html_blocks(text)
     parser = _ExplicitAnchors()
     html = without_code(content, preserve_pre=True)
     parts = re.split(r'(<pre\b[^>]*>.*?</pre\s*>)', html, flags=re.I | re.S)
@@ -570,6 +612,7 @@ def _bracket_pairs(text, html):
 def _markdown_links(content):
     """Yield destinations of inline and single-line reference links outside code."""
     content = _mask_multiline_code(without_code(content))
+    content = _mask_html_blocks(content)
     content = INLINE_CODE.sub(lambda m: ' ' * len(m.group()), content)
     references, content = _reference_definitions(content)
     html = [(m.start(), m.end()) for m in HTML_TAG.finditer(content)]
