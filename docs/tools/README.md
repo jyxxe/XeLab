@@ -30,6 +30,22 @@ python3 docs/tools/render_reference.py
 python3 docs/tools/validate_docs.py
 ```
 
+链接检查支持单行 `[文字](相对路径#片段)`、同页片段及百分号编码；对 `.md` 目标
+检查片段是否存在，对其他文件只检查路径。支持顶层单行 ATX 和 Setext 标题，以及
+标题内的普通强调、行内代码和内联链接：标题转小写，保留 Unicode 字母、数字、
+组合字符、`_` 和 `-`，空格转 `-`，其余符号删除；重复标题按文档顺序加 `-1` 等
+后缀。还识别 HTML 中的 `<a name="...">` 和常用标签的 `id`；自定义锚点区分大小写，
+不影响标题去重。`#top` 视为页首。常见围栏、缩进及 HTML 代码块、行内代码、HTML 注释、图片和外部链接
+不作为待检查链接；不会请求外部网站，也不检查非 Markdown 文件的片段。
+
+这不是完整的 GitHub Markdown 解析器：引用式链接、多行或嵌套链接、列表或引用块内
+标题、复杂嵌套行内语法和其他 HTML 元素的 `id` 不在保证范围内；遇到复杂标题时可
+使用明确的 `<a name="...">`。普通与严格模式使用同一套链接检查。运行独立回归测试：
+
+```bash
+python3 -m unittest discover -s docs/tools -p 'test_markdown_links.py' -v
+```
+
 严格模式额外校验 OpenAPI、所有 JSON Schema、请求与手工样例、TOML、Proto 编译及方法集合、SQL 语法。所有检查均只读，不连接部署、运行插件或应用数据库迁移。
 
 api/、rpc/ 为生成区域；渲染器清理不再属于规范的生成页，不适合放手写说明。主题设计在 architecture/、identity/ 等目录维护。
