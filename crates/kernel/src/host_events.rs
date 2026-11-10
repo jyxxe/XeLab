@@ -90,7 +90,7 @@ pub(crate) async fn publish(
     request: rpc::PublishEventRequest,
 ) -> Result<rpc::PublishEventResponse> {
     let context = context(request.context.as_ref())?;
-    let payload = contracts::strict_json(&request.payload_json, 1048576)?;
+    let payload = contracts::strict_json(&request.payload_json, app.config.json_limit(1048576))?;
     let body = json!({"topic":request.topic,"version":request.version,"payload":payload,"dedupe_key":request.dedupe_key});
     contracts::validate("EventPublish", &body)?;
     let mut c = app.db.connect_scoped(Duration::from_secs(10)).await?;

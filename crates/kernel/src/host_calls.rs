@@ -962,7 +962,7 @@ async fn prepare_capability(
             .ok_or_else(|| Error::invalid("Exact contract is required"))?,
     );
     contracts::validate("ContractRef", &contract)?;
-    let payload = contracts::strict_json(&request.input_json, 4194304)?;
+    let payload = contracts::strict_json(&request.input_json, app.config.json_limit(4194304))?;
     if contracts::digest(&request.input_json) != request.input_digest {
         return Err(Error::invalid("Input digest differs"));
     }
@@ -1037,7 +1037,7 @@ async fn prepare_skill(
         .filter(|v| !v.is_empty())
         .map(uuid)
         .transpose()?;
-    let payload = contracts::strict_json(&request.input_json, 4194304)?;
+    let payload = contracts::strict_json(&request.input_json, app.config.json_limit(4194304))?;
     if contracts::digest(&request.input_json) != request.input_digest {
         return Err(Error::invalid("Input digest differs"));
     }
@@ -1285,6 +1285,7 @@ async fn stream(app: std::sync::Arc<App>, prepared: Prepared) -> Result<RpcStrea
             }))
             .await;
     });
+    let maximum_frame = app.config.rpc_limit(16777216 + 65536);
     tokio::spawn(async move {
         let mut sequence = 0;
         loop {
@@ -1296,7 +1297,7 @@ async fn stream(app: std::sync::Arc<App>, prepared: Prepared) -> Result<RpcStrea
                         continue;
                     }
                     sequence += 1;
-                    let parsed = contracts::strict_json(frame.data.as_bytes(), 16777216 + 65536);
+                    let parsed = contracts::strict_json(frame.data.as_bytes(), maximum_frame);
                     parsed
                         .and_then(|value| {
                             let event = &value["event"];

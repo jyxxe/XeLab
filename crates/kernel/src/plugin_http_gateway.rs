@@ -498,7 +498,7 @@ async fn handle_with_ingress(
         };
         let bytes = tokio::time::timeout_at(
             started + Duration::from_secs(10),
-            to_bytes(body, 16 * 1024 * 1024),
+            to_bytes(body, app.config.json_limit(16 * 1024 * 1024)),
         )
         .await
         .map_err(|_| deadline())?
