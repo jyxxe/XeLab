@@ -63,7 +63,11 @@ export class OAuthSession extends EventTarget {
 
   async accessToken() {
     if (!this.#tokens) throw new ApiError('AUTH_REQUIRED', '请通过可信核心登录。', 401);
-    if (this.#tokens.expires_at <= Date.now() + 30000) await this.refresh();
+    // Refresh early only when a rotating credential exists or an exchange is
+    // already in flight. A token without the optional refresh credential is
+    // usable until its actual expiry.
+    const refreshAhead = this.#tokens.refresh_token !== null || this.#refreshing !== null;
+    if (this.#tokens.expires_at <= Date.now() + (refreshAhead ? 30000 : 0)) await this.refresh();
     if (!this.#tokens) throw new ApiError('AUTH_REQUIRED', '登录已结束。', 401);
     return this.#tokens.access_token;
   }

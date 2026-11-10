@@ -287,6 +287,57 @@ test('OAuth denied consent and invalid token schema yield no local login', async
   }
 });
 
+test('access token without optional refresh remains usable until its actual expiry', async () => {
+  let calls = 0;
+  const state = await signedIn(async () => {
+    calls++;
+    const data = tokens();
+    delete data.refresh_token;
+    return json(data);
+  });
+  const expiresAt = JSON.parse([...state.storage.data.values()][0]).expires_at;
+  const originalNow = Date.now;
+  try {
+    Date.now = () => expiresAt - 1;
+    assert.equal(state.session.loggedIn, true);
+    assert.equal(await state.session.accessToken(), 'access-one');
+    assert.equal(calls, 1, 'no refresh exchange is possible');
+    Date.now = () => expiresAt;
+    assert.equal(state.session.loggedIn, false);
+    await assert.rejects(() => state.session.accessToken(), error => error.code === 'AUTH_REQUIRED');
+    assert.equal(state.storage.data.size, 0);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test('near-expiry access requests wait for the same rotating refresh', async () => {
+  let release;
+  let refreshCalls = 0;
+  const state = await signedIn(async (_url, options) => {
+    if (new URLSearchParams(options.body).get('grant_type') === 'authorization_code') return json(tokens());
+    refreshCalls++;
+    return new Promise(resolve => { release = () => resolve(json(tokens('two'))); });
+  });
+  const expiresAt = JSON.parse([...state.storage.data.values()][0]).expires_at;
+  const originalNow = Date.now;
+  try {
+    Date.now = () => expiresAt - 1000;
+    const first = state.session.accessToken();
+    await new Promise(resolve => setImmediate(resolve));
+    const second = state.session.accessToken();
+    let secondSettled = false;
+    second.then(() => { secondSettled = true; }, () => { secondSettled = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(refreshCalls, 1);
+    assert.equal(secondSettled, false);
+    release();
+    assert.deepEqual(await Promise.all([first, second]), ['access-two', 'access-two']);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test('rotating refresh is singleflight and old credential is removed before network; failure clears family locally', async () => {
   let release;
   let refreshCalls = 0;
