@@ -434,6 +434,11 @@ class DesktopBrowser(unittest.TestCase):
         expect(window).to_contain_text("失败原因")
         expect(window).to_contain_text("FIXTURE_FAILED")
 
+        self.operation = {**base, "state": "canceled"}
+        window.locator(".operation-card").get_by_role("button", name="刷新", exact=True).click()
+        expect(window).to_contain_text("canceled")
+        expect(window).to_contain_text("操作已取消")
+
     def test_window_drag_resize_minimize_maximize_and_keyboard(self):
         self.open()
         window = self.app("系统状态")
