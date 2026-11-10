@@ -65,7 +65,7 @@
 ## 资源、日志与异步调用
 
 - 单微部署默认resources.cpu_millis=250、resources.memory_bytes=268435456；核心适配器为其逐微cgroup配置合计CPU/内存硬上限，全部worker共享，默认并发1/硬上限4；不创建每微OCI，不向MPR授予宿主cgroup权限。
-- 父MPR默认4000mCPU/4294967296字节（4vCPU/4GiB）：工作池3500mCPU/3758096384字节（3584MiB），控制CPU500m及控制内存128MiB，缓存256MiB。默认最多4个不同微部署同时活跃，总活动槽4只是上限；不足时等待/拒绝，不借内核4C/16GiB预留。
+- 父MPR默认4000mCPU/4294967296字节（4vCPU/4GiB）：工作池3500mCPU/3758096384字节（3584MiB），控制CPU500m及控制内存128MiB，缓存256MiB。默认最多4个不同微部署同时活跃，总活动槽4只是上限；不足时等待/拒绝，不借所选 profile 的内核预留。
 - 输入/输出各1MiB、heap16MiB、stack1MiB和stderr64KiB限制真实生效；日志截断带标记。
 - 搜索输出和查询不得进入MPR代码制品缓存，跨用户不能读到其他Call结果或推测其Secret。
 - 默认日志不含query、上游正文、Secret或认证头；微诊断和Call结果读取沿用当前权限。

@@ -1,5 +1,7 @@
 # M3 实现目标与验收进度
 
+本页保留的4C16G容量要求及既有证据属于 `standard` profile；[compact 1C512MiB](compact-node.md) 有独立准入与整机验收，不复用本页容量结论。
+
 [实施索引](README.md) · [目标 Issue #38](https://github.com/jyxxe/XeLab/issues/38) · [里程碑](roadmap.md)
 
 ## 当前验收记录

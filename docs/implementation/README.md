@@ -3,6 +3,7 @@
 [文档总目录](../README.md)
 
 - [验收矩阵与故障注入](acceptance.md)
+- [compact 1C512MiB 节点配置与整机验收](compact-node.md)（稳定性长测待执行）
 - [M4 实现范围、恢复与验收证据](m4-acceptance.md)
 - [M4 依赖解析、固定路由与失效策略](m4-dependencies.md)
 - [M4 HostService、Skill 代理与原调用来源](m4-host.md)

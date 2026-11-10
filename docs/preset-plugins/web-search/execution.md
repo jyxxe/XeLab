@@ -71,7 +71,7 @@ HTTP 401/403只表示固定外部服务商的响应时，才适用auth_rejected�
 
 输入和输出各最多1MiB、深度64；JS heap 16MiB、stack 1MiB、stderr最多64KiB。每attempt请求最多64KiB，响应按解压后512KiB计量。达到硬期限时监督器取消代理和执行单元，并释放活动槽。
 
-微部署默认250mCPU/256MiB，由核心适配器配置逐微cgroup，全部worker合计受限；默认并发1/硬上限4共享预算，heap16MiB为每VM子上限。无每微OCI和MPR宿主cgroup权限。父4000mCPU/4294967296字节（4vCPU/4GiB）的工作池3500mCPU/3758096384字节（3584MiB）默认最多准入4个不同微部署，总活动槽4不是四份资源；控制CPU500m、控制内存128MiB、缓存256MiB另有预算，不借内核4C/16GiB。
+微部署默认250mCPU/256MiB，由核心适配器配置逐微cgroup，全部worker合计受限；默认并发1/硬上限4共享预算，heap16MiB为每VM子上限。无每微OCI和MPR宿主cgroup权限。父4000mCPU/4294967296字节（4vCPU/4GiB）的工作池3500mCPU/3758096384字节（3584MiB）默认最多准入4个不同微部署，总活动槽4不是四份资源；控制CPU500m、控制内存128MiB、缓存256MiB另有预算，不借所选 profile 的内核预留。
 
 `usage.external_requests`统计已经可能发出请求字节的attempt数；确定未发送的连接失败不增加。`usage.potentially_billed_requests`保守统计其中可能收费的请求，不能据状态码推定免费。v1在不能确认不收费时将其计入，数值不高于external_requests。
 

@@ -38,7 +38,7 @@ pub(crate) async fn reset_rows(
     let account=c.query_opt("SELECT password_hash FROM accounts WHERE id=$1 AND kind='user' AND parent_id IS NULL AND independent_owner AND status<>'archived' FOR UPDATE",&[&owner]).await?.ok_or_else(||Error::invalid("Recovery Owner must be an existing independent root user"))?;
     let previous: Option<String> = account.get(0);
     let password = Zeroizing::new(password.to_owned());
-    let hashed = tokio::task::spawn_blocking(move || -> Result<String> {
+    let hashed = auth::password_work(move || -> Result<String> {
         if previous
             .as_deref()
             .and_then(|p| PasswordHash::new(p).ok())
@@ -54,8 +54,7 @@ pub(crate) async fn reset_rows(
         }
         auth::password_hash(&password)
     })
-    .await
-    .map_err(|_| Error::unavailable("Recovery password preparation stopped"))??;
+    .await?;
     c.execute(
         "UPDATE credentials SET status='revoked',revision=revision+1,updated_at=now()",
         &[],

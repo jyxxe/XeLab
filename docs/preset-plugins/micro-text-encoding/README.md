@@ -28,7 +28,7 @@ binary数据不适用编码转换。strict与replace行为显式区分，调用�
 
 输入/输出各最多1MiB UTF-8 JSON、深度64；heap默认16MiB、stack 1MiB；wall默认2s、平台硬上限30s。base64额外开销和目标编码膨胀均计入预算，结果不截断。
 
-默认并发1，资源从父Runtime池扣除，无独立容器，不占用内核至少4C/16GiB预留。VM仅虚拟stdin/stdout/stderr，无文件、网络、Secret、进程或原始HostService访问。
+默认并发1，资源从父Runtime池扣除，无独立容器，不占用所选 profile 的内核预留。VM仅虚拟stdin/stdout/stderr，无文件、网络、Secret、进程或原始HostService访问。
 
 多个小文本使用[核心异步batch](../../skills/batches.md)。跨块多字节状态不在独立item间共享；大文件转换需未来受控流协议。
 
@@ -40,4 +40,4 @@ binary数据不适用编码转换。strict与replace行为显式区分，调用�
 
 资源与联网设置可手动配置：先停用微部署并等待phase=disabled且完全排空，再通过[设置接口](../planned/interface-rules.md#微部署资源与联网设置)更新，然后重新启用。更新generation/revision并使旧句柄失效，不修改原limits、微版本或父绑定，不改变已注册Skill定义。
 
-父MPR默认4000mCPU/4294967296字节（4vCPU/4GiB），其中微工作池3500mCPU/3758096384字节（3584MiB）、控制CPU500m及控制内存128MiB、制品缓存256MiB，内存合计3968MiB；默认预算最多允许4个不同微部署同时活跃，总活动槽4只是上限。资源从父预算扣除，不借用内核4C/16GiB预留。
+父MPR默认4000mCPU/4294967296字节（4vCPU/4GiB），其中微工作池3500mCPU/3758096384字节（3584MiB）、控制CPU500m及控制内存128MiB、制品缓存256MiB，内存合计3968MiB；默认预算最多允许4个不同微部署同时活跃，总活动槽4只是上限。资源从父预算扣除，不借用所选 profile 的内核预留。

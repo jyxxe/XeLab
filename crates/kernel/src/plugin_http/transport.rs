@@ -18,6 +18,7 @@ pub struct InstanceHttp {
     tls: Arc<rustls::ClientConfig>,
     address: SocketAddr,
     server_name: String,
+    maximum_json_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -210,13 +211,15 @@ impl InstanceHttp {
         let identity = config.root().join("kernel-identity");
         let mut pem = fs::read(identity.join("tls.crt"))?;
         pem.extend(fs::read(identity.join("tls.key"))?);
-        Self::new(
+        let mut transport = Self::new(
             instance,
             generation,
             SocketAddr::new(address, 8080),
             &fs::read(config.text("security", "workload_ca_cert_file"))?,
             &pem,
-        )
+        )?;
+        transport.maximum_json_bytes = config.json_limit(MAXIMUM_RESPONSE_BYTES);
+        Ok(transport)
     }
 
     pub(super) fn new(
@@ -278,6 +281,7 @@ impl InstanceHttp {
             tls,
             address,
             server_name: host,
+            maximum_json_bytes: MAXIMUM_RESPONSE_BYTES,
         })
     }
 
@@ -310,12 +314,22 @@ impl InstanceHttp {
     ) -> Result<Response> {
         let deadline = tokio::time::Instant::now() + remaining.min(op.route.timeout);
         check_deadline(deadline)?;
+        if bytes.len() > self.maximum_json_bytes {
+            return Err(too_large());
+        }
         let mut headers = op.request(headers, bytes)?;
         inject(&mut headers, Some(delegation))?;
         check_deadline(deadline)?;
         let work = async {
             let response = self
-                .send(&op.method, &op.path, headers, bytes, deadline)
+                .send(
+                    &op.method,
+                    &op.path,
+                    headers,
+                    bytes,
+                    deadline,
+                    self.maximum_json_bytes,
+                )
                 .await?;
             let headers = op.response(response.status, &response.headers, &response.bytes)?;
             check_deadline(deadline)?;
@@ -357,7 +371,9 @@ impl InstanceHttp {
         let headers = allowed_request_headers(headers, false)?;
         check_deadline(deadline)?;
         let work = async {
-            let response = self.send(method, path, headers, &[], deadline).await?;
+            let response = self
+                .send(method, path, headers, &[], deadline, MAXIMUM_RESPONSE_BYTES)
+                .await?;
             let headers = static_response(
                 method,
                 response.status,
@@ -383,38 +399,12 @@ impl InstanceHttp {
         headers: HeaderMap,
         bytes: &[u8],
         deadline: tokio::time::Instant,
+        maximum: usize,
     ) -> Result<Response> {
         let response = self
             .open_request(method, path, headers, bytes, deadline)
             .await?;
-        if response
-            .content_length()
-            .is_some_and(|l| l > MAXIMUM_RESPONSE_BYTES as u64)
-        {
-            return Err(too_large());
-        }
-        let status = response.status();
-        let headers = response.headers().clone();
-        let mut stream = response.bytes_stream();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|error| {
-                if error.is_timeout() {
-                    timeout()
-                } else {
-                    Error::unavailable("Plugin HTTP response ended before completion")
-                }
-            })?;
-            if chunk.len() > MAXIMUM_RESPONSE_BYTES.saturating_sub(bytes.len()) {
-                return Err(too_large());
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        Ok(Response {
-            status,
-            headers,
-            bytes,
-        })
+        collect(response, maximum).await
     }
     pub(crate) async fn open(
         &self,
@@ -425,6 +415,9 @@ impl InstanceHttp {
         deadline: tokio::time::Instant,
     ) -> Result<reqwest::Response> {
         check_deadline(deadline)?;
+        if bytes.len() > self.maximum_json_bytes {
+            return Err(too_large());
+        }
         let mut headers = op.request(headers, bytes)?;
         inject(&mut headers, Some(context))?;
         check_deadline(deadline)?;
@@ -468,6 +461,38 @@ impl InstanceHttp {
         check_deadline(deadline)?;
         Ok(response)
     }
+}
+
+/// Bound both declared and chunked HTTP responses before schema/JSON parsing.
+pub(crate) async fn collect(response: reqwest::Response, maximum: usize) -> Result<Response> {
+    if response
+        .content_length()
+        .is_some_and(|size| size > maximum as u64)
+    {
+        return Err(too_large());
+    }
+    let status = response.status();
+    let headers = response.headers().clone();
+    let mut stream = response.bytes_stream();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| {
+            if error.is_timeout() {
+                timeout()
+            } else {
+                Error::unavailable("Plugin HTTP response ended before completion")
+            }
+        })?;
+        if chunk.len() > maximum.saturating_sub(bytes.len()) {
+            return Err(too_large());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(Response {
+        status,
+        headers,
+        bytes,
+    })
 }
 
 pub(crate) fn static_response(
@@ -605,5 +630,52 @@ fn check_deadline(deadline: tokio::time::Instant) -> Result<()> {
         Err(timeout())
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod compact_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn wire_response(
+        wire: &'static [u8],
+    ) -> (reqwest::Response, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            socket.write_all(wire).await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap();
+        (response, server)
+    }
+
+    #[tokio::test]
+    async fn compact_response_cap_precedes_json_parse_for_declared_and_chunked_bodies() {
+        for wire in [
+            b"HTTP/1.1 200 OK\r\nContent-Length: 1024\r\n\r\n".as_slice(),
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n3\r\ndef\r\n0\r\n\r\n".as_slice(),
+        ] {
+            let (response, server) = wire_response(wire).await;
+            let result = tokio::time::timeout(Duration::from_secs(2), collect(response, 4)).await;
+            server.abort();
+            assert_eq!(result.unwrap().err().unwrap().code, "PAYLOAD_TOO_LARGE");
+        }
+        let (response, server) =
+            wire_response(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nnull").await;
+        let response = collect(response, 4).await.unwrap();
+        server.abort();
+        assert_eq!(response.bytes, b"null");
     }
 }
