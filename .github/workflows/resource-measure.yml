@@ -1,0 +1,52 @@
+name: Actual kernel resource experiment
+on:
+  push:
+    branches: [experiment/kernel-resource-measure]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  actual_daemon:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: xelab
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_DB: xelab_test
+        ports: ["5432:5432"]
+        options: >-
+          --shm-size=512m
+          --health-cmd "pg_isready -U xelab -d xelab_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Build actual optimized daemon and CLI
+        run: |
+          rustc --version
+          cargo --version
+          cargo build --release --locked -p xelab-kernel --bin xelabd --bin xelabctl
+      - name: Prepare real privileged host
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y nftables postgresql-client
+          sudo systemctl start containerd
+          sudo ctr namespaces create xelab-resource-measure
+      - name: Measure actual daemon with explicitly lowered reservation floor
+        env:
+          PG_CONTAINER_ID: ${{ job.services.postgres.id }}
+          XELAB_MEASURE_DATABASE_URL: "host=127.0.0.1 port=5432 user=xelab password=test-only-password dbname=xelab_test"
+        run: sudo --preserve-env=PG_CONTAINER_ID,XELAB_MEASURE_DATABASE_URL bash tools/resource-measure/run-ci.sh "$GITHUB_WORKSPACE" "$RUNNER_TEMP/xelab-resource-measure" "$(rustc --version)"
+      - name: Upload numeric measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: actual-kernel-resource-${{ github.sha }}
+          path: resource-evidence/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve experiment source
+        if: always()
+        run: git diff --exit-code

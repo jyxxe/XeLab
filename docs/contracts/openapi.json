@@ -73970,14 +73970,14 @@
         "properties": {
           "kernel_cpu_millis": {
             "type": "integer",
-            "minimum": 4000,
+            "minimum": 1,
             "maximum": 1048576,
             "description": "内核预留，至少 4 vCPU",
             "default": 4000
           },
           "kernel_memory_bytes": {
             "type": "integer",
-            "minimum": 17179869184,
+            "minimum": 1048576,
             "maximum": 9007199254740991,
             "description": "内核预留，至少 16 GiB",
             "default": 17179869184
