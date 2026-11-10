@@ -1,9 +1,10 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
-from markdown_links import check_markdown_links, markdown_anchors
+from markdown_links import _markdown_links, _unescape_markdown, check_markdown_links, markdown_anchors
 
 
 class MarkdownLinksTests(unittest.TestCase):
@@ -65,6 +66,10 @@ class MarkdownLinksTests(unittest.TestCase):
 ## [Linked text](https://example.com)
 ## foo_bar
 ## \\_literal_
+## 〇用例 ‿ Ⅳ Ⓐ
+## ![](image.png) Tag
+## Heading [ref][target]
+## Heading [shortcut]
 Setext title
 ============
 ## Repeat
@@ -73,10 +78,14 @@ Setext title
 ## Repeat
 ## !!!
 ## !!!
+
+[target]: #unused
+[shortcut]: #unused
 ''')
         self.assertTrue({
             'thisll-be-a-helpful-section-about-θ', '中文标点', 'café--codevalue',
-            'linked-text', 'foo_bar', '_literal_', 'setext-title', 'repeat', 'repeat-1',
+            'linked-text', 'foo_bar', '_literal_', '〇用例-‿-ⅳ-ⓐ', '-tag', 'heading-ref',
+            'heading-shortcut', 'setext-title', 'repeat', 'repeat-1',
             'repeat-2', 'repeat-3', '-1',
         }.issubset(anchors), anchors)
         self.assertNotIn('repeat-4', anchors)
@@ -106,7 +115,7 @@ Setext title
 # HTML fake
 [HTML code](#absent)
 </pre>
-<code>[inline HTML code](#absent)</code>
+<code>plain HTML code</code>
 <!--
 ```
 -->
@@ -128,7 +137,73 @@ code
         self.assertIn('after-comment', anchors)
         self.assertIn('after-html', anchors)
         self.assertTrue({'fake', 'still-fake', 'also-fake', 'fake-anchor',
-                         'hidden', 'pre-anchor', 'indented-fake', 'html-fake'}.isdisjoint(anchors))
+                         'hidden', 'indented-fake', 'html-fake'}.isdisjoint(anchors))
+        # HTML elements inside <pre> are still real anchors in GitHub's rendered HTML.
+        self.assertIn('pre-anchor', anchors)
+
+    def test_inline_titles_escapes_and_balanced_destinations(self):
+        self.write('other(1).md', '# Section\n')
+        source = self.write('source.md', r'''# Heading
+[title](#heading "A title")
+[angle](<#heading> 'A title')
+[parentheses](other(1).md#section "A (title)")
+\[literal](#not-a-link)
+[not a link](#bad\ name)
+![image](#not-a-link)
+\![actual link](#missing)
+[missing](#other-missing "title")
+''')
+        _, errors = check_markdown_links(source, self.root)
+        self.assertEqual(errors, [
+            'broken Markdown anchor source.md -> #missing',
+            'broken Markdown anchor source.md -> #other-missing',
+        ])
+
+    def test_reference_links_are_resolved_and_unused_definitions_are_not_checked(self):
+        self.write('other.md', '# 中文 标题\n')
+        source = self.write('source.md', '''# Local
+[first][ target ]
+[shortcut]
+[collapsed][]
+![image][bad-image]
+[unresolved][unknown]
+[broken][unknown]
+[missing][broken]
+
+[target]: other.md#%E4%B8%AD%E6%96%87-%E6%A0%87%E9%A2%98 "title"
+[TARGET]: other.md#ignored-duplicate
+[shortcut]: #local
+[collapsed]: <#local> 'title'
+[broken]: other.md#not-present
+[unused]: missing.md#anything
+[bad-image]: missing-image.md#anything
+''')
+        _, errors = check_markdown_links(source, self.root)
+        self.assertEqual(errors, ['broken Markdown anchor source.md -> other.md#not-present'])
+
+    def test_github_html_explicit_anchors_and_inline_code_links(self):
+        source = self.write('source.md', '''<em id="em-anchor">text</em>
+<code id="code-anchor">code</code>
+<section id="section-anchor">section</section>
+<details id="detail-anchor"><summary id="summary-anchor">summary</summary></details>
+<pre id="pre-id"><a name="inside-pre"></a>
+text
+</pre>
+<table><tr><td id="valid-cell">cell</td></tr></table>
+<abbr id="stripped">text</abbr><td id="orphan-cell">cell</td>
+[em](#em-anchor) [code](#code-anchor) [section](#section-anchor)
+[detail](#detail-anchor) [summary](#summary-anchor)
+[pre](#pre-id) [inside](#inside-pre)
+[table](#valid-cell) [stripped](#stripped) [orphan](#orphan-cell)
+<span title="[not a link](#wrong)">text</span>
+<code>[actual link](#missing)</code>
+''')
+        _, errors = check_markdown_links(source, self.root)
+        self.assertEqual(errors, [
+            'broken Markdown anchor source.md -> #stripped',
+            'broken Markdown anchor source.md -> #orphan-cell',
+            'broken Markdown anchor source.md -> #missing',
+        ])
 
     def test_indented_list_link_is_still_checked(self):
         source = self.write('source.md', '''# Existing
@@ -138,6 +213,15 @@ code
 ''')
         _, errors = check_markdown_links(source, self.root)
         self.assertEqual(errors, ['broken Markdown anchor source.md -> #absent'])
+
+    def test_inline_code_delimiter_escapes_and_heading_spaces(self):
+        source = self.write('source.md', r'''# Before ` foo ` After
+\\`[not a link](#missing)`
+\`[actual link](#missing)`
+[heading](#before-foo-after)
+''')
+        _, errors = check_markdown_links(source, self.root)
+        self.assertEqual(errors, ['broken Markdown anchor source.md -> #missing'])
 
     def test_external_images_and_non_markdown_fragments_remain_out_of_scope(self):
         self.write('schema.json', '{}')
@@ -171,6 +255,23 @@ code
         ]))
         _, errors = check_markdown_links(source, self.root)
         self.assertEqual(errors, ['broken Markdown anchor source.md -> other.md#literal%20value'])
+
+    def test_links_match_github_rendered_offline_fixtures(self):
+        fixture = Path(__file__).parent / 'fixtures/github-markdown-links.json'
+        cases = json.loads(fixture.read_text(encoding='utf-8'))['cases']
+        self.assertTrue(cases)
+        for number, case in enumerate(cases):
+            with self.subTest(case=number):
+                actual = [unquote(_unescape_markdown(item)) for item in _markdown_links(case['markdown'])]
+                self.assertEqual(actual, case['destinations'])
+
+    def test_headings_match_rendered_text_and_slugger_offline_fixtures(self):
+        fixture = Path(__file__).parent / 'fixtures/github-heading-slugs.json'
+        cases = json.loads(fixture.read_text(encoding='utf-8'))['cases']
+        self.assertTrue(cases)
+        for number, case in enumerate(cases):
+            with self.subTest(case=number):
+                self.assertEqual(markdown_anchors(case['markdown']) - {'top'}, {case['anchor']})
 
 
 if __name__ == '__main__':
