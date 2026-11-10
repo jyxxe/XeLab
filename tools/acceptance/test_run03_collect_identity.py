@@ -16,7 +16,7 @@ import run03
 
 
 class CollectionDaemonIdentityTests(unittest.TestCase):
-    def collect(self, identities):
+    def collect(self, identities, clock_values=(100, 100, 100, 102)):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config, output = root / 'config.toml', root / 'report.json'
@@ -25,7 +25,7 @@ class CollectionDaemonIdentityTests(unittest.TestCase):
                     '--output', str(output), '--daemon-pid', '42', '--seconds', '1',
                     '--token-file', str(root / 'token'), '--ca-file', str(root / 'ca')]
             api = SimpleNamespace(call=lambda operation: {'operation': operation, 'status': 200})
-            times = iter([100, 100, 100, 102])
+            times = iter(clock_values)
             with patch('sys.argv', argv), patch('run03.preflight', return_value={'status': 'eligible'}), \
                     patch('run03.daemon_evidence', return_value={'pid': 42, 'binary_sha256': 'fixture'}), \
                     patch('run03.process_identity', side_effect=identities), \
@@ -62,6 +62,12 @@ class CollectionDaemonIdentityTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertTrue(report['collection_failed'])
         self.assertNotIn('samples', report)
+
+    def test_expired_budget_without_any_sample_is_not_success(self):
+        code, report = self.collect([(42, 100), (42, 100)], (100, 102))
+        self.assertEqual(code, 1)
+        self.assertTrue(report['collection_failed'])
+        self.assertEqual(report['samples'], [])
 
     def test_real_proc_identity_rejects_an_exited_process(self):
         process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])

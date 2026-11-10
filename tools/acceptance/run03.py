@@ -605,7 +605,11 @@ def main():
                     if not unchanged:
                         break
                     time.sleep(min(1, max(0, end - time.monotonic())))
-            exit_code = int(any(x['errors'] for x in report.get('samples', [])))
+                if not samples:
+                    report['collection_failed'] = True
+                    report['collection_error'] = 'no samples recorded before time budget expired'
+            exit_code = int(report.get('collection_failed', False)
+                            or any(x['errors'] for x in report.get('samples', [])))
     except Exception as error:
         # Never include exception text from a URL, HTTP response, DSN or child.
         report['error_type'] = type(error).__name__
