@@ -126,6 +126,59 @@ test('write dispatch preserves exact ETag/idempotency proof, stable backend erro
   assert.equal(count, 1);
 });
 
+test('dispatch notification is not called for local validation or access-token failure', async () => {
+  let notifications = 0;
+  let fetches = 0;
+  let tokenCalls = 0;
+  const api = new ApiClient(config, { accessToken: async () => {
+    tokenCalls++;
+    throw new ApiError('AUTH_REQUIRED', '登录已结束。', 401);
+  } }, { fetcher: async () => { fetches++; return json({}); } });
+  const onDispatch = () => { notifications++; };
+  for (const [name, options] of [
+    ['unknownOperation', {}],
+    ['invokeSkill', { params: { skill_id: id }, body: { input: { bad: NaN } }, idempotencyKey: 'intent-key' }],
+    ['setSkillEnabled', { params: { skill_id: id }, body: { enabled: true }, idempotencyKey: 'intent-key' }],
+  ]) {
+    await assert.rejects(() => api.invoke(name, options, onDispatch), ApiError);
+  }
+  assert.equal(tokenCalls, 0);
+  await assert.rejects(() => api.invoke('invokeSkill', {
+    params: { skill_id: id }, body: { input: {} }, idempotencyKey: 'intent-key',
+  }, onDispatch), error => error.code === 'AUTH_REQUIRED');
+  assert.equal(tokenCalls, 1);
+  assert.equal(notifications, 0);
+  assert.equal(fetches, 0);
+});
+
+test('dispatch notification runs synchronously immediately before attempted business fetch', async () => {
+  const events = [];
+  let releaseToken;
+  const waitForToken = new Promise(resolve => { releaseToken = resolve; });
+  const api = new ApiClient(config, { accessToken: async () => {
+    events.push('token-start');
+    await waitForToken;
+    events.push('token-resolved');
+    return 'private-test-access-token';
+  } }, { fetcher: async (_url, options) => {
+    assert.deepEqual(events, ['token-start', 'token-resolved', 'dispatch']);
+    events.push('fetch');
+    assert.equal(options.headers.get('idempotency-key'), 'intent-key');
+    assert.deepEqual(JSON.parse(options.body), { input: { value: 'private-test-payload' } });
+    throw new TypeError('private-test-transport-detail');
+  } });
+  let callbackArguments;
+  const pending = api.invoke('invokeSkill', {
+    params: { skill_id: id }, body: { input: { value: 'private-test-payload' } }, idempotencyKey: 'intent-key',
+  }, (...args) => { callbackArguments = args; events.push('dispatch'); });
+  assert.deepEqual(events, ['token-start']);
+  releaseToken();
+  await assert.rejects(pending, error => error.code === 'CONNECTION_FAILED'
+    && !error.message.includes('private-test-transport-detail'));
+  assert.deepEqual(events, ['token-start', 'token-resolved', 'dispatch', 'fetch']);
+  assert.deepEqual(callbackArguments, [], 'dispatch callback must not receive token, payload, or request metadata');
+});
+
 test('caller cancellation reasons are classified consistently before headers and during the body', async t => {
   const reasons = ['private cancellation detail', new Error('private cancellation detail'),
     new DOMException('private cancellation detail', 'TimeoutError'), null];

@@ -185,7 +185,8 @@ export class ApiClient {
     this.#fetch = fetcher.bind(globalThis);
   }
 
-  async invoke(name, options = {}) {
+  async invoke(name, options = {}, onDispatch) {
+    if (onDispatch !== undefined && typeof onDispatch !== 'function') throw new ApiError('INVALID_ARGUMENT', '请求发送通知须为函数。');
     if (!plain(options) || Object.keys(options).some(key => !['params', 'query', 'body', 'etag', 'idempotencyKey', 'signal'].includes(key))) {
       throw new ApiError('INVALID_ARGUMENT', '未声明的管理请求选项。');
     }
@@ -229,6 +230,9 @@ export class ApiClient {
       : 10000;
     const deadline = AbortSignal.timeout(budget);
     const effectiveSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    // Once fetch is attempted its side effects may be unknown, even when it
+    // rejects. Notify the caller after local validation and token preflight.
+    onDispatch?.();
     let response;
     try {
       response = await this.#fetch(url.href, {
