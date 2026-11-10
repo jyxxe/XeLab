@@ -9,7 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
-SCHEMA = 1
+SCHEMA = 2
 UNSUCCESSFUL = {"failure", "timed_out", "cancelled", "startup_failure", "stale"}
 THREADS_QUERY = (
     "query($owner:String!,$name:String!,$number:Int!,$cursor:String){"
@@ -75,30 +75,60 @@ def check_runs(api, head_sha):
         page += 1
 
 
-def classify(checks, statuses):
-    if not checks and not statuses:
+def workflow_runs(api, head_sha):
+    runs = []
+    page = 1
+    while True:
+        batch = api.request(f"/actions/runs?head_sha={head_sha}&per_page=100&page={page}").get("workflow_runs", [])
+        for run in batch:
+            if run.get("head_sha") != head_sha:
+                raise ValueError("workflow run head SHA does not match the pull request head")
+            runs.append({
+                "name": run["name"],
+                "event": run.get("event"),
+                "status": run["status"],
+                "conclusion": run.get("conclusion"),
+                "url": run["html_url"],
+            })
+        if len(batch) < 100:
+            return runs
+        page += 1
+
+
+def classify(checks, statuses, workflows=()):
+    if not checks and not statuses and not workflows:
         return "none-reported"
-    if any(c["status"] == "completed" and c["conclusion"] in UNSUCCESSFUL for c in checks) or any(s["state"] in {"failure", "error"} for s in statuses):
+    if (any(c["status"] == "completed" and c["conclusion"] in UNSUCCESSFUL for c in checks)
+            or any(c["status"] == "completed" and c["conclusion"] in UNSUCCESSFUL for c in workflows)
+            or any(s["state"] in {"failure", "error"} for s in statuses)):
         return "failed"
-    if any(c["status"] == "completed" and c["conclusion"] == "action_required" for c in checks):
+    if (any(c["status"] == "completed" and c["conclusion"] == "action_required" for c in checks)
+            or any(c.get("conclusion") == "action_required" or c.get("status") == "action_required" for c in workflows)):
         return "action-required"
-    if any(c["status"] != "completed" for c in checks) or any(s["state"] == "pending" for s in statuses):
+    if (any(c["status"] != "completed" for c in checks)
+            or any(c["status"] != "completed" for c in workflows)
+            or any(s["state"] == "pending" for s in statuses)):
         return "pending"
     return "passed"
 
 
-def required_checks(api, base_ref, checks, statuses):
+def required_checks(api, base_ref, checks, statuses, workflows=()):
     try:
         protection = api.request("/branches/" + quote(base_ref, safe="") + "/protection")
     except HTTPError:
         return {"state": "unknown"}
     required = protection.get("required_status_checks") or {}
     names = sorted({c["context"] for c in required.get("checks", [])} | set(required.get("contexts", [])))
+    awaiting_approval = any(c.get("conclusion") == "action_required" or c.get("status") == "action_required" for c in workflows)
     results = []
     for name in names:
         matched = [c for c in checks if c["name"] == name]
         matched_statuses = [s for s in statuses if s["context"] == name]
-        results.append({"name": name, "state": classify(matched, matched_statuses) if matched or matched_statuses else "missing"})
+        if matched or matched_statuses:
+            state = classify(matched, matched_statuses)
+        else:
+            state = "action-required" if awaiting_approval else "missing"
+        results.append({"name": name, "state": state})
     return {"state": "readable", "checks": results}
 
 
@@ -133,6 +163,14 @@ def build_report(api, number):
     statuses = [{"context": s["context"], "state": s["state"], "url": s.get("target_url")} for s in pages(api, f"/commits/{head_sha}/statuses")]
     statuses.sort(key=lambda s: (s["context"], s["url"] or ""))
     combined = api.request(f"/commits/{head_sha}/status")["state"]
+    try:
+        workflows = workflow_runs(api, head_sha)
+        workflow_state = "known"
+    except HTTPError as error:
+        if error.code not in {403, 404}:
+            raise
+        workflows, workflow_state = [], "unknown"
+    workflows.sort(key=lambda w: (w["name"], w["url"]))
     reviews = [{"user": r["user"]["login"], "state": r["state"], "commit_id": r.get("commit_id"), "submitted_at": r.get("submitted_at")} for r in pages(api, f"/pulls/{number}/reviews")]
     reviews.sort(key=lambda r: (r["submitted_at"] or "", r["user"], r["state"], r["commit_id"] or ""))
     approvals = [r for r in reviews if r["state"] == "APPROVED"]
@@ -148,12 +186,14 @@ def build_report(api, number):
         "mergeable": pr["mergeable"],
         "mergeable_state": pr["mergeable_state"],
         "checks": {
-            "state": classify(runs, statuses),
+            "state": classify(runs, statuses, workflows),
+            "workflow_runs_state": workflow_state,
             "combined_status": combined,
             "check_runs": runs,
             "commit_statuses": statuses,
+            "workflow_runs": workflows,
         },
-        "required_checks": required_checks(api, pr["base"]["ref"], runs, statuses),
+        "required_checks": required_checks(api, pr["base"]["ref"], runs, statuses, workflows),
         "reviews": {
             "total": len(reviews),
             "approvals_on_head": sum(1 for r in approvals if r["commit_id"] == head_sha),
@@ -175,10 +215,14 @@ def render_text(report):
         f"PR #{report['pull_request']} {report['repository']} state={report['state']} draft={str(report['draft']).lower()}",
         f"base {report['base']['ref']}@{report['base']['sha']} head {report['head']['ref']}@{report['head']['sha']}",
         f"mergeable={json.dumps(report['mergeable'])} mergeable_state={report['mergeable_state']}",
-        f"checks: {checks['state']} ({len(checks['check_runs'])} check runs, {len(checks['commit_statuses'])} commit statuses, combined={checks['combined_status']})",
+        f"checks: {checks['state']} ({len(checks['check_runs'])} check runs, {len(checks['commit_statuses'])} commit statuses, {len(checks['workflow_runs'])} workflow runs, combined={checks['combined_status']})",
     ]
     for run in checks["check_runs"]:
         lines.append(f"  check {run['name']}: {run['status']}/{run['conclusion']}")
+    for run in checks["workflow_runs"]:
+        lines.append(f"  workflow {run['name']}: {run['status']}/{run['conclusion']} ({run['event']})")
+    if checks["workflow_runs_state"] == "unknown":
+        lines.append("workflow runs: unknown (Actions unreadable or disabled; check runs/statuses only)")
     if required["state"] == "unknown":
         lines.append("required checks: unknown (branch protection unreadable)")
     else:

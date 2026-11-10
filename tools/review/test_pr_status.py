@@ -37,12 +37,21 @@ def review(state="APPROVED", commit_id=HEAD, user="reviewer", submitted_at="2026
     return {"user": {"login": user}, "state": state, "commit_id": commit_id, "submitted_at": submitted_at, "body": SECRET}
 
 
+def workflow(name="CI", status="completed", conclusion="success", head_sha=HEAD, event="pull_request"):
+    return {
+        "name": name, "event": event, "status": status, "conclusion": conclusion,
+        "html_url": "https://github.com/example/project/actions/runs/1", "head_sha": head_sha,
+    }
+
+
 class FakeAPI:
-    def __init__(self, pull=None, runs=(), statuses=(), combined="success", reviews=(), protection=None, threads=None, fail_paths=()):
+    def __init__(self, pull=None, runs=(), statuses=(), workflows=(), combined="success", reviews=(), protection=None, threads=None, fail_paths=(), workflow_error=None):
         self.repo = "example/project"
         self.pull = copy.deepcopy(PULL if pull is None else pull)
         self.runs = list(runs)
         self.statuses = list(statuses)
+        self.workflows = list(workflows)
+        self.workflow_error = workflow_error
         self.combined = combined
         self.reviews = list(reviews)
         self.protection = protection
@@ -63,6 +72,11 @@ class FakeAPI:
         if path.startswith(f"/commits/{head}/statuses?"):
             page = int(path.rsplit("=", 1)[1])
             return self.statuses[(page - 1) * 100:page * 100]
+        if path.startswith(f"/actions/runs?head_sha={head}&"):
+            if self.workflow_error is not None:
+                raise HTTPError("https://api.github.com", self.workflow_error, "denied", {}, None)
+            page = int(path.rsplit("=", 1)[1])
+            return {"total_count": len(self.workflows), "workflow_runs": self.workflows[(page - 1) * 100:page * 100]}
         if path == f"/commits/{head}/status":
             return {"state": self.combined}
         if path.startswith("/pulls/1/reviews?"):
@@ -101,6 +115,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(report["head"]["sha"], HEAD)
         for kind in ("check-runs?", "statuses?", "status"):
             self.assertIn(("GET", f"/commits/{HEAD}/{kind}" if kind == "status" else f"/commits/{HEAD}/{kind}per_page=100&page=1"), api.calls)
+        self.assertIn(("GET", f"/actions/runs?head_sha={HEAD}&per_page=100&page=1"), api.calls)
         self.assertEqual(report["reviews"]["approvals_on_head"], 1)
 
     def test_head_change_rebinds_checks_and_stales_approval(self):
@@ -140,6 +155,60 @@ class ReportTests(unittest.TestCase):
         for runs, statuses, expected in cases:
             with self.subTest(expected=expected, runs=runs):
                 self.assertEqual(build_report(FakeAPI(runs=runs, statuses=statuses), 1)["checks"]["state"], expected)
+
+    def test_fork_pr_workflow_approval_is_action_required_not_none_reported(self):
+        protection = {"required_status_checks": {"contexts": ["CI"], "checks": [{"context": "CI", "app_id": 1}]}}
+        api = FakeAPI(workflows=[workflow(conclusion="action_required")], protection=protection)
+        report = build_report(api, 1)
+        self.assertEqual(report["checks"]["state"], "action-required")
+        self.assertEqual(report["checks"]["workflow_runs_state"], "known")
+        self.assertEqual(report["checks"]["workflow_runs"], [{
+            "name": "CI", "event": "pull_request", "status": "completed",
+            "conclusion": "action_required", "url": "https://github.com/example/project/actions/runs/1"}])
+        self.assertEqual(report["required_checks"]["checks"], [{"name": "CI", "state": "action-required"}])
+        text = render_text(report)
+        self.assertIn("workflow CI: completed/action_required", text)
+
+    def test_workflow_states_classified(self):
+        cases = [
+            ([workflow(status="queued", conclusion=None)], "pending"),
+            ([workflow(status="in_progress", conclusion=None)], "pending"),
+            ([workflow(conclusion="failure")], "failed"),
+            ([workflow(conclusion="timed_out")], "failed"),
+            ([workflow(conclusion="action_required")], "action-required"),
+            ([workflow(conclusion="skipped")], "passed"),
+            ([workflow()], "passed"),
+        ]
+        for workflows, expected in cases:
+            with self.subTest(expected=expected, workflows=workflows):
+                self.assertEqual(build_report(FakeAPI(workflows=workflows), 1)["checks"]["state"], expected)
+
+    def test_workflow_failure_outranks_approval_and_pending(self):
+        report = build_report(FakeAPI(workflows=[workflow(conclusion="failure"), workflow(name="Other", conclusion="action_required")]), 1)
+        self.assertEqual(report["checks"]["state"], "failed")
+
+    def test_workflow_head_mismatch_fails_closed(self):
+        with self.assertRaises(ValueError):
+            build_report(FakeAPI(workflows=[workflow(head_sha=OLD)]), 1)
+
+    def test_workflow_pagination(self):
+        api = FakeAPI(workflows=[workflow(name=f"wf-{n}") for n in range(101)])
+        report = build_report(api, 1)
+        self.assertEqual(len(report["checks"]["workflow_runs"]), 101)
+        self.assertIn(("GET", f"/actions/runs?head_sha={HEAD}&per_page=100&page=2"), api.calls)
+
+    def test_workflow_query_403_or_404_degrades_to_unknown(self):
+        for code in (403, 404):
+            with self.subTest(code=code):
+                report = build_report(FakeAPI(runs=[run()], workflow_error=code), 1)
+                self.assertEqual(report["checks"]["workflow_runs_state"], "unknown")
+                self.assertEqual(report["checks"]["workflow_runs"], [])
+                self.assertEqual(report["checks"]["state"], "passed")
+                self.assertIn("workflow runs: unknown", render_text(report))
+
+    def test_workflow_query_other_errors_abort(self):
+        with self.assertRaises(HTTPError):
+            build_report(FakeAPI(workflow_error=500), 1)
 
     def test_protection_unreadable_is_unknown_not_guess(self):
         report = build_report(FakeAPI(runs=[run()]), 1)
