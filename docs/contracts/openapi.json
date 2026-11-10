@@ -982,7 +982,7 @@
       "put": {
         "operationId": "updateNodeConfig",
         "summary": "更新本机资源预留配置",
-        "description": "以 getNode 的 ETag 为前置条件；预留不能低于 4 vCPU/16 GiB；扩大预留导致现有插件超预算时返回 409，不自动驱逐。",
+        "description": "以 getNode 的 ETag 为前置条件；保留启动时的 profile，不支持在线切换。预留不得低于所选档位的内核/系统下限：standard 内核至少 4 vCPU/16 GiB；compact 内核至少 500mCPU/192MiB、系统至少 250mCPU/256MiB。扩大预留导致现有插件超预算时返回 409，不自动驱逐。",
         "tags": [
           "system"
         ],
@@ -73965,21 +73965,21 @@
       },
       "NodeConfig": {
         "type": "object",
-        "description": "本机资源预算；内核最低预留不能调低",
+        "description": "本机资源预算；profile 省略为 standard，compact 为整机至少 1 vCPU/512 MiB 的低并发档位；稳定性须另行宿主验收。",
         "additionalProperties": false,
         "properties": {
           "kernel_cpu_millis": {
             "type": "integer",
-            "minimum": 4000,
+            "minimum": 500,
             "maximum": 1048576,
-            "description": "内核预留，至少 4 vCPU",
+            "description": "内核预留；compact 至少 500mCPU，standard 至少 4000mCPU",
             "default": 4000
           },
           "kernel_memory_bytes": {
             "type": "integer",
-            "minimum": 17179869184,
+            "minimum": 201326592,
             "maximum": 9007199254740991,
-            "description": "内核预留，至少 16 GiB",
+            "description": "内核预留；compact 至少 192MiB，standard 至少 16GiB",
             "default": 17179869184
           },
           "system_cpu_millis": {
@@ -74000,6 +74000,15 @@
             "maximum": 300000,
             "description": "内核停止最大排空时间",
             "default": 30000
+          },
+          "profile": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "compact"
+            ],
+            "default": "standard",
+            "description": "新节点初始化时固定的资源档位；已有节点不可在线或仅改配置切换，显式迁移尚未提供；旧配置保持 standard。"
           }
         },
         "required": [
@@ -74008,6 +74017,40 @@
           "system_cpu_millis",
           "system_memory_bytes",
           "shutdown_grace_ms"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "profile": {
+                  "const": "compact"
+                }
+              },
+              "required": [
+                "profile"
+              ]
+            },
+            "then": {
+              "properties": {
+                "system_cpu_millis": {
+                  "minimum": 250
+                },
+                "system_memory_bytes": {
+                  "minimum": 268435456
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "kernel_cpu_millis": {
+                  "minimum": 4000
+                },
+                "kernel_memory_bytes": {
+                  "minimum": 17179869184
+                }
+              }
+            }
+          }
         ]
       },
       "NodeStatus": {

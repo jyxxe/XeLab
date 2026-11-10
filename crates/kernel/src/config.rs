@@ -1,5 +1,5 @@
 use crate::{
-    contracts::{openapi, validate},
+    contracts::{validate, with_schema_dependencies},
     error::{Error, Result},
 };
 use serde_json::Value;
@@ -31,8 +31,7 @@ impl Config {
             "./openapi.json#/components/schemas/",
             "#/components/schemas/",
         );
-        let mut schema: Value = serde_json::from_str(&raw)?;
-        schema["components"] = openapi()["components"].clone();
+        let schema = with_schema_dependencies(serde_json::from_str(&raw)?)?;
         let compiled = jsonschema::JSONSchema::options()
             .with_draft(jsonschema::Draft::Draft202012)
             .should_validate_formats(true)
@@ -106,6 +105,25 @@ impl Config {
     }
     pub fn text(&self, section: &str, key: &str) -> &str {
         self.value[section][key].as_str().expect("validated config")
+    }
+    pub fn compact(&self) -> bool {
+        self.value["resources"]["profile"] == "compact"
+    }
+    /// Bound wire JSON before allocation-heavy parsing on compact nodes.
+    pub fn json_limit(&self, standard: usize) -> usize {
+        if self.compact() {
+            standard.min(256 * 1024)
+        } else {
+            standard
+        }
+    }
+    /// Leave room for protobuf envelopes without enlarging business JSON.
+    pub fn rpc_limit(&self, standard: usize) -> usize {
+        if self.compact() {
+            standard.min(256 * 1024 + 65536)
+        } else {
+            standard
+        }
     }
     pub fn root(&self) -> PathBuf {
         PathBuf::from(self.text("storage", "root_path"))
@@ -203,6 +221,50 @@ mod tests {
         let t: toml::Value =
             toml::from_str(include_str!("../../../docs/contracts/examples/kernel.toml")).unwrap();
         assert!(Config::from_value(serde_json::to_value(t).unwrap()).is_ok());
+    }
+    #[test]
+    fn compact_example_is_explicit_and_standard_minima_remain_compatible() {
+        let t: toml::Value = toml::from_str(include_str!(
+            "../../../docs/contracts/examples/kernel-compact.toml"
+        ))
+        .unwrap();
+        let value = serde_json::to_value(t).unwrap();
+        let compact = Config::from_value(value.clone()).unwrap();
+        assert!(compact.compact());
+        assert_eq!(compact.json_limit(16 * 1024 * 1024), 256 * 1024);
+        assert_eq!(compact.json_limit(65536), 65536);
+        assert_eq!(compact.rpc_limit(16 * 1024 * 1024), 320 * 1024);
+        let standard = Config {
+            value: serde_json::json!({}),
+        };
+        assert_eq!(standard.json_limit(16 * 1024 * 1024), 16 * 1024 * 1024);
+        assert_eq!(standard.rpc_limit(16 * 1024 * 1024), 16 * 1024 * 1024);
+        for profile in [
+            Value::Null,
+            serde_json::json!("standard"),
+            serde_json::json!("unknown"),
+        ] {
+            let mut invalid = value.clone();
+            if profile.is_null() {
+                invalid["resources"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("profile");
+            } else {
+                invalid["resources"]["profile"] = profile;
+            }
+            assert!(Config::from_value(invalid).is_err());
+        }
+        for (field, below) in [
+            ("kernel_cpu_millis", 499),
+            ("kernel_memory_bytes", 201326591),
+            ("system_cpu_millis", 249),
+            ("system_memory_bytes", 268435455),
+        ] {
+            let mut invalid = value.clone();
+            invalid["resources"][field] = serde_json::json!(below);
+            assert!(Config::from_value(invalid).is_err(), "{field}");
+        }
     }
     #[test]
     fn allocated_shells_do_not_require_a_predeclared_unknown_deployment_origin() {

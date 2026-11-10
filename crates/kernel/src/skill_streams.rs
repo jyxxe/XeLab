@@ -428,14 +428,15 @@ pub(crate) async fn handle(
         ));
     }
     let skill = api::path_id(&params, "skill_id")?;
-    let body = to_bytes(request.into_body(), 4194304).await.map_err(|_| {
+    let maximum = app.config.json_limit(4194304);
+    let body = to_bytes(request.into_body(), maximum).await.map_err(|_| {
         Error::new(
             "PAYLOAD_TOO_LARGE",
-            "Request body exceeds 4 MiB",
+            "Request body exceeds this node's JSON limit",
             StatusCode::PAYLOAD_TOO_LARGE,
         )
     })?;
-    let input = strict_json(&body, 4194304)?;
+    let input = strict_json(&body, maximum)?;
     validate("SkillInvokeRequest", &input)?;
     let response_slot = acquire_response_slot(response_pool())?;
     let (sender, mut receiver) = mpsc::channel(BUFFER_FRAMES);

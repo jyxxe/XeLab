@@ -52,7 +52,7 @@ heap默认16MiB、stack 1MiB，输入和输出各最多1MiB，stderr最多64KiB�
 
 外部搜索可能收费，因此`non_repeatable`约束核心和Broker恢复。已发送后结果不明时进入`unknown`，不能把同一次查询自动重发到另一个服务商。取消本地Call不能撤销已发送的外部请求或保证退费。
 
-资源从父MPR所在插件池扣除，不给微插件重复分配一份MPR资源，也不借用内核至少4C/16GiB的预留。本预设的资源数值为待测建议。
+资源从父MPR所在插件池扣除，不给微插件重复分配一份MPR资源，也不借用所选 profile 的内核预留。本预设的资源数值为待测建议。
 
 资源和联网设置可手动修改，流程为停用、等待phase=disabled且排空、携If-Match及Idempotency-Key更新settings、重新启用。更新generation/revision并失效旧句柄；原limits、微版本、父绑定和已注册Skill定义不变。
 

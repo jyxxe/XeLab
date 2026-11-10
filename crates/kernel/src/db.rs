@@ -56,6 +56,10 @@ pub const LEADER_LOCK: i64 = 0x58454c41424d3101;
 #[path = "db_oauth_tests.rs"]
 mod oauth_migration_tests;
 
+#[cfg(test)]
+#[path = "db_connection_limit_tests.rs"]
+mod connection_limit_tests;
+
 /// Only code-owned base tables can enter an offline metadata snapshot. Views,
 /// migration history and the target's recovery gate are never imported.
 pub(crate) fn snapshot_tables() -> Vec<&'static str> {
@@ -397,6 +401,7 @@ mod scoped_connection_tests {
 #[derive(Clone)]
 pub struct Db {
     dsn: Arc<str>,
+    connections: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 /// A request-owned connection. Dropping a PostgreSQL query future alone does
@@ -463,11 +468,35 @@ impl Db {
                 }
             }
         }
-        Ok(Self { dsn: dsn.into() })
+        Ok(Self {
+            dsn: dsn.into(),
+            connections: None,
+        })
+    }
+    /// Share a backend budget with every subsequent clone. Admission must not
+    /// wait: a caller can already own a transaction or a deployment fence.
+    pub fn with_connection_limit(mut self, limit: usize) -> Self {
+        self.connections = Some(Arc::new(tokio::sync::Semaphore::new(limit)));
+        self
+    }
+    fn connection_permit(&self) -> Result<Option<tokio::sync::OwnedSemaphorePermit>> {
+        self.connections
+            .as_ref()
+            .map(|limit| {
+                limit
+                    .clone()
+                    .try_acquire_owned()
+                    .map_err(|_| Error::exhausted())
+            })
+            .transpose()
     }
     pub async fn connect(&self) -> Result<Client> {
+        let permit = self.connection_permit()?;
         let (c, connection) = tokio_postgres::connect(&self.dsn, NoTls).await?;
         tokio::spawn(async move {
+            // Dropping a Client or its request may leave queued statements in
+            // flight. Count the backend until its actual driver has stopped.
+            let _permit = permit;
             if connection.await.is_err() {
                 tracing::error!(reason_code = "DATABASE_CONNECTION_LOST");
             }
@@ -478,8 +507,10 @@ impl Db {
         &self,
         timeout: std::time::Duration,
     ) -> Result<ScopedClient> {
+        let permit = self.connection_permit()?;
         let (client, connection) = tokio_postgres::connect(&self.dsn, NoTls).await?;
         let driver = tokio::spawn(async move {
+            let _permit = permit;
             if connection.await.is_err() {
                 tracing::error!(reason_code = "DATABASE_CONNECTION_LOST");
             }

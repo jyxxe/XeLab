@@ -1,5 +1,7 @@
 # M4 实现与验收记录
 
+本页保留的4C16G容量要求及既有证据属于 `standard` profile；[compact 1C512MiB](compact-node.md) 有独立准入与整机验收，不复用本页容量结论。
+
 [实施索引](README.md) · [目标 #51](https://github.com/jyxxe/XeLab/issues/51) · [生产验收 #50](https://github.com/jyxxe/XeLab/issues/50)
 
 本轮从 main `c861fd80a8e81d626d749e2ce9db435685f8669a`、Schema16 开始，
