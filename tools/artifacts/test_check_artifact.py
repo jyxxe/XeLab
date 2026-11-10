@@ -175,6 +175,13 @@ class SafetyTests(ArtifactCase):
         path = self.tar_of(self.echo(), extra=[("/evil", b"x")])
         self.assertTrue(any("unsafe tar member name" in e for e in build_report(path)["errors"]))
 
+    def test_tar_control_character_member_is_rejected_without_output(self):
+        path = self.tar_of(self.echo(), extra=[("xelab/\x9b", b"x")])
+        report = build_report(path)
+        self.assertEqual(report["status"], "inconsistent")
+        self.assertTrue(any("unsafe tar member name" in e for e in report["errors"]))
+        self.assertNotIn("\x9b", render_text(report))
+
     def test_tar_duplicate_member(self):
         path = self.tar_of(self.echo(), extra=[("xelab/plugin.json", b"{}")])
         self.assertTrue(any("duplicate tar member" in e for e in build_report(path)["errors"]))
@@ -269,21 +276,25 @@ class BoundaryTests(ArtifactCase):
         directory = self.echo()
         manifest = self.manifest(directory)
         manifest["plugin_id"] = "org.xelab.echo\x1b[31m"
-        manifest["capabilities"][0]["contract"]["name"] = "evil\x1b[31m"
+        manifest["capabilities"][0]["contract"]["name"] = "evil\x1b[31m\x9b"
         self.write_manifest(directory, manifest)
         report = build_report(directory)
         self.assertNotIn("plugin_id", report)
-        self.assertNotIn("\x1b", render_text(report))
+        text = render_text(report)
+        self.assertNotIn("\x1b", text)
+        self.assertNotIn("\x9b", text)
 
     def test_control_characters_in_http_operation_id_are_rejected(self):
         directory = self.http()
         manifest = self.manifest(directory)
-        manifest["skills"][0]["target"]["http_operation_id"] = "missing\x1b[31m"
+        manifest["skills"][0]["target"]["http_operation_id"] = "missing\x1b[31m\x9b"
         self.write_manifest(directory, manifest)
         report = build_report(directory)
         self.assertEqual(report["status"], "inconsistent")
         self.assertTrue(any("invalid http_operation_id" in e for e in report["errors"]))
-        self.assertNotIn("\x1b", render_text(report))
+        text = render_text(report)
+        self.assertNotIn("\x1b", text)
+        self.assertNotIn("\x9b", text)
 
 
 if __name__ == "__main__":

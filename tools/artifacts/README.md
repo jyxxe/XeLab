@@ -22,7 +22,7 @@ python3 tools/artifacts/check_artifact.py --path /tmp/artifact.tar --json
 
 - `xelab/plugin.json`：≤1MiB 严格 JSON（拒绝重复键、非有限数、尾随内容、非法 UTF-8）；
   `manifest_version` 必须为 `"1"`，其他格式 fail closed；publisher UUID，以及 plugin_id/version
-  和契约名/版本，必须为不含 C0/DEL 控制字符的单行字符串。
+  和契约名/版本，必须为不含 Unicode Cc 控制字符（含 C0/C1/DEL）的单行字符串。
 - 每个 capability 的四个契约成员存在、严格 JSON、schema 与清单逐字段一致、
   `semantics.json` 的 side_effect 一致，并按内核同款算法重算 `schema_digest`。
 - HTTP 路由/Skill 引用的 `xelab/http/openapi.json`（≤4MiB）存在且摘要一致，
