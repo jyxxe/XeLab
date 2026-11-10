@@ -21,7 +21,7 @@
 本机制的配置检查：
 
 ```bash
-python3 -m pip install -r tools/issues/requirements.txt
+python3 -m pip install -r tools/issues/requirements.txt -r docs/tools/requirements.txt
 python3 tools/issues/validate.py
 python3 -m unittest discover -s tools/issues -p 'test_*.py' -v
 python3 docs/tools/validate_docs.py --strict
