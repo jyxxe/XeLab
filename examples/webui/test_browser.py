@@ -698,8 +698,10 @@ class DesktopBrowser(unittest.TestCase):
                 self.assertEqual(query.get("limit"), ["50"])
                 cursor = query.get("cursor", [None])[0]
                 cursors.append(cursor)
-                route.fulfill(status=200, headers={"access-control-allow-origin": SHELL},
-                              content_type="application/json", body=json.dumps(pages[cursor]))
+                response = pages[cursor]
+                status, data = response.pop(0) if isinstance(response, list) else (200, response)
+                route.fulfill(status=status, headers={"access-control-allow-origin": SHELL},
+                              content_type="application/json", body=json.dumps(data))
             else:
                 self.route(route)
         self.page.route("**/*", route)
@@ -747,6 +749,25 @@ class DesktopBrowser(unittest.TestCase):
         window.get_by_role("button", name="加载下一页", exact=True).wait_for(state="hidden")
         self.assertEqual(window.get_by_text("component.echo", exact=True).count(), 1)
         self.assertEqual(window.get_by_text("暂无可见项目", exact=True).count(), 0)
+
+    def test_successful_page_retry_clears_the_previous_error(self):
+        skill = {"id": SKILL, "revision": 1, "enabled": True, "definition_digest": "sha256:" + "a" * 64,
+                 "availability": "ready", "reason_codes": [], "definition": {"name": "component.echo", "version": "1.0.0"}}
+        cursors = self.paginated_skill_routes({
+            None: {"items": [], "next_cursor": "next"},
+            "next": [(503, {"error": {"code": "NOT_READY", "message": "fixture unavailable"}}),
+                     (200, {"items": [skill], "next_cursor": None})]})
+        self.open()
+        self.app("Skill")
+        window = self.page.locator('.window[data-app="skills"]')
+        more = window.get_by_role("button", name="加载下一页", exact=True)
+        more.click()
+        window.get_by_text("当前不可用", exact=True).wait_for()
+        more.click()
+        window.get_by_text("component.echo", exact=True).wait_for()
+        self.assertEqual(window.get_by_text("当前不可用", exact=True).count(), 0)
+        self.assertEqual(window.get_by_text("已加载页面暂无可见项目", exact=True).count(), 0)
+        self.assertEqual(cursors, [None, "next", "next"])
 
     def test_mutating_401_never_refreshes_or_retries_business_request(self):
         self.open()
