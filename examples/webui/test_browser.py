@@ -213,6 +213,15 @@ class DesktopBrowser(unittest.TestCase):
         self.context.on("requestfailed", bodies.failed)
         return report, observed, bodies
 
+    def test_unexpired_access_without_refresh_can_load_desktop_and_skills(self):
+        self.page.set_default_timeout(3000)
+        self.open(expires_ms=20000, refresh_token=None)
+        skills = self.app("Skill")
+        skills.get_by_text("component.echo", exact=True).wait_for()
+        self.assertTrue(any(call["method"] == "GET" and call["path"].endswith("/skills")
+                            for call in self.calls))
+        self.assertFalse(any(call["path"] == "/oauth/token" for call in self.calls))
+
     def test_skill_json_is_queued_until_outer_pump_reads_actual_response(self):
         report, observed, bodies = self.skill_body_audit()
         self.open()
