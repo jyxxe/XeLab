@@ -154,7 +154,8 @@ async config => {
       value = await readJson(response);
     } else {
       const controller = new AbortController();
-      if (config.cancel && !config.afterCancel) setTimeout(() => controller.abort(), 50);
+      if (config.cancel && !config.afterCancel) setTimeout(() => controller.abort(
+        config.customCancel ? 'local component view closed' : undefined), 50);
       const key = crypto.randomUUID();
       const api = new ApiClient(
         {core_origin: config.core, client_id: 'http2-browser-component'},
@@ -357,7 +358,7 @@ class Http2BrowserReader(unittest.TestCase):
         except Exception as error:
             raise AssertionError("http2_stats:" + fixed_type(error)) from None
 
-    def invoke(self, kind, number=0, primitive=False, audit=False):
+    def invoke(self, kind, number=0, primitive=False, audit=False, custom_cancel=False):
         if self.server.poll() is not None:
             raise AssertionError("http2_fixture_process_ended")
         value = {"started": time.monotonic(), "request_ms": None, "finished_ms": None,
@@ -371,6 +372,7 @@ class Http2BrowserReader(unittest.TestCase):
                 "fixtureToken": FIXTURE_TOKEN, "primitive": primitive,
                 "deadline": kind.endswith("deadline"), "cancel": kind.endswith("cancel"),
                 "afterCancel": kind == "aftercancel",
+                "customCancel": custom_cancel,
             })
             deadline = time.monotonic() + 3
             while value["finished_ms"] is None and value["failed_ms"] is None and time.monotonic() < deadline:
@@ -490,6 +492,25 @@ class Http2BrowserReader(unittest.TestCase):
                 # HTTP/2 stream, so zero accepted POSTs is valid. Body-stage
                 # cases already observed a response and must have one POST.
                 # At most one accepted POST still proves there was no retry.
+                if kind.startswith("body"):
+                    self.assertEqual(accepted, 1)
+                else:
+                    self.assertIn(accepted, (0, 1))
+
+    def test_custom_caller_cancellation_before_headers_and_during_body(self):
+        for kind in ("headerscancel", "bodycancel"):
+            with self.subTest(case=kind):
+                before = self.stats()["posts"]
+                value = self.invoke(kind, custom_cancel=True)
+                self.assertFalse(value["ui"]["success"])
+                self.assertEqual(value["ui"].get("error_code"), "CANCELED")
+                self.assertEqual(value["network_bucket"], "Aborted")
+                self.assertTrue(value["failed_ms"] is not None)
+                self.assertEqual(value["response"] is not None, kind.startswith("body"))
+                accepted = self.stats()["posts"] - before
+                # A header-stage abort can win before Chromium sends the HTTP/2
+                # stream. Body-stage cases already saw a response and must have
+                # one accepted POST; both stages still reject a retry (>1).
                 if kind.startswith("body"):
                     self.assertEqual(accepted, 1)
                 else:
