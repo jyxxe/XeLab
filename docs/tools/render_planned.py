@@ -132,7 +132,7 @@ def index_page(kind, entries):
         ids = '、'.join('`' + cap + '`' for cap in e['capability_ids'])
         lines.append(f'| [{e["directory"]}/](../{e["directory"]}/README.md) | {ids} | ' + '；'.join(deps) + ' | ' + e['purpose'] + ' |')
     lines += ['', '这些目录不属于当前可安装预设，也没有自动注册的 Skill；[机器目录](../planned-catalog.json)与[契约目录](../planned-contracts.json)分别记录依赖、门槛及字段定义。', '',
-              '普通插件资源与 MPR 总资源都从插件池扣除；内核至少4 vCPU / 16 GiB预留、OS/基础设施预算及单节点不超卖规则不变。多项调用使用核心异步 batch，不在脚本内无限循环代替调度。']
+              '普通插件资源与 MPR 总资源都从插件池扣除；所选 profile 的内核预留、OS/基础设施预算及单节点不超卖规则不变。多项调用使用核心异步 batch，不在脚本内无限循环代替调度。']
     return '\n'.join(lines)
 
 

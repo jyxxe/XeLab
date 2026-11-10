@@ -11,7 +11,7 @@
 | recreate | 独占可写卷默认使用；allow_downtime=true | 撤路由→排空→停旧→卷写锁→备份→迁移→启新→验证→开路由 |
 | parallel_compatible | 清单声明并验证并发访问/格式兼容，插件池可容纳新旧实例 | 预留新版→健康→原子切流→旧版排空→释放旧预留 |
 
-新旧同时运行的 CPU/内存全部计入插件池；容量不足返回 RESOURCE_EXHAUSTED 或等待资源，不能借用内核 4C16G。single_writer 卷禁止 parallel_compatible 并发写。
+新旧同时运行的 CPU/内存全部计入插件池；容量不足返回 RESOURCE_EXHAUSTED 或等待资源，不能借用所选 profile 的内核预留。single_writer 卷禁止 parallel_compatible 并发写。
 
 ## 迁移契约
 

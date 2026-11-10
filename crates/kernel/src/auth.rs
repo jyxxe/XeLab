@@ -452,8 +452,8 @@ impl Auth {
         let real_hash = r
             .as_ref()
             .and_then(|r| r.get::<_, Option<String>>("password_hash"));
-        let password_ok = tokio::task::spawn_blocking(move || {
-            if let Some(hash) = real_hash {
+        let password_ok = password_work(move || {
+            Ok(if let Some(hash) = real_hash {
                 PasswordHash::new(&hash).ok().is_some_and(|hash| {
                     Argon2::default()
                         .verify_password(password.as_bytes(), &hash)
@@ -462,10 +462,9 @@ impl Auth {
             } else {
                 let _ = password_hash(&password);
                 false
-            }
+            })
         })
-        .await
-        .map_err(|_| Error::unavailable("Password verifier unavailable"))?;
+        .await?;
         let active = r.as_ref().is_some_and(|r| {
             r.get::<_, String>("kind") == "user" && r.get::<_, String>("status") == "active"
         });
@@ -501,6 +500,102 @@ impl Auth {
             json!({"session":session,"access_token":token,"token_type":"Bearer","expires_in":3600});
         validate("SessionIssued", &v)?;
         Ok(v)
+    }
+}
+
+/// Serialize memory-hard password work across login, activation, rotation and
+/// recovery. Keep Argon2's parameters unchanged, including on compact nodes.
+pub(crate) async fn password_work<T, F>(work: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    static LIMIT: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    let limit = LIMIT
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1)))
+        .clone();
+    password_work_with_limit(limit, work).await
+}
+
+async fn password_work_with_limit<T, F>(limit: Arc<tokio::sync::Semaphore>, work: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    let permit = limit
+        .acquire_owned()
+        .await
+        .map_err(|_| Error::unavailable("Password worker unavailable"))?;
+    tokio::task::spawn_blocking(move || {
+        // Cancelling an HTTP waiter cannot cancel spawn_blocking. Its memory
+        // reservation must therefore live inside the actual blocking task.
+        let _permit = permit;
+        work()
+    })
+    .await
+    .map_err(|_| Error::unavailable("Password worker stopped"))?
+}
+
+#[cfg(test)]
+mod password_worker_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn canceled_password_waiter_keeps_capacity_until_blocking_work_stops() {
+        let limit = Arc::new(tokio::sync::Semaphore::new(1));
+        let (started, running) = tokio::sync::oneshot::channel();
+        let (release, gate) = std::sync::mpsc::channel();
+        let first_limit = limit.clone();
+        let first = tokio::spawn(password_work_with_limit(first_limit, move || {
+            let _ = started.send(());
+            gate.recv_timeout(Duration::from_secs(3))
+                .map_err(|_| Error::unavailable("Test password worker timed out"))?;
+            Ok(())
+        }));
+        running.await.unwrap();
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+        assert_eq!(limit.available_permits(), 0);
+        let second = password_work_with_limit(limit.clone(), || Ok(7));
+        tokio::pin!(second);
+        assert!(tokio::time::timeout(Duration::from_millis(30), &mut second)
+            .await
+            .is_err());
+        release.send(()).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(3), second)
+                .await
+                .unwrap()
+                .unwrap(),
+            7
+        );
+        assert_eq!(limit.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn password_worker_preserves_argon2_parameters_and_verification() {
+        let password = "compact node test password";
+        let hash = password_work(move || password_hash(password))
+            .await
+            .unwrap();
+        let parsed = PasswordHash::new(&hash).unwrap();
+        assert_eq!(parsed.algorithm.as_str(), "argon2id");
+        assert_eq!(parsed.version, Some(19));
+        assert_eq!(
+            parsed.params.get_decimal("m"),
+            Some(argon2::Params::DEFAULT_M_COST)
+        );
+        assert_eq!(
+            parsed.params.get_decimal("t"),
+            Some(argon2::Params::DEFAULT_T_COST)
+        );
+        assert_eq!(
+            parsed.params.get_decimal("p"),
+            Some(argon2::Params::DEFAULT_P_COST)
+        );
+        Argon2::default()
+            .verify_password(password.as_bytes(), &parsed)
+            .unwrap();
     }
 }
 
@@ -778,7 +873,8 @@ pub async fn bootstrap(
     if name.is_empty() || name.chars().count() > 80 {
         return Err(Error::invalid("Invalid owner name"));
     }
-    let hash = password_hash(password)?;
+    let password = zeroize::Zeroizing::new(password.to_owned());
+    let hash = password_work(move || password_hash(&password)).await?;
     let r = c.query_one("SELECT count(*) FROM accounts", &[]).await?;
     if r.get::<_, i64>(0) != 0 {
         return Err(Error::conflict(

@@ -28,7 +28,7 @@ MIME数据库需审核并锁定版本。verified模式须等核心metadata适配
 
 输入/输出各最多1MiB UTF-8 JSON、深度64；heap默认16MiB、stack 1MiB；wall默认2s、平台硬上限30s。每Call一个描述，文件名最多255 Unicode码点；首版描述大小最多64MiB，扩展名提取不把名字当路径访问。
 
-默认并发1，资源从父Runtime池扣除，无独立容器，不使用内核至少4C/16GiB预留。VM仅虚拟stdin/stdout/stderr，无网络、Secret、进程或原始HostService访问。
+默认并发1，资源从父Runtime池扣除，无独立容器，不使用所选 profile 的内核预留。VM仅虚拟stdin/stdout/stderr，无网络、Secret、进程或原始HostService访问。
 
 大量描述通过[核心异步batch](../../skills/batches.md)处理；各项的声明或验证来源分别保留。
 
@@ -40,4 +40,4 @@ MIME数据库需审核并锁定版本。verified模式须等核心metadata适配
 
 资源与联网设置可手动配置：先停用微部署并等待phase=disabled且完全排空，再通过[设置接口](../planned/interface-rules.md#微部署资源与联网设置)更新，然后重新启用。更新generation/revision并使旧句柄失效，不修改原limits、微版本或父绑定，不改变已注册Skill定义。
 
-父MPR默认4000mCPU/4294967296字节（4vCPU/4GiB），其中微工作池3500mCPU/3758096384字节（3584MiB）、控制CPU500m及控制内存128MiB、制品缓存256MiB，内存合计3968MiB；默认预算最多允许4个不同微部署同时活跃，总活动槽4只是上限。资源从父预算扣除，不借用内核4C/16GiB预留。
+父MPR默认4000mCPU/4294967296字节（4vCPU/4GiB），其中微工作池3500mCPU/3758096384字节（3584MiB）、控制CPU500m及控制内存128MiB、制品缓存256MiB，内存合计3968MiB；默认预算最多允许4个不同微部署同时活跃，总活动槽4只是上限。资源从父预算扣除，不借用所选 profile 的内核预留。
