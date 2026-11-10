@@ -536,6 +536,266 @@ class DesktopBrowser(unittest.TestCase):
         self.page.wait_for_function("document.documentElement.dataset.theme === 'dark'")
         self.assertEqual(self.page.locator("html").get_attribute("data-theme"), "dark")
 
+    def exercise_settings_edit_during_save(self, status):
+        # Complete the boot read before opening Settings: otherwise a late boot
+        # response can independently reset the preview and obscure this race.
+        self.context.add_init_script('''(() => {
+          const original = Response.prototype.arrayBuffer;
+          globalThis.__bootPreferencesRead = false;
+          Response.prototype.arrayBuffer = async function(...args) {
+            const result = await original.apply(this, args);
+            if (new TextDecoder().decode(result).includes('"restore_windows": true'))
+              globalThis.__bootPreferencesRead = true;
+            return result;
+          };
+        })()''')
+        self.open()
+        self.page.wait_for_function('globalThis.__bootPreferencesRead === true')
+        self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+        held, writes = [], []
+        def intercept(route):
+            request = route.request
+            if request.method != 'PUT':
+                route.fallback()
+                return
+            writes.append({'body': json.loads(request.post_data), 'headers': request.all_headers()})
+            if len(writes) == 1:
+                held.append(route)
+            else:
+                self.route(route)
+        self.page.route('**/api/platform/v1/me/ui-preferences', intercept)
+        settings = self.app('设置')
+        mode = settings.get_by_label('主题模式', exact=True)
+        mode.select_option('dark')
+        save = settings.get_by_role('button', name='保存到当前账户', exact=True)
+        save.click()
+        for _ in range(100):
+            if held:
+                break
+            self.page.wait_for_timeout(20)
+        self.assertEqual(len(held), 1, 'first save must reach the component fixture')
+        self.assertEqual(writes[0]['body']['theme']['mode'], 'dark')
+        mode.select_option('light')
+        settings.get_by_label('Dock 位置', exact=True).select_option('left')
+        self.assertEqual(self.page.locator('html').get_attribute('data-theme'), 'light')
+        headers = {'access-control-allow-origin': SHELL, 'access-control-expose-headers': 'etag,x-request-id',
+                   'etag': '"rev-2"', 'x-request-id': ACCOUNT}
+        if status == 200:
+            self.saved['spec'] = writes[0]['body']
+            self.saved['revision'] = 2
+            data = self.saved
+        else:
+            data = {'error': {'code': 'UNAVAILABLE', 'message': 'fixture denied save', 'retryable': False}}
+        held[0].fulfill(status=status, headers=headers, content_type='application/json', body=json.dumps(data))
+        for _ in range(100):
+            if save.is_enabled():
+                break
+            self.page.wait_for_timeout(20)
+        self.assertTrue(save.is_enabled())
+        self.assertEqual(mode.input_value(), 'light')
+        self.assertEqual(settings.get_by_label('Dock 位置', exact=True).input_value(), 'left')
+        self.assertEqual(self.page.locator('html').get_attribute('data-theme'), 'light')
+        if status == 200:
+            self.assertIn('未保存', settings.locator('.theme-preview-note').inner_text())
+            save.click()
+            settings.get_by_text('已保存到核心，重新登录后仍可读取。', exact=True).wait_for()
+            self.assertEqual(len(writes), 2)
+            self.assertEqual(writes[1]['headers']['if-match'], '"rev-2"')
+            self.assertNotEqual(writes[1]['headers']['idempotency-key'], writes[0]['headers']['idempotency-key'])
+            self.assertEqual(writes[1]['body']['theme']['mode'], 'light')
+            self.assertEqual(writes[1]['body']['dock']['position'], 'left')
+        else:
+            settings.get_by_text('当前不可用', exact=True).wait_for()
+            self.assertEqual(len(writes), 1)
+
+    def test_settings_save_does_not_overwrite_newer_preview(self):
+        self.exercise_settings_edit_during_save(200)
+
+    def test_settings_failed_save_preserves_newer_preview(self):
+        self.exercise_settings_edit_during_save(503)
+
+    def test_late_settings_save_does_not_restore_older_etag(self):
+        self.context.add_init_script('''(() => {
+          const original = Response.prototype.arrayBuffer;
+          globalThis.__bootPreferencesRead = false;
+          Response.prototype.arrayBuffer = async function(...args) {
+            const result = await original.apply(this, args);
+            if (new TextDecoder().decode(result).includes('"restore_windows": true'))
+              globalThis.__bootPreferencesRead = true;
+            return result;
+          };
+        })()''')
+        self.open()
+        self.page.wait_for_function('globalThis.__bootPreferencesRead === true')
+        self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+        held, writes = [], []
+        def intercept(route):
+            request = route.request
+            if request.method != 'PUT':
+                route.fallback()
+                return
+            body, headers = json.loads(request.post_data), request.all_headers()
+            writes.append({'body': body, 'headers': headers})
+            if len(writes) == 1:
+                # Core has applied A, but the network delays its rev-2 reply.
+                self.saved['spec'] = body
+                self.saved['revision'] = 2
+                held.append((route, json.loads(json.dumps(self.saved))))
+            else:
+                self.route(route)
+        self.page.route('**/api/platform/v1/me/ui-preferences', intercept)
+        first = self.app('设置')
+        first = self.page.locator(f'.window[data-view-id="{first.get_attribute("data-view-id")}"]')
+        first.get_by_label('主题模式', exact=True).select_option('dark')
+        first_save = first.get_by_role('button', name='保存到当前账户', exact=True)
+        first_save.click()
+        for _ in range(100):
+            if held:
+                break
+            self.page.wait_for_timeout(20)
+        self.assertEqual(len(held), 1)
+        self.assertEqual(writes[0]['headers']['if-match'], '"rev-1"')
+
+        # B reads rev 2 and saves rev 3 before A's older response is delivered.
+        second = self.app('设置')
+        second = self.page.locator(f'.window[data-view-id="{second.get_attribute("data-view-id")}"]')
+        second.get_by_label('主题模式', exact=True).select_option('light')
+        second_save = second.get_by_role('button', name='保存到当前账户', exact=True)
+        second_save.click()
+        second.get_by_text('已保存到核心，重新登录后仍可读取。', exact=True).wait_for()
+        self.assertEqual(writes[1]['headers']['if-match'], '"rev-2"')
+        self.assertEqual(self.saved['revision'], 3)
+        route, old_result = held[0]
+        route.fulfill(status=200, headers={'access-control-allow-origin': SHELL,
+                      'access-control-expose-headers': 'etag,x-request-id',
+                      'etag': '"rev-2"', 'x-request-id': ACCOUNT},
+                      content_type='application/json', body=json.dumps(old_result))
+        for _ in range(100):
+            if first_save.is_enabled():
+                break
+            self.page.wait_for_timeout(20)
+        self.assertTrue(first_save.is_enabled())
+        self.assertEqual(self.page.locator('html').get_attribute('data-theme'), 'light')
+        self.assertIn('核实', first.locator('.theme-preview-note').inner_text())
+
+        second.get_by_label('Dock 位置', exact=True).select_option('left')
+        second_save.click()
+        for _ in range(100):
+            if len(writes) == 3:
+                break
+            self.page.wait_for_timeout(20)
+        self.assertEqual(len(writes), 3)
+        self.assertEqual(writes[2]['headers']['if-match'], '"rev-3"')
+
+    def test_uncertain_settings_retry_keeps_original_key_and_etag(self):
+        self.context.add_init_script('''(() => {
+          const original = Response.prototype.arrayBuffer;
+          globalThis.__bootPreferencesRead = false;
+          Response.prototype.arrayBuffer = async function(...args) {
+            const result = await original.apply(this, args);
+            if (new TextDecoder().decode(result).includes('"restore_windows": true'))
+              globalThis.__bootPreferencesRead = true;
+            return result;
+          };
+        })()''')
+        self.open()
+        self.page.wait_for_function('globalThis.__bootPreferencesRead === true')
+        self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+        writes, first_response = [], []
+        def intercept(route):
+            request = route.request
+            if request.method != 'PUT':
+                route.fallback()
+                return
+            body, headers = json.loads(request.post_data), request.all_headers()
+            writes.append({'body': body, 'headers': headers})
+            if len(writes) == 1:
+                # Core accepted A at rev 2, but its HTTP response was lost.
+                self.saved['spec'] = body
+                self.saved['revision'] = 2
+                first_response.append(json.loads(json.dumps(self.saved)))
+                route.abort('failed')
+            elif len(writes) == 2:
+                self.route(route)
+            else:
+                # A genuine matching idempotent replay returns the cached rev 2.
+                route.fulfill(status=200, headers={'access-control-allow-origin': SHELL,
+                              'access-control-expose-headers': 'etag,x-request-id',
+                              'etag': '"rev-2"', 'x-request-id': ACCOUNT},
+                              content_type='application/json', body=json.dumps(first_response[0]))
+        self.page.route('**/api/platform/v1/me/ui-preferences', intercept)
+        first = self.app('设置')
+        first = self.page.locator(f'.window[data-view-id="{first.get_attribute("data-view-id")}"]')
+        first_mode = first.get_by_label('主题模式', exact=True)
+        first_mode.select_option('dark')
+        first_save = first.get_by_role('button', name='保存到当前账户', exact=True)
+        first_save.click()
+        first.get_by_text('请求失败', exact=True).wait_for()
+        self.assertEqual(writes[0]['headers']['if-match'], '"rev-1"')
+
+        second = self.app('设置')
+        second = self.page.locator(f'.window[data-view-id="{second.get_attribute("data-view-id")}"]')
+        second.get_by_label('主题模式', exact=True).select_option('light')
+        second.get_by_role('button', name='保存到当前账户', exact=True).click()
+        second.get_by_text('已保存到核心，重新登录后仍可读取。', exact=True).wait_for()
+        self.assertEqual(writes[1]['headers']['if-match'], '"rev-2"')
+        self.assertEqual(self.saved['revision'], 3)
+        first.locator('.window-title').focus()
+        first_mode.select_option('dark')
+        first_save.click()
+        for _ in range(100):
+            if len(writes) == 3:
+                break
+            self.page.wait_for_timeout(20)
+        self.assertEqual(len(writes), 3)
+        self.assertEqual(writes[2]['body'], writes[0]['body'])
+        self.assertEqual(writes[2]['headers']['idempotency-key'], writes[0]['headers']['idempotency-key'])
+        self.assertEqual(writes[2]['headers']['if-match'], writes[0]['headers']['if-match'])
+
+    def test_uncertain_settings_retry_412_requires_reconciliation(self):
+        self.context.add_init_script('''(() => {
+          const original = Response.prototype.arrayBuffer;
+          globalThis.__bootPreferencesRead = false;
+          Response.prototype.arrayBuffer = async function(...args) {
+            const result = await original.apply(this, args);
+            if (new TextDecoder().decode(result).includes('"restore_windows": true'))
+              globalThis.__bootPreferencesRead = true;
+            return result;
+          };
+        })()''')
+        self.open()
+        self.page.wait_for_function('globalThis.__bootPreferencesRead === true')
+        self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+        writes = []
+        def intercept(route):
+            request = route.request
+            if request.method != 'PUT':
+                route.fallback()
+                return
+            writes.append({'body': json.loads(request.post_data), 'headers': request.all_headers()})
+            if len(writes) == 1:
+                route.abort('failed')
+            else:
+                route.fulfill(status=412, headers={'access-control-allow-origin': SHELL,
+                              'access-control-expose-headers': 'etag,x-request-id'},
+                              content_type='application/json',
+                              body=json.dumps({'error': {'code': 'PRECONDITION_FAILED', 'message': 'revision changed'}}))
+        self.page.route('**/api/platform/v1/me/ui-preferences', intercept)
+        settings = self.app('设置')
+        settings.get_by_label('主题模式', exact=True).select_option('dark')
+        save = settings.get_by_role('button', name='保存到当前账户', exact=True)
+        save.click()
+        settings.get_by_text('请求失败', exact=True).wait_for()
+        save.click()
+        settings.get_by_text('重新读取', exact=False).wait_for()
+        notice = settings.locator('.theme-preview-note').inner_text()
+        self.assertIn('核实', notice)
+        self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+        self.assertEqual(len(writes), 2, '412 must not automatically retry')
+        self.assertEqual(writes[1]['body'], writes[0]['body'])
+        self.assertEqual(writes[1]['headers']['idempotency-key'], writes[0]['headers']['idempotency-key'])
+        self.assertEqual(writes[1]['headers']['if-match'], writes[0]['headers']['if-match'])
+
     def test_disabled_deployment_configuration_uses_public_patch_shape(self):
         self.open()
         plugins = self.app("插件中心")
