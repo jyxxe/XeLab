@@ -499,7 +499,14 @@ class Http2BrowserReader(unittest.TestCase):
                 self.assertEqual(value["network_bucket"], "Aborted")
                 self.assertTrue(value["failed_ms"] is not None)
                 self.assertEqual(value["response"] is not None, kind.startswith("body"))
-                self.assertEqual(self.stats()["posts"] - before, 1)
+                accepted = self.stats()["posts"] - before
+                # A header-stage abort can win before Chromium sends the HTTP/2
+                # stream. Body-stage cases already saw a response and must have
+                # one accepted POST; both stages still reject a retry (>1).
+                if kind.startswith("body"):
+                    self.assertEqual(accepted, 1)
+                else:
+                    self.assertIn(accepted, (0, 1))
 
     def test_no_content_response_remains_null(self):
         value = self.invoke("empty204", primitive=True)
