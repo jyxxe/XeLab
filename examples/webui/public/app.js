@@ -1,5 +1,5 @@
 import {runtimeConfig} from './runtime-config.js';
-import {ApiClient,strictJson} from './api.js';
+import {ApiClient,encodeRequestJson} from './api.js';
 import {OAuthSession} from './oauth.js';
 import {BridgeHost,validateContribution,sameContribution} from './bridge.js';
 
@@ -281,7 +281,7 @@ function editor(title, operation, {params={}, initial={}, etag, body=true, note=
       try { value = body ? JSON.parse(input.value) : undefined; } catch { notice.replaceChildren(state('error','JSON 格式错误','请修正后再提交。'));return; }
       let fingerprint;
       try {
-        if (body) { strictJson(value); fingerprint = JSON.stringify(canonicalIntent(value)); }
+        if (body) { encodeRequestJson(value); fingerprint = JSON.stringify(canonicalIntent(value)); }
       } catch (error) { notice.replaceChildren(failure(error));return; }
       if (intentBound && fingerprint !== intentBody) {
         notice.replaceChildren(state('error','原请求内容已锁定','请保留原请求键并核实结果；如需提交不同内容，请关闭并重新打开编辑器以创建新意图。'));

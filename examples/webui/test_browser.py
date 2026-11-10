@@ -520,6 +520,16 @@ class DesktopBrowser(unittest.TestCase):
         self.assertNotIn("cookie", calls[0]["headers"])
 
     def test_editor_can_correct_local_json_errors_before_first_send(self):
+        # Detect the editor's recursive canonicalization. An oversized body
+        # must be rejected before allocating the canonical copy.
+        self.context.add_init_script('''(() => {
+          const original = Object.fromEntries;
+          globalThis.__canonicalCopies = 0;
+          Object.fromEntries = function(...args) {
+            globalThis.__canonicalCopies++;
+            return original.apply(this, args);
+          };
+        })()''')
         self.open()
         skills = self.app("Skill")
         skills.get_by_role("button", name="调用测试", exact=True).click()
@@ -538,8 +548,10 @@ class DesktopBrowser(unittest.TestCase):
         self.assertFalse([call for call in self.calls if call["method"] == "POST"])
         too_large = {"input": {"message": "x" * (4 * 1024 * 1024)}, "idempotency_key": "local-check"}
         input_box.fill(json.dumps(too_large))
+        self.page.evaluate('globalThis.__canonicalCopies = 0')
         submit.click()
         editor.get_by_text("PAYLOAD_TOO_LARGE", exact=False).wait_for()
+        self.assertEqual(self.page.evaluate('globalThis.__canonicalCopies'), 0)
         self.assertFalse([call for call in self.calls if call["method"] == "POST"])
         body = {"input": {"message": "corrected"}, "idempotency_key": "local-check"}
         input_box.fill(json.dumps(body))

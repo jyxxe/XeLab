@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { ApiClient, ApiError, OPERATIONS, readJson, strictJson, validateConfig } from './public/api.js';
+import { ApiClient, ApiError, OPERATIONS, encodeRequestJson, readJson, strictJson, validateConfig } from './public/api.js';
 import { OAuthSession } from './public/oauth.js';
 
 const config = { core_origin: 'https://kernel.example.test', client_id: 'xelab-0123456789abcdef0123456789abcdef' };
@@ -107,6 +107,18 @@ test('arbitrary URL, path, query, headers, missing concurrency proof and invalid
   assert.throws(() => strictJson({ code: () => 3 }), ApiError);
   let nested = {}; for (let n = 0; n < 66; n++) nested = { nested };
   assert.throws(() => strictJson(nested), ApiError);
+});
+
+test('request JSON byte limit includes UTF-8 and JSON framing', () => {
+  const limit = 4 * 1024 * 1024;
+  const payloadBytes = limit - Buffer.byteLength(JSON.stringify({ text: '' }), 'utf8');
+  const text = '界'.repeat(Math.floor(payloadBytes / 3)) + 'a'.repeat(payloadBytes % 3);
+  const encoded = encodeRequestJson({ text });
+  assert.equal(Buffer.byteLength(encoded, 'utf8'), limit);
+  assert.ok(encoded.length < limit, 'multi-byte characters must not be counted as one byte');
+  assert.equal(JSON.parse(encoded).text, text);
+  assert.throws(() => encodeRequestJson({ text: text + 'a' }),
+    error => error instanceof ApiError && error.code === 'PAYLOAD_TOO_LARGE');
 });
 
 test('write dispatch preserves exact ETag/idempotency proof, stable backend errors and never retries', async () => {

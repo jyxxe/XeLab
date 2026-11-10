@@ -106,6 +106,15 @@ export function strictJson(value) {
   return JSON.stringify(value);
 }
 
+export function encodeRequestJson(value) {
+  const encoded = strictJson(value);
+  const maximum = 4 * 1024 * 1024;
+  // JSON's UTF-8 byte length cannot be shorter than its UTF-16 code-unit
+  // count. Reject obviously oversized strings before allocating their bytes.
+  if (encoded.length > maximum || new TextEncoder().encode(encoded).byteLength > maximum) throw new ApiError('PAYLOAD_TOO_LARGE', '请求超过4MiB。');
+  return encoded;
+}
+
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function parameter(value, type) {
   if (type === 'limit') {
@@ -208,8 +217,7 @@ export class ApiClient {
     let encoded;
     if (op.body !== (body !== undefined)) throw new ApiError('INVALID_ARGUMENT', op.body ? '需要 JSON 请求体。' : '此操作不接受请求体。');
     if (body !== undefined) {
-      encoded = strictJson(body);
-      if (new TextEncoder().encode(encoded).byteLength > 4 * 1024 * 1024) throw new ApiError('PAYLOAD_TOO_LARGE', '请求超过4MiB。');
+      encoded = encodeRequestJson(body);
       headers.set('Content-Type', 'application/json');
     }
     if (op.method !== 'GET') {
