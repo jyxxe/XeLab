@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kernel"]
+members = ["crates/kernel", "examples/rust-api-client"]
 resolver = "2"
 
 [profile.release]
