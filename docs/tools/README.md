@@ -40,6 +40,8 @@ python3 docs/tools/validate_docs.py
 
 还识别 HTML 中的 `<a name="...">` 和常见安全标签的 `id`，包括 `<pre>`、`<code>`
 和其中实际的 HTML 锚点；自定义锚点区分大小写，不影响标题去重。`#top` 视为页首。
+块级原始 HTML（如 `<div>`、`<table>`、`<details>`）直到空行前的内容不按 Markdown
+解析，其中的链接文字和标题不计入检查；行内 HTML 仍参与 Markdown 解析。
 围栏、缩进和 `<pre>` 代码块中的 Markdown 文字、同一段落内的反引号代码（包括跨行）、
 HTML 注释、图片及外部链接不作为待检查链接；不会请求外部网站，也不检查非 Markdown
 文件的片段。
