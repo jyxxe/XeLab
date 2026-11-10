@@ -181,6 +181,7 @@ function focus(win) {
   saveLayout();
 }
 function closeWindow(win, persist = true) {
+  const restoreFocus = win.element.contains(document.activeElement);
   win.controller?.abort();
   win.dispose?.();
   win.element.remove();
@@ -188,6 +189,15 @@ function closeWindow(win, persist = true) {
   renderDock();
   const next = [...windows.values()].filter(value => !value.minimized).at(-1);
   if (next) focus(next); else $('#active-app').textContent = '桌面';
+  if (restoreFocus) {
+    if (win.opener?.isConnected && win.opener !== document.body) win.opener.focus();
+    if (!win.opener || win.opener === document.body || document.activeElement !== win.opener) {
+      // renderDock replaces its buttons, so find the equivalent current control.
+      const dockOpener = win.dockOpenerLabel && [...$('#dock').querySelectorAll('button')]
+        .find(control => control.getAttribute('aria-label') === win.dockOpenerLabel && !control.disabled);
+      (dockOpener || next?.element.querySelector('.window-title') || $('#launcher-toggle')).focus();
+    }
+  }
   if (persist) saveLayout();
 }
 function pointerMove(win, handle, resize) {
@@ -211,12 +221,14 @@ function pointerMove(win, handle, resize) {
 }
 function openWindow(app, options = {}) {
   if (windows.size >= (runtimeConfig.max_open_windows || 16)) { toast('已达打开窗口上限，请先关闭一个窗口。'); return null; }
+  const opener = document.activeElement;
+  const dockOpenerLabel = opener?.closest('#dock button')?.getAttribute('aria-label');
   const id = crypto.randomUUID();
   const heading = node('h2', {id:`title-${id}`}, app.title);
   const titlebar = node('header', {class:'window-title', tabindex:0, 'aria-label':`${app.title}窗口。Alt加方向键移动，Alt加Shift加方向键调整大小。`});
   const content = node('div', {class:'window-content'});
   const element = node('section', {class:'window', role:'dialog', 'aria-labelledby':`title-${id}`, 'data-view-id':id, 'data-app':app.id}, titlebar, content);
-  const win = {id, app, content, element, rect:options.rect || {x:40+windows.size*24,y:24+windows.size*20,width:680,height:520}, minimized:false,maximized:Boolean(options.maximized),ephemeral:Boolean(options.ephemeral),restoreRef:options.restoreRef,controller:null};
+  const win = {id, app, content, element, opener, dockOpenerLabel, rect:options.rect || {x:40+windows.size*24,y:24+windows.size*20,width:680,height:520}, minimized:false,maximized:Boolean(options.maximized),ephemeral:Boolean(options.ephemeral),restoreRef:options.restoreRef,controller:null};
   const minimize = () => { win.minimized = true; element.hidden = true; win.bridge?.setVisible(false);renderDock(); saveLayout(); };
   const maximize = () => { win.maximized = !win.maximized; fit(win); saveLayout(); };
   titlebar.append(node('div', {class:'window-controls'}, button('×',()=>closeWindow(win),{'aria-label':`关闭${app.title}`}),button('−',minimize,{'aria-label':`最小化${app.title}`}),button('□',maximize,{'aria-label':`最大化或恢复${app.title}`})),heading);
