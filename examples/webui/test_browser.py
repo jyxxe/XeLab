@@ -250,6 +250,33 @@ class DesktopBrowser(unittest.TestCase):
     def test_light_deployment_theme_until_preferences_arrive(self):
         self.check_deployment_theme_until_preferences_arrive("light")
 
+    def test_stored_custom_theme_overrides_deployment_default(self):
+        self.runtime_default_theme("dark")
+        self.saved["spec"]["theme"] = {
+            "mode": "custom", "reduce_motion": False, "reduce_transparency": False,
+            "custom_tokens": {
+                "accent": "#123456", "desktop": "#223344", "surface": "#ffffff",
+                "text": "#18202c", "muted_text": "#526074", "border": "#cbd5e1",
+                "danger": "#b42318", "radius_px": 12, "blur_px": 16,
+                "panel_opacity": 0.92, "font": "system",
+            },
+        }
+        self.hold_preferences = True
+        self.open()
+        for _ in range(100):
+            if self.pending_preferences:
+                break
+            self.page.wait_for_timeout(20)
+        self.assertEqual(len(self.pending_preferences), 1)
+        try:
+            self.assertEqual(self.page.locator("html").get_attribute("data-theme"), "dark")
+        finally:
+            self.hold_preferences = False
+            self.route(self.pending_preferences.pop())
+        self.page.wait_for_function("document.documentElement.dataset.theme === 'custom'")
+        self.assertEqual(self.page.evaluate("document.documentElement.style.getPropertyValue('--accent')"), "#123456")
+        self.assertEqual(self.page.evaluate("document.documentElement.style.getPropertyValue('--desktop')"), "#223344")
+
     def test_failed_first_preference_read_keeps_deployment_theme(self):
         self.runtime_default_theme("dark")
         self.hold_preferences = True
