@@ -269,9 +269,20 @@ class BoundaryTests(ArtifactCase):
         directory = self.echo()
         manifest = self.manifest(directory)
         manifest["plugin_id"] = "org.xelab.echo\x1b[31m"
+        manifest["capabilities"][0]["contract"]["name"] = "evil\x1b[31m"
         self.write_manifest(directory, manifest)
         report = build_report(directory)
         self.assertNotIn("plugin_id", report)
+        self.assertNotIn("\x1b", render_text(report))
+
+    def test_control_characters_in_http_operation_id_are_rejected(self):
+        directory = self.http()
+        manifest = self.manifest(directory)
+        manifest["skills"][0]["target"]["http_operation_id"] = "missing\x1b[31m"
+        self.write_manifest(directory, manifest)
+        report = build_report(directory)
+        self.assertEqual(report["status"], "inconsistent")
+        self.assertTrue(any("invalid http_operation_id" in e for e in report["errors"]))
         self.assertNotIn("\x1b", render_text(report))
 
 

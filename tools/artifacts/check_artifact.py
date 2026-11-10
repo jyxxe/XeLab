@@ -67,7 +67,9 @@ def strict_json(raw, maximum):
 
 def safe_components(relative):
     parts = PurePosixPath(relative).parts
-    if not parts or any(part in {".", "..", "/"} or "\\" in part or any(c in part for c in "\r\n\x00") for part in parts):
+    if not parts or any(part in {".", "..", "/"} or "\\" in part
+                        or any(ord(c) < 32 or ord(c) == 127 for c in part)
+                        for part in parts):
         raise CheckError("unsafe artifact path: " + repr(relative))
     return parts
 
@@ -131,7 +133,8 @@ class TarReader:
             name = info.name
             normalized = str(PurePosixPath(name))
             if name.startswith("/") or normalized != name.rstrip("/") or any(
-                    part in {".", ".."} for part in PurePosixPath(name).parts) or "\\" in name or any(c in name for c in "\r\n\x00"):
+                    part in {".", ".."} for part in PurePosixPath(name).parts) or "\\" in name or any(
+                    ord(c) < 32 or ord(c) == 127 for c in name):
                 raise CheckError("unsafe tar member name: " + repr(name))
             if normalized in seen:
                 raise CheckError("duplicate tar member: " + repr(name))
@@ -164,7 +167,8 @@ class UnsupportedFormat(Exception):
 
 
 def single_line_string(value):
-    return isinstance(value, str) and value != "" and not any(c in value for c in "\r\n\x00")
+    return isinstance(value, str) and value != "" and not any(
+        ord(c) < 32 or ord(c) == 127 for c in value)
 
 
 def check_manifest(reader):
@@ -254,8 +258,11 @@ def check_manifest(reader):
                 errors.append(f"skills[{index}] references an unknown or drifted capability contract")
         elif kind == "http":
             http_references.append((f"skills[{index}]", target.get("http_contract_digest")))
-            if isinstance(target.get("http_operation_id"), str):
-                operation_ids.add(target["http_operation_id"])
+            operation = target.get("http_operation_id")
+            if isinstance(operation, str) and single_line_string(operation):
+                operation_ids.add(operation)
+            elif isinstance(operation, str):
+                errors.append(f"skills[{index}] has an invalid http_operation_id")
         else:
             errors.append(f"skills[{index}] has an unsupported target kind")
 
