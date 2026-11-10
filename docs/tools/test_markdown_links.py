@@ -116,6 +116,10 @@ Setext title
 </pre>
 ## After HTML
 `<!--` [after](#after-comment)
+```
+code
+```
+    [indented after fence](#absent)
 ''')
         _, errors = check_markdown_links(source, self.root)
         self.assertEqual(errors, [])

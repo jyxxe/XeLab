@@ -57,6 +57,7 @@ def without_code(value):
             if match and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence):
                 if not line[match.end():].strip():
                     fence = None
+                    previous_blank = True
             lines.append('')
             continue
         expanded = line.expandtabs(4)
