@@ -699,6 +699,8 @@ impl rustls::server::ResolvesServerCert for RotatingIdentity {
 
 pub async fn serve(app: Arc<App>) -> Result<()> {
     use futures_util::StreamExt;
+    let compact = app.config.compact();
+    let calls = if compact { 2 } else { 64 };
     let mut roots = rustls::RootCertStore::empty();
     let ca = std::fs::read(app.config.text("security", "workload_ca_cert_file"))?;
     for cert in rustls_pemfile::certs(&mut &ca[..]) {
@@ -730,22 +732,23 @@ pub async fn serve(app: Arc<App>) -> Result<()> {
                     })?
             }
         })
-        .buffer_unordered(32);
+        .buffer_unordered(if compact { 2 } else { 32 });
     let service = HostServiceServer::new(Host {
         app: app.clone(),
-        leases: Arc::new(tokio::sync::Semaphore::new(32)),
-        blobs: Arc::new(tokio::sync::Semaphore::new(16)),
-        uploads: Arc::new(tokio::sync::Semaphore::new(4)),
-        proxy_slots: Arc::new(tokio::sync::Semaphore::new(64)),
+        leases: Arc::new(tokio::sync::Semaphore::new(if compact { 2 } else { 32 })),
+        blobs: Arc::new(tokio::sync::Semaphore::new(if compact { 1 } else { 16 })),
+        uploads: Arc::new(tokio::sync::Semaphore::new(if compact { 1 } else { 4 })),
+        proxy_slots: Arc::new(tokio::sync::Semaphore::new(calls)),
     })
-    .max_decoding_message_size(4194304 + 65536)
-    .max_encoding_message_size(16777216 + 65536);
+    .max_decoding_message_size(app.config.rpc_limit(4194304 + 65536))
+    .max_encoding_message_size(app.config.rpc_limit(16777216 + 65536));
     let stop = app.clone();
     tonic::transport::Server::builder()
+        .layer(crate::compact_rpc::BudgetLayer::new(compact))
         // One shared limit across all mTLS connections, before protobuf body
         // decoding. Per-method/stream pools further narrow retained responses.
-        .layer(tower::limit::GlobalConcurrencyLimitLayer::new(64))
-        .concurrency_limit_per_connection(16)
+        .layer(tower::limit::GlobalConcurrencyLimitLayer::new(calls))
+        .concurrency_limit_per_connection(if compact { 2 } else { 16 })
         .timeout(Duration::from_secs(300))
         .add_service(service)
         .serve_with_incoming_shutdown(incoming, async move {

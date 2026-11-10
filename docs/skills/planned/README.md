@@ -17,7 +17,7 @@
 
 能力ID是发现标签，不是允许调用者输入的路由。Skill名称、调用源、目标和资源规则在正式发布时选择并冻结；不能把输入中的模型别名、URL、JSON表达式、数据路径当作任意Skill名或插件地址执行。
 
-MPR 1.2.0的微部署默认resources为250mCPU/256MiB，所有worker共享核心适配器配置的逐微cgroup硬上限，默认并发1/硬上限4；每VM的16MiB JS heap仍为子上限。父MPR默认4000mCPU/4294967296字节（4vCPU/4GiB），其中工作池3500mCPU/3758096384字节（3584MiB）、控制CPU500m及控制内存128MiB、缓存256MiB，默认最多4个不同微部署活跃；总活动槽4不代表四份独立资源，不借用内核4C/16GiB。
+MPR 1.2.0的微部署默认resources为250mCPU/256MiB，所有worker共享核心适配器配置的逐微cgroup硬上限，默认并发1/硬上限4；每VM的16MiB JS heap仍为子上限。父MPR默认4000mCPU/4294967296字节（4vCPU/4GiB），其中工作池3500mCPU/3758096384字节（3584MiB）、控制CPU500m及控制内存128MiB、缓存256MiB，默认最多4个不同微部署活跃；总活动槽4不代表四份独立资源，不借用所选 profile 的内核预留。
 
 资源及network_enabled由[微部署settings接口](../../preset-plugins/planned/interface-rules.md#微部署资源与联网设置)手动配置：仅停用、disabled且排空后，携If-Match和Idempotency-Key写入；更新generation/revision、失效旧句柄，原limits、微版本、父绑定与Skill定义不漂移。UI遵循停用、配置、启用流程，不在执行中热改。
 

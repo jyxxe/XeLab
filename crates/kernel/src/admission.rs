@@ -10,6 +10,11 @@ use uuid::Uuid;
 
 pub fn pool(config: &Value, cpu: i64, memory: i64) -> Result<(i64, i64)> {
     validate("NodeConfig", config)?;
+    // A nominal 512 MiB machine can lose up to 32 MiB to boot reservations.
+    // Always subtract budgets from observed capacity, never add that loss back.
+    if config["profile"] == "compact" && (cpu < 1000 || memory < 480 * 1024 * 1024) {
+        return Err(Error::exhausted());
+    }
     let pc = cpu
         .checked_sub(config["kernel_cpu_millis"].as_i64().unwrap())
         .and_then(|v| v.checked_sub(config["system_cpu_millis"].as_i64().unwrap()))
@@ -26,6 +31,60 @@ pub fn pool(config: &Value, cpu: i64, memory: i64) -> Result<(i64, i64)> {
 
 pub fn host_capacity() -> Result<(i64, i64)> {
     let cpu = std::thread::available_parallelism()?.get() as i64 * 1000;
+    let memory = host_memory()?;
+    let membership = std::fs::read_to_string("/proc/self/cgroup")?;
+    let mounts = std::fs::read_to_string("/proc/self/mountinfo")?;
+    let group = unified_group(&membership, &mounts)?;
+    effective_capacity(Path::new("/sys/fs/cgroup"), group, cpu, memory)
+}
+
+/// Recheck the whole-node budget after compact startup has entered its own
+/// kernel-only cgroup. Preserve any limits from the launcher's original cgroup
+/// and intersect them with the current parent hierarchy, never the kernel leaf.
+pub fn compact_host_capacity(original: (i64, i64)) -> Result<(i64, i64)> {
+    // available_parallelism also consults cpu.max and would treat the kernel's
+    // quota as the capacity of the entire node. Affinity remains a host bound.
+    let mut affinity = unsafe { std::mem::zeroed::<libc::cpu_set_t>() };
+    if unsafe { libc::sched_getaffinity(0, std::mem::size_of_val(&affinity), &mut affinity) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let cpu = i64::from(unsafe { libc::CPU_COUNT(&affinity) }) * 1000;
+    let memory = host_memory()?;
+    let membership = std::fs::read_to_string("/proc/self/cgroup")?;
+    let mounts = std::fs::read_to_string("/proc/self/mountinfo")?;
+    compact_capacity(
+        Path::new("/sys/fs/cgroup"),
+        unified_group(&membership, &mounts)?,
+        original,
+        (cpu, memory),
+    )
+}
+
+fn compact_capacity(
+    root: &Path,
+    group: &Path,
+    original: (i64, i64),
+    observed: (i64, i64),
+) -> Result<(i64, i64)> {
+    if group != Path::new("/xelab/kernel")
+        || original.0 <= 0
+        || original.1 <= 0
+        || observed.0 <= 0
+        || observed.1 <= 0
+    {
+        return Err(Error::unavailable(
+            "Invalid compact startup cgroup or capacity",
+        ));
+    }
+    effective_capacity(
+        root,
+        Path::new("/xelab"),
+        original.0.min(observed.0),
+        original.1.min(observed.1),
+    )
+}
+
+fn host_memory() -> Result<i64> {
     let mem = std::fs::read_to_string("/proc/meminfo")?;
     let kb = mem
         .lines()
@@ -33,11 +92,7 @@ pub fn host_capacity() -> Result<(i64, i64)> {
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|s| s.parse::<i64>().ok())
         .ok_or_else(|| Error::unavailable("Cannot discover host memory"))?;
-    let memory = kb.checked_mul(1024).ok_or_else(Error::exhausted)?;
-    let membership = std::fs::read_to_string("/proc/self/cgroup")?;
-    let mounts = std::fs::read_to_string("/proc/self/mountinfo")?;
-    let group = unified_group(&membership, &mounts)?;
-    effective_capacity(Path::new("/sys/fs/cgroup"), group, cpu, memory)
+    kb.checked_mul(1024).ok_or_else(Error::exhausted)
 }
 
 // The runtime manages /sys/fs/cgroup/xelab directly. A subtree mount hides
@@ -139,6 +194,11 @@ pub async fn initialize(
         .query_one("SELECT * FROM node_budget FOR UPDATE", &[])
         .await?;
     let existing: Value = row.get("config");
+    if (existing["profile"] == "compact") != (config["profile"] == "compact") {
+        return Err(Error::conflict(
+            "Resource profile differs from persisted node budget; use the existing profile",
+        ));
+    }
     let (pcpu, pmem) = pool(&existing, cpu, memory)?;
     if row.get::<_, i64>("reserved_cpu_millis") > pcpu
         || row.get::<_, i64>("reserved_memory_bytes") > pmem
@@ -282,6 +342,26 @@ pub async fn status(c: &impl GenericClient) -> Result<Value> {
 mod tests {
     use super::*;
     #[test]
+    fn compact_whole_node_budget_never_borrows_boot_or_system_memory() {
+        let mut config = json!({"profile":"compact", "kernel_cpu_millis":500,
+            "kernel_memory_bytes":201326592, "system_cpu_millis":250,
+            "system_memory_bytes":268435456, "shutdown_grace_ms":30000});
+        assert_eq!(
+            pool(&config, 1000, 512 * 1024 * 1024).unwrap(),
+            (250, 64 * 1024 * 1024)
+        );
+        assert_eq!(
+            pool(&config, 1000, 480 * 1024 * 1024).unwrap(),
+            (250, 32 * 1024 * 1024)
+        );
+        assert!(pool(&config, 999, 512 * 1024 * 1024).is_err());
+        assert!(pool(&config, 1000, 480 * 1024 * 1024 - 1).is_err());
+        config["system_memory_bytes"] = json!(400 * 1024 * 1024);
+        assert!(pool(&config, 1000, 512 * 1024 * 1024).is_err());
+        config["system_memory_bytes"] = json!(256 * 1024 * 1024 - 1);
+        assert!(pool(&config, 1000, 512 * 1024 * 1024).is_err());
+    }
+    #[test]
     fn host_capacity_respects_every_visible_ancestor_budget() {
         let root = tempfile::tempdir().unwrap();
         let leaf = root.path().join("service/worker");
@@ -316,6 +396,65 @@ mod tests {
             effective_capacity(root.path(), Path::new("/service/worker"), 8000, 34359738368)
                 .is_err()
         );
+    }
+    #[test]
+    fn compact_reexec_preserves_launch_limits_and_checks_parent_not_kernel_leaf() {
+        let root = tempfile::tempdir().unwrap();
+        let leaf = root.path().join("xelab/kernel");
+        std::fs::create_dir_all(&leaf).unwrap();
+        for (dir, cpu, memory) in [
+            (root.path().to_path_buf(), "400000 100000", "2147483648"),
+            (root.path().join("xelab"), "150000 100000", "805306368"),
+            (leaf, "50000 100000", "201326592"),
+        ] {
+            std::fs::write(dir.join("cpu.max"), cpu).unwrap();
+            std::fs::write(dir.join("memory.max"), memory).unwrap();
+        }
+        let resumed = |original, observed| {
+            compact_capacity(root.path(), Path::new("/xelab/kernel"), original, observed).unwrap()
+        };
+        assert_eq!(
+            resumed((1000, 536870912), (8000, 4294967296)),
+            (1000, 536870912)
+        );
+        assert_eq!(
+            resumed((8000, 4294967296), (8000, 4294967296)),
+            (1500, 805306368)
+        );
+        assert_eq!(
+            resumed((8000, 4294967296), (1000, 536870912)),
+            (1000, 536870912)
+        );
+        std::fs::write(root.path().join("cpu.max"), "100000 100000").unwrap();
+        std::fs::write(root.path().join("memory.max"), "536870912").unwrap();
+        assert_eq!(
+            resumed((8000, 4294967296), (8000, 4294967296)),
+            (1000, 536870912)
+        );
+        for group in ["/", "/other/kernel", "/xelab/kernel/child"] {
+            assert!(compact_capacity(
+                root.path(),
+                Path::new(group),
+                (1000, 536870912),
+                (1000, 536870912)
+            )
+            .is_err());
+        }
+        assert!(compact_capacity(
+            root.path(),
+            Path::new("/xelab/kernel"),
+            (0, 536870912),
+            (1000, 536870912)
+        )
+        .is_err());
+        std::fs::remove_file(root.path().join("xelab/memory.max")).unwrap();
+        assert!(compact_capacity(
+            root.path(),
+            Path::new("/xelab/kernel"),
+            (1000, 536870912),
+            (1000, 536870912)
+        )
+        .is_err());
     }
     #[test]
     fn hidden_cgroup_ancestry_cannot_establish_host_capacity() {
