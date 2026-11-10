@@ -269,15 +269,24 @@ def login(args):
     private_write(root / "read.token", key["secret"] + "\n")
     status, _ = api("getNode", token=key["secret"])
     require(status == 200, "read_key_get_node_failed")
-    # A harmless read requiring an unrelated action must remain unauthorized.
-    denied, _ = api("getAccount", token=key["secret"],
+    # Identity getters hide unauthorized objects with RESOURCE_NOT_FOUND.
+    # Prove the same object exists for Owner before checking the limited Key.
+    owner_status, _ = api("getAccount", token=owner_token,
+                         parameters={"account_id": metadata["owner_id"]})
+    require(owner_status == 200, "owner_account_positive_control_failed")
+    denied, denied_response = api("getAccount", token=key["secret"],
                     parameters={"account_id": metadata["owner_id"]})
-    require(denied == 403, "read_key_has_unexpected_account_access")
+    require(denied == 404
+            and denied_response.get("error", {}).get("code") == "RESOURCE_NOT_FOUND",
+            "read_key_has_unexpected_account_access")
     metadata.update({"read_token_file": str(root / "read.token"),
         "owner_token_file": str(root / "owner.token"),
         "read_credential_id": str(uuid.UUID(key["credential"]["id"])),
         "read_rule": rule, "read_key_get_node_status": status,
-        "read_key_unrelated_account_status": denied, "real_https_ready": True})
+        "owner_account_status": owner_status,
+        "read_key_unrelated_account_status": denied,
+        "read_key_unrelated_account_error_code": "RESOURCE_NOT_FOUND",
+        "real_https_ready": True})
     # setup.json contains paths and IDs only, never bearer/password/DSN material.
     output = root / "setup.json"
     fd = os.open(output, os.O_WRONLY | os.O_NOFOLLOW)
