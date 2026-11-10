@@ -412,7 +412,7 @@ def main():
             run03 = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(run03)
             report["run03_sha256"] = hashlib.sha256(module_path.read_bytes()).hexdigest()
-            revision = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+            revision = subprocess.run(["git", "-c", "safe.directory=" + str(repo), "-C", str(repo), "rev-parse", "HEAD"],
                                       capture_output=True, text=True, timeout=5, check=False)
             require(revision.returncode == 0
                     and re.fullmatch(r"[0-9a-f]{40}\n?", revision.stdout) is not None,

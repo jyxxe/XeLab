@@ -13,6 +13,18 @@ import sys
 import time
 import tomllib
 
+sys.dont_write_bytecode = True
+
+
+class Interrupted(Exception):
+    pass
+
+
+def interrupted(signum, frame):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    raise Interrupted()
+
 
 def module(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -28,6 +40,9 @@ def write(path, value):
 
 def main():
     os.umask(0o077)
+    os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
     repo, work, rustc = Path(sys.argv[1]).resolve(), Path(sys.argv[2]), sys.argv[3]
     if os.geteuid() != 0 or work.exists():
         raise RuntimeError('fresh root-owned disposable host required')
@@ -39,6 +54,8 @@ def main():
     result = 1
     status = {'measurement_only':True, 'production_acceptance':'pending #50; AWS DEFERRED'}
     try:
+        if not hasattr(os,'pidfd_open') or not hasattr(signal,'pidfd_send_signal'):
+            raise RuntimeError('pidfd support required')
         config = tomllib.loads((repo/'docs/contracts/examples/kernel.toml').read_text())
         config['resources'].update(kernel_cpu_millis=200, kernel_memory_bytes=256*1024**2,
                                    system_cpu_millis=1000, system_memory_bytes=2*1024**3)
@@ -57,7 +74,7 @@ def main():
                             '--repo',str(repo),'--root',str(work)],check=True,timeout=120)
             binary = repo/'target/release/xelabd'
             write(out/'build-and-host.json',{
-                'source_sha':subprocess.check_output(['git','-C',str(repo),'rev-parse','HEAD'],text=True).strip(),
+                'source_sha':subprocess.check_output(['git','-c','safe.directory='+str(repo),'-C',str(repo),'rev-parse','HEAD'],text=True).strip(),
                 'baseline_main_sha':'44aac50407fb420252023121afde4a2146f6918c',
                 'experiment':'Only two NodeConfig minimum kernel reservations lowered; main unchanged',
                 'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -131,10 +148,18 @@ def main():
     finally:
         if daemon is not None:
             if daemon.poll() is None:
-                signal.pidfd_send_signal(pidfd,signal.SIGTERM)
+                if pidfd is not None:
+                    signal.pidfd_send_signal(pidfd,signal.SIGTERM)
+                else:
+                    # Our own unreaped child cannot reuse its PID. This only
+                    # handles failure acquiring pidfd immediately after Popen.
+                    daemon.terminate()
                 try: exit_code=daemon.wait(timeout=35)
                 except subprocess.TimeoutExpired:
-                    signal.pidfd_send_signal(pidfd,signal.SIGKILL)
+                    if pidfd is not None:
+                        signal.pidfd_send_signal(pidfd,signal.SIGKILL)
+                    else:
+                        daemon.kill()
                     exit_code=daemon.wait(timeout=10)
                     result=1
                     status['forced_shutdown']=True
