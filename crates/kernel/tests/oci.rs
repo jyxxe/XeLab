@@ -1050,6 +1050,28 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
         app.runtime.running(instance).await.unwrap(),
         "another plugin survives the OOM"
     );
+    // The kill can stop the python container itself. The controller notices on
+    // its next two-second reconcile and may apply restart backoff, so a stopped
+    // task here is a restart in progress, not a failed isolation check. Wait for
+    // the replacement task instead of exec-ing into the stop window.
+    let restarted = tokio::time::timeout(Duration::from_secs(60), async {
+        while !app.runtime.running(python_instance).await.unwrap() {
+            let row = c
+                .query_one("SELECT phase FROM instances WHERE id=$1", &[&python_instance])
+                .await
+                .unwrap();
+            assert!(
+                row.get::<_, String>(0) != "failed",
+                "the OOM victim exhausted its restart budget instead of restarting"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+    assert!(
+        restarted.is_ok(),
+        "the OOM victim was not restarted within 60 seconds"
+    );
     let isolation=exec_python(python_instance,"import socket\ntry:\n open('/xelab/forbidden','w')\n raise AssertionError('rootfs writable')\nexcept OSError: pass\ns=socket.socket();s.settimeout(1)\ntry:\n s.connect(('1.1.1.1',443))\n raise AssertionError('egress allowed')\nexcept OSError: pass").await;
     assert!(
         isolation.status.success(),
