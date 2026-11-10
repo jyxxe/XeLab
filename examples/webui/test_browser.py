@@ -57,6 +57,8 @@ class DesktopBrowser(unittest.TestCase):
         self.call_result = None
         self.status_overrides = {}
         self.refresh_enabled = False
+        self.hold_refresh = False
+        self.pending_refresh = []
         self.abort_business = False
         self.errors = []
         self.expected_challenge = None
@@ -110,6 +112,11 @@ class DesktopBrowser(unittest.TestCase):
             return
         if self.hold_preferences and request.method == "GET" and url.path.endswith("/me/ui-preferences"):
             self.pending_preferences.append(route)
+            return
+        if (self.hold_refresh and self.refresh_enabled and request.method == "POST" and url.path == "/oauth/token"
+                and parse_qs(request.post_data or "", keep_blank_values=True) == {
+                    "grant_type": ["refresh_token"], "client_id": ["browser-component"], "refresh_token": ["component-refresh"]}):
+            self.pending_refresh.append(route)
             return
         self.calls.append({"method": request.method, "path": url.path,
                            "headers": request.all_headers(), "body": request.post_data})
@@ -720,6 +727,29 @@ class DesktopBrowser(unittest.TestCase):
         self.assertEqual(len([call for call in self.calls if call["path"] == "/oauth/token"]), 1)
         self.assertEqual(editor.locator('.code').text_content(), original_key)
         self.assertTrue(self.page.get_by_role("button", name="退出", exact=True).is_visible())
+
+    def test_expired_access_refresh_keeps_concurrent_desktop_views_available(self):
+        self.page.clock.install()
+        self.refresh_enabled = True
+        self.open(expires_ms=45000, refresh_token="component-refresh")
+        self.page.clock.fast_forward(46000)
+        self.hold_refresh = True
+        self.app("系统状态")
+        resources = self.page.locator('.window[data-app="resources"]')
+        self.page.wait_for_function("() => sessionStorage.getItem('xelab.oauth:https://core.example.test:browser-component') === null")
+        self.assertEqual(len(self.pending_refresh), 1)
+        try:
+            self.app("Skill")
+            skills = self.page.locator('.window[data-app="skills"]')
+            self.assertEqual(skills.get_by_text("登录后继续", exact=True).count(), 0)
+            self.assertTrue(self.page.get_by_role("button", name="退出", exact=True).is_visible())
+        finally:
+            self.hold_refresh = False
+            for route in self.pending_refresh:
+                self.route(route)
+        resources.get_by_text('"component-only"', exact=False).wait_for()
+        skills.get_by_text("component.echo", exact=True).wait_for()
+        self.assertEqual(len([call for call in self.calls if call["path"] == "/oauth/token"]), 1)
 
 
 if __name__ == "__main__":

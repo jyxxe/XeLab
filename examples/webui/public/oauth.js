@@ -58,7 +58,8 @@ export class OAuthSession extends EventTarget {
   }
 
   get loggedIn() {
-    return this.#tokens !== null && (this.#tokens.expires_at > Date.now() || this.#tokens.refresh_token !== null);
+    return this.#tokens !== null && (this.#tokens.expires_at > Date.now()
+      || this.#tokens.refresh_token !== null || this.#refreshing !== null);
   }
 
   async accessToken() {
@@ -183,7 +184,7 @@ export class OAuthSession extends EventTarget {
     this.#tokens.refresh_token = null;
     this.#storage.removeItem(this.#key);
     const epoch = this.#epoch;
-    this.#refreshing = this.#exchange({ grant_type: 'refresh_token', client_id: this.#config.client_id, refresh_token: token })
+    const refreshing = this.#exchange({ grant_type: 'refresh_token', client_id: this.#config.client_id, refresh_token: token })
       .then(data => {
         if (epoch !== this.#epoch) throw new ApiError('AUTH_REQUIRED', '刷新期间会话已结束。', 401);
         this.#save(data);
@@ -193,13 +194,18 @@ export class OAuthSession extends EventTarget {
         if (epoch === this.#epoch) this.logout();
         throw error;
       })
-      .finally(() => { this.#refreshing = null; });
-    return this.#refreshing;
+      .finally(() => {
+        // A prior session may finish after another session started refreshing.
+        if (this.#refreshing === refreshing) this.#refreshing = null;
+      });
+    this.#refreshing = refreshing;
+    return refreshing;
   }
 
   logout() {
     this.#epoch += 1;
     this.#tokens = null;
+    this.#refreshing = null;
     this.#storage.removeItem(this.#key);
     this.#storage.removeItem(`${this.#key}:pending`);
     this.dispatchEvent(new Event('logout'));
