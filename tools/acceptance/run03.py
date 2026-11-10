@@ -220,11 +220,21 @@ def daemon_evidence(pid, config):
     if read_text(f'/proc/{pid}/cgroup') != '0::/xelab/kernel':
         raise ValueError('xelabd is not in the real kernel cgroup')
     arguments = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
-    # Require explicit configuration to prevent measuring a different daemon.
-    if b'--config' not in arguments:
+    # Clap accepts both --config PATH and --config=PATH. Require one explicit,
+    # nonempty value rather than guessing if command-line evidence is ambiguous.
+    configs = []
+    for index, argument in enumerate(arguments[1:], 1):
+        if argument == b'--config':
+            configs.append(arguments[index + 1] if index + 1 < len(arguments) else b'')
+        elif argument.startswith(b'--config='):
+            configs.append(argument.split(b'=', 1)[1])
+    if len(configs) != 1 or not configs[0]:
         raise ValueError('xelabd must use an explicit --config path')
-    i = arguments.index(b'--config')
-    if Path(os.fsdecode(arguments[i + 1])).resolve() != config.resolve():
+    daemon_config = Path(os.fsdecode(configs[0]))
+    if not daemon_config.is_absolute():
+        # A collector may run in another directory than the measured daemon.
+        daemon_config = Path(f'/proc/{pid}/cwd') / daemon_config
+    if daemon_config.resolve() != config.resolve():
         raise ValueError('daemon config differs from collector config')
     return {'pid': pid, 'binary_sha256': hashlib.sha256(executable.read_bytes()).hexdigest()}
 
