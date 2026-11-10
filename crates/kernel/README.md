@@ -53,8 +53,8 @@ cargo fmt --all -- --check
 
 必须满足：
 
-- 内核预留至少 **4000 mCPU / 16 GiB**，系统预留另算，插件池为剩余容量；不降低现有规范门槛。
-- 示例配置另预留 2 CPU / 4 GiB，因此宿主容量须高于 6 CPU / 20 GiB 才有插件资源。容量不足时启动失败。
+- 默认 `resources.profile = "standard"`（省略同义）：内核预留至少 **4000 mCPU / 16 GiB**，系统另算。原示例预留 2 CPU / 4 GiB，宿主高于 6 CPU / 20 GiB 才有插件资源。
+- 显式 `compact` 目标为 **1 vCPU / 512MiB 整机**，内核最低 500m/192MiB、系统最低 250m/256MiB；实际有效内存至少 480MiB，插件仅使用扣除后的真实余量。以小规模 API/CLI 为基线；现有 WebUI/AI/MPR 资源不自动缩减。配置、限制与尚待执行的整机稳定性验收见 [compact 节点](../../docs/implementation/compact-node.md)。
 - 使用独立 containerd namespace、独立且不与宿主路由冲突的 IPv4 CIDR（/16～/28）。
 - 本版采用 `/sys/fs/cgroup/xelab`。不要在已有其他管理器使用该路径的共享宿主上运行。
 - HTTPS 服务证书须匹配 `public_origin`；工作负载 CA 使用独立的 EC P-256 证书及 PKCS#8 私钥。工作负载证书有效期 1 小时，约 30 分钟更新；插件须重新加载证书，参考插件每 5 分钟重建监听。
@@ -161,7 +161,7 @@ python3 examples/echo/sign_artifact.py \
 
 CI 另在一次性 Linux 主机运行 `tests/oci.rs`：真实 containerd + Rust/Python 两个 OCI 镜像 + cgroup + mTLS，经管理 Router 完成安装、批准、启用、调用、幂等重放/冲突、两处恢复注入、调用配额回收、停用及撤权；实际执行 CPU 压力、内存 OOM、只读根目录/出网拒绝，并以真实 HTTPS 服务运行 `xelabctl`。错误签名、错误实例代次证书和过期版本条件须被拒绝。该测试需显式 `XELAB_OCI_TEST=1`，默认忽略，**只允许在可销毁测试主机上手动运行**；命令见 [CI](../../.github/workflows/kernel.yml)。
 
-托管 CI 容量低于规范的生产内核预留，因此 OCI 组件测试使用小的实际容器 cgroup 和独立测试数据库中的合成节点预算；生产 `xelabd` 没有绕过预留门槛的开关。它验证真实插件执行、HTTPS/CLI 和控制面逻辑，不等价于合规容量宿主上的完整 daemon 启动、4C16G 保留量在持续压力下的有效性、长期负载或灾备验收。
+现有托管 OCI 组件测试使用小的实际容器 cgroup 和独立测试数据库中的合成 standard 节点预算；生产 `xelabd` 按显式 profile 验证真实容量。它验证真实插件执行、HTTPS/CLI 和控制面逻辑，不等价于 standard 的 4C16G 保留量验收，也不等价于 compact 的 1C512MiB 整机长测或灾备验收。
 
 独立 WebUI 整体门禁包含实际浏览器/OCI、两实例真实 CPU/内存/PID cgroup 读数、撤权账本、停用后 CLI 与同进程核心组件重启；尚未通过不能当作 daemon 重执行或独立宿主恢复证据。真实 AWS 按维护者指令 DEFERRED；正式 RUN-03、独立宿主及完整格式迁移验收保留工具和门禁，不能用合成预算代替。身份求值和全局授权写锁优先保证正确性，大账户树下的吞吐须实测再优化。
 

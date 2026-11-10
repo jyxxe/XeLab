@@ -52,6 +52,12 @@ python3 examples/ui-reference/test_browser.py \
 
 Python 测试执行真实回环 HTTPS、临时 CA/内核和错误工作负载证书、严格输入、GET/HEAD/ETag、路径和身份头拒绝、排空及并发槽归还；另用现有 Ed25519 签名工具验证精确 envelope 和篡改拒绝。签名单元测试使用明确的组件测试镜像引用，不证明该 OCI 镜像存在或已获准安装。
 
+`test_http.py` 的 Schema 用例导入 `jsonschema`；系统 Python 未安装时会报 `ModuleNotFoundError` 而不是跳过。可按 CI 方式安装后运行：
+
+```sh
+python3 -m pip install -r docs/tools/requirements.txt
+```
+
 浏览器驱动要求实际官方 `BridgeHost` / `ApiClient` 文件、Chromium 和 Python Playwright。它运行独立 Python 子进程的真实 mTLS 业务及静态服务，通过明确的受控 Core **组件适配器**与官方宿主消息桥互操作；检查真实 echo、固定部署、DOM/存储隔离、文本输出、窗口打开、绑定缺失、撤权关闭和错误 nonce/序列。该适配器不实现或冒充核心 Authorizer、Broker、OAuth、签名准入及 OCI Runtime。
 
 本组件已执行的结果：Python 7 项、Node 5 项、实际 Chromium 4 项通过且无跳过。第一轮浏览器测试暴露 Playwright 字符串等待触发严格 CSP 的 `unsafe-eval` 拒绝；已改测试等待函数，保留 `script-src 'self'`，未放宽 CSP。

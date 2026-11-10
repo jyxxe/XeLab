@@ -7,7 +7,7 @@
 ## 固定前提
 
 - 单台 Linux 主机，cgroups v2，amd64 或 arm64；CPU 插件，不支持 GPU。
-- 内核最低预留 4000 millicpu / 17179869184 bytes；宿主、运行时、独立 PostgreSQL 等另行预留。
+- 内核预留按显式资源 profile：默认 standard 最低 4000m/16GiB；compact 最低 500m/192MiB，宿主等另预留至少 250m/256MiB；容量与验收边界见 [预算](../runtime/budgets.md)。
 - 本机调度；同机多实例不构成宿主高可用，不承诺无中断升级或跨节点故障转移。
 - 内核使用 Rust；普通插件可用 Rust/C++ 或任何能实现插件RPC的语言，使用独立OCI制品及部署。
 - 核心另行管理MicroPlugin、不可变MicroPluginVersion及MicroDeployment；微插件无需自己的OCI镜像或容器，由Micro Plugin Runtime承载。

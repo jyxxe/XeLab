@@ -3415,6 +3415,8 @@ dependencies = [
  "ed25519-dalek",
  "futures-util",
  "hmac 0.12.1",
+ "http-body",
+ "http-body-util",
  "ipnet",
  "jsonschema",
  "libc",
