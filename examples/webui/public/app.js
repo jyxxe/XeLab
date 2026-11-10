@@ -1,5 +1,5 @@
 import {runtimeConfig} from './runtime-config.js';
-import {ApiClient,encodeRequestJson} from './api.js';
+import {ApiClient,encodeRequestJson,compareEncodedJson} from './api.js';
 import {OAuthSession} from './oauth.js';
 import {BridgeHost,validateContribution,sameContribution} from './bridge.js';
 
@@ -263,11 +263,6 @@ async function loadApp(win) {
   win.content.replaceChildren(state('loading','正在读取核心…'));
   try { await win.app.render(win); } catch (error) { if (windows.has(win.id)) win.content.replaceChildren(toolbar(win,win.app.title),failure(error)); }
 }
-function canonicalIntent(value) {
-  if (Array.isArray(value)) return value.map(canonicalIntent);
-  if (value !== null && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonicalIntent(value[key])]));
-  return value;
-}
 function editor(title, operation, {params={}, initial={}, etag, body=true, note='操作将以当前用户和本客户端授权提交；服务端会重新鉴权。'} = {}) {
   return openWindow({id:`editor-${operation}`,title,render:async win => {
     const key = crypto.randomUUID();
@@ -279,11 +274,11 @@ function editor(title, operation, {params={}, initial={}, etag, body=true, note=
       if(win.credentialChanged){toast('原请求来源已改变，请先核实结果。');return;}
       let value;
       try { value = body ? JSON.parse(input.value) : undefined; } catch { notice.replaceChildren(state('error','JSON 格式错误','请修正后再提交。'));return; }
-      let fingerprint;
+      let encoded;
       try {
-        if (body) { encodeRequestJson(value); fingerprint = JSON.stringify(canonicalIntent(value)); }
+        if (body) encoded = encodeRequestJson(value);
       } catch (error) { notice.replaceChildren(failure(error));return; }
-      if (intentBound && fingerprint !== intentBody) {
+      if (intentBound && encoded !== intentBody && (!body || !compareEncodedJson(intentBody,value))) {
         notice.replaceChildren(state('error','原请求内容已锁定','请保留原请求键并核实结果；如需提交不同内容，请关闭并重新打开编辑器以创建新意图。'));
         return;
       }
@@ -292,7 +287,7 @@ function editor(title, operation, {params={}, initial={}, etag, body=true, note=
       outcome.replaceChildren(state('loading','请求中…','请保留原请求键，网络失败不等于操作回滚。'));
       try {
         const result = await request(operation,{params,body:value,etag,idempotencyKey:key,signal:win.controller.signal},()=>{
-          if (!intentBound) { intentBody = fingerprint; intentBound = true; }
+          if (!intentBound) { intentBody = encoded; intentBound = true; }
         });
         outcome.replaceChildren(node('p',{},'核心已返回以下实际结果；异步 Operation 尚需检查其终态。'),raw(result.data));
       } catch (error) { outcome.replaceChildren(failure(error)); }

@@ -615,6 +615,64 @@ class DesktopBrowser(unittest.TestCase):
         self.assertEqual(calls[0]["headers"]["idempotency-key"], calls[1]["headers"]["idempotency-key"])
         self.assertEqual(calls[0]["headers"]["if-match"], '"rev-1"')
 
+    def test_editor_intent_compares_nested_objects_and_arrays_safely(self):
+        self.open()
+        self.app("Skill").get_by_role("button", name="调用测试", exact=True).click()
+        editor = self.page.locator('.window[data-app="editor-invokeSkill"]')
+        input_box = editor.get_by_label("请求 JSON", exact=True)
+        submit = editor.get_by_role("button", name="提交", exact=True)
+        original = {
+            "input": {
+                "message": "preserve-result",
+                "nested": {
+                    "__proto__": {"left": 1, "constructor": {"x": 2, "y": 3}},
+                    "constructor": {"inner": "value", "other": False},
+                    "items": [{"alpha": 1, "beta": 2}, "end"],
+                },
+            },
+            "idempotency_key": "prototype-intent",
+        }
+        reordered = {
+            "idempotency_key": "prototype-intent",
+            "input": {
+                "nested": {
+                    "items": [{"beta": 2, "alpha": 1}, "end"],
+                    "constructor": {"other": False, "inner": "value"},
+                    "__proto__": {"constructor": {"y": 3, "x": 2}, "left": 1},
+                },
+                "message": "preserve-result",
+            },
+        }
+        input_box.fill(json.dumps(original))
+        submit.click()
+        editor.get_by_text(f'"call_id": "{DEPLOYMENT}"', exact=False).wait_for()
+        input_box.fill(json.dumps(reordered, indent=2))
+        with self.page.expect_request(lambda req: req.method == "POST" and req.url.endswith("/calls")):
+            submit.click()
+        editor.get_by_text(f'"call_id": "{DEPLOYMENT}"', exact=False).wait_for()
+        calls = [call for call in self.calls if call["method"] == "POST" and call["path"].endswith("/calls")]
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["headers"]["idempotency-key"], calls[1]["headers"]["idempotency-key"])
+        self.assertEqual(json.loads(calls[0]["body"]), json.loads(calls[1]["body"]))
+        previous_result = editor.locator("pre.result").inner_text()
+
+        reordered_array = json.loads(json.dumps(original))
+        reordered_array["input"]["nested"]["items"].reverse()
+        changed_array_value = json.loads(json.dumps(original))
+        changed_array_value["input"]["nested"]["items"][0]["alpha"] = 9
+        missing_proto = json.loads(json.dumps(original))
+        del missing_proto["input"]["nested"]["__proto__"]
+        changed_constructor = json.loads(json.dumps(original))
+        changed_constructor["input"]["nested"]["constructor"]["inner"] = "different"
+        for changed in (reordered_array, changed_array_value, missing_proto, changed_constructor):
+            input_box.fill(json.dumps(changed))
+            submit.click()
+            editor.get_by_text("原请求内容已锁定", exact=True).wait_for()
+            self.page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+            calls = [call for call in self.calls if call["method"] == "POST" and call["path"].endswith("/calls")]
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(editor.locator("pre.result").inner_text(), previous_result)
+
     def test_editor_inflight_edit_does_not_replace_original_intent(self):
         held = []
         self.page.unroute("**/*")

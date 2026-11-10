@@ -115,6 +115,61 @@ export function encodeRequestJson(value) {
   return encoded;
 }
 
+// Compare a locally produced encodeRequestJson string with another validated
+// JSON value without making a second object tree or sorting/copying every key.
+// This is not a parser for arbitrary input: `encoded` must be our own
+// JSON.stringify output, which has no whitespace or duplicate object keys.
+export function compareEncodedJson(encoded, target) {
+  let position = 0;
+  function readString() {
+    const start = position++;
+    while (position < encoded.length) {
+      const character = encoded[position++];
+      if (character === '\\') { position++; continue; }
+      if (character === '"') return JSON.parse(encoded.slice(start, position));
+    }
+    throw new Error('Incomplete encoded string');
+  }
+  function compare(value) {
+    const character = encoded[position];
+    if (character === '"') return typeof value === 'string' && readString() === value;
+    if (character === '[') {
+      if (!Array.isArray(value)) return false;
+      position++;
+      let count = 0;
+      if (encoded[position] !== ']') for (;;) {
+        if (count >= value.length || !compare(value[count++])) return false;
+        if (encoded[position] === ',') { position++; continue; }
+        break;
+      }
+      if (encoded[position++] !== ']') throw new Error('Invalid encoded array');
+      return count === value.length;
+    }
+    if (character === '{') {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+      position++;
+      let count = 0;
+      if (encoded[position] !== '}') for (;;) {
+        if (encoded[position] !== '"') throw new Error('Invalid encoded key');
+        const key = readString();
+        if (encoded[position++] !== ':') throw new Error('Invalid encoded separator');
+        if (!Object.hasOwn(value, key) || !compare(value[key])) return false;
+        count++;
+        if (encoded[position] === ',') { position++; continue; }
+        break;
+      }
+      if (encoded[position++] !== '}') throw new Error('Invalid encoded object');
+      return count === Object.keys(value).length;
+    }
+    const start = position;
+    while (position < encoded.length && !',]}'.includes(encoded[position])) position++;
+    if (start === position) throw new Error('Missing encoded value');
+    return JSON.parse(encoded.slice(start, position)) === value;
+  }
+  try { return compare(target) && position === encoded.length; }
+  catch { return false; }
+}
+
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function parameter(value, type) {
   if (type === 'limit') {
