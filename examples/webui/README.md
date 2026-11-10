@@ -4,6 +4,8 @@ This is the independent `org.xelab.webui` OCI application. The kernel retains au
 
 The desktop uses browser ES modules and standard DOM/CSS without a frontend framework or package dependency. It includes a menu bar, Dock, searchable launcher, independent windows, pointer dragging, keyboard resizing/movement, minimize/maximize/restore/close/focus, narrow-screen layout and accessible labels. System/light/dark/custom themes and reduced motion/transparency use the current user's core UI preferences when that API is available. Unsaved settings are explicitly marked as previews.
 
+The Dock's read-only overview fetches authorized node budgets and the first pages of deployments and instances on opening or manual refresh. It reports each source and read time, distinguishes errors from empty pages, and flags further pages without treating the visible count as a total. Account identity is shown only when a unique visible active session establishes it. The overview does not poll or invent historical metrics or an Operation list; a separate window can query a known Operation UUID.
+
 Built-in windows issue actual public API requests for signed installations, deployments/approval/configuration/enabling, fixed Skill registration/state/invocation, accounts and child accounts, effective permission/grant sources, quotas/system status, UI clients, default UI and Operation lookup. JSON request editors retain their HTTP idempotency key on manual retry; credential rotation locks those original editors so an unknown outcome cannot be resubmitted under a different credential scope. Verify the original Call/Operation before explicitly creating another intent. Deployment configuration uses the public `{spec}` patch and requires a disabled, drained deployment. A response is displayed as the actual core result, including an asynchronous Operation rather than invented completion. Errors, denied access, unavailable dependencies and empty results have separate states. Unimplemented Batch, Workflow, micro-plugin and knowledge-base capabilities remain visibly unavailable.
 
 The browser performs authorization code + PKCE S256 through the exact configured trusted core origin. It never accepts platform passwords or reads the core login Cookie. Tokens and pending PKCE material are confined to this public client's tab session storage; refresh is single-flight, rotated credentials are not blindly retried, and logout clears private windows/state. The API module accepts only its closed operation map, exact parameters and the configured core origin. It is not an iframe HTTP bridge.
@@ -17,6 +19,8 @@ Widget layout persists through the core preference API. Active frame limits, exp
 See [deployment and signing](DEPLOYMENT.md) for the actual UID 65532 Lifecycle/static workload, resource configuration, callback path, certificate requirements, image build/signing and remaining core integration gates.
 
 ## Component verification
+
+The desktop browser tests also require the Python `jsonschema` package to validate the overview fixtures against the checked-in OpenAPI schemas.
 
 Run from the repository root:
 
