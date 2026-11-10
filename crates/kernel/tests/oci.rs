@@ -1057,7 +1057,10 @@ async fn signed_oci_plugin_runs_through_the_management_api_and_recovers() {
     let restarted = tokio::time::timeout(Duration::from_secs(60), async {
         while !app.runtime.running(python_instance).await.unwrap() {
             let row = c
-                .query_one("SELECT phase FROM instances WHERE id=$1", &[&python_instance])
+                .query_one(
+                    "SELECT phase FROM instances WHERE id=$1",
+                    &[&python_instance],
+                )
                 .await
                 .unwrap();
             assert!(
