@@ -28,6 +28,7 @@ let launcherError = null;
 let launcherEpoch = 0;
 let layer = 10;
 let accountId = null;
+let accountIdentityReadAt = null;
 let preferences = null;
 let preferenceEtag = null;
 let toastTimer;
@@ -93,6 +94,7 @@ function clearPrivateViews() {
   sessionEpoch++;
   const key = layoutKey();
   accountId = null;
+  accountIdentityReadAt = null;
   if (key) localStorage.removeItem(key);
   for (const win of [...windows.values()]) closeWindow(win, false);
   for (const widget of widgetViews.values()) widget.dispose();
@@ -691,7 +693,8 @@ async function overview(win) {
   const identity=node('section',{class:'overview-card'},node('h3',{},'连接与身份'),
     node('p',{},oauth.loggedIn?'本地登录会话存在；服务端授权以每次请求为准。':'未登录。'),
     node('p',{class:'code'},`核心：${runtimeConfig.core_origin}`),
-    node('p',{},accountId?`当前账户：${accountId}（来自唯一可见的活动会话主体）`:'当前账户未确认；会话信息可能尚未加载或不可见。'));
+    node('p',{},accountId?`当前账户：${accountId}（来自唯一可见的活动会话主体）`:'当前账户未确认；会话信息可能尚未加载或不可见。'),
+    node('p',{class:'overview-source'},accountIdentityReadAt?`来源：本地会话与核心本人会话列表；本人会话读取（UTC）：${accountIdentityReadAt}`:'来源：本地会话；本人会话读取时间不可用。'));
   const section=(title)=>node('section',{class:'overview-card'},node('h3',{},title),node('div',{'aria-live':'polite'},state('loading','正在读取…')));
   const nodeCard=section('节点与资源'), deploymentCard=section('部署'), instanceCard=section('实例');
   const note=node('section',{class:'overview-card overview-note'},node('h3',{},'历史与操作'),
@@ -806,6 +809,7 @@ async function boot() {
     $('#login').textContent='退出';$('#welcome').hidden=true;$('#connection').textContent='正在验证连接…';
     try {
       const sessions=await request('listSessions',{query:{limit:200}});
+      accountIdentityReadAt=new Date().toISOString();
       const subjects=[...new Set(rows(sessions.data).filter(item=>item.status==='active').map(item=>item.account_id))];
       if(subjects.length===1) accountId=subjects[0];
     } catch { /* Authorization may intentionally exclude session metadata. */ }
