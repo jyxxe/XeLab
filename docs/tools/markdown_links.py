@@ -7,8 +7,10 @@ import unicodedata
 from urllib.parse import unquote, urlparse
 
 
-FENCE = re.compile(r'^\s*(`{3,}|~{3,})')
+FENCE = re.compile(r'^ {0,3}(`{3,}|~{3,})')
 QUOTE_MARKER = re.compile(r' {0,3}>[ \t]?')
+LIST_MARKER = re.compile(r'^ {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+')
+LIST_QUOTE = re.compile(r'^ {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+(?=>)')
 INLINE_CODE = re.compile(r'(?<![\\`]) (?:\\\\)* (`+) (?!`) (.*?) (?<!`) \1 (?!`)', re.X)
 HTML_TAG = re.compile(r'''</?[A-Za-z][A-Za-z0-9-]*(?:\s+(?:[^>"']|"[^"]*"|'[^']*')*)?\s*/?>''')
 ATX = re.compile(r'^ {0,3}#{1,6}(?:[ \t]+(.*)|[ \t]*)$')
@@ -26,7 +28,8 @@ HTML_BLOCK_START = re.compile(
 
 def _blockquote(line, limit=None):
     """Return the quote depth and content after at most `limit` quote markers."""
-    pos = 0
+    marker = LIST_QUOTE.match(line) if limit is None else None
+    pos = marker.end() if marker else 0
     depth = 0
     while limit is None or depth < limit:
         match = QUOTE_MARKER.match(line, pos)
@@ -35,6 +38,29 @@ def _blockquote(line, limit=None):
         pos = match.end()
         depth += 1
     return depth, line[pos:]
+
+
+def _fenced_container(line, quote_depth, outer_indent, inner_indent):
+    """Return fence content, or None if its quote/list container ended."""
+    expanded = line.expandtabs(4)
+    if outer_indent:
+        if expanded.startswith(' ' * outer_indent):
+            expanded = expanded[outer_indent:]
+        elif not expanded.strip() and not quote_depth:
+            return ''
+        else:
+            return None
+    depth, quoted = _blockquote(expanded, quote_depth)
+    if depth < quote_depth:
+        return None
+    if inner_indent:
+        if quoted.startswith(' ' * inner_indent):
+            quoted = quoted[inner_indent:]
+        elif not quoted.strip():
+            return ''
+        else:
+            return None
+    return quoted
 
 
 def _can_continue_paragraph(line):
@@ -88,6 +114,8 @@ def without_code(value, preserve_pre=False):
     lines = []
     fence = None
     fence_depth = 0
+    fence_outer_indent = 0
+    fence_inner_indent = 0
     indented_code = None
     indented_depth = 0
     list_indent = None
@@ -98,8 +126,8 @@ def without_code(value, preserve_pre=False):
     html_depth = 0
     for line in value.splitlines():
         if fence is not None:
-            depth, quoted = _blockquote(line, fence_depth)
-            if depth < fence_depth:
+            quoted = _fenced_container(line, fence_depth, fence_outer_indent, fence_inner_indent)
+            if quoted is None:
                 fence = None
                 previous_blank = True
             else:
@@ -156,13 +184,24 @@ def without_code(value, preserve_pre=False):
             previous_paragraph = False
             continue
         expanded = quoted.expandtabs(4)
-        match = FENCE.match(quoted)
+        outer_marker = LIST_QUOTE.match(line.expandtabs(4))
+        list_marker = LIST_MARKER.match(expanded)
+        inner_indent = 0
+        if list_marker:
+            inner_indent = list_marker.end()
+        elif list_indent is not None and expanded.startswith(' ' * list_indent):
+            inner_indent = list_indent
+        match = FENCE.match(expanded[inner_indent:]) if inner_indent else None
+        if match is None:
+            inner_indent = 0
+            match = FENCE.match(expanded)
         if match:
             fence = match.group(1)
             fence_depth = depth
+            fence_outer_indent = outer_marker.end() if outer_marker else 0
+            fence_inner_indent = inner_indent
             lines.append('')
         else:
-            list_marker = re.match(r'^ {0,3}(?:[-+*]|\d+[.)])[ \t]+', expanded)
             if list_marker:
                 list_indent = list_marker.end()
             lines.append(line)
@@ -248,11 +287,11 @@ class _ExplicitAnchors(HTMLParser):
 
 def markdown_anchors(content):
     """Collect supported heading and explicit anchors; custom anchors do not deduplicate headings."""
-    text = without_code(content)
+    text = _mask_multiline_code(without_code(content))
     parser = _ExplicitAnchors()
     html = without_code(content, preserve_pre=True)
     parts = re.split(r'(<pre\b[^>]*>.*?</pre\s*>)', html, flags=re.I | re.S)
-    parser.feed(''.join(part if i % 2 else INLINE_CODE.sub('', part)
+    parser.feed(''.join(part if i % 2 else INLINE_CODE.sub('', _mask_multiline_code(part))
                         for i, part in enumerate(parts)))
     anchors = {'top'} | parser.anchors
     references, _ = _reference_definitions(INLINE_CODE.sub('', text))
@@ -286,6 +325,61 @@ def _is_escaped(text, pos):
     while start and text[start - 1] == '\\':
         start -= 1
     return (pos - start) % 2 == 1
+
+
+def _mask_multiline_code(text):
+    """Mask multiline code spans within a paragraph without crossing block boundaries."""
+    spans = []
+    start = None
+    end = 0
+    offset = 0
+    previous_depth = None
+    previous_paragraph = False
+    for line in text.splitlines(keepends=True):
+        raw = line.rstrip('\r\n')
+        depth, quoted = _blockquote(raw)
+        list_start = LIST_MARKER.match(quoted.expandtabs(4)) or LIST_QUOTE.match(raw.expandtabs(4))
+        paragraph = _can_continue_paragraph(quoted)
+        lazy = (previous_depth is not None and depth < previous_depth and previous_paragraph)
+        if (not paragraph or list_start or
+                (previous_depth is not None and depth != previous_depth and not lazy)):
+            if start is not None:
+                spans.append((start, end))
+                start = None
+        if paragraph:
+            if start is None:
+                start = offset
+            end = offset + len(line)
+        previous_depth = depth if paragraph else None
+        previous_paragraph = paragraph
+        offset += len(line)
+    if start is not None:
+        spans.append((start, end))
+
+    masked = list(text)
+    for begin, end in spans:
+        segment = text[begin:end]
+        runs = list(re.finditer(r'`+', segment))
+        following = [None] * len(runs)
+        latest = {}
+        for index in range(len(runs) - 1, -1, -1):
+            width = runs[index].end() - runs[index].start()
+            following[index] = latest.get(width)
+            latest[width] = index
+        index = 0
+        while index < len(runs):
+            closing = following[index]
+            if closing is None or _is_escaped(segment, runs[index].start()):
+                index += 1
+                continue
+            first = runs[index].start()
+            last = runs[closing].end()
+            if '\n' in segment[first:last]:
+                for pos in range(begin + first, begin + last):
+                    if masked[pos] != '\n':
+                        masked[pos] = ' '
+            index = closing + 1
+    return ''.join(masked)
 
 
 def _unescape_markdown(value):
@@ -412,7 +506,8 @@ def _bracket_pairs(text, html):
 
 def _markdown_links(content):
     """Yield destinations of inline and single-line reference links outside code."""
-    content = INLINE_CODE.sub(lambda m: ' ' * len(m.group()), without_code(content))
+    content = _mask_multiline_code(without_code(content))
+    content = INLINE_CODE.sub(lambda m: ' ' * len(m.group()), content)
     references, content = _reference_definitions(content)
     html = [(m.start(), m.end()) for m in HTML_TAG.finditer(content)]
     pairs = _bracket_pairs(content, html)

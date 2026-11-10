@@ -1,0 +1,23 @@
+{
+  "source": "GitHub Markdown API (gfm), 2026-11-10",
+  "cases": [
+    {"markdown": "`prefix\n[not](#bad)\nsuffix`\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": "``prefix\n[not](#bad)\nsuffix``\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": "> `prefix\n> [not](#bad)\n> suffix`\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": "- > ```\n  > [not](#bad)\n  > ```\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": "1. > ```\n   > [not](#bad)\n   > ```\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": "`unterminated\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": "`unterminated\n# Heading\n[real](#good)`","destinations": ["#good"]},
+    {"markdown": "`unterminated\n- item\n[real](#good)`","destinations": ["#good"]},
+    {"markdown": "`foo\n<!-- comment -->\n[not](#bad)`\n\n[real](#good)","destinations": ["#bad","#good"]},
+    {"markdown": "`foo\n> [real](#good)`","destinations": ["#good"]},
+    {"markdown": "``foo\n` bar [not](#bad)\nfoo``\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": "paragraph\n    ```\n    [real](#good)","destinations": ["#good"]},
+    {"markdown": "```\n[fake](#bad)\n```\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": "- ```\n  [fake](#bad)\n  ```\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": "> - ```\n>   [fake](#bad)\n>   ```\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": "- item\n    ```\n    [fake](#bad)\n    ```\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": "- ```\n  [fake](#bad)\n[outside](#good)","destinations": ["#good"]},
+    {"markdown": "- > ```\n  > [fake](#bad)\n[outside](#good)","destinations": ["#good"]}
+  ]
+}

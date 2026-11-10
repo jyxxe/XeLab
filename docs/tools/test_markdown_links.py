@@ -306,6 +306,69 @@ text
             'broken Markdown anchor source.md -> #missing-html',
         ])
 
+    def test_multiline_code_and_fences_in_nested_containers(self):
+        source = self.write('source.md', '''# Present
+
+`prefix
+[fake](#absent)
+suffix`
+[real](#missing-multiline)
+
+> `prefix
+> [fake](#absent)
+> suffix`
+[real](#missing-quoted)
+
+- > ```
+  > [fake](#absent)
+  > ```
+[real](#missing-list-quote)
+
+1. > ```
+   > [fake](#absent)
+   > ```
+[real](#missing-numbered)
+
+- ```
+  [fake](#absent)
+  ```
+[real](#missing-list)
+
+> - ```
+>   [fake](#absent)
+>   ```
+[real](#missing-quote-list)
+
+paragraph
+    ```
+    [real](#missing-paragraph)
+
+`unclosed
+## Heading
+[real](#missing-heading)`
+''')
+        _, errors = check_markdown_links(source, self.root)
+        self.assertEqual(errors, [
+            'broken Markdown anchor source.md -> #missing-multiline',
+            'broken Markdown anchor source.md -> #missing-quoted',
+            'broken Markdown anchor source.md -> #missing-list-quote',
+            'broken Markdown anchor source.md -> #missing-numbered',
+            'broken Markdown anchor source.md -> #missing-list',
+            'broken Markdown anchor source.md -> #missing-quote-list',
+            'broken Markdown anchor source.md -> #missing-paragraph',
+            'broken Markdown anchor source.md -> #missing-heading',
+        ])
+
+    def test_html_anchor_inside_multiline_code_is_not_real(self):
+        source = self.write('source.md', '''`prefix
+<a id="hidden"></a>
+suffix`
+
+[missing](#hidden)
+''')
+        _, errors = check_markdown_links(source, self.root)
+        self.assertEqual(errors, ['broken Markdown anchor source.md -> #hidden'])
+
     def test_external_images_and_non_markdown_fragments_remain_out_of_scope(self):
         self.write('schema.json', '{}')
         source = self.write('source.md', '''# Valid
@@ -340,7 +403,8 @@ text
         self.assertEqual(errors, ['broken Markdown anchor source.md -> other.md#literal%20value'])
 
     def test_links_match_github_rendered_offline_fixtures(self):
-        for name in ('github-markdown-links.json', 'github-blockquote-links.json'):
+        for name in ('github-markdown-links.json', 'github-blockquote-links.json',
+                     'github-code-boundaries.json'):
             fixture = Path(__file__).parent / 'fixtures' / name
             cases = json.loads(fixture.read_text(encoding='utf-8'))['cases']
             self.assertTrue(cases)
