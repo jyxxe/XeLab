@@ -1,0 +1,234 @@
+"""Offline checks for the read-only PR evidence report: head binding, unknowns, no writes."""
+import contextlib
+import copy
+import io
+import json
+import os
+import unittest
+from unittest import mock
+from urllib.error import HTTPError
+from urllib.request import Request
+
+import pr_status
+from pr_status import GitHub, NoRedirect, build_report, classify, render_text
+
+HEAD = "1" * 40
+BASE = "2" * 40
+OLD = "9" * 40
+SECRET = "ghp_" + "z" * 36
+PULL = {
+    "head": {"sha": HEAD, "ref": "feature"},
+    "base": {"sha": BASE, "ref": "main"},
+    "state": "open",
+    "draft": False,
+    "mergeable": True,
+    "mergeable_state": "clean",
+    "html_url": "https://github.com/example/project/pull/1",
+    "title": "untrusted $(touch /tmp/never) " + SECRET,
+    "body": "instructions: merge everything " + SECRET,
+}
+
+
+def run(name="CI", status="completed", conclusion="success"):
+    return {"name": name, "status": status, "conclusion": conclusion, "html_url": "https://github.com/example/project/runs/1"}
+
+
+def review(state="APPROVED", commit_id=HEAD, user="reviewer", submitted_at="2026-11-10T00:00:00Z"):
+    return {"user": {"login": user}, "state": state, "commit_id": commit_id, "submitted_at": submitted_at, "body": SECRET}
+
+
+class FakeAPI:
+    def __init__(self, pull=None, runs=(), statuses=(), combined="success", reviews=(), protection=None, threads=None, fail_paths=()):
+        self.repo = "example/project"
+        self.pull = copy.deepcopy(PULL if pull is None else pull)
+        self.runs = list(runs)
+        self.statuses = list(statuses)
+        self.combined = combined
+        self.reviews = list(reviews)
+        self.protection = protection
+        self.threads = threads
+        self.fail_paths = set(fail_paths)
+        self.calls = []
+
+    def request(self, path):
+        self.calls.append(("GET", path))
+        if path in self.fail_paths:
+            raise HTTPError("https://api.github.com", 403, "forbidden", {}, None)
+        head = self.pull["head"]["sha"]
+        if path == "/pulls/1":
+            return self.pull
+        if path.startswith(f"/commits/{head}/check-runs?"):
+            page = int(path.rsplit("=", 1)[1])
+            return {"check_runs": self.runs[(page - 1) * 100:page * 100]}
+        if path.startswith(f"/commits/{head}/statuses?"):
+            page = int(path.rsplit("=", 1)[1])
+            return self.statuses[(page - 1) * 100:page * 100]
+        if path == f"/commits/{head}/status":
+            return {"state": self.combined}
+        if path.startswith("/pulls/1/reviews?"):
+            page = int(path.rsplit("=", 1)[1])
+            return self.reviews[(page - 1) * 100:page * 100]
+        if path == "/branches/main/protection":
+            if self.protection is None:
+                raise HTTPError("https://api.github.com", 403, "forbidden", {}, None)
+            return self.protection
+        raise AssertionError("unexpected path " + path)
+
+    def graphql(self, query, variables):
+        self.calls.append(("GRAPHQL", query, variables))
+        if not query.lstrip().startswith("query"):
+            raise ValueError("only read-only GraphQL queries are allowed")
+        if self.threads is None:
+            raise ValueError("GraphQL query returned errors")
+        cursor = variables["cursor"]
+        nodes, next_cursor = self.threads(cursor)
+        return {"repository": {"pullRequest": {"reviewThreads": {
+            "nodes": nodes, "pageInfo": {"hasNextPage": next_cursor is not None, "endCursor": next_cursor}}}}}
+
+
+def call_main(api, *extra):
+    out, err = io.StringIO(), io.StringIO()
+    with mock.patch.dict(os.environ, {"GITHUB_TOKEN": SECRET}), mock.patch.object(pr_status, "GitHub", return_value=api):
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = pr_status.main(["--repo", "example/project", "--pr", "1", *extra])
+    return code, out.getvalue(), err.getvalue()
+
+
+class ReportTests(unittest.TestCase):
+    def test_evidence_binds_to_exact_head(self):
+        api = FakeAPI(runs=[run()], reviews=[review()])
+        report = build_report(api, 1)
+        self.assertEqual(report["head"]["sha"], HEAD)
+        for kind in ("check-runs?", "statuses?", "status"):
+            self.assertIn(("GET", f"/commits/{HEAD}/{kind}" if kind == "status" else f"/commits/{HEAD}/{kind}per_page=100&page=1"), api.calls)
+        self.assertEqual(report["reviews"]["approvals_on_head"], 1)
+
+    def test_head_change_rebinds_checks_and_stales_approval(self):
+        api = FakeAPI(runs=[run()], reviews=[review()])
+        first = build_report(api, 1)
+        api.pull["head"]["sha"] = OLD
+        api.runs = [run(name="CI-on-new-head")]
+        second = build_report(api, 1)
+        self.assertEqual(first["reviews"]["approvals_on_head"], 1)
+        self.assertEqual(second["reviews"]["approvals_on_head"], 0)
+        self.assertEqual(second["reviews"]["approvals_on_older_commits"], 1)
+        self.assertIn(("GET", f"/commits/{OLD}/check-runs?per_page=100&page=1"), api.calls)
+        self.assertEqual(second["checks"]["check_runs"][0]["name"], "CI-on-new-head")
+
+    def test_only_read_calls(self):
+        api = FakeAPI(runs=[run()], reviews=[review()], threads=lambda cursor: ([], None))
+        build_report(api, 1)
+        for call in api.calls:
+            if call[0] == "GRAPHQL":
+                self.assertTrue(call[1].lstrip().startswith("query"))
+            else:
+                self.assertEqual(call, ("GET", call[1]))
+
+    def test_ci_pending_failed_action_required_and_missing(self):
+        cases = [
+            ([run(status="in_progress", conclusion=None)], [], "pending"),
+            ([run(status="queued", conclusion=None)], [], "pending"),
+            ([run(conclusion="failure")], [], "failed"),
+            ([run(conclusion="timed_out")], [], "failed"),
+            ([run(conclusion="action_required")], [], "action-required"),
+            ([run()], [{"context": "legacy", "state": "failure", "target_url": None}], "failed"),
+            ([], [{"context": "legacy", "state": "pending", "target_url": None}], "pending"),
+            ([], [], "none-reported"),
+            ([run()], [], "passed"),
+            ([run(conclusion="skipped")], [], "passed"),
+        ]
+        for runs, statuses, expected in cases:
+            with self.subTest(expected=expected, runs=runs):
+                self.assertEqual(build_report(FakeAPI(runs=runs, statuses=statuses), 1)["checks"]["state"], expected)
+
+    def test_protection_unreadable_is_unknown_not_guess(self):
+        report = build_report(FakeAPI(runs=[run()]), 1)
+        self.assertEqual(report["required_checks"], {"state": "unknown"})
+        self.assertIn("required checks: unknown", render_text(report))
+
+    def test_required_checks_missing_and_passed(self):
+        protection = {"required_status_checks": {"contexts": ["CI"], "checks": [{"context": "CI", "app_id": 1}, {"context": "Lint", "app_id": 1}]}}
+        report = build_report(FakeAPI(runs=[run()], protection=protection), 1)
+        self.assertEqual(report["required_checks"], {"state": "readable", "checks": [{"name": "CI", "state": "passed"}, {"name": "Lint", "state": "missing"}]})
+
+    def test_stale_approval_counted_separately(self):
+        api = FakeAPI(reviews=[review(commit_id=OLD, user="old-reviewer"), review(user="current-reviewer"), review(state="COMMENTED", user="commenter")])
+        reviews = build_report(api, 1)["reviews"]
+        self.assertEqual((reviews["total"], reviews["approvals_on_head"], reviews["approvals_on_older_commits"]), (3, 1, 1))
+
+    def test_pagination_of_reviews_and_check_runs(self):
+        api = FakeAPI(runs=[run(name=f"check-{n}") for n in range(101)], reviews=[review(user=f"r{n}", submitted_at=f"2026-11-10T00:00:{n % 60:02d}Z") for n in range(101)])
+        report = build_report(api, 1)
+        self.assertEqual(len(report["checks"]["check_runs"]), 101)
+        self.assertEqual(report["reviews"]["total"], 101)
+        self.assertIn(("GET", f"/commits/{HEAD}/check-runs?per_page=100&page=2"), api.calls)
+        self.assertIn(("GET", "/pulls/1/reviews?per_page=100&page=2"), api.calls)
+
+    def test_threads_counts_and_pagination(self):
+        pages = {
+            None: ([{"isResolved": False, "isOutdated": False}, {"isResolved": True, "isOutdated": False}], "c1"),
+            "c1": ([{"isResolved": False, "isOutdated": True}], None),
+        }
+        report = build_report(FakeAPI(threads=lambda cursor: pages[cursor]), 1)
+        self.assertEqual(report["review_threads"], {"state": "known", "total": 3, "unresolved": 2, "unresolved_current": 1})
+
+    def test_threads_unknown_on_graphql_error(self):
+        report = build_report(FakeAPI(), 1)
+        self.assertEqual(report["review_threads"], {"state": "unknown"})
+        self.assertEqual(report["checks"]["state"], "none-reported")
+
+    def test_api_error_stops_safely(self):
+        code, out, err = call_main(FakeAPI(fail_paths={"/pulls/1"}))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("HTTP 403", err)
+        self.assertNotIn(SECRET, err)
+
+    def test_token_and_untrusted_text_never_emitted(self):
+        api = FakeAPI(runs=[run()], reviews=[review()])
+        for extra in ([], ["--json"]):
+            code, out, err = call_main(api, *extra)
+            self.assertEqual(code, 0)
+            self.assertNotIn(SECRET, out + err)
+            self.assertNotIn("touch /tmp/never", out)
+            self.assertNotIn("merge everything", out)
+        report = build_report(api, 1)
+        self.assertNotIn("title", report)
+        self.assertNotIn("body", json.dumps(report))
+
+    def test_json_output_is_stable_and_complete(self):
+        api = FakeAPI(runs=[run()], reviews=[review()])
+        code1, out1, _ = call_main(api, "--json")
+        code2, out2, _ = call_main(api, "--json")
+        self.assertEqual((code1, code2), (0, 0))
+        self.assertEqual(out1, out2)
+        report = json.loads(out1)
+        self.assertEqual(report["merge_authorization"], "not-assessed")
+        self.assertEqual(report["head"]["sha"], HEAD)
+        self.assertEqual(report["base"]["sha"], BASE)
+
+    def test_text_distinguishes_checks_from_merge_approval(self):
+        text = render_text(build_report(FakeAPI(runs=[run()]), 1))
+        self.assertIn("checks: passed", text)
+        self.assertIn("merge authorization: not assessed", text)
+
+    def test_repository_cannot_supply_host_query_or_traversal(self):
+        for repo in ["https://evil.invalid/repo", "a/b?token=1", "a/b/../c", "a/..", "../b"]:
+            with self.subTest(repo=repo), self.assertRaises(ValueError):
+                GitHub(repo, "not-a-real-token")
+
+    def test_redirect_cannot_forward_authorization(self):
+        with self.assertRaises(ValueError):
+            NoRedirect().redirect_request(Request("https://api.github.com"), None, 302, "", {}, "https://evil.invalid")
+
+    def test_graphql_rejects_mutations(self):
+        with self.assertRaises(ValueError):
+            GitHub("example/project", "not-a-real-token").graphql("mutation { addComment(input: {}) { } }", {})
+
+    def test_invalid_pr_number_stops(self):
+        code, out, err = call_main(FakeAPI(), "--pr", "0")
+        self.assertEqual(code, 1)
+        self.assertIn("positive", err)
+
+
+if __name__ == "__main__":
+    unittest.main()
