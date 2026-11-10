@@ -7,6 +7,7 @@
 - [M4 依赖解析、固定路由与失效策略](m4-dependencies.md)
 - [M4 HostService、Skill 代理与原调用来源](m4-host.md)
 - [M4 持久化事件、租约、重试与死信](m4-events.md)
+- [M4 插件作者教程：固定依赖、HostService 与事件闭环](m4-plugin-cookbook.md)
 - [M3 当前验收记录与精确 CI（2026-11-09）](m3-acceptance-20261109.md)
 - [M3 实现目标与开发历史](m3-progress.md)
 - [M3 声明式 HTTP、HTTP Skill 与静态网关（实现与验收）](m3-http.md)
