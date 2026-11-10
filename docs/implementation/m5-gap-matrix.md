@@ -48,7 +48,7 @@
 | cron / Schedule（五字段、IANA 时区、UTC fire_at、`(schedule_id,scheduled_at)` 唯一、DST/misfire/overlap） | 未实现 | 表：`metadata.sql:233`、`:238`；规范：[schedules.md](../tasks/schedules.md)；操作：[createSchedule](../api/operations/tasks/createSchedule.md) 等 | 触发幂等、恢复先对账再 misfire、plan 改动不取消已建任务 |
 | M4 事件触发任务 | 未实现（且非 M4 承诺） | M4 事件仅投递：[events.md](../tasks/events.md)、[m4-events.md](m4-events.md)；无订阅→任务创建代码 | 明确边界：事件消费者须自行提交任务；不得把 ACK 当业务调度完成 |
 | BatchEngine 适配器（`skill_batches` 复用同一租约/fence/Broker） | 未实现 | 表：`metadata.sql:584`、`:596`；规范：[batches.md](../tasks/batches.md)、[BatchEngine.md](../internal/BatchEngine.md) | 与 Workflow 共用执行器但独立聚合状态；不得先于 P0 执行器交付 |
-| AI 预设（EmbeddingGemma 3 预设、知识表/128 维索引、模型别名） | 未实现 | `model_aliases` 表：`metadata.sql:275`；操作：[docs/api/operations/ai](../api/operations/ai/README.md)；基线 Schema 无知识表 | 独立后置范围；不得与 P0 任务闭环捆绑，也不得据模型别名推断任务能力 |
+| AI 预设（EmbeddingGemma 2 预设、知识表/128 维索引、模型别名） | 未实现 | `model_aliases` 表：`metadata.sql:275`；操作：[docs/api/operations/ai](../api/operations/ai/README.md)；基线 Schema 无知识表 | 独立后置范围；不得与 P0 任务闭环捆绑，也不得据模型别名推断任务能力 |
 
 ## M5 P0 建议顺序与停止条件
 
