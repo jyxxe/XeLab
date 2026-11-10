@@ -223,6 +223,89 @@ text
         _, errors = check_markdown_links(source, self.root)
         self.assertEqual(errors, ['broken Markdown anchor source.md -> #missing'])
 
+    def test_blockquote_code_headings_and_reference_definitions(self):
+        source = self.write('source.md', '''# Present
+
+> ```markdown
+> [inside fence](#absent)
+> ```
+>
+>     [inside indented code](#absent)
+>
+> ## Quoted
+> ## Present
+>
+> Setext heading
+> --------------
+>
+> [quoted-ref]: #quoted
+
+> > ~~~
+> > [inside nested fence](#absent)
+> > ~~~
+
+[quoted][quoted-ref]
+[duplicate](#present-1) [setext](#setext-heading)
+> ```
+> still in quoted code
+[outside](#missing)
+''')
+        _, errors = check_markdown_links(source, self.root)
+        self.assertEqual(errors, ['broken Markdown anchor source.md -> #missing'])
+        self.assertTrue({'quoted', 'present-1', 'setext-heading'}.issubset(
+            markdown_anchors(source.read_text(encoding='utf-8'))))
+
+    def test_repository_root_links_and_reject_paths_outside_repository(self):
+        repo = self.root / 'repo'
+        (repo / 'docs').mkdir(parents=True)
+        (repo / 'README.md').write_text('# Home\n', encoding='utf-8')
+        outside = self.root / 'private.md'
+        outside.write_text('# Private\n', encoding='utf-8')
+        (repo / 'docs' / 'external.md').symlink_to(outside)
+        source = repo / 'docs' / 'source.md'
+        source.write_text('''# Present
+[root](/docs/source.md#present)
+[readme](/README.md#home)
+[traversal](../../private.md#private)
+[absolute traversal](/../private.md#private)
+[symlink](external.md#private)
+''', encoding='utf-8')
+        _, errors = check_markdown_links(source, repo)
+        self.assertEqual(errors, [
+            'broken Markdown link docs/source.md -> ../../private.md#private (outside repository)',
+            'broken Markdown link docs/source.md -> /../private.md#private (outside repository)',
+            'broken Markdown link docs/source.md -> external.md#private (outside repository)',
+        ])
+
+    def test_unclosed_quoted_html_block_does_not_hide_following_links(self):
+        source = self.write('source.md', '''> <pre>
+> [not a link](#absent)
+<a id="after-pre"></a>
+[existing](#after-pre) [missing](#missing)
+''')
+        _, errors = check_markdown_links(source, self.root)
+        self.assertEqual(errors, ['broken Markdown anchor source.md -> #missing'])
+
+    def test_lazy_quote_continuations_are_not_indented_code(self):
+        source = self.write('source.md', '''> paragraph
+    [paragraph continuation](#missing-paragraph)
+
+> - list item
+    [list continuation](#missing-list)
+
+> <em>paragraph</em>
+    [inline HTML continuation](#missing-html)
+
+> ## heading
+    [indented code](#ignored)
+''')
+        _, errors = check_markdown_links(source, self.root)
+        self.assertEqual(errors, [
+            'broken Markdown anchor source.md -> #missing-paragraph',
+            'broken Markdown anchor source.md -> #missing-list',
+            'broken Markdown anchor source.md -> #missing-html',
+        ])
+
     def test_external_images_and_non_markdown_fragments_remain_out_of_scope(self):
         self.write('schema.json', '{}')
         source = self.write('source.md', '''# Valid
@@ -257,13 +340,14 @@ text
         self.assertEqual(errors, ['broken Markdown anchor source.md -> other.md#literal%20value'])
 
     def test_links_match_github_rendered_offline_fixtures(self):
-        fixture = Path(__file__).parent / 'fixtures/github-markdown-links.json'
-        cases = json.loads(fixture.read_text(encoding='utf-8'))['cases']
-        self.assertTrue(cases)
-        for number, case in enumerate(cases):
-            with self.subTest(case=number):
-                actual = [unquote(_unescape_markdown(item)) for item in _markdown_links(case['markdown'])]
-                self.assertEqual(actual, case['destinations'])
+        for name in ('github-markdown-links.json', 'github-blockquote-links.json'):
+            fixture = Path(__file__).parent / 'fixtures' / name
+            cases = json.loads(fixture.read_text(encoding='utf-8'))['cases']
+            self.assertTrue(cases)
+            for number, case in enumerate(cases):
+                with self.subTest(fixture=name, case=number):
+                    actual = [unquote(_unescape_markdown(item)) for item in _markdown_links(case['markdown'])]
+                    self.assertEqual(actual, case['destinations'])
 
     def test_headings_match_rendered_text_and_slugger_offline_fixtures(self):
         fixture = Path(__file__).parent / 'fixtures/github-heading-slugs.json'

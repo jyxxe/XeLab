@@ -8,11 +8,45 @@ from urllib.parse import unquote, urlparse
 
 
 FENCE = re.compile(r'^\s*(`{3,}|~{3,})')
+QUOTE_MARKER = re.compile(r' {0,3}>[ \t]?')
 INLINE_CODE = re.compile(r'(?<![\\`]) (?:\\\\)* (`+) (?!`) (.*?) (?<!`) \1 (?!`)', re.X)
 HTML_TAG = re.compile(r'''</?[A-Za-z][A-Za-z0-9-]*(?:\s+(?:[^>"']|"[^"]*"|'[^']*')*)?\s*/?>''')
 ATX = re.compile(r'^ {0,3}#{1,6}(?:[ \t]+(.*)|[ \t]*)$')
 SETEXT = re.compile(r'^ {0,3}(?:=+|-+)[ \t]*$')
 INERT_HTML = re.compile(r'<!--|<(pre|script|style|textarea)\b[^>]*>', re.I)
+HTML_BLOCK_START = re.compile(
+    r'^ {0,3}<(?:/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|'
+    r'col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|'
+    r'form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|'
+    r'menuitem|nav|noframes|ol|optgroup|option|p|param|pre|script|search|section|style|'
+    r'summary|table|tbody|td|textarea|tfoot|th|thead|title|tr|track|ul)(?=[ \t/>]|$)|!|\?)',
+    re.I,
+)
+
+
+def _blockquote(line, limit=None):
+    """Return the quote depth and content after at most `limit` quote markers."""
+    pos = 0
+    depth = 0
+    while limit is None or depth < limit:
+        match = QUOTE_MARKER.match(line, pos)
+        if match is None:
+            break
+        pos = match.end()
+        depth += 1
+    return depth, line[pos:]
+
+
+def _can_continue_paragraph(line):
+    """Recognize common paragraph/list lines that permit lazy quote continuation."""
+    marker = re.match(r'^ {0,3}(?:[-+*]|\d+[.)])[ \t]+', line)
+    if marker:
+        line = line[marker.end():]
+    if not line.strip() or ATX.match(line) or SETEXT.match(line) or FENCE.match(line):
+        return False
+    if re.match(r'^ {0,3}(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})$', line):
+        return False
+    return not (re.match(r'^ {0,3}\[[^\]]+\]:', line) or HTML_BLOCK_START.match(line))
 
 
 def _strip_inert_html(line, state, preserve_pre=False):
@@ -53,54 +87,86 @@ def without_code(value, preserve_pre=False):
     """Blank code blocks and HTML comments without joining surrounding lines."""
     lines = []
     fence = None
+    fence_depth = 0
     indented_code = None
+    indented_depth = 0
     list_indent = None
     previous_blank = True
+    previous_depth = 0
+    previous_paragraph = False
     html_state = None
+    html_depth = 0
     for line in value.splitlines():
         if fence is not None:
-            match = FENCE.match(line)
-            if match and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence):
-                if not line[match.end():].strip():
-                    fence = None
-                    previous_blank = True
-            lines.append('')
-            continue
-        expanded = line.expandtabs(4)
-        indent = len(expanded) - len(expanded.lstrip(' '))
+            depth, quoted = _blockquote(line, fence_depth)
+            if depth < fence_depth:
+                fence = None
+                previous_blank = True
+            else:
+                match = FENCE.match(quoted)
+                if match and match.group(1)[0] == fence[0] and len(match.group(1)) >= len(fence):
+                    if not quoted[match.end():].strip():
+                        fence = None
+                        previous_blank = True
+                lines.append('')
+                continue
         if indented_code is not None:
-            if not line.strip() or indent >= indented_code:
+            depth, quoted = _blockquote(line, indented_depth)
+            expanded = quoted.expandtabs(4)
+            indent = len(expanded) - len(expanded.lstrip(' '))
+            if depth == indented_depth and (not quoted.strip() or indent >= indented_code):
                 lines.append('')
                 continue
             indented_code = None
-        if not html_state and list_indent is not None and line.strip() and indent < list_indent:
+        depth, quoted = _blockquote(line)
+        if html_state is not None and depth < html_depth:
+            if preserve_pre and html_state == 'pre':
+                lines.append('</pre>')
+            html_state = None
+            previous_blank = True
+        if depth != previous_depth:
+            list_indent = None
+            lazy = depth < previous_depth and not previous_blank and previous_paragraph
+            previous_blank = not lazy
+            previous_depth = depth
+        expanded = quoted.expandtabs(4)
+        indent = len(expanded) - len(expanded.lstrip(' '))
+        if not html_state and list_indent is not None and quoted.strip() and indent < list_indent:
             list_indent = None
         threshold = (list_indent or 0) + 4
-        if not html_state and line.strip() and previous_blank and indent >= threshold:
+        if not html_state and quoted.strip() and previous_blank and indent >= threshold:
             indented_code = threshold
+            indented_depth = depth
             lines.append('')
             continue
+        old_html_state = html_state
         was_pre = html_state == 'pre'
         line, html_state = _strip_inert_html(line, html_state, preserve_pre=preserve_pre)
+        if html_state is not None and html_state != old_html_state:
+            html_depth = depth
         if preserve_pre and (was_pre or html_state == 'pre'):
             lines.append(line)
             if html_state is None:
                 previous_blank = True
             continue
-        if not line.strip():
+        depth, quoted = _blockquote(line)
+        if not quoted.strip():
             lines.append('')
             previous_blank = True
+            previous_paragraph = False
             continue
-        expanded = line.expandtabs(4)
-        match = FENCE.match(line)
+        expanded = quoted.expandtabs(4)
+        match = FENCE.match(quoted)
         if match:
             fence = match.group(1)
+            fence_depth = depth
             lines.append('')
         else:
             list_marker = re.match(r'^ {0,3}(?:[-+*]|\d+[.)])[ \t]+', expanded)
             if list_marker:
                 list_indent = list_marker.end()
             lines.append(line)
+            previous_paragraph = _can_continue_paragraph(quoted)
         previous_blank = False
     return '\n'.join(lines)
 
@@ -191,16 +257,16 @@ def markdown_anchors(content):
     anchors = {'top'} | parser.anchors
     references, _ = _reference_definitions(INLINE_CODE.sub('', text))
     used = set()
-    lines = text.splitlines()
-    for index, line in enumerate(lines):
+    lines = [_blockquote(line) for line in text.splitlines()]
+    for index, (depth, line) in enumerate(lines):
         match = ATX.match(line)
         if match:
             heading = re.sub(r'[ \t]+#+[ \t]*$', '', match.group(1) or '')
-        elif (SETEXT.match(line) and index and lines[index - 1].strip()
-              and not ATX.match(lines[index - 1])
-              and not SETEXT.match(lines[index - 1])
-              and not re.match(r'^ {0,3}(?:>|[-+*] |\d+[.)] |<)', lines[index - 1])):
-            heading = lines[index - 1].strip()
+        elif (SETEXT.match(line) and index and lines[index - 1][0] == depth
+              and lines[index - 1][1].strip() and not ATX.match(lines[index - 1][1])
+              and not SETEXT.match(lines[index - 1][1])
+              and not re.match(r'^ {0,3}(?:>|[-+*] |\d+[.)] |<)', lines[index - 1][1])):
+            heading = lines[index - 1][1].strip()
         else:
             continue
         base = _slug(heading, references)
@@ -311,11 +377,12 @@ def _reference_definitions(text):
     definitions = {}
     remaining = []
     for line in text.splitlines(keepends=True):
-        match = re.match(r'^ {0,3}\[', line)
-        end = _bracket_end(line, match.end() - 1) if match else None
-        if end is not None and end + 1 < len(line) and line[end + 1] == ':':
-            label = _reference_label(line[match.end():end])
-            value = line[end + 2:].rstrip('\r\n').strip()
+        _, quoted = _blockquote(line)
+        match = re.match(r'^ {0,3}\[', quoted)
+        end = _bracket_end(quoted, match.end() - 1) if match else None
+        if end is not None and end + 1 < len(quoted) and quoted[end + 1] == ':':
+            label = _reference_label(quoted[match.end():end])
+            value = quoted[end + 2:].rstrip('\r\n').strip()
             wrapped = '(' + value + ')'
             parsed = _destination(wrapped, 0) if value else None
             if label and end - match.end() <= 999 and parsed and parsed[1] == len(wrapped):
@@ -401,7 +468,18 @@ def check_markdown_links(file, root, anchor_cache=None):
         parsed = urlparse(target)
         if parsed.scheme or parsed.netloc:
             continue
-        destination = (file.parent / unquote(parsed.path)).resolve() if parsed.path else file
+        try:
+            path = unquote(parsed.path)
+            if path.startswith('/'):
+                destination = (root / path.lstrip('/')).resolve()
+            else:
+                destination = (file.parent / path).resolve() if path else file
+        except (OSError, RuntimeError, ValueError):
+            errors.append(f'broken Markdown link {source} -> {value}')
+            continue
+        if not destination.is_relative_to(root):
+            errors.append(f'broken Markdown link {source} -> {value} (outside repository)')
+            continue
         if not destination.exists():
             errors.append(f'broken Markdown link {source} -> {value}')
             continue

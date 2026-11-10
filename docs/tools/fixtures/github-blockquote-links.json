@@ -1,0 +1,26 @@
+{
+  "source": "GitHub Markdown API (gfm), 2026-11-10",
+  "cases": [
+    {"markdown": "> ```\n> [fake](#bad)\n> ```\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": "> ```\n> code\n[outside](#good)","destinations": ["#good"]},
+    {"markdown": "> > ```\n> > [fake](#bad)\n> [outside](#good)","destinations": ["#good"]},
+    {"markdown": "> ```\n> > ```\n> [fake](#bad)\n> ```\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": ">     [fake](#bad)\n>\n> [real](#good)","destinations": ["#good"]},
+    {"markdown": "> >     [fake](#bad)\n> >\n> > [real](#good)","destinations": ["#good"]},
+    {"markdown": "> <pre>\n> [fake](#bad)\n> </pre>\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": "> ## Quoted heading\n\n[real](#quoted-heading)","destinations": ["#quoted-heading"]},
+    {"markdown": "> [qref]: #good\n\n[real][qref]","destinations": ["#good"]},
+    {"markdown": "> paragraph [real](#good)\n> next [second](#two)","destinations": ["#good","#two"]},
+    {"markdown": "> ```\n> code\n> ``` extra\n> [fake](#bad)\n\n[outside](#good)","destinations": ["#good"]},
+    {"markdown": ">```js\n> [fake](#bad)\n>```\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": "> ````\n> ```\n> [fake](#bad)\n> ````\n\n[real](#good)","destinations": ["#good"]},
+    {"markdown": ">\n>     [fake](#bad)\n>\n> [real](#good)","destinations": ["#good"]},
+    {"markdown": "> > ```\n> > [fake](#bad)\n> [real](#good)","destinations": ["#good"]},
+    {"markdown": "> <pre>\n> [fake](#bad)\n[outside](#good)","destinations": ["#good"]},
+    {"markdown": "> paragraph\n    [real](#good)","destinations": ["#good"]},
+    {"markdown": "> ## heading\n    [fake](#bad)","destinations": []},
+    {"markdown": "> - list item\n    [real](#good)","destinations": ["#good"]},
+    {"markdown": "> <em>paragraph</em>\n    [real](#good)","destinations": ["#good"]},
+    {"markdown": "> <div>block</div>\n    [fake](#bad)","destinations": []}
+  ]
+}
