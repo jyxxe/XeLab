@@ -4,6 +4,7 @@ import subprocess
 import os
 from pathlib import Path
 import stat
+import sys
 import tempfile
 import unittest
 import uuid
@@ -116,6 +117,83 @@ class Run03Tests(unittest.TestCase):
             with self.assertRaises(OSError): run03.private_bytes(link)
             os.link(key, key.with_name('hardlink'))
             with self.assertRaises(ValueError): run03.private_bytes(key)
+
+    @unittest.skipUnless(hasattr(os, 'mkfifo'), 'named pipes require a POSIX host')
+    def test_private_input_rejects_fifo_without_waiting_for_writer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'fifo'
+            os.mkfifo(path, 0o600)
+            path.chmod(0o600)
+            # A child timeout makes the regression bounded even if os.open
+            # blocks before private_bytes can inspect the file descriptor.
+            script = '''
+import importlib.util
+import sys
+spec = importlib.util.spec_from_file_location('run03', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    module.private_bytes(sys.argv[2])
+except ValueError:
+    sys.exit(0)
+sys.exit(1)
+'''
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ('GITHUB_TOKEN', 'GH_TOKEN')}
+            try:
+                completed = subprocess.run([sys.executable, '-c', script, run03.__file__, str(path)],
+                                           env=env, capture_output=True, timeout=5)
+            except subprocess.TimeoutExpired:
+                self.fail('private input FIFO blocked waiting for a writer')
+            self.assertEqual(completed.returncode, 0, 'FIFO must be rejected as a non-regular file')
+
+    @unittest.skipUnless(hasattr(os, 'mkfifo'), 'named pipes require a POSIX host')
+    def test_collect_fifo_token_fails_with_sanitized_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / 'config.toml'
+            config.write_text('[server]\npublic_origin = "https://example.invalid"\n')
+            token = root / 'SENSITIVE_FIFO_PATH_MARKER'
+            os.mkfifo(token, 0o600)
+            token.chmod(0o600)
+            output = root / 'report.json'
+            script = '''
+import importlib.util
+import sys
+spec = importlib.util.spec_from_file_location('run03', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.preflight = lambda config: {'status': 'eligible'}
+module.daemon_evidence = lambda pid, config: {}
+def forbidden(*args, **kwargs):
+    raise AssertionError('unexpected external access')
+module.ssl.create_default_context = forbidden
+module.API.call = forbidden
+module.ledger = forbidden
+sys.argv = ['run03', 'collect', '--config', sys.argv[2], '--output', sys.argv[3],
+            '--token-file', sys.argv[4], '--ca-file', sys.argv[5],
+            '--daemon-pid', '1', '--isolated-test-host']
+sys.exit(module.main())
+'''
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ('GITHUB_TOKEN', 'GH_TOKEN')}
+            try:
+                completed = subprocess.run([sys.executable, '-c', script, run03.__file__,
+                                            str(config), str(output), str(token), str(root / 'unused-ca')],
+                                           env=env, capture_output=True, text=True, timeout=3)
+            except subprocess.TimeoutExpired:
+                self.fail('collection blocked while opening a FIFO token')
+            self.assertEqual(completed.returncode, 1)
+            self.assertTrue(output.is_file())
+            report_text = output.read_text()
+            report = json.loads(report_text)
+            self.assertEqual(report['acceptance'], 'pending')
+            self.assertTrue(report['collection_failed'])
+            self.assertEqual(report['error_type'], 'ValueError')
+            self.assertEqual(report['exit_code'], 1)
+            self.assertNotIn(token.name, report_text)
+            self.assertNotIn(token.name, completed.stdout)
+            self.assertNotIn(token.name, completed.stderr)
 
     def test_report_never_overwrites_and_keeps_reserved_inode(self):
         with tempfile.TemporaryDirectory() as directory:

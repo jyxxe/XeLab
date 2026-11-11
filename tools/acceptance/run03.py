@@ -27,7 +27,9 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 def private_bytes(path):
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    # Open without waiting for a FIFO writer so fstat can reject special files.
+    # O_NONBLOCK does not change reads from ordinary local regular files.
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     with os.fdopen(fd, 'rb') as stream:
         info = os.fstat(stream.fileno())
         if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
