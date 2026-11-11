@@ -256,7 +256,23 @@ function openWindow(app, options = {}) {
   if(options.minimized)minimize();
   return win;
 }
-window.addEventListener('resize',()=> { for (const win of windows.values()){fit(win);if(!matchMedia('(max-width:650px)').matches&&!win.minimized){win.element.hidden=false;win.bridge?.setVisible(document.visibilityState==='visible');}} });
+window.addEventListener('resize',()=> {
+  const narrow=matchMedia('(max-width:650px)').matches;
+  const available=[...windows.values()].filter(win=>!win.minimized);
+  // A minimized window can still retain data-focused; fall back to the
+  // topmost remaining window without changing focus or its saved layout.
+  const active=available.find(win=>win.element.dataset.focused==='true')
+    || available.reduce((top,win)=>!top||Number(win.element.style.zIndex)>Number(top.element.style.zIndex)?win:top,null);
+  if(narrow&&(!active||active.element.dataset.focused!=='true')){
+    for(const win of windows.values())win.element.dataset.focused=String(win===active);
+    $('#active-app').textContent=active?.app.title||'桌面';
+  }
+  for(const win of windows.values()){
+    fit(win);
+    win.element.hidden=win.minimized||(narrow&&win!==active);
+    win.bridge?.setVisible(!win.element.hidden&&document.visibilityState==='visible');
+  }
+});
 
 function toolbar(win, title, ...actions) { return node('div',{class:'toolbar'},node('h2',{},title),...actions,button('刷新',()=>loadApp(win))); }
 async function loadApp(win) {
@@ -440,7 +456,7 @@ async function mountContribution(container,fixed,owner){
   const observer=new ResizeObserver(()=>bridge.viewportChanged());observer.observe(frame);
   owner.dispose=()=>{observer.disconnect();clearInterval(owner.refreshTimer);bridge.close('close');};
   await bridge.mount();
-  bridge.setVisible(document.visibilityState==='visible'&&!owner.minimized);
+  bridge.setVisible(document.visibilityState==='visible'&&!owner.minimized&&!owner.element.hidden);
 }
 async function preferenceMutation(intentId,mutate){
   let intent=widgetIntents.get(intentId);
