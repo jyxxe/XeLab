@@ -34,6 +34,12 @@ def future_features_unavailable(window):
             and state.get_by_text("未安装或实现的后续执行系统没有可展示的运行结果。", exact=True).count() == 1)
 
 
+def wait_for_reference_skill(frame):
+    # Old signed reference images expose only #state; newer ones keep
+    # channel and operation status separate.
+    frame.wait_for_function("() => (document.querySelector('#skill-state') ?? document.querySelector('#state'))?.textContent === 'Skill call completed.'")
+
+
 def error_bucket(error):
     message = str(error)[:8192].lower()
     for bucket, phrases in [
@@ -242,12 +248,18 @@ class WindowOpenAudit:
             # Reduce arbitrary DOM text to fixed labels inside the browser.
             # Neither plugin text, URL, identifiers nor exception text leave it.
             value = widget.locator("html").evaluate("""() => {
-              const state=document.querySelector('#state'), text=state?.textContent||'';
               const codes=['DEADLINE_EXCEEDED','CHANNEL_CLOSED','BACKEND_ERROR','PROTOCOL_ERROR',
                 'PERMISSION_DENIED','BINDING_UNAVAILABLE','RATE_LIMITED'];
-              const code=codes.find(code=>text.startsWith(code+':'));
-              const stateClass=text==='The host opened this deployment’s echo window.'?'window_open_succeeded':
-                text==='Skill call completed.'?'previous_skill_completed':code||'other';
+              function classify(text){
+                const code=codes.find(code=>text.startsWith(code+':'));
+                return text==='The host opened this deployment’s echo window.'?'window_open_succeeded':
+                  text==='Skill call completed.'?'previous_skill_completed':code||'other';
+              }
+              // Prefer the window result; a pending window may coexist with a
+              // previous Skill result. Old installed pages use only #state.
+              const states=['#window-state','#skill-state','#state'].map(selector=>document.querySelector(selector)).filter(Boolean);
+              const state=states.find(node=>classify(node.textContent||'')!=='other')||states[0];
+              const stateClass=classify(state?.textContent||'');
               return {state_class:stateClass,state_exists:!!state,state_hidden:!!state?.hidden,
                 state_visible:!!state&&state.getClientRects().length>0&&getComputedStyle(state).visibility!=='hidden',
                 open_exists:!!document.querySelector('#open-window'),
@@ -751,7 +763,7 @@ def run(config, report):
         bodies.expect(expected_successes)
         frame.locator("#message").fill(message)
         frame.locator("#call").click()
-        frame.wait_for_function("() => document.querySelector('#state')?.textContent === 'Skill call completed.'")
+        wait_for_reference_skill(frame)
         require(frame.locator("#result").inner_text() == message, label)
         require(frame.locator("img").count() == 0, label + "_text_not_html")
         wait_for_observers(page, observed, bodies)
