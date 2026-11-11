@@ -47,6 +47,11 @@ jobs:
         run: cargo build --workspace --bins --locked
       - name: Prepare trusted OAuth browser
         run: |
+          # Keep apt on the signed Ubuntu archive when the hosted Azure mirror
+          # is unavailable; Playwright installs required OS packages via apt.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's/azure[.]archive[.]ubuntu[.]com/archive.ubuntu.com/g' /etc/apt/apt-mirrors.txt
+          fi
           oauth_browser_venv="${RUNNER_TEMP}/xelab-oauth-browser"
           python3 -m venv "$oauth_browser_venv"
           "$oauth_browser_venv/bin/pip" install 'playwright==1.62.0' 'jsonschema==4.26.0'
@@ -81,12 +86,14 @@ jobs:
           du -sh target
       - name: Prepare real OCI test
         run: |
+          # Docker build containers can lose DNS while runner apt works.
+          # Use runner networking for dependency installs, retaining apt checks.
           sudo apt-get update -qq
           sudo apt-get install -y nftables xfsprogs
           sudo systemctl start containerd
           sudo ctr namespaces create xelab-ci
           python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001
-          docker build -t docker.io/xelab-ci/echo:test -f examples/echo/Dockerfile .
+          docker build --network=host -t docker.io/xelab-ci/echo:test -f examples/echo/Dockerfile .
           docker save docker.io/xelab-ci/echo:test -o examples/generated/echo.tar
           sudo ctr -n xelab-ci images import examples/generated/echo.tar
           digest=$(sudo ctr -n xelab-ci images list | awk '$1=="docker.io/xelab-ci/echo:test" {print $3}')
@@ -101,7 +108,7 @@ jobs:
               variable=XELAB_TEST_FAILED_UPGRADE_IMAGE
             fi
             python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output "examples/generated-$variant" "${flags[@]}"
-            docker build -t "docker.io/xelab-ci/$variant:test" --build-arg "ARTIFACT_DIR=examples/generated-$variant" -f examples/echo/Dockerfile .
+            docker build --network=host -t "docker.io/xelab-ci/$variant:test" --build-arg "ARTIFACT_DIR=examples/generated-$variant" -f examples/echo/Dockerfile .
             docker save "docker.io/xelab-ci/$variant:test" -o "examples/generated-$variant/image.tar"
             sudo ctr -n xelab-ci images import "examples/generated-$variant/image.tar"
             digest=$(sudo ctr -n xelab-ci images list | awk -v image="docker.io/xelab-ci/$variant:test" '$1==image {print $3}')
@@ -110,7 +117,7 @@ jobs:
             echo "$variable=docker.io/xelab-ci/$variant@$digest" >> "$GITHUB_ENV"
           done
           python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output examples/generated-python --implementation python --request-secret
-          docker build -t docker.io/xelab-ci/echo-python:test -f examples/echo-python/Dockerfile .
+          docker build --network=host -t docker.io/xelab-ci/echo-python:test -f examples/echo-python/Dockerfile .
           docker save docker.io/xelab-ci/echo-python:test -o examples/generated-python/echo.tar
           sudo ctr -n xelab-ci images import examples/generated-python/echo.tar
           digest=$(sudo ctr -n xelab-ci images list | awk '$1=="docker.io/xelab-ci/echo-python:test" {print $3}')
@@ -118,7 +125,7 @@ jobs:
           sudo ctr -n xelab-ci images tag docker.io/xelab-ci/echo-python:test "docker.io/xelab-ci/echo-python@$digest"
           echo "XELAB_TEST_PYTHON_IMAGE=docker.io/xelab-ci/echo-python@$digest" >> "$GITHUB_ENV"
           python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output examples/generated-volume --implementation python --volume-access rw
-          docker build -t docker.io/xelab-ci/volume:test --build-arg ARTIFACT_DIR=examples/generated-volume -f examples/echo-python/Dockerfile .
+          docker build --network=host -t docker.io/xelab-ci/volume:test --build-arg ARTIFACT_DIR=examples/generated-volume -f examples/echo-python/Dockerfile .
           docker save docker.io/xelab-ci/volume:test -o examples/generated-volume/volume.tar
           sudo ctr -n xelab-ci images import examples/generated-volume/volume.tar
           digest=$(sudo ctr -n xelab-ci images list | awk '$1=="docker.io/xelab-ci/volume:test" {print $3}')
@@ -126,7 +133,7 @@ jobs:
           sudo ctr -n xelab-ci images tag docker.io/xelab-ci/volume:test "docker.io/xelab-ci/volume@$digest"
           echo "XELAB_TEST_VOLUME_IMAGE=docker.io/xelab-ci/volume@$digest" >> "$GITHUB_ENV"
           python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output examples/generated-schema --implementation python --volume-access rw --data-schema 1
-          docker build -t docker.io/xelab-ci/schema:test --build-arg ARTIFACT_DIR=examples/generated-schema -f examples/echo-python/Dockerfile .
+          docker build --network=host -t docker.io/xelab-ci/schema:test --build-arg ARTIFACT_DIR=examples/generated-schema -f examples/echo-python/Dockerfile .
           docker save docker.io/xelab-ci/schema:test -o examples/generated-schema/schema.tar
           sudo ctr -n xelab-ci images import examples/generated-schema/schema.tar
           digest=$(sudo ctr -n xelab-ci images list | awk '$1=="docker.io/xelab-ci/schema:test" {print $3}')
@@ -136,7 +143,7 @@ jobs:
           for schema in 1 2; do
             version="${schema}.0.0"
             python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output "examples/generated-platform-schema-$schema" --implementation python --volume-access rw --data-schema "$schema" --plugin-version "$version"
-            docker build -t "docker.io/xelab-ci/platform-schema-$schema:test" --build-arg "ARTIFACT_DIR=examples/generated-platform-schema-$schema" -f examples/echo-python/Dockerfile .
+            docker build --network=host -t "docker.io/xelab-ci/platform-schema-$schema:test" --build-arg "ARTIFACT_DIR=examples/generated-platform-schema-$schema" -f examples/echo-python/Dockerfile .
             docker save "docker.io/xelab-ci/platform-schema-$schema:test" -o "examples/generated-platform-schema-$schema/image.tar"
             sudo ctr -n xelab-ci images import "examples/generated-platform-schema-$schema/image.tar"
             digest=$(sudo ctr -n xelab-ci images list | awk -v name="docker.io/xelab-ci/platform-schema-$schema:test" '$1==name {print $3}')
@@ -145,7 +152,7 @@ jobs:
             echo "XELAB_TEST_PLATFORM_SCHEMA_${schema}_IMAGE=docker.io/xelab-ci/platform-schema-$schema@$digest" >> "$GITHUB_ENV"
           done
           python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output examples/generated-schema-crash --implementation python --volume-access rw --data-schema 1 --migration-pause-after-initialize
-          docker build -t docker.io/xelab-ci/schema-crash:test --build-arg ARTIFACT_DIR=examples/generated-schema-crash -f examples/echo-python/Dockerfile .
+          docker build --network=host -t docker.io/xelab-ci/schema-crash:test --build-arg ARTIFACT_DIR=examples/generated-schema-crash -f examples/echo-python/Dockerfile .
           docker save docker.io/xelab-ci/schema-crash:test -o examples/generated-schema-crash/image.tar
           sudo ctr -n xelab-ci images import examples/generated-schema-crash/image.tar
           digest=$(sudo ctr -n xelab-ci images list | awk '$1=="docker.io/xelab-ci/schema-crash:test" {print $3}')
@@ -153,7 +160,7 @@ jobs:
           sudo ctr -n xelab-ci images tag docker.io/xelab-ci/schema-crash:test "docker.io/xelab-ci/schema-crash@$digest"
           echo "XELAB_TEST_SCHEMA_CRASH_IMAGE=docker.io/xelab-ci/schema-crash@$digest" >> "$GITHUB_ENV"
           python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output examples/generated-schema-upgrade --implementation python --volume-access rw --data-schema 1 --plugin-version 2.0.0
-          docker build -t docker.io/xelab-ci/schema-upgrade:test --build-arg ARTIFACT_DIR=examples/generated-schema-upgrade -f examples/echo-python/Dockerfile .
+          docker build --network=host -t docker.io/xelab-ci/schema-upgrade:test --build-arg ARTIFACT_DIR=examples/generated-schema-upgrade -f examples/echo-python/Dockerfile .
           docker save docker.io/xelab-ci/schema-upgrade:test -o examples/generated-schema-upgrade/schema.tar
           sudo ctr -n xelab-ci images import examples/generated-schema-upgrade/schema.tar
           digest=$(sudo ctr -n xelab-ci images list | awk '$1=="docker.io/xelab-ci/schema-upgrade:test" {print $3}')
@@ -161,7 +168,7 @@ jobs:
           sudo ctr -n xelab-ci images tag docker.io/xelab-ci/schema-upgrade:test "docker.io/xelab-ci/schema-upgrade@$digest"
           echo "XELAB_TEST_SCHEMA_UPGRADE_IMAGE=docker.io/xelab-ci/schema-upgrade@$digest" >> "$GITHUB_ENV"
           python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output examples/generated-schema-transition --implementation python --volume-access rw --data-schema 2 --plugin-version 3.0.0
-          docker build -t docker.io/xelab-ci/schema-transition:test --build-arg ARTIFACT_DIR=examples/generated-schema-transition -f examples/echo-python/Dockerfile .
+          docker build --network=host -t docker.io/xelab-ci/schema-transition:test --build-arg ARTIFACT_DIR=examples/generated-schema-transition -f examples/echo-python/Dockerfile .
           docker save docker.io/xelab-ci/schema-transition:test -o examples/generated-schema-transition/schema.tar
           sudo ctr -n xelab-ci images import examples/generated-schema-transition/schema.tar
           digest=$(sudo ctr -n xelab-ci images list | awk '$1=="docker.io/xelab-ci/schema-transition:test" {print $3}')
@@ -176,7 +183,7 @@ jobs:
               variable=XELAB_TEST_VOLUME_FAILED_UPGRADE_IMAGE
             fi
             python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output "examples/generated-$variant" --implementation python --volume-access rw "${flags[@]}"
-            docker build -t "docker.io/xelab-ci/$variant:test" --build-arg "ARTIFACT_DIR=examples/generated-$variant" -f examples/echo-python/Dockerfile .
+            docker build --network=host -t "docker.io/xelab-ci/$variant:test" --build-arg "ARTIFACT_DIR=examples/generated-$variant" -f examples/echo-python/Dockerfile .
             docker save "docker.io/xelab-ci/$variant:test" -o "examples/generated-$variant/image.tar"
             sudo ctr -n xelab-ci images import "examples/generated-$variant/image.tar"
             digest=$(sudo ctr -n xelab-ci images list | awk -v image="docker.io/xelab-ci/$variant:test" '$1==image {print $3}')
@@ -185,7 +192,7 @@ jobs:
             echo "$variable=docker.io/xelab-ci/$variant@$digest" >> "$GITHUB_ENV"
           done
           python3 examples/echo/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output examples/generated-host-blob --implementation python --request-blob
-          docker build -t docker.io/xelab-ci/host-blob:test --build-arg ARTIFACT_DIR=examples/generated-host-blob -f examples/echo-python/Dockerfile .
+          docker build --network=host -t docker.io/xelab-ci/host-blob:test --build-arg ARTIFACT_DIR=examples/generated-host-blob -f examples/echo-python/Dockerfile .
           docker save docker.io/xelab-ci/host-blob:test -o examples/generated-host-blob/host-blob.tar
           sudo ctr -n xelab-ci images import examples/generated-host-blob/host-blob.tar
           digest=$(sudo ctr -n xelab-ci images list | awk '$1=="docker.io/xelab-ci/host-blob:test" {print $3}')
@@ -193,7 +200,7 @@ jobs:
           sudo ctr -n xelab-ci images tag docker.io/xelab-ci/host-blob:test "docker.io/xelab-ci/host-blob@$digest"
           echo "XELAB_TEST_HOST_BLOB_IMAGE=docker.io/xelab-ci/host-blob@$digest" >> "$GITHUB_ENV"
           python3 examples/m4-consumer/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --provider-manifest examples/generated/xelab/plugin.json
-          docker build -t docker.io/xelab-ci/m4-consumer:test -f examples/m4-consumer/Dockerfile .
+          docker build --network=host -t docker.io/xelab-ci/m4-consumer:test -f examples/m4-consumer/Dockerfile .
           docker save docker.io/xelab-ci/m4-consumer:test -o examples/generated-m4-consumer/m4-consumer.tar
           sudo ctr -n xelab-ci images import examples/generated-m4-consumer/m4-consumer.tar
           digest=$(sudo ctr -n xelab-ci images list | awk '$1=="docker.io/xelab-ci/m4-consumer:test" {print $3}')
@@ -202,7 +209,7 @@ jobs:
           echo "XELAB_TEST_M4_CONSUMER_IMAGE=docker.io/xelab-ci/m4-consumer@$digest" >> "$GITHUB_ENV"
           echo "XELAB_M4_OCI_REQUIRED=1" >> "$GITHUB_ENV"
           python3 examples/http/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001
-          docker build -t docker.io/xelab-ci/http:test -f examples/http/Dockerfile .
+          docker build --network=host -t docker.io/xelab-ci/http:test -f examples/http/Dockerfile .
           python3 examples/http/container_probe.py --image docker.io/xelab-ci/http:test
           docker save docker.io/xelab-ci/http:test -o examples/http/generated/http.tar
           sudo ctr -n xelab-ci images import examples/http/generated/http.tar
@@ -211,7 +218,7 @@ jobs:
           sudo ctr -n xelab-ci images tag docker.io/xelab-ci/http:test "docker.io/xelab-ci/http@$digest"
           echo "XELAB_TEST_HTTP_IMAGE=docker.io/xelab-ci/http@$digest" >> "$GITHUB_ENV"
           python3 examples/http/build_artifact.py --publisher-id 00000000-0000-4000-8000-000000000001 --output examples/http/generated-mixed --plugin-version 2.0.0 --include-rpc
-          docker build -t docker.io/xelab-ci/http-mixed:test --build-arg ARTIFACT_DIR=examples/http/generated-mixed -f examples/http/Dockerfile .
+          docker build --network=host -t docker.io/xelab-ci/http-mixed:test --build-arg ARTIFACT_DIR=examples/http/generated-mixed -f examples/http/Dockerfile .
           python3 examples/http/container_probe.py --image docker.io/xelab-ci/http-mixed:test
           docker save docker.io/xelab-ci/http-mixed:test -o examples/http/generated-mixed/http.tar
           sudo ctr -n xelab-ci images import examples/http/generated-mixed/http.tar
@@ -409,6 +416,11 @@ jobs:
           cargo build -p xelab-kernel --bin xelabctl --locked
       - name: Prepare trusted OAuth browser
         run: |
+          # Keep apt on the signed Ubuntu archive when the hosted Azure mirror
+          # is unavailable; Playwright installs required OS packages via apt.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's/azure[.]archive[.]ubuntu[.]com/archive.ubuntu.com/g' /etc/apt/apt-mirrors.txt
+          fi
           oauth_browser_venv="${RUNNER_TEMP}/xelab-oauth-browser"
           python3 -m venv "$oauth_browser_venv"
           "$oauth_browser_venv/bin/pip" install 'playwright==1.62.0' 'jsonschema==4.26.0'
