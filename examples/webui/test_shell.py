@@ -6,6 +6,8 @@ import json
 import unittest
 from urllib.parse import parse_qs, urlparse
 
+from playwright.sync_api import expect
+
 import test_browser as desktop
 from test_bridge import contribution, framing_query
 
@@ -495,6 +497,143 @@ class ShellBrowser(unittest.TestCase):
         self.page.locator('.window[data-app^="api-keys:"]').get_by_role("heading", name="无权限", exact=True).wait_for()
         self.assertNotIn("xk_safe", self.page.locator("body").inner_text())
         self.assertNotIn("DO-NOT-RENDER", self.page.locator("body").inner_text())
+
+    def test_keyboard_launcher_navigation_escape_and_focus_return(self):
+        self.fixture.open(authenticated=False)
+        skip = self.page.get_by_role("link", name="跳至桌面", exact=True)
+        opener = self.page.get_by_role("button", name="XeLab", exact=True)
+        self.page.keyboard.press("Tab")
+        expect(skip).to_be_focused()
+        self.page.keyboard.press("Tab")
+        expect(opener).to_be_focused()
+        self.page.keyboard.press("Shift+Tab")
+        expect(skip).to_be_focused()
+        self.page.keyboard.press("Tab")
+        self.page.keyboard.press("Enter")
+
+        launcher = self.page.get_by_role("dialog", name="应用启动器", exact=True)
+        close = launcher.get_by_role("button", name="关闭启动器", exact=True)
+        search = launcher.get_by_role("searchbox", name="查找应用", exact=True)
+        expect(launcher).to_be_visible()
+        expect(close).to_be_focused()
+        self.page.keyboard.press("Tab")
+        expect(search).to_be_focused()
+        self.page.keyboard.press("Shift+Tab")
+        expect(close).to_be_focused()
+        self.page.keyboard.press("Escape")
+        expect(launcher).to_be_hidden()
+        expect(opener).to_be_focused()
+
+        self.page.keyboard.press("Enter")
+        expect(close).to_be_focused()
+        self.page.keyboard.press("Space")
+        expect(launcher).to_be_hidden()
+        expect(opener).to_be_focused()
+
+    def test_keyboard_launch_window_and_restore_launcher_opener(self):
+        self.fixture.open(authenticated=False)
+        opener = self.page.get_by_role("button", name="XeLab", exact=True)
+        opener.focus()
+        self.page.keyboard.press("Enter")
+        launcher = self.page.get_by_role("dialog", name="应用启动器", exact=True)
+        self.page.keyboard.press("Tab")
+        search = launcher.get_by_role("searchbox", name="查找应用", exact=True)
+        expect(search).to_be_focused()
+        self.page.keyboard.insert_text("设置")
+        launch = launcher.get_by_role("button", name="启动设置", exact=True)
+        self.page.keyboard.press("Tab")
+        expect(launch).to_be_focused()
+        self.page.keyboard.press("Enter")
+
+        window = self.page.get_by_role("dialog", name="设置", exact=True)
+        title = window.locator(".window-title")
+        close = window.get_by_role("button", name="关闭设置", exact=True)
+        minimize = window.get_by_role("button", name="最小化设置", exact=True)
+        maximize = window.get_by_role("button", name="最大化或恢复设置", exact=True)
+        expect(launcher).to_be_hidden()
+        expect(title).to_be_focused()
+        expect(maximize).to_be_visible()
+        self.page.keyboard.press("Tab")
+        expect(close).to_be_focused()
+        self.page.keyboard.press("Tab")
+        expect(minimize).to_be_focused()
+        self.page.keyboard.press("Shift+Tab")
+        expect(close).to_be_focused()
+        self.page.keyboard.press("Enter")
+        expect(window).to_have_count(0)
+        expect(opener).to_be_focused()
+
+    def test_keyboard_close_window_returns_focus_to_rebuilt_dock(self):
+        self.fixture.open(authenticated=False)
+        dock_button = self.page.get_by_role("button", name="打开设置", exact=True)
+        dock_button.focus()
+        self.page.keyboard.press("Enter")
+        window = self.page.get_by_role("dialog", name="设置", exact=True)
+        expect(window.locator(".window-title")).to_be_focused()
+        self.page.keyboard.press("Tab")
+        expect(window.get_by_role("button", name="关闭设置", exact=True)).to_be_focused()
+        self.page.keyboard.press("Enter")
+        expect(window).to_have_count(0)
+        expect(dock_button).to_be_focused()
+
+    def test_window_opened_through_dock_launcher_returns_to_launcher(self):
+        self.fixture.open(authenticated=False)
+        dock_launcher = self.page.get_by_role("button", name="打开应用启动器", exact=True)
+        dock_launcher.focus()
+        self.page.keyboard.press("Enter")
+        self.page.keyboard.press("Tab")
+        search = self.page.get_by_role("searchbox", name="查找应用", exact=True)
+        expect(search).to_be_focused()
+        self.page.keyboard.insert_text("设置")
+        self.page.keyboard.press("Tab")
+        expect(self.page.get_by_role("button", name="启动设置", exact=True)).to_be_focused()
+        self.page.keyboard.press("Enter")
+        window = self.page.get_by_role("dialog", name="设置", exact=True)
+        expect(window.locator(".window-title")).to_be_focused()
+        self.page.keyboard.press("Tab")
+        self.page.keyboard.press("Enter")
+        expect(window).to_have_count(0)
+        expect(dock_launcher).to_be_focused()
+
+    def test_nested_window_returns_focus_and_handles_removed_opener(self):
+        self.fixture.open()
+        self.fixture.app("插件中心")
+        parent = self.page.get_by_role("dialog", name="插件中心", exact=True)
+        opener = parent.get_by_role("button", name="安装签名镜像", exact=True)
+        opener.focus()
+        self.page.keyboard.press("Enter")
+        child = self.page.get_by_role("dialog", name="安装插件", exact=True)
+        expect(child.locator(".window-title")).to_be_focused()
+        self.page.keyboard.press("Tab")
+        self.page.keyboard.press("Enter")
+        expect(child).to_have_count(0)
+        expect(opener).to_be_focused()
+
+        self.page.keyboard.press("Enter")
+        expect(child.locator(".window-title")).to_be_focused()
+        # A background window may be removed without taking focus from the child.
+        parent.get_by_role("button", name="关闭插件中心", exact=True).evaluate("button => button.click()")
+        expect(child.locator(".window-title")).to_be_focused()
+        self.page.keyboard.press("Tab")
+        self.page.keyboard.press("Enter")
+        expect(child).to_have_count(0)
+        expect(self.page.get_by_role("button", name="XeLab", exact=True)).to_be_focused()
+
+    def test_forbidden_response_is_visible_and_exposed_via_live_status(self):
+        self.fixture.denied.add("/api/platform/v1/clients")
+        self.fixture.open()
+        self.open_launcher()
+        self.page.get_by_text("已加载贡献中没有匹配项", exact=True).wait_for()
+        self.page.get_by_role("button", name="启动UI 客户端", exact=True).click()
+        window = self.page.get_by_role("dialog", name="UI 客户端", exact=True)
+        denial = window.get_by_role("note")
+        expect(denial.get_by_role("heading", name="无权限", exact=True)).to_be_visible()
+        expect(denial).to_contain_text("PERMISSION_DENIED")
+        connection = self.page.locator("#connection")
+        expect(connection).to_have_attribute("role", "status")
+        expect(connection).to_have_text("当前请求无权限")
+        self.assertTrue(any(call["method"] == "GET" and call["path"] == "/api/platform/v1/clients"
+                            for call in self.fixture.calls))
 
 
 if __name__ == "__main__":
