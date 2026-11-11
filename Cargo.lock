@@ -3403,6 +3403,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "xelab-api-client-example"
+version = "0.1.0"
+dependencies = [
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
 name = "xelab-kernel"
 version = "0.1.0"
 dependencies = [
