@@ -64,3 +64,7 @@ cursor_sequence 保持位置，因此删除已确认事件不会让游标倒退�
 正式 daemon/宿主重启和独立宿主生产验收仍由 [#50](https://github.com/jyxxe/XeLab/issues/50) 跟踪。
 实际 PostgreSQL、事务回滚、组件进程 SIGKILL/reexec 和公开 SSE 的执行证据
 由阶段 PR 与最终 M4 验收记录补齐，不能替代 #50 的正式生产证据。
+
+消费者侧的离线参考示例（event_id 去重、先提交后 ACK、ACK 丢失/重启/旧租约/
+失权场景与测试）见 [examples/event-consumer](../../examples/event-consumer/README.md)；
+它是契约演示而非内核实现。
