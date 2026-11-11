@@ -1,0 +1,25 @@
+{
+  "source": "GitHub Markdown API (gfm) text + github-slugger 2.0.0, 2026-11-10",
+  "cases": [
+    {"markdown": "## Simple heading\n\n[target]: #section\n","anchor": "simple-heading"},
+    {"markdown": "## This'll be a _Helpful_ Section About Θ!\n\n[target]: #section\n","anchor": "thisll-be-a-helpful-section-about-θ"},
+    {"markdown": "## foo_bar\n\n[target]: #section\n","anchor": "foo_bar"},
+    {"markdown": "## Before ` foo ` After\n\n[target]: #section\n","anchor": "before-foo-after"},
+    {"markdown": "## 中文，标点！\n\n[target]: #section\n","anchor": "中文标点"},
+    {"markdown": "## 〇用例 ‿ Ⅳ Ⓐ\n\n[target]: #section\n","anchor": "〇用例-‿-ⅳ-ⓐ"},
+    {"markdown": "## [Link](https://example.com)\n\n[target]: #section\n","anchor": "link"},
+    {"markdown": "## [Link](https://example.com \"title\")\n\n[target]: #section\n","anchor": "link"},
+    {"markdown": "## <em>Emphasis</em>\n\n[target]: #section\n","anchor": "emphasis"},
+    {"markdown": "## \\_literal_\n\n[target]: #section\n","anchor": "_literal_"},
+    {"markdown": "## Backslash \\\\`code` text\n\n[target]: #section\n","anchor": "backslash-code-text"},
+    {"markdown": "## Café &amp; `A&amp;B`\n\n[target]: #section\n","anchor": "café--aampb"},
+    {"markdown": "## **Bold** and ~~strike~~\n\n[target]: #section\n","anchor": "bold-and-strike"},
+    {"markdown": "## A  B\n\n[target]: #section\n","anchor": "a--b"},
+    {"markdown": "## ![](image.png) Tag\n\n[target]: #section\n","anchor": "-tag"},
+    {"markdown": "## <span>Text</span> and <code>Value</code>\n\n[target]: #section\n","anchor": "text-and-value"},
+    {"markdown": "## Two **bold _nested_** items\n\n[target]: #section\n","anchor": "two-bold-nested-items"},
+    {"markdown": "## A __bold__ word\n\n[target]: #section\n","anchor": "a-bold-word"},
+    {"markdown": "## Heading [ref][target]\n\n[target]: #section\n","anchor": "heading-ref"},
+    {"markdown": "## <https://example.com/path>\n\n[target]: #section\n","anchor": "httpsexamplecompath"}
+  ]
+}

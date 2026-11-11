@@ -13,6 +13,7 @@ import tomllib
 import sqlite3
 from validate_planned import validate_planned
 from validate_extensions import validate_extensions
+from markdown_links import check_markdown_links
 from functools import lru_cache
 from urllib.parse import urlparse, unquote
 
@@ -41,12 +42,6 @@ def pointer(data,fragment):
     for part in fragment.removeprefix('/').split('/') if fragment else []:
         data=data[part.replace('~1','/').replace('~0','~')]
     return data
-def without_code(value):
-    lines=[]; fenced=False
-    for line in value.splitlines():
-        if line.strip().startswith(('```','~~~')): fenced=not fenced; continue
-        if not fenced: lines.append(line)
-    return '\n'.join(lines)
 
 def baseline():
     spec=read(DOCS/'contracts/openapi.json')
@@ -123,19 +118,20 @@ def baseline():
         check((DOCS/'internal'/f'{m["module"]}.md').is_file(),'missing internal module page '+m['module'])
     # Markdown links, page size and reachability.
     md=list(DOCS.rglob('*.md'))+[ROOT/'README.md',ROOT/'plan/v0.md']
-    graph={}
+    graph={}; anchor_cache={}
     for file in md:
         content=file.read_text()
         if 'archive' not in file.parts:
             check(len(content.splitlines())<=220,'human page exceeds 220 lines: '+str(file.relative_to(ROOT)))
-        edges=[]
-        for value in re.findall(r'(?<!!)\[[^\]]*\]\(([^\n)]+)\)',without_code(content)):
-            target=value.strip().strip('<>');parsed=urlparse(target)
-            if parsed.scheme or target.startswith('#'):continue
-            destination=(file.parent/unquote(parsed.path)).resolve()
-            check(destination.exists(),f'broken Markdown link {file.relative_to(ROOT)} -> {target}')
-            if destination.is_file() and destination.suffix=='.md':edges.append(destination)
+        edges,link_errors=check_markdown_links(file,ROOT,anchor_cache)
+        ERRORS.extend(link_errors)
         graph[file.resolve()]=edges
+    # Extend link coverage without changing the original size or reachability graph.
+    extra_md=[ROOT/'CONTRIBUTING.md',ROOT/'SECURITY.md',ROOT/'crates/kernel/README.md']
+    extra_md+=sorted((ROOT/'examples').rglob('*.md'))
+    for file in extra_md:
+        _,link_errors=check_markdown_links(file,ROOT,anchor_cache)
+        ERRORS.extend(link_errors)
     seen=set();pending=[(DOCS/'README.md').resolve()]
     while pending:
         p=pending.pop()
