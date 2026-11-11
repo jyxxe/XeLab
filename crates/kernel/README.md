@@ -157,7 +157,7 @@ python3 examples/echo/sign_artifact.py \
 
 ## 验证和发布门槛
 
-默认测试包括严格 JSON、Schema、配置/秘密文件、权限条件交集、制品路径/信封、OCI 隔离参数，以及真实 PostgreSQL 的 AUTH-01～09、会话撤销、重复迁移、并发准入、防超售和幂等释放。设置 `XELAB_TEST_DATABASE_URL` 后运行数据库测试；测试 DSN 须有创建一次性数据库的权限。未设置会提示跳过，不能据此宣称数据库验证完成。
+默认测试包括严格 JSON、Schema、配置/秘密文件、权限条件交集、制品路径/信封、OCI 隔离参数，以及真实 PostgreSQL 的 AUTH-01～09、会话撤销、重复迁移、并发准入、防超售和幂等释放。设置 `XELAB_TEST_DATABASE_URL` 后运行数据库测试；测试 DSN 须有创建一次性数据库的权限。未设置时，部分用例提前返回，Cargo 仍计为 `ok`；默认输出会捕获部分用例的跳过提示，另有用例不打印提示。向上述 `cargo test` 命令追加 `-- --nocapture` 能显示已有提示，但不能证明所有数据库用例都已执行；须记录 DSN 与实际测试范围，不能据此宣称数据库验证完成。
 
 CI 另在一次性 Linux 主机运行 `tests/oci.rs`：真实 containerd + Rust/Python 两个 OCI 镜像 + cgroup + mTLS，经管理 Router 完成安装、批准、启用、调用、幂等重放/冲突、两处恢复注入、调用配额回收、停用及撤权；实际执行 CPU 压力、内存 OOM、只读根目录/出网拒绝，并以真实 HTTPS 服务运行 `xelabctl`。错误签名、错误实例代次证书和过期版本条件须被拒绝。该测试需显式 `XELAB_OCI_TEST=1`，默认忽略，**只允许在可销毁测试主机上手动运行**；命令见 [CI](../../.github/workflows/kernel.yml)。
 
