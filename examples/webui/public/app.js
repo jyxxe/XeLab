@@ -34,7 +34,7 @@ let toastTimer;
 let sessionEpoch=0;
 const oauth = new OAuthSession(runtimeConfig);
 const api = new ApiClient(runtimeConfig, oauth);
-const defaults = () => ({theme: {mode: 'system', reduce_motion: false, reduce_transparency: false}, dock: {position: 'bottom', auto_hide: false, pinned: []}, widgets: [], restore_windows: true});
+const defaults = () => ({theme: {mode: ['system','light','dark'].includes(runtimeConfig.default_theme) ? runtimeConfig.default_theme : 'system', reduce_motion: false, reduce_transparency: false}, dock: {position: 'bottom', auto_hide: false, pinned: []}, widgets: [], restore_windows: true});
 const baseTokens = {
   light: {accent:'#4F7CFF', desktop:'#E9EEF7', surface:'#FFFFFF', text:'#18202C', muted_text:'#526074', border:'#CBD5E1', danger:'#B42318', radius_px:12, blur_px:16, panel_opacity:0.92, font:'system'},
   dark: {accent:'#80A7FF', desktop:'#121826', surface:'#1F2937', text:'#F3F4F6', muted_text:'#B4C0D0', border:'#475569', danger:'#FF8A80', radius_px:12, blur_px:16, panel_opacity:0.92, font:'system'},

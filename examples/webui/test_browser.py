@@ -214,6 +214,106 @@ class DesktopBrowser(unittest.TestCase):
         window.wait_for()
         return window
 
+    def runtime_default_theme(self, value=None, *, present=True):
+        config = {"core_origin": CORE, "client_id": "browser-component", "max_open_windows": 16}
+        if present:
+            config["default_theme"] = value
+        self.page.route("**/runtime-config.js", lambda route: route.fulfill(
+            status=200, content_type="text/javascript",
+            body="export const runtimeConfig=" + json.dumps(config) + ";"))
+
+    def test_deployment_theme_applies_while_logged_out(self):
+        for theme in ("light", "dark"):
+            with self.subTest(theme=theme):
+                self.runtime_default_theme(theme)
+                self.open(authenticated=False)
+                self.assertEqual(self.page.locator("html").get_attribute("data-theme"), theme)
+                self.assertTrue(self.page.get_by_role("button", name="登录", exact=True).is_visible())
+
+    def check_deployment_theme_until_preferences_arrive(self, theme):
+        self.runtime_default_theme(theme)
+        self.saved["spec"]["theme"]["mode"] = "system"
+        self.hold_preferences = True
+        self.open()
+        for _ in range(100):
+            if self.pending_preferences:
+                break
+            self.page.wait_for_timeout(20)
+        self.assertEqual(len(self.pending_preferences), 1)
+        try:
+            # The real browser has not received its first Core preference yet.
+            self.assertEqual(self.page.locator("html").get_attribute("data-theme"), theme)
+        finally:
+            self.hold_preferences = False
+            self.route(self.pending_preferences.pop())
+        # A stored `system` preference must override either deployment default.
+        self.page.wait_for_function("document.documentElement.dataset.theme === 'system'")
+        self.assertEqual(self.page.locator("html").get_attribute("data-theme"), "system")
+
+    def test_dark_deployment_theme_until_preferences_arrive(self):
+        self.check_deployment_theme_until_preferences_arrive("dark")
+
+    def test_light_deployment_theme_until_preferences_arrive(self):
+        self.check_deployment_theme_until_preferences_arrive("light")
+
+    def test_stored_custom_theme_overrides_deployment_default(self):
+        self.runtime_default_theme("dark")
+        self.saved["spec"]["theme"] = {
+            "mode": "custom", "reduce_motion": False, "reduce_transparency": False,
+            "custom_tokens": {
+                "accent": "#123456", "desktop": "#223344", "surface": "#ffffff",
+                "text": "#18202c", "muted_text": "#526074", "border": "#cbd5e1",
+                "danger": "#b42318", "radius_px": 12, "blur_px": 16,
+                "panel_opacity": 0.92, "font": "system",
+            },
+        }
+        self.hold_preferences = True
+        self.open()
+        for _ in range(100):
+            if self.pending_preferences:
+                break
+            self.page.wait_for_timeout(20)
+        self.assertEqual(len(self.pending_preferences), 1)
+        try:
+            self.assertEqual(self.page.locator("html").get_attribute("data-theme"), "dark")
+        finally:
+            self.hold_preferences = False
+            self.route(self.pending_preferences.pop())
+        self.page.wait_for_function("document.documentElement.dataset.theme === 'custom'")
+        self.assertEqual(self.page.evaluate("document.documentElement.style.getPropertyValue('--accent')"), "#123456")
+        self.assertEqual(self.page.evaluate("document.documentElement.style.getPropertyValue('--desktop')"), "#223344")
+
+    def test_failed_first_preference_read_keeps_deployment_theme(self):
+        self.runtime_default_theme("dark")
+        self.hold_preferences = True
+        self.open()
+        for _ in range(100):
+            if self.pending_preferences:
+                break
+            self.page.wait_for_timeout(20)
+        self.assertEqual(len(self.pending_preferences), 1)
+        self.status_overrides["/api/platform/v1/me/ui-preferences"] = 503
+        self.hold_preferences = False
+        self.route(self.pending_preferences.pop())
+        self.page.wait_for_function("document.querySelector('#connection').textContent === '请求未完成'")
+        self.assertEqual(self.page.locator("html").get_attribute("data-theme"), "dark")
+
+    def test_logout_restores_deployment_theme(self):
+        self.runtime_default_theme("dark")
+        self.saved["spec"]["theme"]["mode"] = "light"
+        self.open()
+        self.page.wait_for_function("document.documentElement.dataset.theme === 'light'")
+        self.page.get_by_role("button", name="退出", exact=True).click()
+        self.page.get_by_role("button", name="登录", exact=True).wait_for()
+        self.assertEqual(self.page.locator("html").get_attribute("data-theme"), "dark")
+
+    def test_missing_or_invalid_deployment_theme_falls_back_to_system(self):
+        for present, value in ((False, None), (True, None), (True, "invalid"), (True, {})):
+            with self.subTest(present=present, value=value):
+                self.runtime_default_theme(value, present=present)
+                self.open(authenticated=False)
+                self.assertEqual(self.page.locator("html").get_attribute("data-theme"), "system")
+
     def skill_body_audit(self):
         # Core here is an explicit routed component adapter. The same observer
         # runs against actual Core/OCI only in the separate acceptance driver.
