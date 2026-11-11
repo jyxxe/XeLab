@@ -562,6 +562,252 @@ class DesktopBrowser(unittest.TestCase):
         self.assertEqual(calls[0]["body"], calls[1]["body"])
         self.assertNotIn("cookie", calls[0]["headers"])
 
+    def test_editor_can_correct_local_json_errors_before_first_send(self):
+        # Detect the editor's recursive canonicalization. An oversized body
+        # must be rejected before allocating the canonical copy.
+        self.context.add_init_script('''(() => {
+          const original = Object.fromEntries;
+          globalThis.__canonicalCopies = 0;
+          Object.fromEntries = function(...args) {
+            globalThis.__canonicalCopies++;
+            return original.apply(this, args);
+          };
+        })()''')
+        self.open()
+        skills = self.app("Skill")
+        skills.get_by_role("button", name="调用测试", exact=True).click()
+        editor = self.page.locator('.window[data-app="editor-invokeSkill"]')
+        input_box = editor.get_by_label("请求 JSON", exact=True)
+        submit = editor.get_by_role("button", name="提交", exact=True)
+        input_box.fill('{')
+        submit.click()
+        editor.get_by_text("JSON 格式错误", exact=True).wait_for()
+        self.assertFalse([call for call in self.calls if call["method"] == "POST"])
+        # JSON.parse accepts 1e400 as Infinity, but strictJson rejects it
+        # locally; a body that never left the client must not lock the intent.
+        input_box.fill('{"input":{"number":1e400},"idempotency_key":"local-check"}')
+        submit.click()
+        editor.get_by_text("请求失败", exact=True).wait_for()
+        self.assertFalse([call for call in self.calls if call["method"] == "POST"])
+        too_large = {"input": {"message": "x" * (4 * 1024 * 1024)}, "idempotency_key": "local-check"}
+        input_box.fill(json.dumps(too_large))
+        self.page.evaluate('globalThis.__canonicalCopies = 0')
+        submit.click()
+        editor.get_by_text("PAYLOAD_TOO_LARGE", exact=False).wait_for()
+        self.assertEqual(self.page.evaluate('globalThis.__canonicalCopies'), 0)
+        self.assertFalse([call for call in self.calls if call["method"] == "POST"])
+        body = {"input": {"message": "corrected"}, "idempotency_key": "local-check"}
+        input_box.fill(json.dumps(body))
+        submit.click()
+        editor.get_by_text('"message": "corrected"', exact=False).wait_for()
+        calls = [call for call in self.calls if call["method"] == "POST"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(json.loads(calls[0]["body"]), body)
+
+    def test_editor_rejects_changed_body_and_retries_original_with_same_key(self):
+        self.open()
+        skills = self.app("Skill")
+        skills.get_by_role("button", name="调用测试", exact=True).click()
+        editor = self.page.locator('.window[data-app="editor-invokeSkill"]')
+        input_box = editor.get_by_label("请求 JSON", exact=True)
+        submit = editor.get_by_role("button", name="提交", exact=True)
+        body = {"input": {"message": "original", "nested": {"alpha": 1, "beta": 2}}, "idempotency_key": "intent-one"}
+        input_box.fill(json.dumps(body))
+        submit.click()
+        editor.get_by_text('"message": "original"', exact=False).wait_for()
+        changed = {"input": {"message": "changed"}, "idempotency_key": "intent-one"}
+        input_box.fill(json.dumps(changed))
+        submit.click()
+        self.page.wait_for_function("""() => {
+          const explains = el => el && !el.matches('[data-kind="loading"]') && !el.querySelector('[data-kind="loading"]') &&
+            el.textContent.includes('原请求') && /修改|不同|不一致|新意图/.test(el.textContent);
+          return explains(document.querySelector('#toast')) ||
+            [...document.querySelectorAll('.window[data-app="editor-invokeSkill"] [aria-live="polite"], .window[data-app="editor-invokeSkill"] [role="status"]')].some(explains);
+        }""", timeout=3000)
+        calls = [call for call in self.calls if call["method"] == "POST"]
+        self.assertEqual(len(calls), 1)
+        # The result may contain the only Call ID available for verification.
+        editor.get_by_text('"message": "original"', exact=False).wait_for()
+        editor.get_by_text(f'"call_id": "{DEPLOYMENT}"', exact=False).wait_for()
+        # Reordered object keys and formatting preserve the JSON intent.
+        reordered = {"idempotency_key": "intent-one", "input": {"nested": {"beta": 2, "alpha": 1}, "message": "original"}}
+        input_box.fill(json.dumps(reordered, indent=2))
+        with self.page.expect_request(lambda req: req.method == "POST" and req.url.endswith('/calls')):
+            submit.click()
+        editor.get_by_text('"message": "original"', exact=False).wait_for()
+        calls = [call for call in self.calls if call["method"] == "POST"]
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["headers"]["idempotency-key"], calls[1]["headers"]["idempotency-key"])
+        self.assertEqual(json.loads(calls[0]["body"]), json.loads(calls[1]["body"]))
+
+    def test_editor_bodyless_intent_retry_uses_same_key(self):
+        self.open()
+        skills = self.app("Skill")
+        skills.get_by_role("button", name="归档", exact=True).click()
+        editor = self.page.locator('.window[data-app="editor-archiveSkill"]')
+        self.assertEqual(editor.get_by_label("请求 JSON", exact=True).count(), 0)
+        submit = editor.get_by_role("button", name="提交", exact=True)
+        submit.click()
+        editor.get_by_text("当前不可用", exact=True).wait_for()
+        with self.page.expect_request(lambda req: req.method == 'DELETE' and req.url.endswith('/skills/' + SKILL)):
+            submit.click()
+        editor.get_by_text("当前不可用", exact=True).wait_for()
+        calls = [call for call in self.calls if call["method"] == "DELETE"]
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([call["body"] for call in calls], [None, None])
+        self.assertEqual(calls[0]["headers"]["idempotency-key"], calls[1]["headers"]["idempotency-key"])
+        self.assertEqual(calls[0]["headers"]["if-match"], '"rev-1"')
+
+    def test_editor_intent_compares_nested_objects_and_arrays_safely(self):
+        self.open()
+        self.app("Skill").get_by_role("button", name="调用测试", exact=True).click()
+        editor = self.page.locator('.window[data-app="editor-invokeSkill"]')
+        input_box = editor.get_by_label("请求 JSON", exact=True)
+        submit = editor.get_by_role("button", name="提交", exact=True)
+        original = {
+            "input": {
+                "message": "preserve-result",
+                "nested": {
+                    "__proto__": {"left": 1, "constructor": {"x": 2, "y": 3}},
+                    "constructor": {"inner": "value", "other": False},
+                    "items": [{"alpha": 1, "beta": 2}, "end"],
+                },
+            },
+            "idempotency_key": "prototype-intent",
+        }
+        reordered = {
+            "idempotency_key": "prototype-intent",
+            "input": {
+                "nested": {
+                    "items": [{"beta": 2, "alpha": 1}, "end"],
+                    "constructor": {"other": False, "inner": "value"},
+                    "__proto__": {"constructor": {"y": 3, "x": 2}, "left": 1},
+                },
+                "message": "preserve-result",
+            },
+        }
+        input_box.fill(json.dumps(original))
+        submit.click()
+        editor.get_by_text(f'"call_id": "{DEPLOYMENT}"', exact=False).wait_for()
+        input_box.fill(json.dumps(reordered, indent=2))
+        with self.page.expect_request(lambda req: req.method == "POST" and req.url.endswith("/calls")):
+            submit.click()
+        editor.get_by_text(f'"call_id": "{DEPLOYMENT}"', exact=False).wait_for()
+        calls = [call for call in self.calls if call["method"] == "POST" and call["path"].endswith("/calls")]
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["headers"]["idempotency-key"], calls[1]["headers"]["idempotency-key"])
+        self.assertEqual(json.loads(calls[0]["body"]), json.loads(calls[1]["body"]))
+        previous_result = editor.locator("pre.result").inner_text()
+
+        reordered_array = json.loads(json.dumps(original))
+        reordered_array["input"]["nested"]["items"].reverse()
+        changed_array_value = json.loads(json.dumps(original))
+        changed_array_value["input"]["nested"]["items"][0]["alpha"] = 9
+        missing_proto = json.loads(json.dumps(original))
+        del missing_proto["input"]["nested"]["__proto__"]
+        changed_constructor = json.loads(json.dumps(original))
+        changed_constructor["input"]["nested"]["constructor"]["inner"] = "different"
+        for changed in (reordered_array, changed_array_value, missing_proto, changed_constructor):
+            input_box.fill(json.dumps(changed))
+            submit.click()
+            editor.get_by_text("原请求内容已锁定", exact=True).wait_for()
+            self.page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+            calls = [call for call in self.calls if call["method"] == "POST" and call["path"].endswith("/calls")]
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(editor.locator("pre.result").inner_text(), previous_result)
+
+    def test_editor_inflight_edit_does_not_replace_original_intent(self):
+        held = []
+        self.page.unroute("**/*")
+        def route(route):
+            request = route.request
+            if request.method == "POST" and urlparse(request.url).path == f'/api/platform/v1/skills/{SKILL}/calls' and not held:
+                held.append(route)
+            else:
+                self.route(route)
+        self.page.route("**/*", route)
+        self.open()
+        skills = self.app("Skill")
+        skills.get_by_role("button", name="调用测试", exact=True).click()
+        editor = self.page.locator('.window[data-app="editor-invokeSkill"]')
+        input_box = editor.get_by_label("请求 JSON", exact=True)
+        submit = editor.get_by_role("button", name="提交", exact=True)
+        original = {"input": {"message": "before"}, "idempotency_key": "inflight"}
+        input_box.fill(json.dumps(original))
+        with self.page.expect_request(lambda req: req.method == 'POST' and req.url.endswith('/calls')):
+            submit.click()
+        self.assertEqual(len(held), 1)
+        self.assertEqual(json.loads(held[0].request.post_data), original)
+        input_box.fill(json.dumps({"input": {"message": "after"}, "idempotency_key": "inflight"}))
+        self.route(held[0])
+        editor.get_by_text('"message": "before"', exact=False).wait_for()
+        submit.click()
+        self.page.wait_for_function("""() => {
+          const explains = el => el && !el.matches('[data-kind="loading"]') && !el.querySelector('[data-kind="loading"]') &&
+            el.textContent.includes('原请求') && /修改|不同|不一致|新意图/.test(el.textContent);
+          return explains(document.querySelector('#toast')) ||
+            [...document.querySelectorAll('.window[data-app="editor-invokeSkill"] [aria-live="polite"], .window[data-app="editor-invokeSkill"] [role="status"]')].some(explains);
+        }""", timeout=3000)
+        calls = [call for call in self.calls if call["method"] == "POST"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(json.loads(calls[0]["body"]), original)
+        editor.get_by_text('"message": "before"', exact=False).wait_for()
+        editor.get_by_text(f'"call_id": "{DEPLOYMENT}"', exact=False).wait_for()
+
+    def test_editor_network_failure_keeps_the_first_body_and_key(self):
+        self.abort_business = True
+        self.open()
+        skills = self.app("Skill")
+        skills.get_by_role("button", name="调用测试", exact=True).click()
+        editor = self.page.locator('.window[data-app="editor-invokeSkill"]')
+        input_box = editor.get_by_label("请求 JSON", exact=True)
+        submit = editor.get_by_role("button", name="提交", exact=True)
+        body = {"input": {"message": "unknown result"}, "idempotency_key": "unknown-intent"}
+        input_box.fill(json.dumps(body))
+        submit.click()
+        editor.get_by_text("请求失败", exact=True).wait_for()
+        input_box.fill(json.dumps({"input": {"message": "different"}, "idempotency_key": "unknown-intent"}))
+        submit.click()
+        self.page.wait_for_function("""() => {
+          const explains = el => el && !el.matches('[data-kind="loading"]') && !el.querySelector('[data-kind="loading"]') &&
+            el.textContent.includes('原请求') && /修改|不同|不一致|新意图/.test(el.textContent);
+          return explains(document.querySelector('#toast')) ||
+            [...document.querySelectorAll('.window[data-app="editor-invokeSkill"] [aria-live="polite"], .window[data-app="editor-invokeSkill"] [role="status"]')].some(explains);
+        }""", timeout=3000)
+        calls = [call for call in self.calls if call["method"] == "POST"]
+        self.assertEqual(len(calls), 1)
+        editor.get_by_text("请求失败", exact=True).wait_for()
+        input_box.fill(json.dumps(body))
+        with self.page.expect_request(lambda req: req.method == 'POST' and req.url.endswith('/calls')):
+            submit.click()
+        editor.get_by_text("请求失败", exact=True).wait_for()
+        calls = [call for call in self.calls if call["method"] == "POST"]
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["body"], calls[1]["body"])
+        self.assertEqual(calls[0]["headers"]["idempotency-key"], calls[1]["headers"]["idempotency-key"])
+
+    def test_each_editor_window_has_an_independent_intent(self):
+        self.open()
+        self.app("Skill")
+        skills = self.page.locator('.window[data-app="skills"]')
+        skills.get_by_role("button", name="调用测试", exact=True).click()
+        first = self.page.locator('.window[data-app="editor-invokeSkill"]').first
+        body_one = {"input": {"message": "first window"}, "idempotency_key": "window-one"}
+        first.get_by_label("请求 JSON", exact=True).fill(json.dumps(body_one))
+        first.get_by_role("button", name="提交", exact=True).click()
+        first.get_by_text('"message": "first window"', exact=False).wait_for()
+        skills.locator('.window-title').focus()
+        skills.get_by_role("button", name="调用测试", exact=True).click()
+        second = self.page.locator('.window[data-app="editor-invokeSkill"]').last
+        body_two = {"input": {"message": "second window"}, "idempotency_key": "window-two"}
+        second.get_by_label("请求 JSON", exact=True).fill(json.dumps(body_two))
+        second.get_by_role("button", name="提交", exact=True).click()
+        second.get_by_text('"message": "second window"', exact=False).wait_for()
+        calls = [call for call in self.calls if call["method"] == "POST"]
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([json.loads(call["body"]) for call in calls], [body_one, body_two])
+        self.assertNotEqual(calls[0]["headers"]["idempotency-key"], calls[1]["headers"]["idempotency-key"])
+
     def test_theme_saved_preferences_reload_and_reduced_effects(self):
         self.open()
         settings = self.app("设置")

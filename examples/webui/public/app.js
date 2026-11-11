@@ -1,5 +1,5 @@
 import {runtimeConfig} from './runtime-config.js';
-import {ApiClient} from './api.js';
+import {ApiClient,encodeRequestJson,compareEncodedJson} from './api.js';
 import {OAuthSession} from './oauth.js';
 import {BridgeHost,validateContribution,sameContribution} from './bridge.js';
 
@@ -67,10 +67,10 @@ function permittedContent(win) {
   win.content.replaceChildren(state('denied', '登录后继续', '授权由内核可信页面完成。本页面不会读取平台密码或内核登录 Cookie。'), button('前往可信登录', login, {class:'primary'}));
   return false;
 }
-async function request(operation, options = {}) {
+async function request(operation, options = {}, onDispatch) {
   const epoch=sessionEpoch;
   try {
-    const result = await api.invoke(operation, options);
+    const result = await api.invoke(operation, options, onDispatch);
     if(epoch!==sessionEpoch)throw new Error('登录来源已经改变；旧请求结果不再显示。');
     $('#connection').textContent = '已连接核心';
     return result;
@@ -285,21 +285,34 @@ async function loadApp(win) {
 function editor(title, operation, {params={}, initial={}, etag, body=true, note='操作将以当前用户和本客户端授权提交；服务端会重新鉴权。'} = {}) {
   return openWindow({id:`editor-${operation}`,title,render:async win => {
     const key = crypto.randomUUID();
+    let intentBound = false, intentBody;
     const input = node('textarea',{'aria-label':'请求 JSON',spellcheck:false},JSON.stringify(initial,null,2));
     const outcome = node('div',{'aria-live':'polite'});
+    const notice = node('div',{role:'status'});
     const submit = button('提交',async()=> {
       if(win.credentialChanged){toast('原请求来源已改变，请先核实结果。');return;}
       let value;
-      try { value = body ? JSON.parse(input.value) : undefined; } catch { outcome.replaceChildren(state('error','JSON 格式错误','请修正后再提交。'));return; }
+      try { value = body ? JSON.parse(input.value) : undefined; } catch { notice.replaceChildren(state('error','JSON 格式错误','请修正后再提交。'));return; }
+      let encoded;
+      try {
+        if (body) encoded = encodeRequestJson(value);
+      } catch (error) { notice.replaceChildren(failure(error));return; }
+      if (intentBound && encoded !== intentBody && (!body || !compareEncodedJson(intentBody,value))) {
+        notice.replaceChildren(state('error','原请求内容已锁定','请保留原请求键并核实结果；如需提交不同内容，请关闭并重新打开编辑器以创建新意图。'));
+        return;
+      }
+      notice.replaceChildren();
       submit.disabled = true;
       outcome.replaceChildren(state('loading','请求中…','请保留原请求键，网络失败不等于操作回滚。'));
       try {
-        const result = await request(operation,{params,body:value,etag,idempotencyKey:key,signal:win.controller.signal});
+        const result = await request(operation,{params,body:value,etag,idempotencyKey:key,signal:win.controller.signal},()=>{
+          if (!intentBound) { intentBody = encoded; intentBound = true; }
+        });
         outcome.replaceChildren(node('p',{},'核心已返回以下实际结果；异步 Operation 尚需检查其终态。'),raw(result.data));
       } catch (error) { outcome.replaceChildren(failure(error)); }
       finally { submit.disabled = Boolean(win.credentialChanged); }
     },{class:'primary','data-intent-submit':true});
-    win.content.replaceChildren(node('div',{class:'editor-form'},node('p',{class:'muted'},note),...(body?[node('label',{},'请求 JSON',input)]:[]),node('p',{class:'code'},`幂等键：${key}`),submit,outcome));
+    win.content.replaceChildren(node('div',{class:'editor-form'},node('p',{class:'muted'},note),...(body?[node('label',{},'请求 JSON',input)]:[]),node('p',{class:'code'},`幂等键：${key}`),submit,notice,outcome));
   }},{ephemeral:true});
 }
 function details(title, data) { return openWindow({id:'details',title,render:async win=>win.content.replaceChildren(raw(data))},{ephemeral:true}); }

@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { ApiClient, ApiError, OPERATIONS, readJson, strictJson, validateConfig } from './public/api.js';
+import { ApiClient, ApiError, OPERATIONS, compareEncodedJson, encodeRequestJson, readJson, strictJson, validateConfig } from './public/api.js';
 import { OAuthSession } from './public/oauth.js';
 
 const config = { core_origin: 'https://kernel.example.test', client_id: 'xelab-0123456789abcdef0123456789abcdef' };
@@ -109,6 +109,87 @@ test('arbitrary URL, path, query, headers, missing concurrency proof and invalid
   assert.throws(() => strictJson(nested), ApiError);
 });
 
+test('request JSON byte limit includes UTF-8 and JSON framing', () => {
+  const limit = 4 * 1024 * 1024;
+  const payloadBytes = limit - Buffer.byteLength(JSON.stringify({ text: '' }), 'utf8');
+  const text = '界'.repeat(Math.floor(payloadBytes / 3)) + 'a'.repeat(payloadBytes % 3);
+  const encoded = encodeRequestJson({ text });
+  assert.equal(Buffer.byteLength(encoded, 'utf8'), limit);
+  assert.ok(encoded.length < limit, 'multi-byte characters must not be counted as one byte');
+  assert.equal(JSON.parse(encoded).text, text);
+  assert.throws(() => encodeRequestJson({ text: text + 'a' }),
+    error => error instanceof ApiError && error.code === 'PAYLOAD_TOO_LARGE');
+});
+
+test('encoded JSON intent comparison respects object keys, arrays, values and JSON types', () => {
+  const cases = [
+    [JSON.parse('{"__proto__":{"constructor":{"a":1,"b":2}},"constructor":{"x":false,"y":null}}'),
+      JSON.parse('{"constructor":{"y":null,"x":false},"__proto__":{"constructor":{"b":2,"a":1}}}'), true],
+    [JSON.parse('{"__proto__":{}}'), {}, false],
+    [JSON.parse('{"constructor":1}'), {}, false],
+    [[1, { a: 2, b: [3, 4] }], [1, { b: [3, 4], a: 2 }], true],
+    [[1, 2], [2, 1], false],
+    [[1, { a: 2 }], [1, { a: 3 }], false],
+    [{ text: '\u0000\ud800\\"雪😀' }, { text: '\u0000\ud800\\"雪😀' }, true],
+    [{ text: '\u0000\ud800\\"雪😀' }, { text: '\u0000\ud801\\"雪😀' }, false],
+    [{ number: -0 }, { number: 0 }, true],
+    [{ number: 0 }, { number: -0 }, true],
+    [null, {}, false],
+    [[], {}, false],
+    [{ value: null }, { value: false }, false],
+    [{ value: 1 }, { value: '1' }, false],
+  ];
+  for (const [source, candidate, expected] of cases) {
+    assert.equal(compareEncodedJson(encodeRequestJson(source), candidate), expected);
+  }
+  // JSON.stringify escapes lone surrogate and control characters; these are
+  // still compared as their decoded JSON values, including in object keys.
+  const escaped = { '\ud800\u0000': '\udfff\n' };
+  const text = encodeRequestJson(escaped);
+  assert.match(text, /\\ud800/);
+  assert.match(text, /\\u0000/);
+  assert.equal(compareEncodedJson(text, { '\ud800\u0000': '\udfff\n' }), true);
+});
+
+test('encoded JSON intent comparison agrees with an independent canonical reference', () => {
+  // Deterministic, bounded JSON values. Object.fromEntries preserves special
+  // own keys such as __proto__ without invoking prototype setters.
+  let seed = 0x546319ab;
+  const next = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return seed >>> 0; };
+  const scalars = [null, false, true, -0, 0, 1, -3.5, '', '雪', '\ud800', 'a\n\\"'];
+  const keys = ['__proto__', 'constructor', '0', '01', 'alpha', '雪', '\udfff'];
+  function generate(depth) {
+    if (!depth || next() % 3 === 0) return scalars[next() % scalars.length];
+    const count = next() % 4;
+    if (next() & 1) return Array.from({ length: count }, () => generate(depth - 1));
+    const entries = [];
+    for (let i = 0; i < count; i++) entries.push([keys[next() % keys.length], generate(depth - 1)]);
+    return Object.fromEntries(entries);
+  }
+  function reordered(value) {
+    if (Array.isArray(value)) return value.map(reordered);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).reverse().map(([key, child]) => [key, reordered(child)]));
+    }
+    return value;
+  }
+  function reference(value) {
+    if (Array.isArray(value)) return '[' + value.map(reference).join(',') + ']';
+    if (value && typeof value === 'object') {
+      return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + reference(value[key])).join(',') + '}';
+    }
+    return JSON.stringify(value);
+  }
+  for (let i = 0; i < 500; i++) {
+    const source = generate(4);
+    const text = encodeRequestJson(source);
+    const same = reordered(source);
+    const candidate = generate(4);
+    assert.equal(compareEncodedJson(text, same), true, `reordered case ${i}`);
+    assert.equal(compareEncodedJson(text, candidate), reference(JSON.parse(text)) === reference(candidate), `random case ${i}`);
+  }
+});
+
 test('write dispatch preserves exact ETag/idempotency proof, stable backend errors and never retries', async () => {
   let count = 0;
   const api = new ApiClient(config, { accessToken: async () => 'token' }, { fetcher: async (_url, options) => {
@@ -124,6 +205,59 @@ test('write dispatch preserves exact ETag/idempotency proof, stable backend erro
     etag: '"rev-7"', idempotencyKey: 'original-intent-key' }), error => error.code === 'PERMISSION_DENIED'
       && error.status === 403 && error.requestId === id);
   assert.equal(count, 1);
+});
+
+test('dispatch notification is not called for local validation or access-token failure', async () => {
+  let notifications = 0;
+  let fetches = 0;
+  let tokenCalls = 0;
+  const api = new ApiClient(config, { accessToken: async () => {
+    tokenCalls++;
+    throw new ApiError('AUTH_REQUIRED', '登录已结束。', 401);
+  } }, { fetcher: async () => { fetches++; return json({}); } });
+  const onDispatch = () => { notifications++; };
+  for (const [name, options] of [
+    ['unknownOperation', {}],
+    ['invokeSkill', { params: { skill_id: id }, body: { input: { bad: NaN } }, idempotencyKey: 'intent-key' }],
+    ['setSkillEnabled', { params: { skill_id: id }, body: { enabled: true }, idempotencyKey: 'intent-key' }],
+  ]) {
+    await assert.rejects(() => api.invoke(name, options, onDispatch), ApiError);
+  }
+  assert.equal(tokenCalls, 0);
+  await assert.rejects(() => api.invoke('invokeSkill', {
+    params: { skill_id: id }, body: { input: {} }, idempotencyKey: 'intent-key',
+  }, onDispatch), error => error.code === 'AUTH_REQUIRED');
+  assert.equal(tokenCalls, 1);
+  assert.equal(notifications, 0);
+  assert.equal(fetches, 0);
+});
+
+test('dispatch notification runs synchronously immediately before attempted business fetch', async () => {
+  const events = [];
+  let releaseToken;
+  const waitForToken = new Promise(resolve => { releaseToken = resolve; });
+  const api = new ApiClient(config, { accessToken: async () => {
+    events.push('token-start');
+    await waitForToken;
+    events.push('token-resolved');
+    return 'private-test-access-token';
+  } }, { fetcher: async (_url, options) => {
+    assert.deepEqual(events, ['token-start', 'token-resolved', 'dispatch']);
+    events.push('fetch');
+    assert.equal(options.headers.get('idempotency-key'), 'intent-key');
+    assert.deepEqual(JSON.parse(options.body), { input: { value: 'private-test-payload' } });
+    throw new TypeError('private-test-transport-detail');
+  } });
+  let callbackArguments;
+  const pending = api.invoke('invokeSkill', {
+    params: { skill_id: id }, body: { input: { value: 'private-test-payload' } }, idempotencyKey: 'intent-key',
+  }, (...args) => { callbackArguments = args; events.push('dispatch'); });
+  assert.deepEqual(events, ['token-start']);
+  releaseToken();
+  await assert.rejects(pending, error => error.code === 'CONNECTION_FAILED'
+    && !error.message.includes('private-test-transport-detail'));
+  assert.deepEqual(events, ['token-start', 'token-resolved', 'dispatch', 'fetch']);
+  assert.deepEqual(callbackArguments, [], 'dispatch callback must not receive token, payload, or request metadata');
 });
 
 test('caller cancellation reasons are classified consistently before headers and during the body', async t => {

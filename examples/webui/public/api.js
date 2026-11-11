@@ -106,6 +106,70 @@ export function strictJson(value) {
   return JSON.stringify(value);
 }
 
+export function encodeRequestJson(value) {
+  const encoded = strictJson(value);
+  const maximum = 4 * 1024 * 1024;
+  // JSON's UTF-8 byte length cannot be shorter than its UTF-16 code-unit
+  // count. Reject obviously oversized strings before allocating their bytes.
+  if (encoded.length > maximum || new TextEncoder().encode(encoded).byteLength > maximum) throw new ApiError('PAYLOAD_TOO_LARGE', '请求超过4MiB。');
+  return encoded;
+}
+
+// Compare a locally produced encodeRequestJson string with another validated
+// JSON value without making a second object tree or sorting/copying every key.
+// This is not a parser for arbitrary input: `encoded` must be our own
+// JSON.stringify output, which has no whitespace or duplicate object keys.
+export function compareEncodedJson(encoded, target) {
+  let position = 0;
+  function readString() {
+    const start = position++;
+    while (position < encoded.length) {
+      const character = encoded[position++];
+      if (character === '\\') { position++; continue; }
+      if (character === '"') return JSON.parse(encoded.slice(start, position));
+    }
+    throw new Error('Incomplete encoded string');
+  }
+  function compare(value) {
+    const character = encoded[position];
+    if (character === '"') return typeof value === 'string' && readString() === value;
+    if (character === '[') {
+      if (!Array.isArray(value)) return false;
+      position++;
+      let count = 0;
+      if (encoded[position] !== ']') for (;;) {
+        if (count >= value.length || !compare(value[count++])) return false;
+        if (encoded[position] === ',') { position++; continue; }
+        break;
+      }
+      if (encoded[position++] !== ']') throw new Error('Invalid encoded array');
+      return count === value.length;
+    }
+    if (character === '{') {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+      position++;
+      let count = 0;
+      if (encoded[position] !== '}') for (;;) {
+        if (encoded[position] !== '"') throw new Error('Invalid encoded key');
+        const key = readString();
+        if (encoded[position++] !== ':') throw new Error('Invalid encoded separator');
+        if (!Object.hasOwn(value, key) || !compare(value[key])) return false;
+        count++;
+        if (encoded[position] === ',') { position++; continue; }
+        break;
+      }
+      if (encoded[position++] !== '}') throw new Error('Invalid encoded object');
+      return count === Object.keys(value).length;
+    }
+    const start = position;
+    while (position < encoded.length && !',]}'.includes(encoded[position])) position++;
+    if (start === position) throw new Error('Missing encoded value');
+    return JSON.parse(encoded.slice(start, position)) === value;
+  }
+  try { return compare(target) && position === encoded.length; }
+  catch { return false; }
+}
+
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function parameter(value, type) {
   if (type === 'limit') {
@@ -185,7 +249,8 @@ export class ApiClient {
     this.#fetch = fetcher.bind(globalThis);
   }
 
-  async invoke(name, options = {}) {
+  async invoke(name, options = {}, onDispatch) {
+    if (onDispatch !== undefined && typeof onDispatch !== 'function') throw new ApiError('INVALID_ARGUMENT', '请求发送通知须为函数。');
     if (!plain(options) || Object.keys(options).some(key => !['params', 'query', 'body', 'etag', 'idempotencyKey', 'signal'].includes(key))) {
       throw new ApiError('INVALID_ARGUMENT', '未声明的管理请求选项。');
     }
@@ -207,8 +272,7 @@ export class ApiClient {
     let encoded;
     if (op.body !== (body !== undefined)) throw new ApiError('INVALID_ARGUMENT', op.body ? '需要 JSON 请求体。' : '此操作不接受请求体。');
     if (body !== undefined) {
-      encoded = strictJson(body);
-      if (new TextEncoder().encode(encoded).byteLength > 4 * 1024 * 1024) throw new ApiError('PAYLOAD_TOO_LARGE', '请求超过4MiB。');
+      encoded = encodeRequestJson(body);
       headers.set('Content-Type', 'application/json');
     }
     if (op.method !== 'GET') {
@@ -229,6 +293,9 @@ export class ApiClient {
       : 10000;
     const deadline = AbortSignal.timeout(budget);
     const effectiveSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    // Once fetch is attempted its side effects may be unknown, even when it
+    // rejects. Notify the caller after local validation and token preflight.
+    onDispatch?.();
     let response;
     try {
       response = await this.#fetch(url.href, {
