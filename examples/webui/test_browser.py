@@ -9,7 +9,7 @@ import pathlib
 import unittest
 from urllib.parse import parse_qs, urlencode, urlparse
 
-from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeoutError
+from playwright.sync_api import sync_playwright, TimeoutError as BrowserTimeoutError, expect
 from test_bridge import contribution, FRAME, PLUGIN
 
 PUBLIC = pathlib.Path(__file__).parent / "public"
@@ -56,6 +56,7 @@ class DesktopBrowser(unittest.TestCase):
         self.contributions = {}
         self.call_result = None
         self.status_overrides = {}
+        self.operation = None
         self.refresh_enabled = False
         self.hold_refresh = False
         self.pending_refresh = []
@@ -145,6 +146,8 @@ class DesktopBrowser(unittest.TestCase):
                         "scope": "client:browser-component"}
         elif url.path in self.status_overrides:
             status, data = self.status_overrides[url.path], {"error": {"code": "INVALID_CREDENTIAL", "message": "fixture credential rejected", "retryable": False}}
+        elif url.path == f"/api/platform/v1/operations/{ACCOUNT}" and self.operation is not None:
+            data = self.operation
         elif url.path in self.denied:
             status, data = 403, {"error": {"code": "PERMISSION_DENIED", "message": "fixture denied", "retryable": False}}
         elif url.path.endswith("/sessions"):
@@ -424,6 +427,39 @@ class DesktopBrowser(unittest.TestCase):
         self.assertEqual([(call["method"], call["path"]) for call in self.calls], [("GET", "/oauth/authorize")])
         self.assertEqual(self.page.evaluate("Object.keys(sessionStorage).filter(key=>key.startsWith('xelab.oauth:')).length"), 0)
         self.assertEqual(self.page.locator('input[type="password"]').count(), 0)
+
+    def test_operation_state_and_terminal_fields(self):
+        base = {"id": ACCOUNT, "revision": 1, "created_at": NOW, "updated_at": NOW,
+                "kind": "createDeployment", "progress_percent": 100,
+                "resource_id": DEPLOYMENT, "result": None, "error": None}
+        self.operation = {**base, "state": "running", "progress_percent": 40}
+        self.open()
+        self.page.get_by_role("button", name="打开应用启动器", exact=True).click()
+        self.page.get_by_role("button", name="启动任务与知识库", exact=True).click()
+        window = self.page.locator(".window").last
+        window.get_by_label("Operation UUID").fill(ACCOUNT)
+        window.get_by_role("button", name="查询", exact=True).click()
+        expect(window).to_contain_text("running")
+        expect(window).to_contain_text("操作正在执行中")
+
+        self.operation = {**base, "state": "succeeded", "result": {"deployment_id": DEPLOYMENT}}
+        window.locator(".operation-card").get_by_role("button", name="刷新", exact=True).click()
+        expect(window).to_contain_text("succeeded")
+        expect(window).to_contain_text("执行结果")
+        expect(window).to_contain_text('"deployment_id"')
+
+        self.operation = {**base, "state": "failed",
+                          "error": {"code": "FIXTURE_FAILED", "message": "fixture failure",
+                                    "retryable": False, "violations": []}}
+        window.locator(".operation-card").get_by_role("button", name="刷新", exact=True).click()
+        expect(window).to_contain_text("failed")
+        expect(window).to_contain_text("失败原因")
+        expect(window).to_contain_text("FIXTURE_FAILED")
+
+        self.operation = {**base, "state": "canceled"}
+        window.locator(".operation-card").get_by_role("button", name="刷新", exact=True).click()
+        expect(window).to_contain_text("canceled")
+        expect(window).to_contain_text("操作已取消")
 
     def test_window_drag_resize_minimize_maximize_and_keyboard(self):
         self.open()
