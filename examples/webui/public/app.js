@@ -648,15 +648,35 @@ async function settings(win) {
   const check = (title,key) => { const input=node('input',{type:'checkbox','aria-label':title});input.checked=preview.theme[key];input.addEventListener('change',()=> { preview.theme[key]=input.checked;mark(); });return node('label',{class:'check'},input,title); };
   const dock=node('select',{'aria-label':'Dock 位置'},...['bottom','left','right'].map(value=>node('option',{value},({bottom:'底部',left:'左侧',right:'右侧'})[value])));dock.value=preview.dock.position;dock.addEventListener('change',()=>{preview.dock.position=dock.value;mark();});
   const autoHide=node('input',{type:'checkbox','aria-label':'自动隐藏 Dock'});autoHide.checked=preview.dock.auto_hide;autoHide.addEventListener('change',()=>{preview.dock.auto_hide=autoHide.checked;mark();});
-  let saveIntent = {key:crypto.randomUUID(), body:null};
+  let saveIntent = {key:crypto.randomUUID(), body:null, etag:null};
   const save=button('保存到当前账户',async()=> {
     if (!preferences || !preferenceEtag) {toast('需要先登录并成功读取核心偏好及其ETag。');return;}
-    const canonicalIntent=JSON.stringify(preview);
-    if(saveIntent.body!==null&&saveIntent.body!==canonicalIntent)saveIntent={key:crypto.randomUUID(),body:null};
-    saveIntent.body=canonicalIntent;
+    const submitted=structuredClone(preview);
+    const canonicalIntent=JSON.stringify(submitted);
+    if(saveIntent.body!==null&&saveIntent.body!==canonicalIntent)saveIntent={key:crypto.randomUUID(),body:null,etag:null};
+    if(saveIntent.body===null){saveIntent.body=canonicalIntent;saveIntent.etag=preferenceEtag;}
+    const sentEtag=saveIntent.etag;
     save.disabled=true;
-    try {const result=await request('setMyUiPreferences',{body:preview,etag:preferenceEtag,idempotencyKey:saveIntent.key,signal:win.controller.signal});preferences=result.data;preferenceEtag=result.etag||revision(result.data);preview=structuredClone(result.data.spec);applyTheme();notice.textContent='已保存到核心，重新登录后仍可读取。';saveIntent={key:crypto.randomUUID(),body:null};}
-    catch(error){notice.replaceChildren(failure(error));}finally{save.disabled=false;}
+    try {
+      const result=await request('setMyUiPreferences',{body:submitted,etag:sentEtag,idempotencyKey:saveIntent.key,signal:win.controller.signal});
+      const savedEtag=result.etag||revision(result.data);
+      // Another preference operation may have completed while this response
+      // was in flight. Do not replace its locally observed version with one
+      // whose ordering we cannot establish.
+      if(typeof savedEtag!=='string' || !/^"rev-[1-9][0-9]*"$/.test(savedEtag) || (preferenceEtag!==sentEtag && preferenceEtag!==savedEtag)) {
+        notice.textContent='本次保存已完成，但期间偏好版本发生变化；请先记录未保存的更改，再核实并重新读取核心偏好。';
+      } else {
+        preferences=result.data;preferenceEtag=savedEtag;
+        if(JSON.stringify(preview)===canonicalIntent) {
+          preview=structuredClone(result.data.spec);applyTheme();notice.textContent='已保存到核心，重新登录后仍可读取。';
+        } else notice.textContent='先前更改已保存；当前预览仍有未保存的更改。';
+      }
+      saveIntent={key:crypto.randomUUID(),body:null,etag:null};
+    }
+    catch(error){
+      notice.replaceChildren(failure(error));
+      if((error.status??error.http_status)===412) notice.append(node('span',{},'请先记录未保存的更改并核实此前保存结果，重新读取核心偏好后再明确创建新的保存意图。'));
+    }finally{save.disabled=false;}
   },{class:'primary'});
   form.append(node('label',{},'主题',mode),colors,check('减少动画','reduce_motion'),check('减少透明度','reduce_transparency'),node('label',{},'Dock 位置',dock),node('label',{class:'check'},autoHide,'自动隐藏 Dock'),notice,node('div',{class:'toolbar'},save,button('恢复已保存偏好',()=> {preview=preferences?structuredClone(preferences.spec):defaults();applyTheme();loadApp(win);})),node('p',{class:'code'},`核心：${runtimeConfig.core_origin}\n公共 Client：${runtimeConfig.client_id}`));
   customFields();
