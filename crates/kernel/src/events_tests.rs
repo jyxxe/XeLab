@@ -678,6 +678,80 @@ async fn public_request(
 }
 
 #[tokio::test]
+async fn actual_postgres_public_ack_state_conflicts_do_not_advance_cursors() {
+    let Some(f) = EventFixture::new().await else {
+        return;
+    };
+    let expired_sub = f.subscription("earliest", 5).await;
+    let disabled_sub = f.subscription("earliest", 5).await;
+    f.publish("public-ack-conflicts", 1).await;
+    let expired_delivery = f.next(expired_sub).await.unwrap();
+    let disabled_delivery = f.next(disabled_sub).await.unwrap();
+    let c = f.base.app.db.connect().await.unwrap();
+    c.execute(
+        "UPDATE event_deliveries SET lease_expires_at=now()-interval '1 second' WHERE id=$1",
+        &[&delivery_id(&expired_delivery)],
+    )
+    .await
+    .unwrap();
+
+    let expired = public_request(
+        &f,
+        "POST",
+        &format!("/api/platform/v1/subscriptions/{expired_sub}/acks"),
+        ack_body(&expired_delivery, "ack"),
+        "expired-ack-conflict",
+        None,
+    )
+    .await;
+    assert_eq!(expired.0, 409);
+    assert_eq!(expired.1["error"]["code"], "STATE_CONFLICT");
+    contracts::validate("ErrorEnvelope", &expired.1).unwrap();
+
+    let path = format!("/api/platform/v1/subscriptions/{disabled_sub}");
+    let current = public_request(&f, "GET", &path, Value::Null, "unused", None).await;
+    assert_eq!(current.0, 200);
+    let revision = current.1["revision"].as_i64().unwrap();
+    let disabled = public_request(
+        &f,
+        "DELETE",
+        &path,
+        Value::Null,
+        "disable-before-ack",
+        Some(revision),
+    )
+    .await;
+    assert_eq!(disabled.0, 204);
+    let rejected = public_request(
+        &f,
+        "POST",
+        &format!("{path}/acks"),
+        ack_body(&disabled_delivery, "ack"),
+        "disabled-ack-conflict",
+        None,
+    )
+    .await;
+    assert_eq!(rejected.0, 409);
+    assert_eq!(rejected.1["error"]["code"], "STATE_CONFLICT");
+    contracts::validate("ErrorEnvelope", &rejected.1).unwrap();
+
+    for (subscription, delivery) in [
+        (expired_sub, expired_delivery),
+        (disabled_sub, disabled_delivery),
+    ] {
+        let row = c
+            .query_one(
+                "SELECT s.cursor,d.state FROM subscriptions s JOIN event_deliveries d ON d.subscription_id=s.id WHERE s.id=$1 AND d.id=$2",
+                &[&subscription, &delivery_id(&delivery)],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.get::<_, Option<Uuid>>(0), None);
+        assert_eq!(row.get::<_, String>(1), "leased");
+    }
+}
+
+#[tokio::test]
 async fn actual_postgres_public_event_api_idempotency_etag_and_subscription_ownership() {
     let Some(f) = EventFixture::new().await else {
         return;
