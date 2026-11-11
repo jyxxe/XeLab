@@ -47,3 +47,4 @@
 
 - [M3 Skill 注册与普通 OCI 调用](m3-skills.md)
 - [M3 普通 OCI Skill 流式调用](m3-skill-streams.md)
+- [M5 差距矩阵：Workflow、Task、Schedule 与可复用 M4 原语](m5-gap-matrix.md)

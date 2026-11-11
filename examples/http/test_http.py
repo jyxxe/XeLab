@@ -1,6 +1,7 @@
 """Real loopback mTLS tests; no kernel, OCI or external credentials required."""
 import hashlib
 import base64
+import contextlib
 import http.client
 import json
 import pathlib
@@ -80,7 +81,8 @@ class HTTPTests(unittest.TestCase):
 
         openssl("req", "-new", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
                 "-keyout", cls.root / "ca.key", "-out", cls.root / "ca.crt", "-subj", "/CN=Test Workload CA",
-                "-addext", "basicConstraints=critical,CA:TRUE")
+                "-addext", "basicConstraints=critical,CA:TRUE",
+                "-addext", "keyUsage=critical,keyCertSign,cRLSign")
         for name, san, purpose in [
             ("server", "DNS:localhost,IP:127.0.0.1,URI:spiffe://xelab.local/instance/00000000-0000-4000-8000-000000000001/generation/1", "serverAuth"),
             ("kernel", "URI:spiffe://xelab.local/kernel", "clientAuth"),
@@ -92,6 +94,9 @@ class HTTPTests(unittest.TestCase):
             extension.write_text("subjectAltName=" + san + "\nextendedKeyUsage=" + purpose + "\n")
             openssl("x509", "-req", "-in", cls.root / (name + ".csr"), "-CA", cls.root / "ca.crt", "-CAkey", cls.root / "ca.key",
                     "-CAcreateserial", "-out", cls.root / (name + ".crt"), "-days", "1", "-extfile", extension)
+        # CI's Python predates strict-by-default verification; assert the PKI shape here.
+        openssl("verify", "-x509_strict", "-purpose", "sslserver", "-CAfile", cls.root / "ca.crt",
+                cls.root / "server.crt")
         (cls.root / "tls.crt").write_bytes((cls.root / "server.crt").read_bytes())
         (cls.root / "tls.key").write_bytes((cls.root / "server.key").read_bytes())
         (cls.root / "untrusted.key").write_bytes((cls.root / "foreign.key").read_bytes())
@@ -149,7 +154,7 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.request(method="GET", path=READ_PATH, body=b"unexpected")[0], 400)
         self.assertEqual(self.request(method="POST", path=READ_PATH)[0], 405)
         self.assertEqual(self.request(method="DELETE", path=BUSINESS_PATH, body=b"")[0], 405)
-        self.assertEqual(self.state.active, 0)
+        self.assert_business_slots_released()
 
     def test_real_echo_and_strict_shape(self):
         status, headers, raw = self.request(body='{"message":"你好"}'.encode())
@@ -158,11 +163,11 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(headers["Content-Type"], "application/json")
         self.assertNotIn("Set-Cookie", headers)
         self.assertNotIn("Location", headers)
-        self.assertEqual(self.state.active, 0)
+        self.assert_business_slots_released()
         for body in [b'{"message":"a","message":"b"}', b'{"message":NaN}', b'{"message":1}', b'{"message":"a","other":true}', b'{}', b'{"message":"\xff"}', br'{"message":"\ud800"}']:
             with self.subTest(body=body):
                 self.assertEqual(self.request(body=body)[0], 400)
-                self.assertEqual(self.state.active, 0)
+                self.assert_business_slots_released()
 
     def test_mtls_rejects_no_certificate_and_foreign_workload(self):
         for identity in [None, "foreign", "untrusted"]:
@@ -198,6 +203,21 @@ class HTTPTests(unittest.TestCase):
         finally:
             for _ in range(acquired):
                 self.server.connections.release()
+
+    def assert_business_slots_released(self):
+        # The response can reach the peer before the handler leaves its
+        # business context. Observe worker completion before checking slots.
+        self.assertTrue(self.server.wait_workers(0), "HTTP workers did not finish")
+        with self.state.lock:
+            self.assertEqual(self.state.active, 0)
+        acquired = 0
+        try:
+            while acquired < 4 and self.state.slots.acquire(blocking=False):
+                acquired += 1
+            self.assertEqual(acquired, 4)
+        finally:
+            for _ in range(acquired):
+                self.state.slots.release()
 
     def test_slow_tls_handshakes_do_not_block_a_legal_static_request(self):
         accepted = self.server.socket.accepted
@@ -358,7 +378,7 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.request("GET", STATIC_PATH, b"")[0], 200)
         self.state.initialize()
         self.assertEqual(self.request()[0], 200)
-        self.assertEqual(self.state.active, 0)
+        self.assert_business_slots_released()
 
     def test_duplicate_framing_and_delegation_headers(self):
         for header in ["Content-Length", "Content-Type", "X-Xelab-Subject", "X-Xelab-Delegation",
@@ -402,7 +422,7 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(frames[-1]["payload"]["output"], {"message": "event"})
         self.assertEqual(frames[-1]["payload"]["contract"]["name"], "org.xelab.http-echo.http")
         self.assertEqual(sum(frame["terminal"] for frame in frames), 1)
-        self.assertEqual(self.state.active, 0)
+        self.assert_business_slots_released()
 
     def test_sse_deadline_is_a_terminal_frame_and_releases_the_slot(self):
         status, _, raw = self.request(path=EVENTS_PATH,
@@ -413,7 +433,36 @@ class HTTPTests(unittest.TestCase):
         self.assertIn(b'"kind":"canceled"', raw)
         self.assertIn(b'"reason":"deadline"', raw)
         self.assertNotIn(b'"kind":"completed"', raw)
-        self.assertEqual(self.state.active, 0)
+        self.assert_business_slots_released()
+
+    def test_terminal_sse_response_can_precede_server_slot_cleanup(self):
+        cleanup_started = threading.Event()
+        release_cleanup = threading.Event()
+        original = self.state.business
+
+        @contextlib.contextmanager
+        def delayed_business():
+            with original() as acquired:
+                try:
+                    yield acquired
+                finally:
+                    if acquired:
+                        cleanup_started.set()
+                        if not release_cleanup.wait(5):
+                            raise TimeoutError("test cleanup gate timed out")
+
+        with mock.patch.object(self.state, "business", delayed_business):
+            try:
+                status, _, raw = self.request(path=EVENTS_PATH,
+                    body=b'{"message":"gate","items":0,"interval_ms":0}')
+                self.assertEqual(status, 200)
+                self.assertIn(b'"kind":"completed"', raw)
+                self.assertTrue(cleanup_started.wait(2))
+                with self.state.lock:
+                    self.assertEqual(self.state.active, 1)
+            finally:
+                release_cleanup.set()
+            self.assert_business_slots_released()
 
     def test_json_schema_integral_numbers_are_accepted_without_truncation(self):
         self.assertEqual(self.request(path=HOLD_PATH, body=b'{"message":"float","delay_ms":1.0}')[0], 200)
@@ -423,7 +472,7 @@ class HTTPTests(unittest.TestCase):
         for value in [b'true', b'false', b'1.5', b'-1', b'5001', b'1e999']:
             with self.subTest(value=value):
                 self.assertEqual(self.request(path=HOLD_PATH, body=b'{"message":"bad number","delay_ms":' + value + b'}')[0], 400)
-        self.assertEqual(self.state.active, 0)
+        self.assert_business_slots_released()
 
 
 class ArtifactTests(unittest.TestCase):

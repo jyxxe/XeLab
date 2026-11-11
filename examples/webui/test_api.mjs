@@ -287,6 +287,57 @@ test('OAuth denied consent and invalid token schema yield no local login', async
   }
 });
 
+test('access token without optional refresh remains usable until its actual expiry', async () => {
+  let calls = 0;
+  const state = await signedIn(async () => {
+    calls++;
+    const data = tokens();
+    delete data.refresh_token;
+    return json(data);
+  });
+  const expiresAt = JSON.parse([...state.storage.data.values()][0]).expires_at;
+  const originalNow = Date.now;
+  try {
+    Date.now = () => expiresAt - 1;
+    assert.equal(state.session.loggedIn, true);
+    assert.equal(await state.session.accessToken(), 'access-one');
+    assert.equal(calls, 1, 'no refresh exchange is possible');
+    Date.now = () => expiresAt;
+    assert.equal(state.session.loggedIn, false);
+    await assert.rejects(() => state.session.accessToken(), error => error.code === 'AUTH_REQUIRED');
+    assert.equal(state.storage.data.size, 0);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test('near-expiry access requests wait for the same rotating refresh', async () => {
+  let release;
+  let refreshCalls = 0;
+  const state = await signedIn(async (_url, options) => {
+    if (new URLSearchParams(options.body).get('grant_type') === 'authorization_code') return json(tokens());
+    refreshCalls++;
+    return new Promise(resolve => { release = () => resolve(json(tokens('two'))); });
+  });
+  const expiresAt = JSON.parse([...state.storage.data.values()][0]).expires_at;
+  const originalNow = Date.now;
+  try {
+    Date.now = () => expiresAt - 1000;
+    const first = state.session.accessToken();
+    await new Promise(resolve => setImmediate(resolve));
+    const second = state.session.accessToken();
+    let secondSettled = false;
+    second.then(() => { secondSettled = true; }, () => { secondSettled = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(refreshCalls, 1);
+    assert.equal(secondSettled, false);
+    release();
+    assert.deepEqual(await Promise.all([first, second]), ['access-two', 'access-two']);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test('rotating refresh is singleflight and old credential is removed before network; failure clears family locally', async () => {
   let release;
   let refreshCalls = 0;
@@ -348,6 +399,65 @@ test('an old in-flight refresh cannot erase a newer explicit login', async () =>
   await assert.rejects(() => oldRefresh, error => error.code === 'AUTH_REQUIRED');
   assert.equal(await state.session.accessToken(), 'access-new-user-code');
   assert.equal(state.session.loggedIn, true);
+});
+
+test('an expired session stays available while its rotating refresh is pending', async () => {
+  let release;
+  let refreshCalls = 0;
+  const state = await signedIn(async (_url, options) => {
+    if (new URLSearchParams(options.body).get('grant_type') === 'authorization_code') return json(tokens());
+    refreshCalls++;
+    return new Promise(resolve => { release = () => resolve(json(tokens('refreshed'))); });
+  });
+  const expiresAt = JSON.parse([...state.storage.data.values()][0]).expires_at;
+  const originalNow = Date.now;
+  let pending;
+  try {
+    Date.now = () => expiresAt + 1;
+    pending = state.session.accessToken();
+    assert.equal(state.session.loggedIn, true, 'a valid refresh is still in flight');
+    const concurrent = state.session.accessToken();
+    assert.equal(refreshCalls, 1);
+    release();
+    assert.deepEqual(await Promise.all([pending, concurrent]), ['access-refreshed', 'access-refreshed']);
+    assert.equal(state.session.loggedIn, true);
+  } finally {
+    release?.();
+    if (pending) await pending.catch(() => {});
+    Date.now = originalNow;
+  }
+});
+
+test('a previous session refresh cannot occupy or clear a new session refresh', async () => {
+  const releases = new Map();
+  const requested = [];
+  const state = await signedIn(async (_url, options) => {
+    const fields = new URLSearchParams(options.body);
+    if (fields.get('grant_type') === 'authorization_code') return json(tokens(fields.get('code')));
+    const token = fields.get('refresh_token');
+    requested.push(token);
+    return new Promise(resolve => { releases.set(token, () => resolve(json(tokens(`rotated-${token}`)))); });
+  });
+  const oldRefresh = state.session.refresh();
+  const oldResult = oldRefresh.catch(error => error);
+  let newRefresh;
+  try {
+    await state.session.startLogin();
+    await state.session.finishLogin(`${callback}?code=new-user-code&state=${state.navigation().searchParams.get('state')}`);
+    newRefresh = state.session.refresh();
+    assert.notEqual(newRefresh, oldRefresh);
+    assert.deepEqual(requested, ['refresh-one-use-code', 'refresh-new-user-code']);
+    releases.get('refresh-one-use-code')();
+    assert.equal((await oldResult).code, 'AUTH_REQUIRED');
+    assert.equal(state.session.refresh(), newRefresh, 'old completion must not clear the new singleflight');
+    assert.equal(requested.length, 2);
+    releases.get('refresh-new-user-code')();
+    await newRefresh;
+    assert.equal(await state.session.accessToken(), 'access-rotated-refresh-new-user-code');
+  } finally {
+    for (const release of releases.values()) release();
+    await Promise.allSettled([oldRefresh, ...(newRefresh ? [newRefresh] : [])]);
+  }
 });
 
 test('a late 401 from an older API request cannot log out a new account session', async () => {

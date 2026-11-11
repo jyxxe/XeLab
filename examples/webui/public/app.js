@@ -78,7 +78,10 @@ async function request(operation, options = {}) {
     // ApiClient invalidates only the exact rejected access token. A late 401
     // from an old request must not destroy a newer explicit login.
     if ((error.status ?? error.http_status) === 401 && !oauth.loggedIn) clearPrivateViews();
-    $('#connection').textContent = (error.status ?? error.http_status) === 403 ? '当前请求无权限' : '请求未完成';
+    // A logout or credential invalidation may have cleared the private UI
+    // while this request was in flight. Do not overwrite the new session's
+    // connection state with the outcome of that earlier request.
+    if (epoch === sessionEpoch) $('#connection').textContent = (error.status ?? error.http_status) === 403 ? '当前请求无权限' : '请求未完成';
     throw error;
   }
 }

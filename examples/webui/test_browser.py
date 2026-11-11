@@ -57,6 +57,8 @@ class DesktopBrowser(unittest.TestCase):
         self.call_result = None
         self.status_overrides = {}
         self.refresh_enabled = False
+        self.hold_refresh = False
+        self.pending_refresh = []
         self.abort_business = False
         self.errors = []
         self.expected_challenge = None
@@ -110,6 +112,11 @@ class DesktopBrowser(unittest.TestCase):
             return
         if self.hold_preferences and request.method == "GET" and url.path.endswith("/me/ui-preferences"):
             self.pending_preferences.append(route)
+            return
+        if (self.hold_refresh and self.refresh_enabled and request.method == "POST" and url.path == "/oauth/token"
+                and parse_qs(request.post_data or "", keep_blank_values=True) == {
+                    "grant_type": ["refresh_token"], "client_id": ["browser-component"], "refresh_token": ["component-refresh"]}):
+            self.pending_refresh.append(route)
             return
         self.calls.append({"method": request.method, "path": url.path,
                            "headers": request.all_headers(), "body": request.post_data})
@@ -212,6 +219,15 @@ class DesktopBrowser(unittest.TestCase):
         self.context.on("requestfinished", bodies.finished)
         self.context.on("requestfailed", bodies.failed)
         return report, observed, bodies
+
+    def test_unexpired_access_without_refresh_can_load_desktop_and_skills(self):
+        self.page.set_default_timeout(3000)
+        self.open(expires_ms=20000, refresh_token=None)
+        skills = self.app("Skill")
+        skills.get_by_text("component.echo", exact=True).wait_for()
+        self.assertTrue(any(call["method"] == "GET" and call["path"].endswith("/skills")
+                            for call in self.calls))
+        self.assertFalse(any(call["path"] == "/oauth/token" for call in self.calls))
 
     def test_skill_json_is_queued_until_outer_pump_reads_actual_response(self):
         report, observed, bodies = self.skill_body_audit()
@@ -451,6 +467,43 @@ class DesktopBrowser(unittest.TestCase):
         self.assertEqual(window.get_attribute("data-view-id"), original)
         self.assertEqual(len([call for call in self.calls if call["path"].endswith("/installations")]), 1)
 
+    def assert_old_preferences_do_not_change_disconnected_status(self, status):
+        # The startup preferences read has no window-owned AbortSignal, so it
+        # can finish after logout. Track body consumption instead of sleeping.
+        self.context.add_init_script('''(() => {
+          const original = Response.prototype.arrayBuffer;
+          globalThis.__stalePreferencesDecoded = false;
+          Response.prototype.arrayBuffer = async function(...args) {
+            const bytes = await original.apply(this, args);
+            if (new TextDecoder().decode(bytes).includes('stale-preferences-probe'))
+              globalThis.__stalePreferencesDecoded = true;
+            return bytes;
+          };
+        })()''')
+        self.hold_preferences = True
+        self.open()
+        self.assertEqual(len(self.pending_preferences), 1)
+        self.page.get_by_role("button", name="退出", exact=True).click()
+        self.page.get_by_role("button", name="登录", exact=True).wait_for()
+        self.assertEqual(self.page.locator('#connection').text_content(), '未连接')
+        if status == 200:
+            data = {**self.saved, "probe": "stale-preferences-probe"}
+        else:
+            data = {"error": {"code": "STALE_PREFERENCES", "message": "stale-preferences-probe"}}
+        self.pending_preferences[0].fulfill(
+            status=status, headers={"access-control-allow-origin": SHELL},
+            content_type="application/json", body=json.dumps(data))
+        self.page.wait_for_function("globalThis.__stalePreferencesDecoded === true")
+        self.page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+        self.assertEqual(self.page.locator('#connection').text_content(), '未连接')
+        self.assertTrue(self.page.get_by_role("button", name="登录", exact=True).is_visible())
+
+    def test_old_success_after_logout_cannot_change_connection_status(self):
+        self.assert_old_preferences_do_not_change_disconnected_status(200)
+
+    def test_old_failure_after_logout_cannot_change_connection_status(self):
+        self.assert_old_preferences_do_not_change_disconnected_status(503)
+
     def test_delayed_preferences_restore_previous_multiwindow_layout(self):
         self.hold_preferences = True
         self.saved["spec"]["theme"]["mode"] = "dark"
@@ -540,7 +593,19 @@ class DesktopBrowser(unittest.TestCase):
         self.assertTrue(writes[0]["headers"]["idempotency-key"])
 
     def test_data_is_text_denied_unavailable_logout_and_mobile_controls(self):
+        self.context.add_init_script('''(() => {
+          const original = Response.prototype.arrayBuffer;
+          globalThis.__preferencesDecoded = false;
+          Response.prototype.arrayBuffer = async function(...args) {
+            const bytes = await original.apply(this, args);
+            if (new TextDecoder().decode(bytes).includes('"restore_windows": true'))
+              globalThis.__preferencesDecoded = true;
+            return bytes;
+          };
+        })()''')
         self.open()
+        self.page.wait_for_function("globalThis.__preferencesDecoded === true")
+        self.page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
         plugins = self.app("插件中心")
         plugins.get_by_text('<img src=x onerror="alert(1)">', exact=True).wait_for()
         self.assertEqual(plugins.locator("img").count(), 0)
@@ -548,6 +613,7 @@ class DesktopBrowser(unittest.TestCase):
         self.page.get_by_role("button", name="打开应用启动器", exact=True).click()
         self.page.get_by_role("button", name="启动UI 客户端", exact=True).click()
         self.page.locator(".window").last.get_by_text("无权限", exact=True).wait_for()
+        self.assertEqual(self.page.locator('#connection').text_content(), '当前请求无权限')
         self.page.get_by_role("button", name="打开应用启动器", exact=True).click()
         self.page.get_by_role("button", name="启动任务与知识库", exact=True).click()
         self.page.get_by_text("Batch / Workflow / 微插件 / 知识库尚不可用", exact=True).wait_for()
@@ -684,8 +750,13 @@ class DesktopBrowser(unittest.TestCase):
         skills.get_by_role("button", name="调用测试", exact=True).click()
         editor = self.page.locator(".window").last
         editor.get_by_label("请求 JSON", exact=True).fill(json.dumps({"input": {"message": "once"}, "idempotency_key": "once"}))
+        # Logout removes the editor and may abort the 401 response body. Keep
+        # its outcome node to observe the submit handler after request() ends.
+        editor.locator('[aria-live="polite"]').evaluate("element => { globalThis.__oldEditorOutcome = element; }")
         editor.get_by_role("button", name="提交", exact=True).click()
         self.page.get_by_role("button", name="登录", exact=True).wait_for()
+        self.page.wait_for_function("globalThis.__oldEditorOutcome.querySelector('[data-kind=error], [data-kind=denied], [data-kind=unavailable]') !== null")
+        self.assertEqual(self.page.locator('#connection').text_content(), '未连接')
         self.assertEqual(len([call for call in self.calls if call["method"] == "POST" and call["path"].endswith("/calls")]), 1)
         self.assertEqual(len([call for call in self.calls if call["path"] == "/oauth/token"]), 0)
         self.assertEqual(self.page.locator(".window").count(), 0)
@@ -711,6 +782,29 @@ class DesktopBrowser(unittest.TestCase):
         self.assertEqual(len([call for call in self.calls if call["path"] == "/oauth/token"]), 1)
         self.assertEqual(editor.locator('.code').text_content(), original_key)
         self.assertTrue(self.page.get_by_role("button", name="退出", exact=True).is_visible())
+
+    def test_expired_access_refresh_keeps_concurrent_desktop_views_available(self):
+        self.page.clock.install()
+        self.refresh_enabled = True
+        self.open(expires_ms=45000, refresh_token="component-refresh")
+        self.page.clock.fast_forward(46000)
+        self.hold_refresh = True
+        self.app("系统状态")
+        resources = self.page.locator('.window[data-app="resources"]')
+        self.page.wait_for_function("() => sessionStorage.getItem('xelab.oauth:https://core.example.test:browser-component') === null")
+        self.assertEqual(len(self.pending_refresh), 1)
+        try:
+            self.app("Skill")
+            skills = self.page.locator('.window[data-app="skills"]')
+            self.assertEqual(skills.get_by_text("登录后继续", exact=True).count(), 0)
+            self.assertTrue(self.page.get_by_role("button", name="退出", exact=True).is_visible())
+        finally:
+            self.hold_refresh = False
+            for route in self.pending_refresh:
+                self.route(route)
+        resources.get_by_text('"component-only"', exact=False).wait_for()
+        skills.get_by_text("component.echo", exact=True).wait_for()
+        self.assertEqual(len([call for call in self.calls if call["path"] == "/oauth/token"]), 1)
 
 
 if __name__ == "__main__":
