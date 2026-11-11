@@ -335,6 +335,60 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.request("GET", STATIC_PATH, b"", {"If-None-Match": headers["ETag"]})[0], 304)
         self.assertEqual(self.request("GET", STATIC_PATH, b"", {"Range": "bytes=0-9"})[0], 400)
 
+    def test_head_business_length_describes_get_representation(self):
+        get_status, get_headers, get_body = self.request("GET", READ_PATH, b"")
+        head_status, head_headers, head_body = self.request("HEAD", READ_PATH, b"")
+        self.assertEqual((get_status, head_status), (200, 200))
+        self.assertEqual(head_body, b"")
+        self.assertGreater(len(get_body), 0)
+        self.assertEqual(head_headers["Content-Length"], str(len(get_body)))
+        self.assertEqual(head_headers["Content-Length"], get_headers["Content-Length"])
+        self.assertEqual(head_headers["Connection"].lower(), "close")
+
+    def test_no_content_response_has_no_content_length(self):
+        status, headers, body = self.request("DELETE", DISCARD_PATH, b"")
+        self.assertEqual(status, 204)
+        self.assertEqual(body, b"")
+        self.assertNotIn("Content-Length", headers)
+        self.assertEqual(headers["Connection"].lower(), "close")
+
+    def test_conditional_responses_retain_etag_without_misleading_length(self):
+        status, headers, body = self.request("GET", STATIC_PATH, b"")
+        self.assertEqual(status, 200)
+        self.assertGreater(len(body), 0)
+        for method in ("GET", "HEAD"):
+            with self.subTest(method=method):
+                status, conditional, result = self.request(method, STATIC_PATH, b"", {"If-None-Match": headers["ETag"]})
+                self.assertEqual(status, 304)
+                self.assertEqual(result, b"")
+                self.assertEqual(conditional.get("ETag"), headers["ETag"])
+                self.assertNotIn("Content-Length", conditional)
+                self.assertEqual(conditional["Connection"].lower(), "close")
+
+    def test_sequential_client_requests_reconnect_after_explicit_close(self):
+        connection = self.connection()
+        before = self.server.socket.accepted
+        try:
+            connection.request("GET", STATIC_PATH)
+            first = connection.getresponse()
+            etag = first.getheader("ETag")
+            self.assertEqual(first.status, 200)
+            self.assertTrue(first.will_close)
+            self.assertEqual(first.read(), self.server.static)
+            connection.request("HEAD", STATIC_PATH)
+            second = connection.getresponse()
+            self.assertEqual(second.status, 200)
+            self.assertTrue(second.will_close)
+            self.assertEqual(second.read(), b"")
+            connection.request("GET", STATIC_PATH, headers={"If-None-Match": etag})
+            third = connection.getresponse()
+            self.assertEqual(third.status, 304)
+            self.assertTrue(third.will_close)
+            self.assertEqual(third.read(), b"")
+        finally:
+            connection.close()
+        self.assertEqual(self.server.socket.accepted - before, 3)
+
     def test_delegation_and_credential_leakage_refused(self):
         for headers, status in [
             ({"X-Xelab-Delegation": ""}, 403),
