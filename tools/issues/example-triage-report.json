@@ -1,0 +1,94 @@
+{
+  "duplicate_candidates": [
+    {
+      "issues": [
+        3,
+        7
+      ],
+      "kind": "same-normalized-title"
+    }
+  ],
+  "duplicates_are_definitive": false,
+  "excluded_prs": 1,
+  "issues": [
+    {
+      "assignees": [],
+      "claim_candidates": [],
+      "labels": [
+        "status:needs-triage",
+        "type:bug"
+      ],
+      "multiple_claimants": false,
+      "number": 3,
+      "status": "status:needs-triage",
+      "title": "[bug] add   offline ARTIFACT checker!",
+      "url": "https://github.com/example/project/issues/3"
+    },
+    {
+      "assignees": [
+        "maintainer"
+      ],
+      "claim_candidates": [
+        {
+          "created_at": "2026-11-10T01:00:00Z",
+          "url": "https://github.com/example/project/issues/1#issuecomment-agent-x",
+          "user": "agent-x"
+        },
+        {
+          "created_at": "2026-11-10T02:00:00Z",
+          "url": "https://github.com/example/project/issues/1#issuecomment-agent-y",
+          "user": "agent-y"
+        }
+      ],
+      "labels": [
+        "status:in-progress"
+      ],
+      "multiple_claimants": true,
+      "number": 5,
+      "status": "status:in-progress",
+      "title": "claim collision example",
+      "url": "https://github.com/example/project/issues/5"
+    },
+    {
+      "assignees": [],
+      "claim_candidates": [],
+      "labels": [
+        "type:feature"
+      ],
+      "multiple_claimants": false,
+      "number": 7,
+      "status": "no-status",
+      "title": "[feature] Add offline artifact checker",
+      "url": "https://github.com/example/project/issues/7"
+    },
+    {
+      "assignees": [],
+      "claim_candidates": [],
+      "labels": [
+        "status:blocked"
+      ],
+      "multiple_claimants": false,
+      "number": 9,
+      "status": "status:blocked",
+      "title": "blocked host research",
+      "url": "https://github.com/example/project/issues/9"
+    }
+  ],
+  "kind": "issue-triage-report",
+  "multiple_claimants": [
+    5
+  ],
+  "needs_triage": [
+    3,
+    7
+  ],
+  "note": "Read-only report. Duplicate and claim matches are candidates for manual review, never definitive rulings; no issue state was changed.",
+  "open_issues": 4,
+  "repository": "example/project",
+  "schema": 1,
+  "unassigned": [
+    3,
+    7,
+    9
+  ]
+}
