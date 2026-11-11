@@ -1,0 +1,9 @@
+{
+  "repository": "jyxxe/XeLab",
+  "default_branch": "main",
+  "contributing": "CONTRIBUTING.md",
+  "issue_workflow": "docs/implementation/issue-workflow.md",
+  "issue_automation": "docs/implementation/issue-automation.md",
+  "security": "SECURITY.md",
+  "maintenance_interval_minutes": 30
+}

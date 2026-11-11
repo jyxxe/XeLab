@@ -28,3 +28,12 @@ python3 docs/tools/validate_docs.py --strict
 ```
 
 标签清单及启用方式见 [标签与自动化边界](docs/implementation/issue-automation.md)。
+
+Agent 接入指令（根 `AGENTS.md` 与受信 PR 维护模板）由 `tools/agents/` 生成器产出，检查：
+
+```bash
+python3 -m unittest discover -s tools/agents -p 'test_*.py' -v
+python3 tools/agents/generate.py --check
+```
+
+用法与部署边界见 [Agent 接入生成器](tools/agents/README.md)。
