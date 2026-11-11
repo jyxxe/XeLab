@@ -12,6 +12,79 @@ from unittest.mock import patch, Mock
 import run03
 
 
+class DaemonEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        self.launch = root / 'daemon launch'
+        self.launch.mkdir()
+        self.config = self.launch / '核心.toml'
+        self.config.write_text('fixture configuration, no credentials')
+        self.executable = root / 'xelabd'
+        self.executable.write_bytes(b'fixture executable, never executed')
+        self.proc = root / 'proc' / '42'
+        self.proc.mkdir(parents=True)
+        (self.proc / 'exe').symlink_to(self.executable)
+        (self.proc / 'cwd').symlink_to(self.launch, target_is_directory=True)
+        (self.proc / 'cgroup').write_text('0::/xelab/kernel\n')
+
+        def proc_path(value):
+            path = Path(value)
+            if path.is_relative_to('/proc/42'):
+                return self.proc / path.relative_to('/proc/42')
+            return path
+
+        patcher = patch('run03.Path', side_effect=proc_path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def arguments(self, *arguments):
+        (self.proc / 'cmdline').write_bytes(b'\0'.join(
+            [b'/usr/local/bin/xelabd', *[os.fsencode(arg) for arg in arguments], b'']))
+
+    def test_absolute_config_supports_split_and_equals_options(self):
+        for arguments in [('--config', self.config), ('--config=' + str(self.config),)]:
+            with self.subTest(arguments=arguments):
+                self.arguments(*arguments)
+                self.assertEqual(run03.daemon_evidence(42, self.config), {
+                    'pid': 42, 'binary_sha256': run03.hashlib.sha256(self.executable.read_bytes()).hexdigest()})
+
+    def test_relative_config_uses_daemon_working_directory(self):
+        for arguments in [('--config', './核心.toml'), ('--config=./核心.toml',)]:
+            with self.subTest(arguments=arguments):
+                self.arguments(*arguments)
+                self.assertEqual(run03.daemon_evidence(42, self.config)['pid'], 42)
+
+    def test_mismatched_config_is_rejected_in_both_option_forms(self):
+        for arguments in [('--config', 'different.toml'), ('--config=different.toml',)]:
+            with self.subTest(arguments=arguments):
+                self.arguments(*arguments)
+                with self.assertRaises(ValueError):
+                    run03.daemon_evidence(42, self.config)
+
+    def test_missing_empty_and_ambiguous_config_are_rejected(self):
+        for arguments in [(), ('--config',), ('--config=',),
+                          ('--config', self.config, '--config=' + str(self.config))]:
+            with self.subTest(arguments=arguments):
+                self.arguments(*arguments)
+                with self.assertRaises(ValueError):
+                    run03.daemon_evidence(42, self.config)
+
+    def test_daemon_name_and_cgroup_checks_still_apply(self):
+        self.arguments('--config', self.config)
+        (self.proc / 'cgroup').write_text('0::/other/kernel\n')
+        with self.assertRaises(ValueError):
+            run03.daemon_evidence(42, self.config)
+        (self.proc / 'cgroup').write_text('0::/xelab/kernel\n')
+        other = self.executable.with_name('other')
+        self.executable.rename(other)
+        (self.proc / 'exe').unlink()
+        (self.proc / 'exe').symlink_to(other)
+        with self.assertRaises(ValueError):
+            run03.daemon_evidence(42, self.config)
+
+
 class Run03Tests(unittest.TestCase):
     def resources(self):
         return {'kernel_cpu_millis': 4000, 'kernel_memory_bytes': 16 * run03.GIB,
