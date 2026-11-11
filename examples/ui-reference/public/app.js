@@ -1,6 +1,8 @@
 import {BridgeClient} from './bridge.js';
 
 const state = document.querySelector('#state'), output = document.querySelector('#result'), message = document.querySelector('#message');
+const resultContext = document.querySelector('#result-context');
+const skillState = document.querySelector('#skill-state'), windowState = document.querySelector('#window-state');
 const call = document.querySelector('#call'), open = document.querySelector('#open-window');
 let bridge, intent;
 
@@ -17,7 +19,7 @@ try {
     } else if (event === 'theme.changed') applyTheme(value);
     else if (event === 'visibility.changed') document.documentElement.dataset.visible = String(value.visible);
     else if (event === 'widget.refresh') state.textContent = 'Widget refresh requested. Business calls require the button.';
-    else if (event === 'closed') { call.disabled = true; if (open) open.disabled = true; state.textContent = value.message; output.textContent = ''; }
+    else if (event === 'closed') { call.disabled = true; if (open) open.disabled = true; state.textContent = value.message; skillState.textContent = ''; if (windowState) windowState.textContent = ''; output.textContent = ''; resultContext.textContent = ''; }
   }});
 } catch (error) { state.textContent = error.message; }
 
@@ -26,19 +28,23 @@ call.addEventListener('click', async () => {
   if (!bridge?.canCall) return;
   const current = message.value;
   if (!intent || intent.message !== current) intent = {message: current, key: crypto.randomUUID()};
-  call.disabled = true; state.textContent = 'Waiting for the actual Skill result…'; output.textContent = '';
+  call.disabled = true; skillState.textContent = 'Waiting for the actual Skill result…'; output.textContent = '';
+  // Preserve the submitted input alongside the result even if the editable
+  // draft changes before (or after) the response arrives.
+  resultContext.textContent = `Submitted message: ${JSON.stringify(current)}`;
   try {
     const result = await bridge.callEcho(current, intent.key);
+    if (!bridge.ready) return;
     // This is actual backend output, never a local echo or fabricated result.
     output.textContent = result.call.output.message;
-    state.textContent = 'Skill call completed.';
-  } catch (error) { state.textContent = `${error.code || 'UNAVAILABLE'}: ${error.message}`; }
+    skillState.textContent = 'Skill call completed.';
+  } catch (error) { if (bridge.ready) skillState.textContent = `${error.code || 'UNAVAILABLE'}: ${error.message}`; }
   finally { call.disabled = !bridge.canCall; }
 });
 open?.addEventListener('click', async () => {
-  open.disabled = true;
-  try { await bridge.openWindow(); state.textContent = 'The host opened this deployment’s echo window.'; }
-  catch (error) { state.textContent = `${error.code || 'UNAVAILABLE'}: ${error.message}`; }
+  open.disabled = true; windowState.textContent = 'Waiting for the host to open the window…';
+  try { await bridge.openWindow(); if (bridge.ready) windowState.textContent = 'The host opened this deployment’s echo window.'; }
+  catch (error) { if (bridge.ready) windowState.textContent = `${error.code || 'UNAVAILABLE'}: ${error.message}`; }
   finally { open.disabled = !bridge.ready; }
 });
 addEventListener('pagehide', () => bridge?.close());

@@ -64,6 +64,8 @@ class DesktopBrowser(unittest.TestCase):
         self.expected_challenge = None
         self.hold_preferences = False
         self.pending_preferences = []
+        self.hold_mount_verify = False
+        self.pending_mount_verify = []
         self.real_reference = False
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
         self.page.route("**/*", self.route)
@@ -117,6 +119,10 @@ class DesktopBrowser(unittest.TestCase):
                 and parse_qs(request.post_data or "", keep_blank_values=True) == {
                     "grant_type": ["refresh_token"], "client_id": ["browser-component"], "refresh_token": ["component-refresh"]}):
             self.pending_refresh.append(route)
+            return
+        if (self.hold_mount_verify and request.method == "GET" and url.path.endswith("/ui/contributions/" + self.contributions["main"]["deployment_id"] + "/main")
+                and sum(call["path"] == url.path for call in self.calls) == 1):
+            self.pending_mount_verify.append(route)
             return
         self.calls.append({"method": request.method, "path": url.path,
                            "headers": request.all_headers(), "body": request.post_data})
@@ -630,6 +636,98 @@ class DesktopBrowser(unittest.TestCase):
         self.assertEqual(self.page.locator(".window").count(), 0)
         self.assertEqual(self.page.locator("#widgets").text_content(), "")
         self.assertEqual(self.page.evaluate("Object.keys(sessionStorage).filter(k=>k.startsWith('xelab.oauth:')).length"), 0)
+
+    def test_resizing_updates_window_and_plugin_visibility(self):
+        value = contribution("main", "window")
+        value["bindings"][0]["skill_id"] = SKILL
+        self.contributions["main"] = value
+        self.open()
+        self.page.get_by_role("button", name="打开应用启动器", exact=True).click()
+        self.page.get_by_role("button", name="启动插件页面", exact=True).click()
+        listing = self.page.locator('.window[data-app="contributions"]')
+        with self.page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith(PLUGIN)) as navigated:
+            listing.get_by_role("button", name="打开隔离窗口", exact=True).click()
+        frame = navigated.value
+        frame.wait_for_function("()=>messages.some(message=>message.type==='host.init')", polling=100, timeout=5000)
+        listing.locator(".window-title").focus()
+        listing.get_by_role("button", name="最小化插件页面", exact=True).click()
+        settings = self.app("设置")
+        plugin = self.page.locator('.window[data-app^="plugin:"]')
+        self.assertFalse(plugin.is_hidden())
+        self.page.set_viewport_size({"width": 390, "height": 760})
+        frame.wait_for_function("()=>messages.some(m=>m.event==='visibility.changed'&&!m.params.visible)", polling=100, timeout=5000)
+        self.assertTrue(plugin.is_hidden())
+        self.assertFalse(settings.is_hidden())
+        self.assertTrue(listing.is_hidden())
+        self.assertEqual(settings.get_attribute("data-focused"), "true")
+        self.page.get_by_role("button", name="打开应用启动器", exact=True).click()
+        self.page.get_by_role("button", name="聚焦窗口2 Independent fixture · org.xelab.fixture", exact=True).click()
+        frame.wait_for_function("()=>messages.filter(m=>m.event==='visibility.changed').at(-1)?.params.visible===true", polling=100, timeout=5000)
+        self.assertFalse(plugin.is_hidden())
+        self.assertTrue(settings.is_hidden())
+        self.page.get_by_role("button", name="打开设置", exact=True).click()
+        frame.wait_for_function("()=>messages.filter(m=>m.event==='visibility.changed').at(-1)?.params.visible===false", polling=100, timeout=5000)
+        self.assertTrue(plugin.is_hidden())
+        self.assertFalse(settings.is_hidden())
+        self.page.set_viewport_size({"width": 1280, "height": 900})
+        frame.wait_for_function("()=>messages.filter(m=>m.event==='visibility.changed').at(-1)?.params.visible===true", polling=100, timeout=5000)
+        self.assertFalse(plugin.is_hidden())
+        self.assertFalse(settings.is_hidden())
+        self.assertTrue(listing.is_hidden())
+        self.assertEqual(settings.get_attribute("data-focused"), "true")
+        # Simulate document visibility on the real page; this does not claim
+        # that the browser actually switched operating-system tabs.
+        self.page.evaluate("""() => {
+          Object.defineProperty(document, 'visibilityState', {configurable:true, get:()=> 'hidden'});
+          document.dispatchEvent(new Event('visibilitychange'));
+          window.__resizeCount = 0;
+          window.addEventListener('resize', () => window.__resizeCount++);
+        }""")
+        frame.wait_for_function("()=>messages.filter(m=>m.event==='visibility.changed').at(-1)?.params.visible===false", polling=100, timeout=5000)
+        self.page.set_viewport_size({"width": 390, "height": 760})
+        self.page.wait_for_function("()=>window.__resizeCount >= 1", timeout=5000)
+        self.page.set_viewport_size({"width": 1280, "height": 900})
+        self.page.wait_for_function("()=>window.__resizeCount >= 2", timeout=5000)
+        self.assertFalse(frame.evaluate("messages.filter(m=>m.event==='visibility.changed').at(-1).params.visible"))
+        self.page.evaluate("""() => {
+          delete document.visibilityState;
+          document.dispatchEvent(new Event('visibilitychange'));
+        }""")
+        frame.wait_for_function("()=>messages.filter(m=>m.event==='visibility.changed').at(-1)?.params.visible===true", polling=100, timeout=5000)
+        # Minimizing the focused window leaves its focused flag behind; a
+        # subsequent narrow transition must keep the remaining window visible.
+        settings.get_by_role("button", name="最小化设置", exact=True).click()
+        self.page.set_viewport_size({"width": 390, "height": 760})
+        self.page.wait_for_function("()=>document.querySelector('.window[data-app^=plugin]')?.dataset.focused==='true'", timeout=5000)
+        self.assertFalse(plugin.is_hidden())
+        self.assertTrue(settings.is_hidden())
+        self.assertTrue(listing.is_hidden())
+        self.assertEqual(plugin.get_attribute("data-focused"), "true")
+
+    def test_hidden_window_remains_hidden_when_bridge_mount_finishes(self):
+        value = contribution("main", "window")
+        value["bindings"][0]["skill_id"] = SKILL
+        self.contributions["main"] = value
+        self.open()
+        self.page.set_viewport_size({"width": 390, "height": 760})
+        self.page.get_by_role("button", name="打开应用启动器", exact=True).click()
+        self.page.get_by_role("button", name="启动插件页面", exact=True).click()
+        listing = self.page.locator('.window[data-app="contributions"]')
+        self.hold_mount_verify = True
+        listing.get_by_role("button", name="打开隔离窗口", exact=True).click()
+        for _ in range(100):
+            if self.pending_mount_verify:
+                break
+            self.page.wait_for_timeout(10)
+        self.assertEqual(len(self.pending_mount_verify), 1)
+        self.app("设置")
+        self.assertTrue(self.page.locator('.window[data-app^="plugin:"]').is_hidden())
+        self.hold_mount_verify = False
+        with self.page.expect_event("framenavigated", predicate=lambda frame: frame.url.startswith(PLUGIN)) as navigated:
+            self.route(self.pending_mount_verify.pop())
+        frame = navigated.value
+        frame.wait_for_function("()=>messages.some(message=>message.type==='host.init')", polling=100, timeout=5000)
+        self.assertFalse(frame.evaluate("messages.find(m=>m.type==='host.init').params.visible"))
 
     def test_actual_desktop_opens_fixed_window_and_widget_bridge(self):
         for identifier, kind in [("main", "window"), ("summary", "widget")]:

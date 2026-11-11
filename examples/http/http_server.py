@@ -174,14 +174,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def reply(self, status, body=b"", content_type="application/json", extra=()):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
+        # 204 forbids Content-Length; 304 may include it only if it describes
+        # the selected 200 representation, so omit it for bodyless responses.
+        if not (100 <= status < 200 or status in (204, 304)):
+            self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Connection", "close")
         for key, value in extra:
             self.send_header(key, value)
         self.end_headers()
-        if self.command != "HEAD":
+        if self.command != "HEAD" and not (100 <= status < 200 or status in (204, 304)):
             self.wfile.write(body)
         self.close_connection = True
 
@@ -360,7 +363,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.error(400, "INVALID_REQUEST")
             return
         if self.headers.get("If-None-Match") == self.server.etag:
-            self.reply(304)
+            self.reply(304, content_type="text/html; charset=utf-8", extra=(("ETag", self.server.etag),))
             return
         self.reply(200, self.server.static, "text/html; charset=utf-8",
                    (("ETag", self.server.etag),
@@ -378,7 +381,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not acquired:
                 self.error(429 if self.server.state.ready() else 503, "UNAVAILABLE")
                 return
-            self.reply(status, b"" if status == 204 or self.command == "HEAD" else encoded(value))
+            # reply() suppresses the bytes for HEAD while retaining the GET
+            # representation length in its response metadata.
+            self.reply(status, b"" if status == 204 else encoded(value))
 
     def do_PUT(self):
         self.do_POST()
