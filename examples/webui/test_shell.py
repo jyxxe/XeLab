@@ -145,8 +145,34 @@ class ShellBrowser(unittest.TestCase):
         audit.start()
         audit.snapshot(widget)
         safe = report["window_open_observation"]["widget_snapshot"]
-        audit.end()
         self.assertEqual(safe["state_class"], "window_open_succeeded")
+        # The driver must continue to classify old signed images and must not
+        # place arbitrary plugin text in diagnostic reports.
+        widget.evaluate("""() => {
+          document.querySelector('#window-state').textContent='Waiting for the host to open the window…';
+          document.querySelector('#skill-state').textContent='Skill call completed.';
+        }""")
+        audit.snapshot(widget)
+        self.assertEqual(report['window_open_observation']['widget_snapshot']['state_class'], 'previous_skill_completed')
+        desktop.DRIVER.wait_for_reference_skill(widget)
+        widget.evaluate("""() => {
+          document.querySelector('#window-state').textContent='BINDING_UNAVAILABLE: PRIVATE_DIAGNOSTIC_MARKER';
+        }""")
+        audit.snapshot(widget)
+        self.assertEqual(report['window_open_observation']['widget_snapshot']['state_class'], 'BINDING_UNAVAILABLE')
+        self.assertNotIn('PRIVATE_DIAGNOSTIC_MARKER', json.dumps(report))
+        widget.evaluate("""() => {
+          document.querySelector('#window-state').remove();
+          document.querySelector('#skill-state').remove();
+          document.querySelector('#state').textContent='Skill call completed.';
+        }""")
+        desktop.DRIVER.wait_for_reference_skill(widget)
+        audit.snapshot(widget)
+        self.assertEqual(report['window_open_observation']['widget_snapshot']['state_class'], 'previous_skill_completed')
+        widget.evaluate("() => {document.querySelector('#state').textContent='The host opened this deployment’s echo window.';}")
+        audit.snapshot(widget)
+        self.assertEqual(report['window_open_observation']['widget_snapshot']['state_class'], 'window_open_succeeded')
+        audit.end()
         print(json.dumps({"component": "actual_window_bridge_core_adapter", "metadata_delay_ms": 3000, "window_response_ms": response[0]["at"], "pre_open_target_lookups": len(before), "target_ready": True}, sort_keys=True))
 
     def test_closed_widget_cannot_create_late_window_across_reference_digest_await(self):
