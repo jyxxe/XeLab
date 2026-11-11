@@ -26,7 +26,8 @@ def create_test_identities(root):
 
     openssl("req", "-new", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
             "-keyout", root / "ca.key", "-out", root / "ca.crt", "-subj", "/CN=WebUI Component CA",
-            "-addext", "basicConstraints=critical,CA:TRUE")
+            "-addext", "basicConstraints=critical,CA:TRUE",
+            "-addext", "keyUsage=critical,keyCertSign,cRLSign")
     for name, san, purpose in [("server", "DNS:localhost,IP:127.0.0.1", "serverAuth"),
                                ("kernel", "URI:spiffe://xelab.local/kernel", "clientAuth"),
                                ("foreign", "URI:spiffe://xelab.local/instance/foreign", "clientAuth")]:
@@ -37,6 +38,9 @@ def create_test_identities(root):
         openssl("x509", "-req", "-in", root / (name + ".csr"), "-CA", root / "ca.crt",
                 "-CAkey", root / "ca.key", "-CAcreateserial", "-out", root / (name + ".crt"),
                 "-days", "1", "-extfile", extension)
+    # CI's Python predates strict-by-default verification; assert the PKI shape here.
+    openssl("verify", "-x509_strict", "-purpose", "sslserver", "-CAfile", root / "ca.crt",
+            root / "server.crt")
     (root / "tls.crt").write_bytes((root / "server.crt").read_bytes())
     (root / "tls.key").write_bytes((root / "server.key").read_bytes())
     # A correct URI is insufficient when its certificate is not signed by the

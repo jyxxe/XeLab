@@ -80,7 +80,8 @@ class HTTPTests(unittest.TestCase):
 
         openssl("req", "-new", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
                 "-keyout", cls.root / "ca.key", "-out", cls.root / "ca.crt", "-subj", "/CN=Test Workload CA",
-                "-addext", "basicConstraints=critical,CA:TRUE")
+                "-addext", "basicConstraints=critical,CA:TRUE",
+                "-addext", "keyUsage=critical,keyCertSign,cRLSign")
         for name, san, purpose in [
             ("server", "DNS:localhost,IP:127.0.0.1,URI:spiffe://xelab.local/instance/00000000-0000-4000-8000-000000000001/generation/1", "serverAuth"),
             ("kernel", "URI:spiffe://xelab.local/kernel", "clientAuth"),
@@ -92,6 +93,9 @@ class HTTPTests(unittest.TestCase):
             extension.write_text("subjectAltName=" + san + "\nextendedKeyUsage=" + purpose + "\n")
             openssl("x509", "-req", "-in", cls.root / (name + ".csr"), "-CA", cls.root / "ca.crt", "-CAkey", cls.root / "ca.key",
                     "-CAcreateserial", "-out", cls.root / (name + ".crt"), "-days", "1", "-extfile", extension)
+        # CI's Python predates strict-by-default verification; assert the PKI shape here.
+        openssl("verify", "-x509_strict", "-purpose", "sslserver", "-CAfile", cls.root / "ca.crt",
+                cls.root / "server.crt")
         (cls.root / "tls.crt").write_bytes((cls.root / "server.crt").read_bytes())
         (cls.root / "tls.key").write_bytes((cls.root / "server.key").read_bytes())
         (cls.root / "untrusted.key").write_bytes((cls.root / "foreign.key").read_bytes())
