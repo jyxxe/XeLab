@@ -30,6 +30,32 @@ python3 docs/tools/render_reference.py
 python3 docs/tools/validate_docs.py
 ```
 
+链接检查支持单行内联链接（包括可选标题、尖括号目的地和括号转义）以及带单行定义的
+引用式链接；支持同页片段、相对路径、仓库根路径和百分号编码，拒绝解析到仓库外的
+链接目标（包括符号链接）。对 `.md` 目标检查片段是否存在，对其他文件只检查路径。支持顶层和
+引用块内的单行 ATX、Setext 标题，以及标题内的普通强调、
+反引号代码和简单内联或引用式链接：标题转小写，保留 Unicode 字母、十进制及字母数字、组合
+字符、连接标点、`-` 和部分字母形符号，空格转 `-`，其余符号删除；重复标题按文档
+顺序加 `-1` 等后缀。单个目的地最多支持 32 层平衡括号。
+
+还识别 HTML 中的 `<a name="...">` 和常见安全标签的 `id`，包括 `<pre>`、`<code>`
+和其中实际的 HTML 锚点；自定义锚点区分大小写，不影响标题去重。`#top` 视为页首。
+块级原始 HTML（如 `<div>`、`<table>`、`<details>`）直到空行前的内容不按 Markdown
+解析，其中的链接文字和标题不计入检查；行内 HTML 仍参与 Markdown 解析。
+围栏、缩进和 `<pre>` 代码块中的 Markdown 文字、同一段落内的反引号代码（包括跨行）、
+HTML 注释、图片及外部链接不作为待检查链接；不会请求外部网站，也不检查非 Markdown
+文件的片段。
+
+这不是完整的 GitHub Markdown 解析器：多行定义或链接、列表内标题、复杂嵌套
+行内语法和不受支持的 HTML 元素不在保证范围内；遇到复杂标题时
+可使用明确的 `<a name="...">`。普通与严格模式使用同一套链接检查。回归测试包含
+GitHub Markdown API 的离线链接样例，以及其标题文本结合 github-slugger 2.0.0 的
+锚点样例；运行测试本身不联网：
+
+```bash
+python3 -m unittest discover -s docs/tools -p 'test_markdown_links.py' -v
+```
+
 严格模式额外校验 OpenAPI、所有 JSON Schema、请求与手工样例、TOML、Proto 编译及方法集合、SQL 语法。所有检查均只读，不连接部署、运行插件或应用数据库迁移。
 
 api/、rpc/ 为生成区域；渲染器清理不再属于规范的生成页，不适合放手写说明。主题设计在 architecture/、identity/ 等目录维护。
