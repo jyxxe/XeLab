@@ -69,6 +69,8 @@ class IndependentPage(unittest.TestCase):
         self.calls, self.opened, self.errors, self.backend_messages = [], [], [], []
         self.revoked = False
         self.results = {}
+        self.defer_echo = False
+        self.deferred_echo = None
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
         self.page.route("**/*", self.route)
 
@@ -108,10 +110,10 @@ class IndependentPage(unittest.TestCase):
             else:
                 route.fulfill(content_type="text/html", body=f"""<!doctype html><main id=frames></main><script type=module>
 import {{BridgeHost}} from '/bridge.js'; import {{ApiClient}} from '/api.js';
-window.states=[]; window.opened=[];
+window.states=[]; window.opened=[]; window.deferOpen=false; window.releaseOpen=null;
 const api=new ApiClient({{core_origin:{json.dumps(CORE)},client_id:'component-only-client'}},{{accessToken:async()=> 'parent-only-component-token'}});
 window.launch=async contribution=>{{const iframe=document.createElement('iframe');iframe.width=640;iframe.height=420;document.querySelector('#frames').append(iframe);
-window.bridge=new BridgeHost({{iframe,api,contribution,subjectId:{json.dumps(SUBJECT)},isCurrent:()=>true,coreOrigin:{json.dumps(CORE)},theme:()=>({{theme_tokens:{json.dumps(TOKENS)},reduce_motion:false,reduce_transparency:false}}),onState:(...state)=>states.push(state),openWindow:async value=>{{opened.push(value);return crypto.randomUUID();}}}});await bridge.mount();}};
+window.bridge=new BridgeHost({{iframe,api,contribution,subjectId:{json.dumps(SUBJECT)},isCurrent:()=>true,coreOrigin:{json.dumps(CORE)},theme:()=>({{theme_tokens:{json.dumps(TOKENS)},reduce_motion:false,reduce_transparency:false}}),onState:(...state)=>states.push(state),openWindow:async value=>{{opened.push(value);if(window.deferOpen)await new Promise(resolve=>window.releaseOpen=resolve);return crypto.randomUUID();}}}});await bridge.mount();}};
 </script>""")
             return
         if origin == PLUGIN:
@@ -142,6 +144,9 @@ window.bridge=new BridgeHost({{iframe,api,contribution,subjectId:{json.dumps(SUB
             self.backend_messages.append(output)
             result = {"skill_id":SKILL, "skill_version":"1.0.0", "definition_digest":DIGEST, "call":{"call_id":str(uuid.uuid4()), "contract":{"name":build_artifact.PLUGIN_ID+".echo", "version":"1.0.0", "schema_digest":DIGEST}, "provider_instance_id":INSTANCE, "skill_id":SKILL, "skill_definition_digest":DIGEST, "output":output, "completed_at":datetime.datetime.now(datetime.timezone.utc).isoformat()}}
             self.results[result["call"]["call_id"]] = result["call"]
+            if self.defer_echo:
+                self.deferred_echo = (route, cors, result)
+                return
             route.fulfill(headers=cors, content_type="application/json", body=json.dumps(result))
         elif request.method == "GET" and parsed.path.startswith("/api/platform/v1/calls/") and parsed.path.rsplit("/",1)[1] in self.results:
             call = self.results[parsed.path.rsplit("/",1)[1]]
@@ -169,6 +174,8 @@ window.bridge=new BridgeHost({{iframe,api,contribution,subjectId:{json.dumps(SUB
         frame.wait_for_function("() => document.querySelector('#state').textContent==='Skill call completed.'")
         self.assertEqual(frame.locator("#result").inner_text(), message)
         self.assertEqual(frame.locator("img").count(), 0)
+        self.assertEqual(frame.locator('#result-context').inner_text(), 'Submitted message: ' + json.dumps(message))
+        self.assertEqual(frame.locator('#result-context img').count(), 0)
         self.assertEqual(self.backend_messages, [{"message":message}])
         post = next(value for value in self.calls if value["method"] == "POST")
         body = json.loads(post["body"])
@@ -176,6 +183,92 @@ window.bridge=new BridgeHost({{iframe,api,contribution,subjectId:{json.dumps(SUB
         self.assertEqual(body["idempotency_key"], post["headers"]["idempotency-key"])
         self.assertNotIn("cookie", post["headers"])
         self.assertTrue(frame.evaluate("!document.body.textContent.includes('parent-only-component-token') && localStorage.length===0 && sessionStorage.length===0"))
+
+    def assert_edited_message_keeps_result_attributed_to_submitted_message(self):
+        frame = self.launch()
+        self.defer_echo = True
+        frame.locator('#message').fill('first')
+        frame.locator('#call').click()
+        deadline = time.monotonic() + 5
+        while self.deferred_echo is None and time.monotonic() < deadline:
+            self.page.wait_for_timeout(10)
+        self.assertIsNotNone(self.deferred_echo, 'expected the first request to reach the Core adapter')
+        frame.locator('#message').fill('second')
+        route, cors, result = self.deferred_echo
+        self.defer_echo = False
+        # Distinguish the Core adapter's returned output from the input so the
+        # assertion cannot pass if the UI fabricates a local echo. The actual
+        # separate-process echo received "first" above; this response mutation
+        # is limited to the controlled adapter.
+        result = copy.deepcopy(result)
+        result['call']['output']['message'] = 'adapter-returned-result'
+        self.results[result['call']['call_id']] = copy.deepcopy(result['call'])
+        route.fulfill(headers=cors, content_type='application/json', body=json.dumps(result))
+        frame.wait_for_function("() => document.querySelector('#state').textContent === 'Skill call completed.'")
+        self.assertEqual(frame.locator('#message').input_value(), 'second')
+        self.assertEqual(frame.locator('#result').inner_text(), 'adapter-returned-result')
+        self.assertEqual(frame.locator('#result-context').count(), 1)
+        self.assertEqual(frame.locator('#result-context').inner_text(), 'Submitted message: "first"')
+        self.assertEqual(self.backend_messages, [{'message':'first'}])
+
+        frame.locator('#message').fill('third')
+        self.assertEqual(frame.locator('#result').inner_text(), 'adapter-returned-result')
+        self.assertEqual(frame.locator('#result-context').inner_text(), 'Submitted message: "first"')
+        frame.locator('#message').fill('second')
+        frame.locator('#call').click()
+        frame.wait_for_function("() => document.querySelector('#state').textContent === 'Skill call completed.'")
+        self.assertEqual(frame.locator('#result').inner_text(), 'second')
+        self.assertEqual(frame.locator('#result-context').inner_text(), 'Submitted message: "second"')
+
+    def test_window_edited_message_keeps_result_attributed_to_submitted_message(self):
+        self.assert_edited_message_keeps_result_attributed_to_submitted_message()
+
+    def test_widget_edited_message_keeps_result_attributed_to_submitted_message(self):
+        self.current = self.contribution('echo_widget')
+        self.assert_edited_message_keeps_result_attributed_to_submitted_message()
+
+    def test_failed_call_still_identifies_submitted_message(self):
+        frame = self.launch()
+        self.defer_echo = True
+        frame.locator('#message').fill('first')
+        frame.locator('#call').click()
+        deadline = time.monotonic() + 5
+        while self.deferred_echo is None and time.monotonic() < deadline:
+            self.page.wait_for_timeout(10)
+        self.assertIsNotNone(self.deferred_echo)
+        frame.locator('#message').fill('second')
+        route, cors, _ = self.deferred_echo
+        route.fulfill(status=403, headers=cors, content_type='application/json', body=json.dumps({'error':{'code':'PERMISSION_DENIED','message':'denied','retryable':False,'violations':[],'retry_after_ms':None,'resource_id':None}}))
+        frame.wait_for_function("() => document.querySelector('#state').textContent.startsWith('BACKEND_ERROR:')")
+        self.assertEqual(frame.locator('#result').inner_text(), '')
+        self.assertEqual(frame.locator('#result-context').inner_text(), 'Submitted message: "first"')
+        self.assertEqual(frame.locator('#message').input_value(), 'second')
+
+    def test_closed_bridge_clears_context_and_keeps_closed_status(self):
+        frame = self.launch()
+        frame.evaluate("""() => {
+          window.lateResponses = [];
+          window.addEventListener('message', event => {
+            if (event.data && event.data.type === 'response') window.lateResponses.push(event.data);
+          });
+        }""")
+        self.defer_echo = True
+        frame.locator('#message').fill('first')
+        frame.locator('#call').click()
+        deadline = time.monotonic() + 5
+        while self.deferred_echo is None and time.monotonic() < deadline:
+            self.page.wait_for_timeout(10)
+        self.assertIsNotNone(self.deferred_echo)
+        frame.evaluate("() => window.dispatchEvent(new Event('pagehide'))")
+        frame.wait_for_function("() => document.querySelector('#state').textContent === 'Channel closed.'")
+        self.assertEqual(frame.locator('#result-context').inner_text(), '')
+        self.assertEqual(frame.locator('#result').inner_text(), '')
+        self.assertTrue(frame.locator('#call').is_disabled())
+        route, cors, result = self.deferred_echo
+        route.fulfill(headers=cors, content_type='application/json', body=json.dumps(result))
+        frame.wait_for_function("() => window.lateResponses.length === 1")
+        self.assertEqual(frame.locator('#state').inner_text(), 'Channel closed.')
+        self.assertEqual(frame.locator('#result-context').inner_text(), '')
 
     def test_widget_opens_only_the_same_deployment_window(self):
         self.current = self.contribution("echo_widget")
@@ -186,6 +279,25 @@ window.bridge=new BridgeHost({{iframe,api,contribution,subjectId:{json.dumps(SUB
         self.assertEqual(opened["deployment_id"], DEPLOYMENT)
         self.assertEqual(opened["spec"]["id"], "echo_window")
         self.assertEqual(len(self.backend_messages), 0)
+
+    def test_widget_closed_bridge_keeps_closed_status_after_open_response(self):
+        self.current = self.contribution('echo_widget')
+        frame = self.launch()
+        frame.evaluate("""() => {
+          window.lateResponses = [];
+          window.addEventListener('message', event => {
+            if (event.data && event.data.type === 'response') window.lateResponses.push(event.data);
+          });
+        }""")
+        self.page.evaluate('window.deferOpen = true')
+        frame.locator('#open-window').click()
+        self.page.wait_for_function("() => typeof window.releaseOpen === 'function'")
+        frame.evaluate("() => window.dispatchEvent(new Event('pagehide'))")
+        frame.wait_for_function("() => document.querySelector('#state').textContent === 'Channel closed.'")
+        self.page.evaluate('window.releaseOpen()')
+        frame.wait_for_function("() => window.lateResponses.length === 1")
+        self.assertEqual(frame.locator('#state').inner_text(), 'Channel closed.')
+        self.assertTrue(frame.locator('#open-window').is_disabled())
 
     def test_missing_binding_and_source_revocation_do_not_produce_fake_results(self):
         self.current["bindings"] = []
