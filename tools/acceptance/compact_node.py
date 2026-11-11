@@ -6,8 +6,8 @@ The caller separately supplies hypervisor, API/load and persistence evidence.
 """
 import argparse
 import json
-import os
 from pathlib import Path
+import re
 import sys
 import time
 import tomllib
@@ -24,6 +24,22 @@ def counters(text):
 def meminfo(text):
     return {parts[0].rstrip(':'): int(parts[1]) * 1024
             for line in text.splitlines() if len(parts := line.split()) == 3 and parts[2] == 'kB'}
+
+
+def online_cpu_count():
+    """Read the kernel's online CPU list, unaffected by Python CPU overrides."""
+    text = run03.read_text('/sys/devices/system/cpu/online')
+    total, previous_end = 0, -1
+    for group in text.split(','):
+        if not re.fullmatch(r'[0-9]+(?:-[0-9]+)?', group):
+            raise ValueError('invalid kernel online CPU list')
+        first, _, last = group.partition('-')
+        start, end = int(first), int(last or first)
+        if start > end or start <= previous_end:
+            raise ValueError('invalid kernel online CPU list')
+        total += end - start + 1
+        previous_end = end
+    return total
 
 
 def shape_errors(memory, online_cpus, swap_count, in_container):
@@ -90,7 +106,7 @@ def snapshot(pid):
     result = {
         'unix': time.time(), 'monotonic': time.monotonic(), 'identity': identity,
         'boot_id': run03.read_text('/proc/sys/kernel/random/boot_id'),
-        'online_cpus': os.cpu_count(),
+        'online_cpus': online_cpu_count(),
         'meminfo': meminfo(run03.read_text('/proc/meminfo')),
         'daemon_memory': {key: value for key, value in
                           meminfo(run03.read_text(f'/proc/{pid}/status')).items()

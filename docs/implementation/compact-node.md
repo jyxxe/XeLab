@@ -78,6 +78,8 @@ psql -X -c "SELECT state, count(*) FROM pg_stat_activity GROUP BY state;"
 
 只读 [compact_node.py](../../tools/acceptance/compact_node.py) 按实际PID、启动时间、cgroup和配置路径锁定 daemon，记录主机MemAvailable、全局OOM、PSI、内核/插件cgroup内存/事件，以及daemon的`/proc/<PID>/status`中VmRSS/VmHWM/VmSwap；JSONL逐条写入，避免全天样本留在RAM。RSS或自进程启动以来的HWM超过内核预算、或VmSwap非零均失败，防止仅观察cgroup时遗漏入组前分配；摘要单列RSS/HWM峰值。它不产生业务流量，不替代API可用性、数据库持久性或hypervisor证据，所有报告的 `acceptance` 始终为 pending。
 
+在线 CPU 数从 Linux `/sys/devices/system/cpu/online` 读取，不受 Python CPU 数量覆盖设置影响；该文件不可读或格式异常时采集失败。此检查仍需结合 hypervisor 证据确认整机形态。
+
 在VM上用两个不同输出文件分阶段采集（`<PID>` 为已核实 daemon）：
 
 ```bash
