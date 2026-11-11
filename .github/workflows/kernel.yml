@@ -47,6 +47,11 @@ jobs:
         run: cargo build --workspace --bins --locked
       - name: Prepare trusted OAuth browser
         run: |
+          # Keep apt on the signed Ubuntu archive when the hosted Azure mirror
+          # is unavailable; Playwright installs required OS packages via apt.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's/azure[.]archive[.]ubuntu[.]com/archive.ubuntu.com/g' /etc/apt/apt-mirrors.txt
+          fi
           oauth_browser_venv="${RUNNER_TEMP}/xelab-oauth-browser"
           python3 -m venv "$oauth_browser_venv"
           "$oauth_browser_venv/bin/pip" install 'playwright==1.62.0' 'jsonschema==4.26.0'
@@ -409,6 +414,11 @@ jobs:
           cargo build -p xelab-kernel --bin xelabctl --locked
       - name: Prepare trusted OAuth browser
         run: |
+          # Keep apt on the signed Ubuntu archive when the hosted Azure mirror
+          # is unavailable; Playwright installs required OS packages via apt.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's/azure[.]archive[.]ubuntu[.]com/archive.ubuntu.com/g' /etc/apt/apt-mirrors.txt
+          fi
           oauth_browser_venv="${RUNNER_TEMP}/xelab-oauth-browser"
           python3 -m venv "$oauth_browser_venv"
           "$oauth_browser_venv/bin/pip" install 'playwright==1.62.0' 'jsonschema==4.26.0'
