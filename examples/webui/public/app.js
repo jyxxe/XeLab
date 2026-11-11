@@ -306,17 +306,26 @@ function details(title, data) { return openWindow({id:'details',title,render:asy
 async function listSection(win, {title,operation,params={},query={},actions=[],renderItem}) {
   const result = await request(operation,{params,query:{limit:50,...query},signal:win.controller.signal});
   const list = node('div',{class:'list'});
-  const append = data => { for (const item of rows(data)) list.append(renderItem(item)); };
+  const empty = node('div',{'aria-live':'polite'});
+  const pageError = node('div',{'aria-live':'polite'});
+  let itemCount = 0;
+  const append = data => {
+    for (const item of rows(data)) { list.append(renderItem(item)); itemCount++; }
+    const message = itemCount ? null : data.next_cursor
+      ? state('empty','已加载页面暂无可见项目','仍有后续页，可继续加载有权查看的项目。')
+      : state('empty','暂无可见项目','当前账户授权范围内没有记录。');
+    empty.replaceChildren(...(message ? [message] : []));
+  };
   append(result.data);
   const more = button('加载下一页',async()=> {
     more.disabled = true;
+    pageError.replaceChildren();
     try { const next = await request(operation,{params,query:{limit:50,...query,cursor:more.dataset.cursor},signal:win.controller.signal}); append(next.data); more.dataset.cursor=next.data.next_cursor||'';more.hidden=!next.data.next_cursor; }
-    catch(error) { list.append(failure(error)); } finally { more.disabled=false; }
+    catch(error) { pageError.replaceChildren(failure(error)); } finally { more.disabled=false; }
   });
   more.dataset.cursor = result.data.next_cursor || '';
   more.hidden = !result.data.next_cursor;
-  if (!list.childElementCount) list.append(state('empty','暂无可见项目','当前账户授权范围内没有记录。'));
-  win.content.replaceChildren(toolbar(win,title,...actions),list,more);
+  win.content.replaceChildren(toolbar(win,title,...actions),list,empty,pageError,more);
 }
 
 async function plugins(win) {

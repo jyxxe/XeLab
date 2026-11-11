@@ -841,6 +841,89 @@ class DesktopBrowser(unittest.TestCase):
         self.assertFalse(observed["observer_failure"], observed["error_counts"])
         print(json.dumps({"component": "desktop_reference_window_observer_not_core", "plugin_headers": counts["plugin_headers"], "skill_json": report["http"]["actual_skill_successes"], "unique_skill_call_ids": report["http"]["unique_skill_call_ids"], "active_requests": observed["active_request_observers"], "active_responses": observed["active_response_observers"], "observer_failure": observed["observer_failure"]}, sort_keys=True))
 
+    def paginated_skill_routes(self, pages):
+        cursors = []
+        self.page.unroute("**/*")
+        def route(route):
+            request = route.request
+            url = urlparse(request.url)
+            if (f"{url.scheme}://{url.netloc}" == CORE and url.path == "/api/platform/v1/skills"
+                    and request.method == "GET"):
+                query = parse_qs(url.query)
+                self.assertEqual(query.get("limit"), ["50"])
+                cursor = query.get("cursor", [None])[0]
+                cursors.append(cursor)
+                response = pages[cursor]
+                status, data = response.pop(0) if isinstance(response, list) else (200, response)
+                route.fulfill(status=status, headers={"access-control-allow-origin": SHELL},
+                              content_type="application/json", body=json.dumps(data))
+            else:
+                self.route(route)
+        self.page.route("**/*", route)
+        return cursors
+
+    def test_empty_first_page_does_not_claim_absence_or_leave_stale_notice(self):
+        skill = {"id": SKILL, "revision": 1, "enabled": True, "definition_digest": "sha256:" + "a" * 64,
+                 "availability": "ready", "reason_codes": [], "definition": {"name": "component.echo", "version": "1.0.0"}}
+        cursors = self.paginated_skill_routes({None: {"items": [], "next_cursor": "next"},
+                                               "next": {"items": [skill], "next_cursor": None}})
+        self.open()
+        self.app("Skill")
+        window = self.page.locator('.window[data-app="skills"]')
+        window.get_by_text("已加载页面暂无可见项目", exact=True).wait_for()
+        self.assertEqual(window.get_by_text("当前账户授权范围内没有记录。", exact=True).count(), 0)
+        window.get_by_role("button", name="加载下一页", exact=True).click()
+        window.get_by_text("component.echo", exact=True).wait_for()
+        self.assertEqual(window.get_by_text("已加载页面暂无可见项目", exact=True).count(), 0)
+        self.assertEqual(window.get_by_text("暂无可见项目", exact=True).count(), 0)
+        window.get_by_role("button", name="加载下一页", exact=True).wait_for(state="hidden")
+        self.assertEqual(cursors, [None, "next"])
+
+    def test_only_the_last_empty_page_can_report_no_visible_items(self):
+        self.paginated_skill_routes({None: {"items": [], "next_cursor": "next"},
+                                     "next": {"items": [], "next_cursor": None}})
+        self.open()
+        self.app("Skill")
+        window = self.page.locator('.window[data-app="skills"]')
+        window.get_by_text("已加载页面暂无可见项目", exact=True).wait_for()
+        window.get_by_role("button", name="加载下一页", exact=True).click()
+        window.get_by_text("暂无可见项目", exact=True).wait_for()
+        self.assertEqual(window.get_by_text("已加载页面暂无可见项目", exact=True).count(), 0)
+        window.get_by_role("button", name="加载下一页", exact=True).wait_for(state="hidden")
+
+    def test_empty_later_page_keeps_existing_visible_items(self):
+        skill = {"id": SKILL, "revision": 1, "enabled": True, "definition_digest": "sha256:" + "a" * 64,
+                 "availability": "ready", "reason_codes": [], "definition": {"name": "component.echo", "version": "1.0.0"}}
+        self.paginated_skill_routes({None: {"items": [skill], "next_cursor": "next"},
+                                     "next": {"items": [], "next_cursor": None}})
+        self.open()
+        self.app("Skill")
+        window = self.page.locator('.window[data-app="skills"]')
+        window.get_by_text("component.echo", exact=True).wait_for()
+        window.get_by_role("button", name="加载下一页", exact=True).click()
+        window.get_by_role("button", name="加载下一页", exact=True).wait_for(state="hidden")
+        self.assertEqual(window.get_by_text("component.echo", exact=True).count(), 1)
+        self.assertEqual(window.get_by_text("暂无可见项目", exact=True).count(), 0)
+
+    def test_successful_page_retry_clears_the_previous_error(self):
+        skill = {"id": SKILL, "revision": 1, "enabled": True, "definition_digest": "sha256:" + "a" * 64,
+                 "availability": "ready", "reason_codes": [], "definition": {"name": "component.echo", "version": "1.0.0"}}
+        cursors = self.paginated_skill_routes({
+            None: {"items": [], "next_cursor": "next"},
+            "next": [(503, {"error": {"code": "NOT_READY", "message": "fixture unavailable"}}),
+                     (200, {"items": [skill], "next_cursor": None})]})
+        self.open()
+        self.app("Skill")
+        window = self.page.locator('.window[data-app="skills"]')
+        more = window.get_by_role("button", name="加载下一页", exact=True)
+        more.click()
+        window.get_by_text("当前不可用", exact=True).wait_for()
+        more.click()
+        window.get_by_text("component.echo", exact=True).wait_for()
+        self.assertEqual(window.get_by_text("当前不可用", exact=True).count(), 0)
+        self.assertEqual(window.get_by_text("已加载页面暂无可见项目", exact=True).count(), 0)
+        self.assertEqual(cursors, [None, "next", "next"])
+
     def test_mutating_401_never_refreshes_or_retries_business_request(self):
         self.open()
         self.status_overrides[f"/api/platform/v1/skills/{SKILL}/calls"] = 401
