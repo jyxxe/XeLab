@@ -39,23 +39,7 @@ async fn terminal(f: &Fixture, operation: Uuid) {
     panic!("same-format upgrade did not complete");
 }
 async fn data(f: &Fixture, volume: Uuid) -> Value {
-    let project: i32 = f
-        .app
-        .db
-        .connect()
-        .await
-        .unwrap()
-        .query_one(
-            "SELECT project_id FROM volume_allocations WHERE volume_id=$1",
-            &[&volume],
-        )
-        .await
-        .unwrap()
-        .get(0);
-    let path = ProjectStore::open(&f.app.config.root().join("volumes"))
-        .unwrap()
-        .data_path(volume, project as u32)
-        .unwrap();
+    let path = super::schema_bootstrap::data_path(f, volume).await;
     serde_json::from_slice(&fs::read(path.join("store.json")).unwrap()).unwrap()
 }
 
