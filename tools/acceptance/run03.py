@@ -258,9 +258,18 @@ def task_pid(config, instance):
     return pid
 
 
-def process_identity(pid):
+def process_identity(pid, *, require_live=False):
     fields = read_text(f'/proc/{pid}/stat').rsplit(')', 1)[1].split()
+    if require_live and fields[0] in {'Z', 'X', 'x'}:
+        raise ValueError('process has exited')
     return pid, int(fields[19])  # starttime prevents PID reuse
+
+
+def same_process_identity(pid, expected):
+    try:
+        return process_identity(pid, require_live=True) == expected
+    except (OSError, ValueError, IndexError):
+        return False
 
 
 def cpu_cap(value):
@@ -553,7 +562,14 @@ def main():
             raise ValueError('requires eligible, explicitly authorized isolated test host')
         if not args.daemon_pid:
             raise ValueError('--daemon-pid required')
+        # Collection evidence must remain tied to the verified process, not a
+        # recycled PID or a new daemon serving the same API endpoint.
+        daemon_identity = process_identity(args.daemon_pid, require_live=True) if args.mode == 'collect' else None
         report['daemon'] = daemon_evidence(args.daemon_pid, args.config)
+        if daemon_identity is not None:
+            if not same_process_identity(args.daemon_pid, daemon_identity):
+                raise ValueError('daemon identity changed during verification')
+            report['daemon']['starttime_ticks'] = daemon_identity[1]
         root = CGROUP / 'xelab'
         report['before'] = {str(x): cgroup_snapshot(root / 'plugins' / str(x)) for x in args.instance}
         if args.mode == 'stress':
@@ -583,15 +599,27 @@ def main():
                 samples = report['samples'] = []
                 end = time.monotonic() + args.seconds
                 while time.monotonic() < end:
+                    if not same_process_identity(args.daemon_pid, daemon_identity):
+                        samples.append({'unix': time.time(), 'errors': ['daemon identity changed or unavailable']})
+                        break
                     sample = {'unix': time.time(), 'api': api.call('getNode'),
                               'kernel': cgroup_snapshot(root / 'kernel'),
                               'plugins': cgroup_snapshot(root / 'plugins'), 'ledger': ledger(config)}
                     sample['errors'] = evidence_errors(report['preflight'], sample['kernel'], sample['plugins'], sample['ledger'])
                     if sample['api']['status'] != 200:
                         sample['errors'].append('management API unavailable')
+                    unchanged = same_process_identity(args.daemon_pid, daemon_identity)
+                    if not unchanged:
+                        sample['errors'].append('daemon identity changed or unavailable')
                     samples.append(sample)
+                    if not unchanged:
+                        break
                     time.sleep(min(1, max(0, end - time.monotonic())))
-            exit_code = int(any(x['errors'] for x in report.get('samples', [])))
+                if not samples:
+                    report['collection_failed'] = True
+                    report['collection_error'] = 'no samples recorded before time budget expired'
+            exit_code = int(report.get('collection_failed', False)
+                            or any(x['errors'] for x in report.get('samples', [])))
     except Exception as error:
         # Never include exception text from a URL, HTTP response, DSN or child.
         report['error_type'] = type(error).__name__
