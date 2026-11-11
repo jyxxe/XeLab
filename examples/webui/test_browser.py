@@ -226,6 +226,121 @@ class DesktopBrowser(unittest.TestCase):
         self.context.on("requestfailed", bodies.failed)
         return report, observed, bodies
 
+    def account_query_routes(self, hold_second=False):
+        reads, held, permission_reads = [], [], []
+        self.page.unroute("**/*")
+
+        def complete(route, identifier, status=200):
+            data = {"id": identifier, "display_name": "Old Account" if identifier == ACCOUNT else "New Account",
+                    "status": "active", "revision": 1}
+            if status != 200:
+                data = {"error": {"code": "OLD_ACCOUNT_FAILURE", "message": "old account fixture failure"}}
+            route.fulfill(status=status, headers={"access-control-allow-origin": SHELL},
+                          content_type="application/json", body=json.dumps(data))
+
+        def route(route):
+            request = route.request
+            url = urlparse(request.url)
+            prefix = "/api/platform/v1/accounts/"
+            if f"{url.scheme}://{url.netloc}" == CORE and request.method == "GET" and url.path.startswith(prefix):
+                remainder = url.path.removeprefix(prefix)
+                if "/" not in remainder:
+                    reads.append(remainder)
+                    if remainder == ACCOUNT and not held:
+                        held.append((route, remainder))
+                    elif remainder == SKILL and hold_second:
+                        held.append((route, remainder))
+                    else:
+                        complete(route, remainder)
+                    return
+                if remainder.endswith("/effective-permissions"):
+                    permission_reads.append(remainder.split("/", 1)[0])
+                    route.fulfill(status=200, headers={"access-control-allow-origin": SHELL},
+                                  content_type="application/json", body="{}")
+                    return
+            self.route(route)
+
+        self.page.route("**/*", route)
+        return reads, held, permission_reads, complete
+
+    def track_account_response(self, fragment):
+        self.context.add_init_script(f'''(() => {{
+          const original=Response.prototype.arrayBuffer, fragment={json.dumps(fragment)};
+          globalThis.__trackedAccountDecoded=false;
+          Response.prototype.arrayBuffer=async function(...args) {{
+            const bytes=await original.apply(this,args);
+            if(new TextDecoder().decode(bytes).includes(fragment)) globalThis.__trackedAccountDecoded=true;
+            return bytes;
+          }};
+        }})()''')
+
+    def account_window_with_pending_initial_read(self):
+        with self.page.expect_response(lambda response: response.url.endswith('/me/ui-preferences')):
+            self.open()
+        with self.page.expect_request(lambda request: request.url.endswith('/accounts/' + ACCOUNT)):
+            window = self.app("账户与权限")
+        return window
+
+    def wait_for_tracked_account_response(self):
+        self.page.wait_for_function("globalThis.__trackedAccountDecoded === true")
+        self.page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+
+    def test_old_initial_account_response_cannot_replace_newer_query_or_actions(self):
+        self.track_account_response('"display_name": "Old Account"')
+        reads, held, permission_reads, complete = self.account_query_routes()
+        window = self.account_window_with_pending_initial_read()
+        self.assertEqual(len(held), 1)
+        window.get_by_label("账户 UUID").fill(SKILL)
+        window.get_by_role("button", name="读取", exact=True).click()
+        window.get_by_text("New Account · active", exact=True).wait_for()
+        complete(*held[0])
+        self.wait_for_tracked_account_response()
+        window.get_by_text("New Account · active", exact=True).wait_for(timeout=3000)
+        with self.page.expect_request(lambda request: request.url.endswith('/effective-permissions')):
+            window.get_by_role("button", name="有效权限与阻断祖先", exact=True).click()
+        self.assertEqual(reads, [ACCOUNT, SKILL])
+        self.assertEqual(permission_reads, [SKILL])
+
+    def test_old_account_error_cannot_replace_newer_success(self):
+        self.track_account_response('"code": "OLD_ACCOUNT_FAILURE"')
+        reads, held, _, complete = self.account_query_routes()
+        window = self.account_window_with_pending_initial_read()
+        window.get_by_label("账户 UUID").fill(SKILL)
+        window.get_by_role("button", name="读取", exact=True).click()
+        window.get_by_text("New Account · active", exact=True).wait_for()
+        complete(*held[0], status=503)
+        self.wait_for_tracked_account_response()
+        window.get_by_text("New Account · active", exact=True).wait_for(timeout=3000)
+        self.assertEqual(reads, [ACCOUNT, SKILL])
+
+    def test_old_account_response_cannot_replace_newer_loading_state(self):
+        self.track_account_response('"display_name": "Old Account"')
+        reads, held, _, complete = self.account_query_routes(hold_second=True)
+        window = self.account_window_with_pending_initial_read()
+        window.get_by_label("账户 UUID").fill(SKILL)
+        with self.page.expect_request(lambda request: request.url.endswith('/accounts/' + SKILL)):
+            window.get_by_role("button", name="读取", exact=True).click()
+        self.assertEqual(len(held), 2)
+        complete(*held[0])
+        self.wait_for_tracked_account_response()
+        window.get_by_text("读取账户及授权来源…", exact=True).wait_for(timeout=3000)
+        self.assertEqual(window.get_by_text("Old Account · active", exact=True).count(), 0)
+        complete(*held[1])
+        window.get_by_text("New Account · active", exact=True).wait_for()
+        self.assertEqual(reads, [ACCOUNT, SKILL])
+
+    def test_invalid_new_account_query_is_not_replaced_by_old_response(self):
+        self.track_account_response('"display_name": "Old Account"')
+        reads, held, _, complete = self.account_query_routes()
+        window = self.account_window_with_pending_initial_read()
+        window.get_by_label("账户 UUID").fill("")
+        window.get_by_role("button", name="读取", exact=True).click()
+        window.get_by_text("请求失败", exact=True).wait_for()
+        complete(*held[0])
+        self.wait_for_tracked_account_response()
+        window.get_by_text("请求失败", exact=True).wait_for(timeout=3000)
+        self.assertEqual(reads, [ACCOUNT])
+
     def test_unexpired_access_without_refresh_can_load_desktop_and_skills(self):
         self.page.set_default_timeout(3000)
         self.open(expires_ms=20000, refresh_token=None)

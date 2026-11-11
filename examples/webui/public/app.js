@@ -347,14 +347,17 @@ async function skills(win) {
 async function accounts(win) {
   const accountInput = node('input',{placeholder:'账户 UUID','aria-label':'账户 UUID',value:accountId||''});
   const display = node('div');
+  let querySequence = 0;
   const inspect = async id => {
+    const sequence = ++querySequence;
     display.replaceChildren(state('loading','读取账户及授权来源…'));
     try {
       const result = await request('getAccount',{params:{account_id:id},signal:win.controller.signal});
+      if(sequence!==querySequence)return;
       display.replaceChildren(node('h3',{},`${result.data.display_name} · ${result.data.status}`),raw(result.data));
       const read = (title,operation) => button(title,async()=> { try { const data=await request(operation,{params:{account_id:id},signal:win.controller.signal});details(title,data.data); } catch(error){toast(`${error.code||'请求失败'}：${error.message}`);} });
       display.append(node('div',{class:'toolbar'},read('有效权限与阻断祖先','getEffectivePermissions'),read('授权组来源','listGrants'),read('资源配额','getQuota'),button('API Key 元数据',()=>openWindow({id:`api-keys:${id}`,title:'API Key 元数据',render:keys=>apiKeys(keys,id)})),button('子账户',async()=> { try { const data=await request('listAccounts',{query:{parent_id:id,limit:200},signal:win.controller.signal});details('子账户与继承模式',data.data); }catch(error){toast(error.message);} })));
-    } catch(error) {display.replaceChildren(failure(error));}
+    } catch(error) {if(sequence===querySequence)display.replaceChildren(failure(error));}
   };
   win.content.replaceChildren(toolbar(win,'账户与权限'),node('p',{class:'muted'},'账户身份、祖先限制与凭证来源均以核心返回为准；WebUI 不收集平台密码。'),node('div',{class:'inline-field'},accountInput,button('读取',()=>inspect(accountInput.value.trim()))),display);
   if (accountId) await inspect(accountId); else display.replaceChildren(state('unavailable','当前账户详情尚不可用','当前委托未获准读取本人会话元数据。可输入已知账户 UUID，在现有授权内查询。'));
