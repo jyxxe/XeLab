@@ -8,6 +8,12 @@ from sync_labels import load_labels
 
 ROOT = Path(__file__).resolve().parents[2]
 
+# These exact text anchors are regression tripwires, not proof of semantic
+# safety. Changes require reviewing the security policy and form together,
+# then deliberately updating the anchors as part of that review.
+PRIVATE_CHANNEL_OPTION = "请求私密报告渠道（不公开细节）"
+SECURITY_CONFIRMATION = "确认标题、正文和附件不含未公开漏洞细节，必要时仅请求私密渠道。"
+
 
 class Loader(yaml.SafeLoader):
     pass
@@ -77,6 +83,19 @@ def validate(root=ROOT):
             require(isinstance(attrs.get("label"), str) and attrs["label"] not in field_labels, "invalid/duplicate field label")
             ids.add(identifier)
             field_labels.add(attrs["label"])
+            if identifier == "checks":
+                options = attrs.get("options")
+                require(kind == "checkboxes" and isinstance(options, list) and bool(options),
+                        "submission checks must be a non-empty checkbox set")
+                if types == ["type:security"]:
+                    require(any(isinstance(value, dict) and value.get("label") == SECURITY_CONFIRMATION
+                                and value.get("required") is True for value in options),
+                            "security submission checks must confirm confidential details are excluded")
+            if types == ["type:security"] and identifier == "disclosure":
+                options = attrs.get("options")
+                require(kind == "dropdown" and isinstance(options, list)
+                        and PRIVATE_CHANNEL_OPTION in options,
+                        "security disclosure must offer the private reporting channel")
             if kind == "checkboxes":
                 require(all(x.get("required") is True and isinstance(x.get("label"), str) for x in attrs["options"]), "checks must be required")
             else:
