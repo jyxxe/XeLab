@@ -890,31 +890,79 @@ async function settings(win) {
   const mode = node('select',{'aria-label':'主题模式'},...['system','light','dark','custom'].map(value=>node('option',{value},({system:'跟随系统',light:'明亮',dark:'深色',custom:'自定义'})[value])));
   mode.value=preview.theme.mode;
   const colors=node('div',{class:'theme-colors'});
-  const mark = () => { setNotice('当前为未保存预览。');applyTheme(); };
+  let customTokens = structuredClone(preview.theme.custom_tokens);
+  // Each window keeps its edits even when another action reloads the desktop preview.
+  const edits = new Map();
+  const applyEdit = (spec, {section, fields}) => {
+    Object.assign(spec[section], structuredClone(fields));
+    if (section === 'theme' && fields.mode && fields.mode !== 'custom') delete spec.theme.custom_tokens;
+  };
+  const mark = (section, key, fields) => {
+    const edit = {section, fields:structuredClone(fields)};
+    edits.set(`${section}.${key}`, edit);
+    applyEdit(preview, edit);
+    setNotice('当前为未保存预览。');
+    applyTheme();
+  };
+  const markMode = () => mark('theme', 'mode', mode.value === 'custom'
+    ? {mode:mode.value, custom_tokens:customTokens}
+    : {mode:mode.value});
   function customFields() {
-    colors.replaceChildren();colors.hidden=preview.theme.mode!=='custom';
+    colors.replaceChildren();colors.hidden=mode.value!=='custom';
     if (colors.hidden) return;
-    preview.theme.custom_tokens ||= structuredClone(baseTokens[mediaDark.matches?'dark':'light']);
+    customTokens ||= structuredClone(baseTokens[mediaDark.matches?'dark':'light']);
     for (const name of ['accent','desktop','surface','text','muted_text','border','danger']) {
-      const input=node('input',{type:'color',value:preview.theme.custom_tokens[name],'aria-label':`自定义 ${name}`});
-      input.addEventListener('input',()=> { preview.theme.custom_tokens[name]=input.value;mark(); });
+      const input=node('input',{type:'color',value:customTokens[name],'aria-label':`自定义 ${name}`});
+      input.addEventListener('input', () => {
+        customTokens[name] = input.value;
+        markMode();
+      });
       colors.append(node('label',{},name,input));
     }
   }
-  mode.addEventListener('change',()=> { preview.theme.mode=mode.value;if(mode.value!=='custom')delete preview.theme.custom_tokens;customFields();mark(); });
-  const check = (title,key) => { const input=node('input',{type:'checkbox','aria-label':title});input.checked=preview.theme[key];input.addEventListener('change',()=> { preview.theme[key]=input.checked;mark(); });return node('label',{class:'check'},input,title); };
-  const dock=node('select',{'aria-label':'Dock 位置'},...['bottom','left','right'].map(value=>node('option',{value},({bottom:'底部',left:'左侧',right:'右侧'})[value])));dock.value=preview.dock.position;dock.addEventListener('change',()=>{preview.dock.position=dock.value;mark();});
-  const autoHide=node('input',{type:'checkbox','aria-label':'自动隐藏 Dock'});autoHide.checked=preview.dock.auto_hide;autoHide.addEventListener('change',()=>{preview.dock.auto_hide=autoHide.checked;mark();});
+  mode.addEventListener('change', () => {
+    if (mode.value !== 'custom') customTokens = undefined;
+    customFields();
+    markMode();
+  });
+  const check = (title, key) => {
+    const input=node('input',{type:'checkbox','aria-label':title});
+    input.checked = preview.theme[key];
+    input.addEventListener('change', () => mark('theme', key, {[key]:input.checked}));
+    return node('label',{class:'check'},input,title);
+  };
+  const dock=node('select',{'aria-label':'Dock 位置'},...['bottom','left','right'].map(value=>node('option',{value},({bottom:'底部',left:'左侧',right:'右侧'})[value])));
+  dock.value = preview.dock.position;
+  dock.addEventListener('change', () => mark('dock', 'position', {position:dock.value}));
+  const autoHide=node('input',{type:'checkbox','aria-label':'自动隐藏 Dock'});
+  autoHide.checked = preview.dock.auto_hide;
+  autoHide.addEventListener('change', () => mark('dock', 'auto_hide', {auto_hide:autoHide.checked}));
   let saveIntent = {key:crypto.randomUUID(), body:null};
   const save=button('保存到当前账户',async()=> {
     if (!preferences || !preferenceEtag) {toast('需要先登录并成功读取核心偏好及其ETag。');return;}
-    const canonicalIntent=JSON.stringify(preview);
+    const submittedEdits = new Map(edits);
+    const body = structuredClone(preferences.spec);
+    for (const edit of submittedEdits.values()) applyEdit(body, edit);
+    const canonicalIntent=JSON.stringify(body);
     if(saveIntent.body!==null&&saveIntent.body!==canonicalIntent)saveIntent={key:crypto.randomUUID(),body:null};
     saveIntent.body=canonicalIntent;
     save.disabled=true;
-    const {signal}=win.controller;
-    try {const result=await request('setMyUiPreferences',{body:preview,etag:preferenceEtag,idempotencyKey:saveIntent.key,signal});if(signal.aborted||!notice.isConnected)return;preferences=result.data;preferenceEtag=result.etag||revision(result.data);preview=structuredClone(result.data.spec);applyTheme();setNotice('已保存到核心，重新登录后仍可读取。');saveIntent={key:crypto.randomUUID(),body:null};}
-    catch(error){if(!signal.aborted&&notice.isConnected)notice.replaceChildren(failure(error));}finally{save.disabled=false;}
+    try {
+      const result=await request('setMyUiPreferences',{body,etag:preferenceEtag,idempotencyKey:saveIntent.key,signal});
+      if(signal.aborted||!notice.isConnected)return;
+      if (!preferences || result.data.revision >= preferences.revision) {
+        preferences = result.data;
+        preferenceEtag = result.etag || revision(result.data);
+      }
+      for (const [key, edit] of submittedEdits) if (edits.get(key) === edit) edits.delete(key);
+      preview = structuredClone(preferences.spec);
+      for (const edit of edits.values()) applyEdit(preview, edit);
+      applyTheme();
+      setNotice(edits.size ? '当前为未保存预览。' : '已保存到核心，重新登录后仍可读取。');
+      saveIntent={key:crypto.randomUUID(),body:null};
+    } catch(error) {
+      if(!signal.aborted&&notice.isConnected)notice.replaceChildren(failure(error));
+    } finally {save.disabled=false;}
   },{class:'primary'});
   form.append(node('label',{},'主题',mode),colors,check('减少动画','reduce_motion'),check('减少透明度','reduce_transparency'),node('label',{},'Dock 位置',dock),node('label',{class:'check'},autoHide,'自动隐藏 Dock'),notice,node('div',{class:'toolbar'},save,button('恢复已保存偏好',()=> {preview=preferences?structuredClone(preferences.spec):defaults();applyTheme();loadApp(win);})),node('p',{class:'code'},`核心：${runtimeConfig.core_origin}\n公共 Client：${runtimeConfig.client_id}`));
   customFields();

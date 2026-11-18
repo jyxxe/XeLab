@@ -1098,6 +1098,98 @@ class ShellBrowser(unittest.TestCase):
         status.locator("p.theme-preview-note").get_by_text("已保存到核心，重新登录后仍可读取。", exact=True).wait_for()
         self.assertEqual(len(self.custom_calls), 2)
 
+    def test_settings_windows_save_their_own_edits_and_keep_other_preferences(self):
+        _, placement = self.widget()
+        contribution = self.window_contribution()
+        pin = {"deployment_id": contribution["deployment_id"], "contribution_id": contribution["spec"]["id"]}
+        self.fixture.saved["spec"]["theme"]["mode"] = "light"
+        self.fixture.saved["spec"]["dock"]["pinned"] = [pin]
+        self.fixture.open()
+
+        first_id = self.fixture.app("设置").get_attribute("data-view-id")
+        first = self.page.locator(f'.window[data-view-id="{first_id}"]')
+        first.get_by_label("主题模式", exact=True).select_option("custom")
+
+        second = self.fixture.app("设置")
+        second.get_by_label("Dock 位置", exact=True).select_option("right")
+        second.get_by_label("减少动画", exact=True).check()
+        second.get_by_role("button", name="保存到当前账户", exact=True).click()
+        second.get_by_text("已保存到核心，重新登录后仍可读取。", exact=True).wait_for()
+        second.get_by_role("button", name="关闭设置", exact=True).click()
+
+        self.assertEqual(first.get_by_label("主题模式", exact=True).input_value(), "custom")
+        first.get_by_label("自定义 accent", exact=True).fill("#123456")
+        first.get_by_role("button", name="保存到当前账户", exact=True).click()
+        first.get_by_text("已保存到核心，重新登录后仍可读取。", exact=True).wait_for()
+
+        first_write, second_write = self.custom_calls
+        self.assertEqual(first_write["headers"]["if-match"], '"rev-1"')
+        self.assertEqual(second_write["headers"]["if-match"], '"rev-2"')
+        saved = json.loads(second_write["body"])
+        self.assertEqual(saved, self.fixture.saved["spec"])
+        self.assertEqual(saved["theme"]["mode"], "custom")
+        self.assertEqual(saved["theme"]["custom_tokens"]["accent"], "#123456")
+        self.assertTrue(saved["theme"]["reduce_motion"])
+        self.assertEqual(saved["dock"]["position"], "right")
+        self.assertEqual(saved["dock"]["pinned"], [pin])
+        self.assertEqual(saved["widgets"], [placement])
+
+    def test_settings_delayed_save_ack_keeps_newest_revision_and_pending_edits(self):
+        self.fixture.open()
+        endpoint = desktop.CORE + "/api/platform/v1/me/ui-preferences"
+        held = []
+
+        def commit_first_and_hold_response(route):
+            request = route.request
+            if request.method != "PUT":
+                route.fallback()
+                return
+            revision = self.fixture.saved["revision"]
+            if request.all_headers()["if-match"] != f'"rev-{revision}"':
+                self.reply(route, {"error": {"code": "ETAG_MISMATCH", "message": "Resource revision changed"}}, 412)
+            elif revision == 1:
+                self.fixture.saved["spec"] = json.loads(request.post_data)
+                self.fixture.saved["revision"] = 2
+                held.append((route, copy.deepcopy(self.fixture.saved)))
+                self.page.evaluate("() => { globalThis.__preferenceResponseHeld = true; }")
+            else:
+                route.fallback()
+
+        self.page.route(endpoint, commit_first_and_hold_response)
+        first_id = self.fixture.app("设置").get_attribute("data-view-id")
+        first = self.page.locator(f'.window[data-view-id="{first_id}"]')
+        first.get_by_label("主题模式", exact=True).select_option("dark")
+        save = first.get_by_role("button", name="保存到当前账户", exact=True)
+        save.click()
+        self.page.wait_for_function("() => globalThis.__preferenceResponseHeld === true")
+
+        second = self.fixture.app("设置")
+        second.get_by_label("主题模式", exact=True).select_option("light")
+        second.get_by_label("减少动画", exact=True).check()
+        second.get_by_role("button", name="保存到当前账户", exact=True).click()
+        second.get_by_text("已保存到核心，重新登录后仍可读取。", exact=True).wait_for()
+        second.get_by_role("button", name="关闭设置", exact=True).click()
+        self.assertEqual(self.fixture.saved["revision"], 3)
+
+        first.get_by_label("自动隐藏 Dock", exact=True).check()
+        delayed_route, response = held.pop()
+        delayed_route.fulfill(status=200, content_type="application/json", headers={
+            "access-control-allow-origin": desktop.SHELL,
+            "access-control-expose-headers": "etag",
+            "etag": '"rev-2"',
+        }, body=json.dumps(response))
+        self.page.wait_for_function("button => !button.disabled", arg=save.element_handle())
+        self.assertTrue(first.get_by_text("当前为未保存预览。", exact=True).is_visible())
+
+        with self.page.expect_response(lambda response: response.url == endpoint and response.request.method == "PUT") as next_save:
+            save.click()
+        self.assertEqual(next_save.value.status, 200)
+        first.get_by_text("已保存到核心，重新登录后仍可读取。", exact=True).wait_for()
+        self.assertEqual(self.custom_calls[-1]["headers"]["if-match"], '"rev-3"')
+        self.assertEqual(self.fixture.saved["spec"]["theme"]["mode"], "light")
+        self.assertTrue(self.fixture.saved["spec"]["theme"]["reduce_motion"])
+        self.assertTrue(self.fixture.saved["spec"]["dock"]["auto_hide"])
+
     def test_accounts_and_tasks_submit_on_enter_and_tasks_ignores_stale_response(self):
         acct_enter_id = "00000000-0000-4000-8000-000000000011"
         op_slow = "00000000-0000-4000-8000-000000000021"
