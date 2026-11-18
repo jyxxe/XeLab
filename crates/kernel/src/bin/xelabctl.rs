@@ -456,8 +456,11 @@ async fn run(args: Args) -> Result<()> {
                 body.extend_from_slice(&chunk);
             }
             if !body.is_empty() {
-                let value: Value = serde_json::from_slice(&body)?;
-                println!("{}", serde_json::to_string_pretty(&value)?);
+                match serde_json::from_slice::<Value>(&body) {
+                    Ok(value) => println!("{}", serde_json::to_string_pretty(&value)?),
+                    Err(error) if status.is_success() => return Err(error.into()),
+                    Err(_) => {}
+                }
             }
             if !status.is_success() {
                 return Err(Error::new(
