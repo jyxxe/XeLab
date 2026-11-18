@@ -606,6 +606,83 @@ class DesktopBrowser(unittest.TestCase):
         self.assertEqual(writes[0]["headers"]["if-match"], '"rev-1"')
         self.assertTrue(writes[0]["headers"]["idempotency-key"])
 
+    def test_editor_retry_keeps_the_original_serialized_request(self):
+        writes, held = [], []
+        headers = {"access-control-allow-origin": SHELL}
+        spec = {"installation_id": ACCOUNT, "display_name": "fixture deployment", "enabled": False,
+                "limits": {"cpu_millis": 100, "memory_bytes": 16777216, "ephemeral_bytes": 1048576, "pids": 16},
+                "config": {}, "volume_ids": []}
+
+        def update(route):
+            request = route.request
+            if request.method != "PUT":
+                return route.fallback()
+            writes.append((request.post_data_buffer, request.header_value("idempotency-key"),
+                           request.header_value("if-match")))
+            if len(writes) == 2:
+                held.append(route)
+                return
+            rejected = len(writes) in (1, 3)
+            data = ({"error": {"code": "INVALID_ARGUMENT", "message": "Value does not match the existing contract",
+                               "resource_id": None}}
+                    if rejected else {"id": ACCOUNT, "state": "pending", "kind": "update_deployment"})
+            route.fulfill(status=400 if rejected else 202, headers=headers, json=data)
+
+        deployments = CORE + "/api/platform/v1/deployments"
+        self.page.route(deployments + "?*", lambda route: route.fulfill(headers=headers, json={
+            "items": [{"id": DEPLOYMENT, "revision": 1, "phase": "disabled", "conditions": [], "spec": spec}],
+            "next_cursor": None,
+        }))
+        self.page.route(f"{deployments}/{DEPLOYMENT}", update)
+        self.open()
+        self.app("插件中心").get_by_role("button", name="配置", exact=True).click()
+        editor = self.page.locator('.window[data-app="editor-updateDeployment"]')
+        textarea = editor.get_by_label("请求 JSON", exact=True)
+        submit = editor.get_by_role("button", name="提交", exact=True)
+        body = json.loads(textarea.input_value())
+        self.assertEqual(body, {"spec": spec})
+
+        textarea.fill("{")
+        submit.click()
+        editor.get_by_text("JSON 格式错误", exact=True).wait_for()
+        self.assertTrue(textarea.is_editable())
+        self.assertEqual(writes, [])
+
+        textarea.fill('{"spec":{}}')
+        submit.click()
+        editor.get_by_text("INVALID_ARGUMENT", exact=False).wait_for()
+        self.assertTrue(textarea.is_editable())
+
+        body["spec"]["display_name"] = "corrected deployment"
+        original = json.dumps(body, indent=2)
+        textarea.fill(original)
+        submit.click()
+        deadline = time.monotonic() + 5
+        while not held and time.monotonic() < deadline:
+            self.page.wait_for_timeout(10)
+        self.assertEqual(len(held), 1)
+        editable_while_waiting = textarea.is_editable()
+        held[0].abort("connectionreset")
+        self.assertFalse(editable_while_waiting)
+        editor.get_by_text("CONNECTION_FAILED", exact=False).wait_for()
+        self.assertFalse(textarea.is_editable())
+        self.assertEqual(len(writes), 2)
+
+        submit.click()
+        editor.get_by_text("INVALID_ARGUMENT", exact=False).wait_for()
+        self.assertFalse(textarea.is_editable())
+
+        for _ in range(2):
+            submit.click()
+            editor.locator("pre.result").wait_for()
+            self.assertFalse(textarea.is_editable())
+            self.assertEqual(textarea.input_value(), original)
+        self.assertEqual(json.loads(writes[1][0]), body)
+        self.assertEqual(writes[0][1:], writes[1][1:])
+        self.assertTrue(writes[1][1])
+        self.assertEqual(writes[1][2], '"rev-1"')
+        self.assertEqual(writes[1:], [writes[1]] * 4)
+
     def test_data_is_text_denied_unavailable_logout_and_mobile_controls(self):
         self.context.add_init_script('''(() => {
           const original = Response.prototype.arrayBuffer;
