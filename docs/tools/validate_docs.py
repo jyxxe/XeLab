@@ -156,6 +156,7 @@ def strict(spec,operations):
         from referencing.jsonschema import DRAFT202012
         from google.protobuf import descriptor_pb2
         from pglast import parse_sql
+        from render_rpc import render_pages
     except ImportError as e:
         ERRORS.append('strict dependencies missing; install docs/tools/requirements.txt: '+str(e));return
     try:validate_spec(spec)
@@ -207,10 +208,18 @@ def strict(spec,operations):
         check(result.returncode==0,'Proto compile failed: '+result.stderr)
         if descriptor.exists():
             data=descriptor_pb2.FileDescriptorSet.FromString(descriptor.read_bytes())
-            methods={s.name+'.'+m.name for f in data.file for s in f.service for m in s.method}
             rules=read(DOCS/'contracts/rpc-semantics.json')['methods']
-            check(methods==set(rules),'RPC source/semantics mismatch')
-            for name in methods:check((DOCS/'rpc'/f'{name}.md').exists(),'missing RPC page '+name)
+            try:
+                pages = render_pages(data, rules)
+            except ValueError as e:
+                ERRORS.append(str(e))
+            else:
+                for name, content in pages.items():
+                    page = DOCS / 'rpc' / name
+                    check(
+                        page.is_file() and page.read_text(encoding='utf-8') == content,
+                        'generated RPC page drift: ' + name,
+                    )
     try:parse_sql((DOCS/'contracts/metadata.sql').read_text())
     except Exception as e:ERRORS.append('PostgreSQL SQL syntax invalid: '+str(e))
     # Echo package digest is an actual fixture, not an arbitrary placeholder.
