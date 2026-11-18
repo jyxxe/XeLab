@@ -774,6 +774,33 @@ class ShellBrowser(unittest.TestCase):
         self.assertEqual(self.custom_calls[2]["headers"]["if-match"], '"rev-2"')
         self.assertNotEqual(first["headers"]["idempotency-key"], self.custom_calls[2]["headers"]["idempotency-key"])
 
+    def test_widget_moved_offscreen_can_be_reached_by_wheel(self):
+        self.widget()
+        self.fixture.open()
+        layout = self.layout_window()
+        layout.get_by_label("行坐标", exact=True).fill("18")
+        layout.get_by_role("button", name="保存组件布局", exact=True).click()
+        layout.get_by_text("组件布局已保存", exact=True).wait_for()
+        layout.get_by_role("button", name="关闭组件布局 · Layout widget", exact=True).click()
+        self.assertEqual(self.fixture.saved["spec"]["widgets"][0]["row"], 18)
+
+        grid = self.page.locator("#widgets")
+        card = grid.locator(".widget-card")
+        height = self.page.viewport_size["height"]
+        self.assertGreater(card.bounding_box()["y"], height)
+        self.assertTrue(grid.evaluate("el => el.scrollHeight > el.clientHeight && el.scrollTop === 0"))
+        bounds = grid.bounding_box()
+        x, y = bounds["x"] + bounds["width"] / 2, bounds["y"] + bounds["height"] / 2
+        self.page.mouse.move(x, y)
+        self.page.mouse.wheel(0, 2500)
+        self.page.wait_for_function("() => document.querySelector('#widgets').scrollTop > 0", timeout=2500)
+        self.assertLess(card.bounding_box()["y"], height)
+
+        card.get_by_role("button", name="移除", exact=True).click()
+        card.wait_for(state="detached")
+        self.assertEqual(self.fixture.saved["spec"]["widgets"], [])
+        self.assertEqual(self.page.evaluate("([x,y]) => document.elementFromPoint(x,y).id", [x, y]), "desktop")
+
     def test_widget_overlap_stale_and_denied_never_write_preferences(self):
         value, placement = self.widget()
         self.fixture.saved["spec"]["widgets"].append({**placement, "instance_id": desktop.DEPLOYMENT, "column": 4})
