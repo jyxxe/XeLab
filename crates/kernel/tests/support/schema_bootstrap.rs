@@ -568,7 +568,7 @@ pub async fn exercise(f: &Fixture, publisher: Uuid) {
         volumes::tick(&f.app).await.unwrap();
         let current = c
             .query_one(
-                "SELECT state,reserved_bytes FROM volume_allocations a
+                "SELECT a.state,r.reserved_bytes FROM volume_allocations a
                  JOIN volume_storage_root r ON r.id=a.root_id WHERE a.volume_id=$1",
                 &[&scratch],
             )
