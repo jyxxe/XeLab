@@ -335,10 +335,13 @@ function closeWindow(win, persist = true) {
   renderDock();
   handOffFocus(win, {hadFocus, wasFocused, persist});
 }
+function canAdjustWindow(win) {
+  return !win.maximized && !matchMedia('(max-width:650px)').matches;
+}
 function pointerMove(win, handle, resize) {
   handle.addEventListener('pointerdown', event => {
     if (event.button !== 0 || (!resize && event.target.closest('button'))) return;
-    if (win.maximized || matchMedia('(max-width:650px)').matches||(resize&&win.contribution?.spec.window.resizable===false)) return;
+    if (!canAdjustWindow(win) || (resize && win.contribution?.spec.window.resizable === false)) return;
     focus(win);
     const start = {x:event.clientX,y:event.clientY,...win.rect};
     const pointerX = event.clientX, pointerY = event.clientY;
@@ -369,6 +372,7 @@ function openWindow(app, options = {}) {
     if (!event.altKey || !['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)) return;
     if(event.shiftKey&&win.contribution?.spec.window.resizable===false)return;
     event.preventDefault();
+    if (!canAdjustWindow(win)) return;
     const horizontal = ['ArrowLeft','ArrowRight'].includes(event.key), delta = ['ArrowLeft','ArrowUp'].includes(event.key) ? -20 : 20;
     const key = event.shiftKey ? (horizontal ? 'width' : 'height') : (horizontal ? 'x' : 'y');
     win.rect[key] += delta;
@@ -380,6 +384,7 @@ function openWindow(app, options = {}) {
     if (!event.key.startsWith('Arrow')) return;
     if(win.contribution?.spec.window.resizable===false)return;
     event.preventDefault();
+    if (!canAdjustWindow(win)) return;
     win.rect[['ArrowLeft','ArrowRight'].includes(event.key) ? 'width' : 'height'] += ['ArrowLeft','ArrowUp'].includes(event.key) ? -20 : 20;
     fit(win); saveLayout();
   });
