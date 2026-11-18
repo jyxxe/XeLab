@@ -876,6 +876,82 @@ class ShellBrowser(unittest.TestCase):
         self.assertEqual(keys_window.locator(".state").count(), 0)
         self.assertTrue(more.is_hidden())
 
+    def test_plugin_catalog_pages_both_collections_and_allows_later_deployment_actions(self):
+        deployments = [
+            {"id": f"00000000-0000-4000-8000-{index:012d}", "revision": 1,
+             "created_at": desktop.NOW, "updated_at": desktop.NOW, "observed_generation": 1,
+             "phase": "disabled", "conditions": [],
+             "spec": {"display_name": f"Deployment {index}", "installation_id": desktop.DEPLOYMENT,
+                      "enabled": False, "replicas": 1, "config": {}, "volume_ids": [],
+                      "limits": {"cpu_millis": 500, "memory_bytes": 536870912,
+                                 "ephemeral_bytes": 268435456, "pids": 128}}}
+            for index in range(1, 202)
+        ]
+        installations = [
+            {"id": f"00000000-0000-4001-8000-{index:012d}", "plugin_id": f"org.xelab.fixture.installation-{index}",
+             "version": "1.0.0", "state": "installed", "image_digest": "sha256:" + "b" * 64}
+            for index in range(1, 202)
+        ]
+        collections = {"deployments": deployments, "installations": installations}
+        endpoint = desktop.CORE + "/api/platform/v1"
+        reads = []
+
+        def catalog_page(route):
+            if route.request.method != "GET":
+                route.fallback()
+                return
+            url = urlparse(route.request.url)
+            collection = url.path.rsplit("/", 1)[-1]
+            query = parse_qs(url.query)
+            cursor = query.get("cursor", [None])[0]
+            reads.append((collection, cursor, query.get("limit")))
+            items = collections[collection]
+            next_cursor = f"{collection}-next"
+            if cursor is None:
+                self.reply(route, {"items": items[:200], "next_cursor": next_cursor})
+            elif cursor == next_cursor:
+                self.reply(route, {"items": items[200:], "next_cursor": None})
+            else:
+                self.reply(route, {"error": {"code": "INVALID_ARGUMENT", "message": "Wrong catalog cursor"}}, 400)
+
+        self.page.route(lambda url: any(url.startswith(f"{endpoint}/{name}?") for name in collections), catalog_page)
+        target = deployments[-1]
+        enable_url = f"{endpoint}/deployments/{target['id']}/enabled"
+        operation = {"id": desktop.ACCOUNT, "revision": 1, "created_at": desktop.NOW, "updated_at": desktop.NOW,
+                     "kind": "update_deployment", "state": "pending", "progress_percent": 0,
+                     "resource_id": target["id"], "result": None, "error": None}
+        self.page.route(enable_url, lambda route: self.reply(route, operation, 202))
+
+        self.fixture.open()
+        self.fixture.app("插件中心")
+        catalog = self.page.locator('.window[data-app="plugins"]')
+        catalog.get_by_role("heading", name="Deployment 200", exact=True).wait_for()
+        more_deployments = catalog.get_by_role("button", name="加载下一页部署", exact=True)
+        more_installations = catalog.get_by_role("button", name="加载下一页安装制品", exact=True)
+        initial_reads = [("deployments", None, ["200"]), ("installations", None, ["200"])]
+        self.assertCountEqual(reads, initial_reads)
+        self.assertTrue(more_deployments.is_visible())
+        self.assertTrue(more_installations.is_visible())
+
+        more_deployments.click()
+        target_card = catalog.locator("article").filter(has_text=target["spec"]["display_name"])
+        target_card.get_by_role("button", name="启用", exact=True).click()
+        editor = self.page.locator('.window[data-app="editor-setDeploymentEnabled"]')
+        with self.page.expect_request(lambda request: request.url == enable_url and request.method == "PUT") as enabled:
+            editor.get_by_role("button", name="提交", exact=True).click()
+        self.assertEqual(json.loads(enabled.value.post_data), {"enabled": True})
+        self.assertEqual(enabled.value.all_headers()["if-match"], '"rev-1"')
+        editor.get_by_text("pending", exact=False).wait_for()
+        editor.get_by_role("button", name="关闭改变部署启停", exact=True).click()
+        self.assertTrue(more_deployments.is_hidden())
+        self.assertEqual(reads[2:], [("deployments", "deployments-next", ["200"])])
+
+        more_installations.click()
+        catalog.get_by_role("heading", name=installations[-1]["plugin_id"], exact=True).wait_for()
+        self.assertTrue(more_installations.is_hidden())
+        self.assertEqual(reads[2:], [("deployments", "deployments-next", ["200"]),
+                                     ("installations", "installations-next", ["200"])])
+
     def test_skill_pagination_reports_empty_only_after_exhausting_all_pages(self):
         self.fixture.open()
         endpoint = desktop.CORE + "/api/platform/v1/skills?"
