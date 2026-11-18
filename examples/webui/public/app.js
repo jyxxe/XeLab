@@ -165,7 +165,12 @@ function layoutKey() { return accountId ? `xelab:windows:${runtimeConfig.core_or
 function saveLayout() {
   const key = layoutKey();
   if (!key || !preview.restore_windows) return;
-  const layout = [...windows.values()].filter(win => win.restoreRef || !win.ephemeral).map(win => ({app:win.restoreRef?'contribution':win.app.id,...(win.restoreRef?{contribution:win.restoreRef}:{}),rect:win.rect,minimized:win.minimized,maximized:win.maximized}));
+  // Restore opens windows in order, so the topmost visible window goes last.
+  const focusOrder = win => win.minimized ? 0 : Number(win.element.style.zIndex);
+  const layout = [...windows.values()]
+    .filter(win => win.restoreRef || !win.ephemeral)
+    .sort((left, right) => focusOrder(left) - focusOrder(right))
+    .map(win => ({app:win.restoreRef?'contribution':win.app.id,...(win.restoreRef?{contribution:win.restoreRef}:{}),rect:win.rect,minimized:win.minimized,maximized:win.maximized}));
   try { localStorage.setItem(key, JSON.stringify(layout)); } catch { /* Storage is optional. */ }
 }
 function clearPrivateViews() {

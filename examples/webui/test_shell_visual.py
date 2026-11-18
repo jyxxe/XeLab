@@ -222,6 +222,34 @@ class ShellVisual(unittest.TestCase):
         window.wait_for()
         self.assertEqual(self.page.evaluate(read_rect, key), original)
 
+    def test_reload_restores_the_last_active_window(self):
+        self.page.set_viewport_size({"width": 390, "height": 760})
+        self.open()
+        self.fixture.app("系统状态")
+        self.fixture.app("设置")
+        resources = self.page.locator('.window[data-app="resources"]')
+        settings = self.page.locator('.window[data-app="settings"]')
+        self.assertTrue(resources.is_hidden())
+
+        self.page.locator("#launcher-toggle").click()
+        self.page.get_by_role("button", name="聚焦窗口1 系统状态", exact=True).click()
+        self.assertTrue(resources.is_visible())
+        self.assertTrue(settings.is_hidden())
+
+        for width, height, narrow in ((390, 760, True), (1280, 900, False)):
+            with self.subTest(narrow=narrow):
+                self.page.set_viewport_size({"width": width, "height": height})
+                self.page.reload()
+                self.page.wait_for_function("document.querySelectorAll('#windows > .window').length === 2")
+                self.assertEqual(resources.get_attribute("data-focused"), "true")
+                self.assertEqual(settings.get_attribute("data-focused"), "false")
+                self.assertTrue(resources.is_visible())
+                self.assertEqual(settings.is_hidden(), narrow)
+                self.assertEqual(
+                    self.page.evaluate("document.activeElement?.closest('.window')?.dataset.app"),
+                    "resources",
+                )
+
     def test_left_dock_growth_keeps_close_button_reachable(self):
         value = contribution()
         self.fixture.contributions[value["spec"]["id"]] = value
