@@ -534,8 +534,7 @@ function editor(title, operation, {params={}, initial={}, etag, body=true, note=
   }},{ephemeral:true});
 }
 function details(title, data) { return openWindow({id:'details',title,render:async win=>win.content.replaceChildren(raw(data))},{ephemeral:true}); }
-async function listSection(win, {title,operation,params={},query={},actions=[],renderItem}) {
-  const result = await request(operation,{params,query:{limit:50,...query},signal:win.controller.signal});
+function paginatedList(win, {title,operation,params={},query,renderItem,moreText='加载下一页'}, firstPage) {
   const list = node('div',{class:'list'});
   const append = data => {
     for (const item of rows(data)) list.append(renderItem(item));
@@ -543,12 +542,12 @@ async function listSection(win, {title,operation,params={},query={},actions=[],r
       list.append(state('empty','暂无可见项目','当前账户授权范围内没有记录。'));
     }
   };
-  append(result.data);
+  append(firstPage);
   const pageError = node('div', {class:'list-page-error'});
-  const more = button('加载下一页',async()=> {
+  const more = button(moreText,async()=> {
     more.disabled = true;
     try {
-      const next = await request(operation,{params,query:{limit:50,...query,cursor:more.dataset.cursor},signal:win.controller.signal});
+      const next = await request(operation,{params,query:{...query,cursor:more.dataset.cursor},signal:win.controller.signal});
       if (!more.isConnected) return;
       append(next.data);
       pageError.replaceChildren();
@@ -560,32 +559,40 @@ async function listSection(win, {title,operation,params={},query={},actions=[],r
     } finally {
       if (more.isConnected) more.disabled = false;
     }
-  }, {'aria-label':`加载下一页${title}`, hidden:!result.data.next_cursor});
-  more.dataset.cursor = result.data.next_cursor || '';
-  win.content.replaceChildren(toolbar(win,title,...actions),list,pageError,more);
+  }, {'aria-label':`加载下一页${title}`, hidden:!firstPage.next_cursor});
+  more.dataset.cursor = firstPage.next_cursor || '';
+  return [list,pageError,more];
+}
+async function listSection(win, {title,operation,params={},query={},actions=[],renderItem}) {
+  const pageQuery = {limit:50,...query};
+  const result = await request(operation,{params,query:pageQuery,signal:win.controller.signal});
+  const list = paginatedList(win,{title,operation,params,query:pageQuery,renderItem},result.data);
+  win.content.replaceChildren(toolbar(win,title,...actions),...list);
 }
 
 async function plugins(win) {
+  const query = {limit:200};
   const [installations,deployments] = await Promise.all([
-    request('listInstallations',{query:{limit:200},signal:win.controller.signal}),
-    request('listDeployments',{query:{limit:200},signal:win.controller.signal}),
+    request('listInstallations',{query,signal:win.controller.signal}),
+    request('listDeployments',{query,signal:win.controller.signal}),
   ]);
   const install = button('安装签名镜像',()=>editor('安装插件','installPlugin',{initial:{image:'',publisher_id:'',signature:''}}));
   const deploy = button('创建部署',()=>editor('创建部署','createDeployment',{initial:{installation_id:'',display_name:'',enabled:false,replicas:1,limits:{cpu_millis:500,memory_bytes:536870912,ephemeral_bytes:268435456,pids:128},config:{},volume_ids:[]}}));
-  const list = node('div',{class:'list'});
-  for (const item of rows(deployments.data)) {
+  const renderDeployment = item => {
     const spec = item.spec;
     const actions = node('div',{class:'toolbar'},
       button('详情',()=>details('部署详情',item)),
       button(spec.enabled?'停用':'启用',()=>editor('改变部署启停','setDeploymentEnabled',{params:{deployment_id:item.id},initial:{enabled:!spec.enabled},etag:revision(item),note:'停用会撤销新路由。核心 API 与 CLI 仍可独立使用。'})),
       button('审批',()=>editor('审批插件版本','approvePlugin',{params:{deployment_id:item.id},initial:{rules:[],egress:[]},etag:revision(item)})),
       button('配置',()=>editor('修改部署','updateDeployment',{params:{deployment_id:item.id},initial:{spec},etag:revision(item),note:'先停用部署并等待实例排空，才能修改配置。安装制品和卷绑定不可在此替换；升级、卷变更或启用应使用各自的工作流。'})));
-    list.append(node('article',{class:'card'},node('h3',{},spec.display_name),node('p',{},node('span',{class:'badge'},item.phase),` · ${spec.enabled?'已启用':'已停用'}`),node('p',{class:'code'},item.id),node('p',{},(item.conditions||[]).join(' · ')),actions));
-  }
-  for (const item of rows(installations.data)) list.append(node('article',{class:'card'},node('h3',{},item.plugin_id),node('p',{},`版本 ${item.version} · ${item.state}`),node('p',{class:'code'},item.image_digest),node('div',{class:'toolbar'},button('安装详情',()=>details('固定安装制品',item)))));
-  if (!list.childElementCount) list.append(state('empty','暂无可见插件','安装签名制品后，创建关闭状态的部署并审批。'));
-  win.content.replaceChildren(toolbar(win,'插件中心',install,deploy),list);
-  if (installations.data.next_cursor || deployments.data.next_cursor) win.content.append(state('unavailable','还有更多项目','本视图最多显示每类200项。请使用 CLI 分页或缩小核心授权范围。'));
+    return node('article',{class:'card'},node('h3',{},spec.display_name),node('p',{},node('span',{class:'badge'},item.phase),` · ${spec.enabled?'已启用':'已停用'}`),node('p',{class:'code'},item.id),node('p',{},(item.conditions||[]).join(' · ')),actions);
+  };
+  const renderInstallation = item => node('article',{class:'card'},node('h3',{},item.plugin_id),node('p',{},`版本 ${item.version} · ${item.state}`),node('p',{class:'code'},item.image_digest),node('div',{class:'toolbar'},button('安装详情',()=>details('固定安装制品',item))));
+  const section = (title, operation, firstPage, renderItem) => node('section', {'aria-label':title}, node('h3',{},title),
+    ...paginatedList(win,{title,operation,query,renderItem,moreText:`加载下一页${title}`},firstPage));
+  win.content.replaceChildren(toolbar(win,'插件中心',install,deploy),node('div',{class:'list'},
+    section('部署','listDeployments',deployments.data,renderDeployment),
+    section('安装制品','listInstallations',installations.data,renderInstallation)));
 }
 async function skills(win) {
   await listSection(win,{title:'Skill 浏览器',operation:'listSkills',actions:[button('注册固定 Skill',()=>editor('注册 Skill','registerSkill',{initial:{installation_id:'',definition:{},enabled:false}}))],renderItem:item=>node('article',{class:'card'},node('h3',{},item.definition.name),node('p',{},`${item.definition.version} · ${item.availability}`),node('p',{class:'code'},`UUID ${item.id}`),node('p',{class:'code'},item.definition_digest),node('p',{},(item.reason_codes||[]).join(' · ')),node('div',{class:'toolbar'},button('定义与输入 Schema',()=>details('不可变 Skill 定义',item)),button('调用测试',()=>editor('调用固定 Skill','invokeSkill',{params:{skill_id:item.id},initial:{input:{},idempotency_key:crypto.randomUUID()},note:`固定UUID ${item.id}；定义摘要 ${item.definition_digest}。输入须符合此版本Schema，权限仍由核心逐次校验。`})),button(item.enabled?'禁用':'启用',()=>editor('改变 Skill 状态','setSkillEnabled',{params:{skill_id:item.id},initial:{enabled:!item.enabled},etag:revision(item)})),button('归档',()=>editor('归档 Skill','archiveSkill',{params:{skill_id:item.id},etag:revision(item),body:false,note:'归档是不可逆的逻辑停用；历史调用仍保留。'}))))});
