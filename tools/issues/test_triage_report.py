@@ -293,6 +293,20 @@ class TriageTests(unittest.TestCase):
         ])
         self.assertNotIn("redacted", json.dumps(report["duplicate_candidates"]))
 
+    def test_exact_title_group_suppresses_only_internal_keyword_pairs(self):
+        api = FakeAPI(issues=[
+            issue(6, "[bug] Fix plugin linter"),
+            issue(3, "[feature] fix   PLUGIN linter!"),
+            issue(7, "[request] Fix plugin linter"),
+            issue(8, "Repair plugin linter"),
+        ])
+        self.assertEqual(build_report(api)["duplicate_candidates"], [
+            {"kind": "same-normalized-title", "issues": [3, 6, 7]},
+            {"kind": "shared-keywords", "issues": [3, 8], "shared": ["linter", "plugin"]},
+            {"kind": "shared-keywords", "issues": [6, 8], "shared": ["linter", "plugin"]},
+            {"kind": "shared-keywords", "issues": [7, 8], "shared": ["linter", "plugin"]},
+        ])
+
     def test_zero_comment_issues_skip_comment_endpoint(self):
         zero = dict(issue(1, "no comments"), comments=0)
         nonzero = dict(issue(2, "has claim"), comments=1)
