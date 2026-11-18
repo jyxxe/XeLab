@@ -288,6 +288,37 @@ class ShellBrowser(unittest.TestCase):
         self.assertEqual(window.locator("iframe").count(), 0)
         self.assertEqual(target_navigations, [], "No target business document loads after the current mount proof is denied")
 
+    def test_launcher_discovery_keeps_focused_builtin_app(self):
+        value = self.window_contribution()
+        self.fixture.open()
+        endpoint = desktop.CORE + "/api/platform/v1/ui/contributions?"
+        pending = []
+
+        def hold_discovery(route):
+            if route.request.method != "GET":
+                route.fallback()
+                return
+            pending.append(route)
+            self.page.evaluate("() => { globalThis.__launcherDiscoveryHeld = true; }")
+
+        self.page.route(lambda url: url.startswith(endpoint), hold_discovery)
+        self.open_launcher()
+        launcher = self.page.locator("#launcher")
+        self.page.wait_for_function("() => globalThis.__launcherDiscoveryHeld === true")
+        self.assertTrue(self.page.locator("#app-search").evaluate("el => el === document.activeElement"))
+        settings = launcher.get_by_role("button", name="启动设置", exact=True)
+        settings.focus()
+        self.assertTrue(settings.evaluate("el => el === document.activeElement"))
+
+        pending.pop().fallback()
+        launcher.get_by_role("button", name="启动贡献 " + value["spec"]["title"], exact=True).wait_for()
+        self.assertTrue(settings.evaluate("el => el === document.activeElement"))
+
+        self.page.keyboard.press("Enter")
+        launcher.wait_for(state="hidden")
+        title = self.page.locator('.window[data-app="settings"] .window-title')
+        self.assertTrue(title.evaluate("el => el === document.activeElement"))
+
     def test_launcher_search_pages_and_pin_open_unpin_fixed_contribution(self):
         first, second = self.window_contribution(), self.window_contribution("second")
         self.launcher_pages = {None: {"items": [first], "next_cursor": "component-next"},

@@ -1111,12 +1111,15 @@ function renderDock() {
 }
 function renderLauncher() {
   const search=$('#app-search').value.trim().toLowerCase();
-  $('#app-grid').replaceChildren(...apps.filter(app=>app.title.toLowerCase().includes(search)||app.id.includes(search)).map(app=>button('',()=>{launcher.close();openWindow(app);},{'aria-label':`启动${app.title}`})));
-  for (const [index,entry] of [...$('#app-grid').children].entries()) {
-    const matching=apps.filter(app=>app.title.toLowerCase().includes(search)||app.id.includes(search))[index];
-    entry.append(appIcon(matching.icon),node('span',{},matching.title));
-  }
-  for(const[ index,win]of[...windows.values()].entries())if(win.app.title.toLowerCase().includes(search))$('#app-grid').append(button(`↥ ${win.app.title}`,()=>{launcher.close();focusWindow(win);},{'aria-label':`聚焦窗口${index+1} ${win.app.title}`}));
+  const grid = $('#app-grid');
+  const focusedApp = launcher.open ? grid.querySelector('[data-app-id]:focus')?.dataset.appId : null;
+  const shortcuts = apps.filter(app => app.title.toLowerCase().includes(search) || app.id.includes(search)).map(app => {
+    const entry = button('', () => { launcher.close(); openWindow(app); }, {'aria-label':`启动${app.title}`, 'data-app-id':app.id});
+    entry.append(appIcon(app.icon),node('span',{},app.title));
+    return entry;
+  });
+  grid.replaceChildren(...shortcuts);
+  for(const[ index,win]of[...windows.values()].entries())if(win.app.title.toLowerCase().includes(search))grid.append(button(`↥ ${win.app.title}`,()=>{launcher.close();focusWindow(win);},{'aria-label':`聚焦窗口${index+1} ${win.app.title}`}));
   if(!oauth.loggedIn)return;
   const found=launcherItems.filter(item=>`${item.spec.title} ${item.spec.id} ${item.plugin_id}`.toLowerCase().includes(search));
   for(const item of found){
@@ -1136,14 +1139,15 @@ function renderLauncher() {
       }catch(error){if(current())toastError(error);}
       finally{launch.disabled=item.availability!=='ready';}
     },{disabled:item.availability!=='ready','aria-label':`启动贡献 ${item.spec.title}`});
-    $('#app-grid').append(node('article',{class:'launcher-contribution card'},node('h3',{},item.spec.title),node('p',{},`${item.spec.kind} · ${item.availability}`),node('p',{class:'code'},`${item.plugin_id} · ${item.deployment_id}`),node('p',{},item.reason_codes.join(' · ')),launch,item.spec.kind==='window'?pinControl(item):null));
+    grid.append(node('article',{class:'launcher-contribution card'},node('h3',{},item.spec.title),node('p',{},`${item.spec.kind} · ${item.availability}`),node('p',{class:'code'},`${item.plugin_id} · ${item.deployment_id}`),node('p',{},item.reason_codes.join(' · ')),launch,item.spec.kind==='window'?pinControl(item):null));
   }
   const status=node('div',{class:'launcher-status'});
   if(launcherLoading)status.append(state('loading','正在发现获准贡献…'));
   else if(launcherError)status.append(failure(launcherError),button('重新发现贡献',()=>loadLauncher(true)));
   else if(!found.length)status.append(state('empty','已加载贡献中没有匹配项','搜索只包含当前授权可见的贡献；可继续分页或重新发现。'));
   if(launcherCursor&&!launcherLoading)status.append(button('加载更多贡献',()=>loadLauncher(false)));
-  $('#app-grid').append(status);
+  grid.append(status);
+  if (focusedApp) shortcuts.find(entry => entry.dataset.appId === focusedApp)?.focus({preventScroll:true});
 }
 async function loadLauncher(reset) {
   if(!oauth.loggedIn)return;
