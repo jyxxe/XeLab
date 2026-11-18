@@ -250,11 +250,14 @@ function fit(win) {
   if (win.maximized) Object.assign(win.element.style, {left:'6px', top:'6px', width:`${Math.max(300, area.width-12)}px`, height:`${Math.max(240, area.height-12)}px`});
   else {
     const r = win.rect;
-    const limits=win.contribution?.spec.window;
-    r.width = Math.min(area.width-12, Math.max(limits?.min_width||300, Math.min(r.width,limits?.max_width||4096)));
-    r.height = Math.min(area.height-12, Math.max(limits?.min_height||240, Math.min(r.height,limits?.max_height||2160)));
-    r.x = Math.max(6, Math.min(r.x, Math.max(6, area.width-r.width-6)));
-    r.y = Math.max(6, Math.min(r.y, Math.max(6, area.height-r.height-6)));
+    // Narrow layout is sized by CSS. Keep the desktop bounds for restoration.
+    if (!matchMedia('(max-width:650px)').matches) {
+      const limits=win.contribution?.spec.window;
+      r.width = Math.min(area.width-12, Math.max(limits?.min_width||300, Math.min(r.width,limits?.max_width||4096)));
+      r.height = Math.min(area.height-12, Math.max(limits?.min_height||240, Math.min(r.height,limits?.max_height||2160)));
+      r.x = Math.max(6, Math.min(r.x, Math.max(6, area.width-r.width-6)));
+      r.y = Math.max(6, Math.min(r.y, Math.max(6, area.height-r.height-6)));
+    }
     Object.assign(win.element.style, {left:`${r.x}px`, top:`${r.y}px`, width:`${r.width}px`, height:`${r.height}px`});
   }
   win.bridge?.viewportChanged();
