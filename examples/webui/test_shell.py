@@ -49,13 +49,13 @@ class ShellBrowser(unittest.TestCase):
     def tearDown(self):
         self.fixture.tearDown()
 
-    def reply(self, route, data, status=200):
+    def reply(self, route, data, status=200, *, request_id=desktop.ACCOUNT):
         route.fulfill(status=status, content_type="application/json", headers={
             "access-control-allow-origin": desktop.SHELL,
             "access-control-allow-headers": "authorization,content-type,if-match,idempotency-key",
             "access-control-allow-methods": "GET,PUT,OPTIONS",
             "access-control-expose-headers": "etag,x-request-id",
-            "etag": '"rev-1"', "x-request-id": desktop.ACCOUNT,
+            "etag": '"rev-1"', "x-request-id": request_id,
         }, body=json.dumps(data))
 
     def route(self, route):
@@ -1091,6 +1091,66 @@ class ShellBrowser(unittest.TestCase):
           return layouts.map(item => item.app);
         }""")
         self.assertFalse(any(app.startswith("api-keys:") for app in saved_apps), saved_apps)
+
+    def test_account_follow_up_reads_belong_to_the_selected_account(self):
+        other = "00000000-0000-4000-8000-000000000099"
+        old_request_id = "00000000-0000-4000-8000-000000000079"
+        self.fast_accounts[other] = {"id": other, "display_name": "Second Account", "status": "active"}
+        self.page.add_init_script("""(() => {
+          const original = Response.prototype.arrayBuffer;
+          globalThis.__staleFollowUpsRead = 0;
+          Response.prototype.arrayBuffer = async function(...args) {
+            const bytes = await original.apply(this, args);
+            if (this.headers.get('x-request-id') === REQUEST_ID) ++globalThis.__staleFollowUpsRead;
+            return bytes;
+          };
+        })()""".replace("REQUEST_ID", json.dumps(old_request_id)))
+
+        def quota(account_id):
+            return {"id": account_id, "account_id": account_id, "revision": 1,
+                    "created_at": desktop.NOW, "updated_at": desktop.NOW,
+                    "spec": {"maximum_depth": 8, "maximum_descendants": 30, "maximum_api_keys": 5,
+                             "maximum_concurrent_calls": 3, "daily_calls": 50},
+                    "descendants_used": 0, "api_keys_used": 0, "concurrent_calls_used": 0, "daily_calls_used": 0}
+
+        endpoint = desktop.CORE + "/api/platform/v1/accounts"
+        held = {}
+
+        def hold_follow_up(route):
+            if route.request.method != "GET":
+                route.fallback()
+                return
+            key = "quota" if urlparse(route.request.url).path.endswith("/quota") else "children"
+            held[key] = route
+            self.page.evaluate("count => { globalThis.__heldFollowUps = count; }", len(held))
+
+        self.page.route(f"{endpoint}/{desktop.ACCOUNT}/quota", hold_follow_up)
+        self.page.route(lambda url: url.startswith(endpoint + "?") and
+                        parse_qs(urlparse(url).query).get("parent_id") == [desktop.ACCOUNT], hold_follow_up)
+        self.page.route(f"{endpoint}/{other}/quota", lambda route: self.reply(route, quota(other)))
+        self.fixture.open()
+        self.fixture.app("账户与权限")
+        accounts = self.page.locator('.window[data-app="accounts"]')
+        accounts.get_by_role("button", name="资源配额", exact=True).click()
+        accounts.get_by_role("button", name="子账户", exact=True).click()
+        self.page.wait_for_function("() => globalThis.__heldFollowUps === 2")
+
+        selected = accounts.get_by_label("账户 UUID", exact=True)
+        selected.fill(other)
+        selected.press("Enter")
+        accounts.get_by_role("heading", name="Second Account · active", exact=True).wait_for()
+        self.reply(held.pop("quota"), quota(desktop.ACCOUNT), request_id=old_request_id)
+        self.page.wait_for_function("() => globalThis.__staleFollowUpsRead === 1")
+        self.reply(held.pop("children"), {"error": {"code": "PERMISSION_DENIED", "message": "Fixture state"}},
+                   403, request_id=old_request_id)
+        self.page.wait_for_function("() => globalThis.__staleFollowUpsRead === 2")
+
+        details = self.page.locator('.window[data-app="details"]')
+        self.assertEqual((details.count(), self.page.locator("#toast").inner_text(),
+                          self.page.locator("#connection").inner_text()), (0, "", "已连接核心"))
+        accounts.get_by_role("button", name="资源配额", exact=True).click()
+        details.get_by_text(other, exact=False).wait_for()
+        self.assertEqual(details.count(), 1)
 
     def test_invalid_operation_uuid_shows_local_validation_without_a_core_request(self):
         self.fixture.open()

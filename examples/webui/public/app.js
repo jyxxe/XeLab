@@ -143,12 +143,12 @@ function permittedContent(win) {
   win.content.replaceChildren(state('denied', '登录后继续', '授权由内核可信页面完成。本页面不会读取平台密码或内核登录 Cookie。'), button('前往可信登录', login, {class:'primary'}));
   return false;
 }
-async function request(operation, options = {}) {
+async function request(operation, options = {}, isCurrent = () => true) {
   const epoch=sessionEpoch;
   try {
     const result = await api.invoke(operation, options);
     if(epoch!==sessionEpoch)throw new Error('登录来源已经改变；旧请求结果不再显示。');
-    $('#connection').textContent = '已连接核心';
+    if (isCurrent()) $('#connection').textContent = '已连接核心';
     return result;
   } catch (error) {
     // ApiClient invalidates only the exact rejected access token. A late 401
@@ -157,7 +157,7 @@ async function request(operation, options = {}) {
     // A logout or credential invalidation may have cleared the private UI
     // while this request was in flight. Do not overwrite the new session's
     // connection state with the outcome of that earlier request.
-    if (epoch === sessionEpoch) $('#connection').textContent = (error?.status ?? error?.http_status) === 403 ? '当前请求无权限' : '请求未完成';
+    if (epoch === sessionEpoch && isCurrent()) $('#connection').textContent = (error?.status ?? error?.http_status) === 403 ? '当前请求无权限' : '请求未完成';
     throw error;
   }
 }
@@ -597,16 +597,28 @@ async function accounts(win) {
   let sequence = 0;
   const inspect = async id => {
     const current = ++sequence;
+    const isCurrent = () => current === sequence && !signal.aborted && display.isConnected;
     display.replaceChildren(state('loading','读取账户及授权来源…'));
     try {
-      const result = await request('getAccount',{params:{account_id:id},signal});
-      if (current !== sequence || signal.aborted || !display.isConnected) return;
+      const result = await request('getAccount',{params:{account_id:id},signal},isCurrent);
+      if (!isCurrent()) return;
       display.replaceChildren(node('h3',{},`${result.data.display_name} · ${result.data.status}`),raw(result.data));
-      const read = (title,operation) => button(title,async()=> { try { const data=await request(operation,{params:{account_id:id},signal});if (signal.aborted || !display.isConnected) return;details(title,data.data); } catch(error){ if (!signal.aborted && display.isConnected) toastError(error); } });
-      display.append(node('div',{class:'toolbar'},read('有效权限与阻断祖先','getEffectivePermissions'),read('授权组来源','listGrants'),read('资源配额','getQuota'),button('API Key 元数据',()=>openWindow({id:`api-keys:${id}`,title:'API Key 元数据',render:keys=>apiKeys(keys,id)},{ephemeral:true})),button('子账户',async()=> { try { const data=await request('listAccounts',{query:{parent_id:id,limit:200},signal});if (signal.aborted || !display.isConnected) return;details('子账户与继承模式',data.data); }catch(error){ if (!signal.aborted && display.isConnected) toastError(error); } })));
+      const read = (label, operation, options = {params:{account_id:id}}, title = label) => button(label, async () => {
+        try {
+          const {data} = await request(operation, {...options,signal}, isCurrent);
+          if (isCurrent()) details(title, data);
+        } catch (error) {
+          if (isCurrent()) toastError(error);
+        }
+      });
+      display.append(node('div',{class:'toolbar'},
+        read('有效权限与阻断祖先','getEffectivePermissions'),
+        read('授权组来源','listGrants'),
+        read('资源配额','getQuota'),
+        button('API Key 元数据',()=>openWindow({id:`api-keys:${id}`,title:'API Key 元数据',render:keys=>apiKeys(keys,id)},{ephemeral:true})),
+        read('子账户','listAccounts',{query:{parent_id:id,limit:200}},'子账户与继承模式')));
     } catch(error) {
-      if (current !== sequence || signal.aborted || !display.isConnected) return;
-      display.replaceChildren(failure(error));
+      if (isCurrent()) display.replaceChildren(failure(error));
     }
   };
   const accountForm=node('form',{class:'inline-field'},accountInput,button('读取',()=>{},{type:'submit'}));
