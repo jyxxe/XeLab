@@ -5,7 +5,7 @@
 
 1. 先搜索已有 Issue 和开放 PR，避免重复实现；小修复、紧急修复及现有 M2 PR
    可以直接提 PR，在描述中说明原因，不要求事后补建占位 Issue。
-2. 新需求或跨模块变更使用 [Issue 表单](https://github.com/jyxxe/XeLab/issues/new/choose)。
+2. 新需求或跨模块变更使用 [Issue 表单](https://github.com/jyxxenon/XeLab/issues/new/choose)。
    提交来源、基线 SHA、证据、范围、依赖和验收条件按
    [Issue 生命周期](docs/implementation/issue-workflow.md)填写。
 3. 可利用不同模型提出问题或补充审查，但只有维护者或明确获授权的 Agent

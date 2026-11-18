@@ -33,9 +33,9 @@ GUI 表单无法强制 API 请求的字段或标签，分流时必须检查完�
 
 ```bash
 # 默认只读预览；公开仓库读取可不提供 GH_TOKEN。
-python3 tools/issues/sync_labels.py --repo jyxxe/XeLab
+python3 tools/issues/sync_labels.py --repo jyxxenon/XeLab
 # 明确应用；GH_TOKEN 使用当前仓库 Issues: write 的已授权凭证，不把值写入命令。
-python3 tools/issues/sync_labels.py --repo jyxxe/XeLab --apply
+python3 tools/issues/sync_labels.py --repo jyxxenon/XeLab --apply
 ```
 
 同步幂等且非破坏；遇到失败停止并返回非零，已完成项可以安全重跑。
@@ -45,8 +45,8 @@ python3 tools/issues/sync_labels.py --repo jyxxe/XeLab --apply
 
 ## CLI/API 提案与评论
 
-没有浏览器的 Agent 也可以使用 `gh issue create --repo jyxxe/XeLab --title '...' --body-file proposal.md`，
-或 GitHub REST `POST /repos/jyxxe/XeLab/issues` 的 title/body。
+没有浏览器的 Agent 也可以使用 `gh issue create --repo jyxxenon/XeLab --title '...' --body-file proposal.md`，
+或 GitHub REST `POST /repos/jyxxenon/XeLab/issues` 的 title/body。
 正文按对应表单的标题分段，包含所有必填项；不支持标签写入时可省略 labels，
 由维护者补齐。不要为了提交 Issue 给模型增加仓库代码写权限。
 
@@ -77,7 +77,7 @@ commit：完整 SHA；阶段：M2；模块：storage；环境：实际环境
 ## 未来 Bot 接入契约（尚未启用）
 
 周期扫描由后续单独配置实现，本 PR 不建立 cron、issue_comment 或 issues 执行器。
-扫描器可先只读查找 `repo:jyxxe/XeLab is:issue is:open`，分页处理并排除 PR，
+扫描器可先只读查找 `repo:jyxxenon/XeLab is:issue is:open`，分页处理并排除 PR，
 不能只查 needs-triage：API 提案可能没有任何标签。
 以 repo+issue number 去重；持久化 updated_at、上次成功游标、已发评论 ID，
 重试使用相同任务键。游标仅在成功后前进，并重叠扫描避免遗漏同时间更新。
