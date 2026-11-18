@@ -171,6 +171,19 @@ void RunPlugin() {
               StatusCode::OK, "Initialize");
   Check(initialized.initialized() && initialized.observed_generation() == 1,
         "Initialize did not observe the current generation");
+  *initialize.mutable_context() = Context();
+  CheckStatus(lifecycle->Initialize(Call().get(), initialize, &initialized),
+              StatusCode::OK, "Repeat Initialize with the same digest");
+  Check(initialized.initialized() && initialized.observed_generation() == 1,
+        "Repeated Initialize did not confirm the current generation");
+  auto different_config = initialize;
+  *different_config.mutable_context() = Context();
+  different_config.set_config_json("{ }");
+  different_config.set_config_digest(sdk::Digest(different_config.config_json()));
+  CheckStatus(lifecycle->Initialize(Call().get(), different_config, &initialized),
+              StatusCode::FAILED_PRECONDITION,
+              "Initialize with a different digest in the same generation");
+
   rpc::HealthRequest health;
   *health.mutable_context() = Context();
   rpc::HealthResponse ready;
@@ -241,8 +254,25 @@ void RunPlugin() {
   }
   Check(drained.drained() && drained.active_calls() == 0 && !drained.accepting_requests(),
         "Stream cancellation did not release the active slot");
-  CheckStatus(capability->Invoke(Call().get(), echo, &response),
+  const auto after_drain = Invoke(unary_contract, 20, R"({"message":"互操作"})");
+  CheckStatus(capability->Invoke(Call().get(), after_drain, &response),
               StatusCode::UNAVAILABLE, "Invoke after Drain");
+  *initialize.mutable_context() = Context();
+  CheckStatus(lifecycle->Initialize(Call().get(), initialize, &initialized),
+              StatusCode::OK, "Repeat Initialize after Drain");
+  Check(initialized.initialized() && initialized.observed_generation() == 1,
+        "Initialize retry after Drain did not confirm the current generation");
+  *health.mutable_context() = Context();
+  rpc::HealthResponse drained_health;
+  CheckStatus(lifecycle->GetHealth(Call().get(), health, &drained_health),
+              StatusCode::OK, "Health after Drain and repeated Initialize");
+  Check(drained_health.alive() && drained_health.capabilities_size() == ready.capabilities_size(),
+        "Drained workload no longer reports its capabilities");
+  for (const auto& contract : drained_health.capabilities()) {
+    Check(!contract.ready(), "Repeated Initialize restored a drained capability");
+  }
+  CheckStatus(capability->Invoke(Call().get(), after_drain, &response),
+              StatusCode::UNAVAILABLE, "Invoke after Drain and repeated Initialize");
   std::cout << manifest.at("plugin_id").get<std::string>()
             << " passed shared mTLS, Lifecycle, Invoke, stream/error, deadline, cancellation and Drain\n";
 }
