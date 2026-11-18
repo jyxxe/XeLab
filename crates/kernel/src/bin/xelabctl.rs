@@ -142,6 +142,19 @@ fn read_body(path: &str, limit: usize) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
+
+fn http_transport_error(error: reqwest::Error, message: &'static str) -> Error {
+    if error.is_timeout() {
+        Error::new(
+            "DEADLINE_EXCEEDED",
+            message,
+            axum::http::StatusCode::GATEWAY_TIMEOUT,
+        )
+    } else {
+        Error::unavailable(message)
+    }
+}
+
 async fn run(args: Args) -> Result<()> {
     match args.command {
         Cmd::RecoverAccount {
@@ -416,8 +429,11 @@ async fn run(args: Args) -> Result<()> {
                     idempotency_key.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                 );
             }
-            let mut response = request.send().await.map_err(|_| {
-                Error::unavailable("HTTP request failed; operation outcome may need inspection")
+            let mut response = request.send().await.map_err(|error| {
+                http_transport_error(
+                    error,
+                    "HTTP request failed; operation outcome may need inspection",
+                )
             })?;
             let status = response.status();
             if status.is_success() && operation_id == "downloadBlob" {
@@ -432,7 +448,7 @@ async fn run(args: Args) -> Result<()> {
             while let Some(chunk) = response
                 .chunk()
                 .await
-                .map_err(|_| Error::unavailable("HTTP response was interrupted"))?
+                .map_err(|error| http_transport_error(error, "HTTP response was interrupted"))?
             {
                 if body.len() + chunk.len() > 16777216 {
                     return Err(Error::invalid("HTTP response exceeds its limit"));
@@ -484,7 +500,7 @@ async fn download(mut response: reqwest::Response, path: &Path) -> Result<Value>
         while let Some(bytes) = response
             .chunk()
             .await
-            .map_err(|_| Error::unavailable("Blob download was interrupted"))?
+            .map_err(|error| http_transport_error(error, "Blob download was interrupted"))?
         {
             count += bytes.len() as u64;
             if count > size {
