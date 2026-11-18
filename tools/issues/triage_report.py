@@ -92,19 +92,24 @@ def claim_candidates(api, number):
 def duplicate_candidates(issues):
     candidates = []
     by_title = {}
+    normalized_titles = {}
     for issue in issues:
-        by_title.setdefault(normalize_title(issue["title"]), []).append(issue["number"])
+        number = issue["number"]
+        title = normalize_title(issue["title"])
+        normalized_titles[number] = title
+        by_title.setdefault(title, []).append(number)
     for numbers in by_title.values():
         if len(numbers) > 1:
             candidates.append({"kind": "same-normalized-title", "issues": sorted(numbers)})
     for index, left in enumerate(issues):
         for right in issues[index + 1:]:
+            if normalized_titles[left["number"]] == normalized_titles[right["number"]]:
+                continue
             shared = keywords(left["title"]) & keywords(right["title"])
             union = keywords(left["title"]) | keywords(right["title"])
             if len(shared) >= 2 and union and len(shared) / len(union) >= 0.5:
                 pair = sorted((left["number"], right["number"]))
-                if not any(c["kind"] == "same-normalized-title" and c["issues"] == pair for c in candidates):
-                    candidates.append({"kind": "shared-keywords", "issues": pair, "shared": sorted(shared)})
+                candidates.append({"kind": "shared-keywords", "issues": pair, "shared": sorted(shared)})
     candidates.sort(key=lambda c: (c["kind"], c["issues"]))
     return candidates
 
