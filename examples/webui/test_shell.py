@@ -318,6 +318,94 @@ class ShellBrowser(unittest.TestCase):
         self.assertEqual(self.custom_calls[1]["headers"]["if-match"], '"rev-2"')
         self.assertNotEqual(self.custom_calls[0]["headers"]["idempotency-key"], self.custom_calls[1]["headers"]["idempotency-key"])
 
+    def test_launcher_pin_retry_after_etag_mismatch_reads_current_preferences(self):
+        value = self.window_contribution()
+        self.fixture.open()
+        endpoint = desktop.CORE + "/api/platform/v1/me/ui-preferences"
+        writes = []
+
+        def enforce_preference_etag(route):
+            if route.request.method != "PUT":
+                route.fallback()
+                return
+            if not writes:
+                # A second client saves after this tab reads preferences.
+                self.fixture.saved["revision"] += 1
+                self.fixture.saved["spec"]["theme"]["mode"] = "dark"
+            headers = route.request.all_headers()
+            writes.append(headers)
+            revision = self.fixture.saved["revision"]
+            if headers["if-match"] == f'"rev-{revision}"':
+                route.fallback()
+            else:
+                self.reply(route, {"error": {"code": "ETAG_MISMATCH", "message": "Resource revision changed"}}, 412)
+
+        self.page.route(endpoint, enforce_preference_etag)
+        self.open_launcher()
+        title = value["spec"]["title"]
+        pin = self.page.get_by_role("button", name="固定 " + title, exact=True)
+        pin.click()
+        self.page.locator("#toast").get_by_text("ETAG_MISMATCH", exact=False).wait_for()
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(self.fixture.saved["spec"]["dock"]["pinned"], [])
+
+        with self.page.expect_response(lambda response: response.url == endpoint and response.request.method == "PUT") as retry:
+            pin.click()
+        self.assertEqual(retry.value.status, 200)
+        self.assertEqual([write["if-match"] for write in writes], ['"rev-1"', '"rev-2"'])
+        self.assertNotEqual(writes[0]["idempotency-key"], writes[1]["idempotency-key"])
+        spec = self.fixture.saved["spec"]
+        self.assertEqual(spec["dock"]["pinned"], [{"deployment_id": value["deployment_id"], "contribution_id": "main"}])
+        self.assertEqual(spec["theme"]["mode"], "dark")
+
+    def test_widget_retry_keeps_unknown_intent_after_etag_mismatch(self):
+        value = contribution("conflict_widget", "widget")
+        self.fixture.contributions["conflict_widget"] = value
+        self.page.clock.set_fixed_time("2026-11-01T12:00:00Z")
+        self.fixture.refresh_enabled = True
+        self.fixture.open(expires_ms=45000, refresh_token="component-refresh")
+        endpoint = desktop.CORE + "/api/platform/v1/me/ui-preferences"
+        writes = []
+
+        def handle_preference_write(route):
+            request = route.request
+            if request.method != "PUT":
+                route.fallback()
+                return
+            headers = request.all_headers()
+            writes.append((headers, request.post_data))
+            if len(writes) == 1:
+                # The original credential's write commits, but its response is lost.
+                self.fixture.saved["spec"] = json.loads(request.post_data)
+                self.fixture.saved["revision"] += 1
+                route.abort("failed")
+            elif headers["if-match"] == f'"rev-{self.fixture.saved["revision"]}"':
+                route.fallback()
+            else:
+                self.reply(route, {"error": {"code": "ETAG_MISMATCH", "message": "Resource revision changed"}}, 412)
+
+        self.page.route(endpoint, handle_preference_write)
+        self.open_launcher()
+        launch = self.page.get_by_role("button", name="启动贡献 " + value["spec"]["title"], exact=True)
+        launch.click()
+        self.page.locator("#toast").get_by_text("CONNECTION_FAILED", exact=False).wait_for()
+        self.assertEqual(len(writes), 1)
+
+        # Credential rotation means the new credential cannot replay the old write.
+        self.page.clock.set_fixed_time("2026-11-01T12:00:16Z")
+        for _ in range(2):
+            with self.page.expect_response(lambda response: response.url == endpoint and response.request.method == "PUT") as retry:
+                launch.click()
+            self.assertEqual(retry.value.status, 412)
+        self.assertEqual(len(writes), 3)
+        first_headers, first_body = writes[0]
+        for headers, body in writes[1:]:
+            self.assertNotEqual(headers["authorization"], first_headers["authorization"])
+            self.assertEqual(headers["if-match"], first_headers["if-match"])
+            self.assertEqual(headers["idempotency-key"], first_headers["idempotency-key"])
+            self.assertEqual(body, first_body)
+        self.assertEqual(len(self.fixture.saved["spec"]["widgets"]), 1)
+
     def test_closed_launcher_cannot_open_window_after_reopening(self):
         value = self.window_contribution()
         self.fixture.open()
