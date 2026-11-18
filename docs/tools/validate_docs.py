@@ -14,6 +14,8 @@ import sqlite3
 from validate_planned import validate_planned
 from validate_extensions import validate_extensions
 from functools import lru_cache
+from html import unescape
+from unicodedata import category
 from urllib.parse import urlparse, unquote
 
 sys.dont_write_bytecode=True
@@ -47,6 +49,36 @@ def without_code(value):
         if line.strip().startswith(('```','~~~')): fenced=not fenced; continue
         if not fenced: lines.append(line)
     return '\n'.join(lines)
+
+@lru_cache(maxsize=None)
+def markdown_anchors(path):
+    """Collect GitHub-style anchors for the ATX headings used in the docs."""
+    content = without_code(path.read_text())
+    anchors = set()
+    headings = set()
+    for line in content.splitlines():
+        heading = re.match(r'^ {0,3}#{1,6}[ \t]+(.*)$', line)
+        if heading:
+            title = re.sub(r'(?:^|[ \t]+)#+[ \t]*$', '', heading[1]).strip()
+            title = re.sub(r'\[([^\]\n]+)\]\([^\n)]+\)', r'\1', title)
+            slug = ''.join(
+                char for char in unescape(title).lower()
+                if char in ' -_' or category(char)[0] in 'LMN'
+            ).replace(' ', '-')
+            anchor = slug
+            suffix = 0
+            while anchor in headings:
+                suffix += 1
+                anchor = f'{slug}-{suffix}'
+            headings.add(anchor)
+        else:
+            # GitHub permits standalone custom anchors without affecting heading numbering.
+            tag = re.match(r'^ {0,3}<a[ \t]+([^>]+)>', line, re.IGNORECASE)
+            if tag:
+                for _, name in re.findall(r"""(?:^|\s)(?:id|name)\s*=\s*(["'])(.*?)\1""",
+                                          tag[1], re.IGNORECASE):
+                    anchors.add(unescape(name))
+    return anchors | headings
 
 def baseline():
     spec=read(DOCS/'contracts/openapi.json')
@@ -123,18 +155,26 @@ def baseline():
         check((DOCS/'internal'/f'{m["module"]}.md').is_file(),'missing internal module page '+m['module'])
     # Markdown links, page size and reachability.
     md=list(DOCS.rglob('*.md'))+[ROOT/'README.md',ROOT/'plan/v0.md']
+    link_pattern=(
+        r'(?<!!)\[[^\]]*\]\([ \t]*(<[^>\n]+>|(?:[^\s()]|\([^()\n]*\))+)'
+        r'''(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?[ \t]*\)'''
+    )
     graph={}
     for file in md:
         content=file.read_text()
         if 'archive' not in file.parts:
             check(len(content.splitlines())<=220,'human page exceeds 220 lines: '+str(file.relative_to(ROOT)))
         edges=[]
-        for value in re.findall(r'(?<!!)\[[^\]]*\]\(([^\n)]+)\)',without_code(content)):
-            target=value.strip().strip('<>');parsed=urlparse(target)
-            if parsed.scheme or target.startswith('#'):continue
-            destination=(file.parent/unquote(parsed.path)).resolve()
+        for value in re.findall(link_pattern,without_code(content)):
+            target=value.strip('<>');parsed=urlparse(target)
+            if parsed.scheme or parsed.netloc:continue
+            destination=(file.parent/unquote(parsed.path)).resolve() if parsed.path else file.resolve()
             check(destination.exists(),f'broken Markdown link {file.relative_to(ROOT)} -> {target}')
-            if destination.is_file() and destination.suffix=='.md':edges.append(destination)
+            if destination.is_file() and destination.suffix=='.md':
+                if parsed.path:edges.append(destination)
+                if parsed.fragment:
+                    check(unquote(parsed.fragment) in markdown_anchors(destination),
+                          f'broken Markdown fragment {file.relative_to(ROOT)} -> {target}')
         graph[file.resolve()]=edges
     seen=set();pending=[(DOCS/'README.md').resolve()]
     while pending:
