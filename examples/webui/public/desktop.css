@@ -416,7 +416,7 @@ dialog[open]{animation:shell-dialog-in .18s var(--ease-shell)}
   .dock .app-icon svg{width:16px;height:16px}
   .app-grid .app-icon svg{width:19px;height:19px}
   .dock[data-position=left],.dock[data-position=right]{top:auto;right:auto;bottom:8px;left:50%;flex-direction:row;transform:translateX(-50%)}
-  .window{border-radius:12px}
+  .window{border-radius:12px;min-height:0}
   .window-title{height:42px;gap:8px;padding:0 8px}
   .window-controls{gap:4px}
   .window-content{padding:16px}
