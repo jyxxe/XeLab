@@ -481,7 +481,12 @@ function details(title, data) { return openWindow({id:'details',title,render:asy
 async function listSection(win, {title,operation,params={},query={},actions=[],renderItem}) {
   const result = await request(operation,{params,query:{limit:50,...query},signal:win.controller.signal});
   const list = node('div',{class:'list'});
-  const append = data => { for (const item of rows(data)) list.append(renderItem(item)); };
+  const append = data => {
+    for (const item of rows(data)) list.append(renderItem(item));
+    if (!list.childElementCount && !data.next_cursor) {
+      list.append(state('empty','暂无可见项目','当前账户授权范围内没有记录。'));
+    }
+  };
   append(result.data);
   const pageError = node('div', {class:'list-page-error'});
   const more = button('加载下一页',async()=> {
@@ -501,7 +506,6 @@ async function listSection(win, {title,operation,params={},query={},actions=[],r
     }
   }, {'aria-label':`加载下一页${title}`, hidden:!result.data.next_cursor});
   more.dataset.cursor = result.data.next_cursor || '';
-  if (!list.childElementCount) list.append(state('empty','暂无可见项目','当前账户授权范围内没有记录。'));
   win.content.replaceChildren(toolbar(win,title,...actions),list,pageError,more);
 }
 
