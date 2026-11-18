@@ -876,6 +876,38 @@ class ShellBrowser(unittest.TestCase):
         self.assertEqual(keys_window.locator(".state").count(), 0)
         self.assertTrue(more.is_hidden())
 
+    def test_skill_pagination_reports_empty_only_after_exhausting_all_pages(self):
+        self.fixture.open()
+        endpoint = desktop.CORE + "/api/platform/v1/skills?"
+
+        def skill_pages(route):
+            if route.request.method != "GET":
+                route.fallback()
+                return
+            cursor = parse_qs(urlparse(route.request.url).query).get("cursor", [None])[0]
+            if cursor is None:
+                self.reply(route, {"items": [], "next_cursor": "next-skills"})
+            elif terminal_empty:
+                self.reply(route, {"items": [], "next_cursor": None})
+            else:
+                route.fallback()
+
+        self.page.route(lambda url: url.startswith(endpoint), skill_pages)
+        for terminal_empty in (False, True):
+            with self.subTest(terminal_empty=terminal_empty):
+                window = self.fixture.app("Skill")
+                more = window.get_by_role("button", name="加载下一页Skill 浏览器", exact=True)
+                empty = window.get_by_text("暂无可见项目", exact=True)
+                more.wait_for()
+                empty_on_first_page = empty.is_visible()
+
+                more.click()
+                more.wait_for(state="hidden")
+                self.assertEqual(window.get_by_role("heading", name="component.echo", exact=True).is_visible(),
+                                 not terminal_empty)
+                self.assertEqual((empty_on_first_page, empty.is_visible()), (False, terminal_empty))
+            window.get_by_role("button", name="关闭Skill", exact=True).click()
+
     def test_toast_redacts_server_error_messages_across_actions(self):
         value = self.window_contribution("toast-redact")
         self.fixture.open()
