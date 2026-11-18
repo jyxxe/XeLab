@@ -11,7 +11,8 @@ from preflight import build_report, render_text
 ALL_BINARIES = ("ctr", "runc", "ip", "nft", "cargo", "rustc", "psql")
 CGROUP = "/sys/fs/cgroup"
 MEMINFO = "MemTotal:       32768000 kB\nMemFree:        1000000 kB\n"
-SELF_CGROUP = "0::/user.slice/user-1000.slice/session-3.scope\n"
+MEMBER = "/user.slice/user-1000.slice/session-3.scope"
+SELF_CGROUP = f"0::{MEMBER}\n"
 
 
 class FakeProbe:
@@ -59,6 +60,9 @@ class FakeProbe:
 def healthy(**overrides):
     defaults = dict(
         files={CGROUP + "/cgroup.controllers": "cpu memory pids io\n",
+               CGROUP + "/user.slice/cgroup.controllers": "pids\n",
+               CGROUP + "/user.slice/user-1000.slice/cgroup.controllers": "pids\n",
+               CGROUP + MEMBER + "/cgroup.controllers": "",
                "/proc/meminfo": MEMINFO,
                "/proc/self/cgroup": SELF_CGROUP},
         kinds={"/run/containerd/containerd.sock": "socket"},
@@ -111,9 +115,45 @@ class PreflightTests(unittest.TestCase):
         checks = build_report(probe)["checks"]
         self.assertEqual(checks["cgroup_controllers"]["state"], "unavailable")
         self.assertEqual(checks["resources"]["state"], "unavailable")
+        self.assertIsNone(checks["resources"]["effective_cpu_millis"])
+        self.assertIsNone(checks["resources"]["effective_memory_bytes"])
+
+    def test_incomplete_cgroup_view_does_not_publish_effective_capacity(self):
+        member_controllers = CGROUP + MEMBER + "/cgroup.controllers"
+        cases = (
+            ("/proc/self/cgroup", FileNotFoundError(), "unavailable"),
+            ("/proc/self/cgroup", PermissionError(), "unknown"),
+            ("/proc/self/cgroup", "0::\n", "unavailable"),
+            (member_controllers, FileNotFoundError(), "unknown"),
+            (member_controllers, PermissionError(), "unknown"),
+            (CGROUP + "/user.slice/cgroup.controllers", FileNotFoundError(), "unknown"),
+        )
+        for path, content, state in cases:
+            with self.subTest(path=path, content=content):
+                probe = healthy()
+                probe.files[path] = content
+                code, out, err = call_main(probe, "--json")
+                self.assertEqual((code, err), (0, ""))
+                resources = json.loads(out)["checks"]["resources"]
+                self.assertEqual(resources, {
+                    "state": state,
+                    "memtotal_bytes": 32768000 * 1024,
+                    "affinity_cpu_millis": 8000,
+                    "effective_cpu_millis": None,
+                    "effective_memory_bytes": None,
+                })
+
+    def test_visible_root_can_have_no_hard_limits(self):
+        probe = healthy()
+        probe.files["/proc/self/cgroup"] = "0::/\n"
+        resources = build_report(probe)["checks"]["resources"]
+        self.assertEqual(resources["state"], "ok")
+        self.assertEqual(resources["effective_cpu_millis"], 8000)
+        self.assertEqual(resources["effective_memory_bytes"], 32768000 * 1024)
 
     def test_ancestor_limits_cap_effective_resources(self):
         probe = healthy()
+        probe.files[CGROUP + "/user.slice/cgroup.controllers"] = "cpu memory pids\n"
         probe.files[CGROUP + "/user.slice/cpu.max"] = "200000 100000\n"
         probe.files[CGROUP + "/user.slice/memory.max"] = "17179869184\n"
         resources = build_report(probe)["checks"]["resources"]
@@ -135,11 +175,16 @@ class PreflightTests(unittest.TestCase):
         resources = build_report(healthy(affinity_error=True))["checks"]["resources"]
         self.assertEqual(resources["state"], "unknown")
         self.assertIsNone(resources["affinity_cpu_millis"])
+        self.assertIsNone(resources["effective_cpu_millis"])
+        self.assertIsNone(resources["effective_memory_bytes"])
 
     def test_cgroup_path_escape_is_unavailable(self):
         probe = healthy()
         probe.files["/proc/self/cgroup"] = "0::/../../etc\n"
-        self.assertEqual(build_report(probe)["checks"]["resources"]["state"], "unavailable")
+        resources = build_report(probe)["checks"]["resources"]
+        self.assertEqual(resources["state"], "unavailable")
+        self.assertIsNone(resources["effective_cpu_millis"])
+        self.assertIsNone(resources["effective_memory_bytes"])
 
     def test_socket_kinds(self):
         for kind, expected in (("socket", "detected"), ("missing", "unavailable"), ("other", "unavailable"), ("unknown", "unknown")):

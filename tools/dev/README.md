@@ -29,6 +29,10 @@ cpu.max/memory.max 推导的有效值，任一项不可读则有效值为 `unkno
 必需命令（ctr/runc/ip/nft）、构建工具（cargo/rustc）、可选 PostgreSQL 工具（psql）。
 命令存在性依据 [RUN-03 宿主手册](../../docs/implementation/run03-host.md)；存在不等于可执行该验收。
 
+资源检查先确认当前 cgroup 及可见祖先的 `cgroup.controllers` 可读，再汇总该挂载视图中的 CPU 与内存限额。
+无法确认有效容量时，JSON 的 `effective_cpu_millis` 和 `effective_memory_bytes` 为 `null`。
+`memtotal_bytes` 和 `affinity_cpu_millis` 各自保留可读取的原始观测。
+
 ## 测试
 
 ```bash
