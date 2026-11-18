@@ -195,6 +195,32 @@ class ShellVisual(unittest.TestCase):
         )
         self.assertTrue(self.page.get_by_role("button", name="恢复设置", exact=True).is_visible())
 
+    def test_narrow_viewport_round_trip_restores_desktop_window_bounds(self):
+        self.open()
+        window = self.fixture.app("系统状态")
+        bounds = "el => [el.offsetLeft, el.offsetTop, el.offsetWidth, el.offsetHeight]"
+        original = window.evaluate(bounds)
+
+        self.page.set_viewport_size({"width": 390, "height": 540})
+        self.page.evaluate("() => new Promise(resolve => requestAnimationFrame(resolve))")
+        self.assertEqual(window.evaluate(bounds), [6, 6, 378, 400])
+
+        self.page.set_viewport_size({"width": 1280, "height": 900})
+        self.page.evaluate("() => new Promise(resolve => requestAnimationFrame(resolve))")
+        self.assertEqual(window.evaluate(bounds), original)
+
+    def test_narrow_viewport_reload_preserves_saved_desktop_window_rect(self):
+        self.open()
+        window = self.fixture.app("系统状态")
+        key = f"xelab:windows:{desktop.CORE}:browser-component:{desktop.ACCOUNT}"
+        read_rect = "key => JSON.parse(localStorage.getItem(key))[0].rect"
+        original = self.page.evaluate(read_rect, key)
+
+        self.page.set_viewport_size({"width": 390, "height": 540})
+        self.page.reload()
+        window.wait_for()
+        self.assertEqual(self.page.evaluate(read_rect, key), original)
+
     def test_closing_stacked_window_focuses_topmost_remaining_z_order(self):
         self.open()
         self.fixture.app("系统状态")
