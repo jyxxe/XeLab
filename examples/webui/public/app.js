@@ -73,6 +73,7 @@ const baseTokens = {
 let preview = defaults();
 const mediaDark = matchMedia('(prefers-color-scheme: dark)');
 const mediaMotion = matchMedia('(prefers-reduced-motion: reduce)');
+const mediaNarrow = matchMedia('(max-width:650px)');
 
 function toast(message) {
   $('#toast').textContent = message;
@@ -231,9 +232,12 @@ function applyTheme() {
   document.documentElement.dataset.theme = mode;
   document.documentElement.classList.toggle('reduced-motion', preview.theme.reduce_motion || mediaMotion.matches);
   document.documentElement.classList.toggle('reduced-transparency', preview.theme.reduce_transparency);
-  $('#dock').dataset.position = preview.dock.position;
-  $('#dock').dataset.autoHide = String(preview.dock.auto_hide);
+  const dock = $('#dock');
+  const dockMoved = dock.dataset.position !== preview.dock.position;
+  dock.dataset.position = preview.dock.position;
+  dock.dataset.autoHide = String(preview.dock.auto_hide);
   renderDock();
+  if (dockMoved) fitWindows();
   for(const win of windows.values())win.bridge?.themeChanged();
   for(const widget of widgetViews.values())widget.bridge?.themeChanged();
 }
@@ -244,23 +248,64 @@ function bridgeTheme(){
 mediaDark.addEventListener('change', applyTheme);
 mediaMotion.addEventListener('change', applyTheme);
 
-function workspace() { return {width: $('#windows').clientWidth, height: $('#windows').clientHeight}; }
-function fit(win) {
-  const area = workspace();
-  if (win.maximized) Object.assign(win.element.style, {left:'6px', top:'6px', width:`${Math.max(300, area.width-12)}px`, height:`${Math.max(240, area.height-12)}px`});
-  else {
-    const r = win.rect;
-    // Narrow layout is sized by CSS. Keep the desktop bounds for restoration.
-    if (!matchMedia('(max-width:650px)').matches) {
-      const limits=win.contribution?.spec.window;
-      r.width = Math.min(area.width-12, Math.max(limits?.min_width||300, Math.min(r.width,limits?.max_width||4096)));
-      r.height = Math.min(area.height-12, Math.max(limits?.min_height||240, Math.min(r.height,limits?.max_height||2160)));
-      r.x = Math.max(6, Math.min(r.x, Math.max(6, area.width-r.width-6)));
-      r.y = Math.max(6, Math.min(r.y, Math.max(6, area.height-r.height-6)));
-    }
-    Object.assign(win.element.style, {left:`${r.x}px`, top:`${r.y}px`, width:`${r.width}px`, height:`${r.height}px`});
+function workspace() {
+  const container = $('#windows');
+  const dock = $('#dock');
+  const {clientWidth:width, clientHeight:height} = container;
+  const area = {width,height,left:0,right:width};
+  const position = dock.dataset.position;
+  if (!mediaNarrow.matches && ['left','right'].includes(position)) {
+    const origin = container.getBoundingClientRect().left;
+    const bounds = dock.getBoundingClientRect();
+    if (position === 'left') area.left = Math.ceil(bounds.right - origin);
+    else area.right = Math.floor(bounds.left - origin);
   }
+  return area;
+}
+function fit(win, area = workspace()) {
+  let r = win.rect;
+  const availableWidth = area.right - area.left - 12;
+  if (win.maximized) {
+    r = {x:area.left+6, y:6, width:Math.max(300, availableWidth), height:Math.max(240, area.height-12)};
+  } else if (!mediaNarrow.matches) {
+    const limits=win.contribution?.spec.window;
+    r.width = Math.min(area.width-12, Math.max(limits?.min_width||300, Math.min(r.width,limits?.max_width||4096)));
+    r.height = Math.min(area.height-12, Math.max(limits?.min_height||240, Math.min(r.height,limits?.max_height||2160)));
+    r.x = Math.max(6, Math.min(r.x, Math.max(6, area.width-r.width-6)));
+    r.y = Math.max(6, Math.min(r.y, Math.max(6, area.height-r.height-6)));
+    // Side Dock space only changes the displayed bounds. Narrow layout uses CSS.
+    const width = Math.min(r.width, availableWidth);
+    const x = Math.max(area.left+6, Math.min(r.x, area.right-width-6));
+    r = {...r,width,x};
+  }
+  Object.assign(win.element.style, {left:`${r.x}px`, top:`${r.y}px`, width:`${r.width}px`, height:`${r.height}px`});
   win.bridge?.viewportChanged();
+  return r;
+}
+function fitWindows() {
+  const area = workspace();
+  for (const win of windows.values()) fit(win, area);
+}
+new ResizeObserver(() => {
+  if (!mediaNarrow.matches && ['left','right'].includes($('#dock').dataset.position)) fitWindows();
+}).observe($('#dock'), {box:'border-box'});
+
+function displayedWindowRect(win) {
+  const {offsetLeft:x, offsetTop:y, offsetWidth:width, offsetHeight:height} = win.element;
+  return {x,y,width,height};
+}
+function adjustWindow(win, changes, resizeStartX) {
+  const before = displayedWindowRect(win);
+  const saved = {...win.rect};
+  const resizesWidth = Object.hasOwn(changes, 'width');
+  Object.assign(win.rect, changes);
+  if (resizesWidth) win.rect.x = resizeStartX ?? before.x;
+  const displayed = fit(win);
+  // Keep the saved geometry when the Dock blocks a move or resize.
+  for (const key of Object.keys(changes)) {
+    win.rect[key] = displayed[key] === before[key] ? saved[key] : displayed[key];
+  }
+  if (resizesWidth) win.rect.x = displayed.width === before.width ? saved.x : displayed.x;
 }
 function focusTitle(win) {
   win?.element.querySelector('.window-title')?.focus();
@@ -287,7 +332,7 @@ function topmostWindow(exclude = null) {
   return top;
 }
 function focus(win, persist = true) {
-  if (matchMedia('(max-width:650px)').matches) for (const other of windows.values()) {other.element.hidden = other !== win;other.bridge?.setVisible(other===win&&document.visibilityState==='visible');}
+  if (mediaNarrow.matches) for (const other of windows.values()) {other.element.hidden = other !== win;other.bridge?.setVisible(other===win&&document.visibilityState==='visible');}
   win.minimized = false;
   win.bridge?.setVisible(document.visibilityState==='visible');
   win.element.hidden = false;
@@ -339,20 +384,29 @@ function closeWindow(win, persist = true) {
   handOffFocus(win, {hadFocus, wasFocused, persist});
 }
 function canAdjustWindow(win) {
-  return !win.maximized && !matchMedia('(max-width:650px)').matches;
+  return !win.maximized && !mediaNarrow.matches;
 }
 function pointerMove(win, handle, resize) {
   handle.addEventListener('pointerdown', event => {
     if (event.button !== 0 || (!resize && event.target.closest('button'))) return;
     if (!canAdjustWindow(win) || (resize && win.contribution?.spec.window.resizable === false)) return;
     focus(win);
-    const start = {x:event.clientX,y:event.clientY,...win.rect};
+    const start = displayedWindowRect(win);
+    const saved = {...win.rect};
+    const horizontal = resize ? 'width' : 'x';
+    const vertical = resize ? 'height' : 'y';
     const pointerX = event.clientX, pointerY = event.clientY;
     handle.setPointerCapture(event.pointerId);
     const move = next => {
-      if (resize) Object.assign(win.rect, {width:start.width+next.clientX-pointerX,height:start.height+next.clientY-pointerY});
-      else Object.assign(win.rect, {x:start.x+next.clientX-pointerX,y:start.y+next.clientY-pointerY});
-      fit(win);
+      if (!canAdjustWindow(win)) return;
+      const dx = next.clientX - pointerX, dy = next.clientY - pointerY;
+      const changes = {};
+      if (dx) changes[horizontal] = start[horizontal] + dx;
+      else win.rect[horizontal] = saved[horizontal];
+      if (dy) changes[vertical] = start[vertical] + dy;
+      else win.rect[vertical] = saved[vertical];
+      if (resize && !dx) win.rect.x = saved.x;
+      adjustWindow(win, changes, start.x);
     };
     const done = () => { handle.removeEventListener('pointermove',move); handle.removeEventListener('pointerup',done); handle.removeEventListener('pointercancel',done); saveLayout(); };
     handle.addEventListener('pointermove',move);
@@ -378,8 +432,7 @@ function openWindow(app, options = {}) {
     if (!canAdjustWindow(win)) return;
     const horizontal = ['ArrowLeft','ArrowRight'].includes(event.key), delta = ['ArrowLeft','ArrowUp'].includes(event.key) ? -20 : 20;
     const key = event.shiftKey ? (horizontal ? 'width' : 'height') : (horizontal ? 'x' : 'y');
-    win.rect[key] += delta;
-    fit(win);
+    adjustWindow(win, {[key]:displayedWindowRect(win)[key]+delta});
     saveLayout();
   });
   const resize = button('', ()=>{}, {class:'window-resize', 'aria-label':`调整${app.title}大小`});
@@ -388,8 +441,10 @@ function openWindow(app, options = {}) {
     if(win.contribution?.spec.window.resizable===false)return;
     event.preventDefault();
     if (!canAdjustWindow(win)) return;
-    win.rect[['ArrowLeft','ArrowRight'].includes(event.key) ? 'width' : 'height'] += ['ArrowLeft','ArrowUp'].includes(event.key) ? -20 : 20;
-    fit(win); saveLayout();
+    const key = ['ArrowLeft','ArrowRight'].includes(event.key) ? 'width' : 'height';
+    const delta = ['ArrowLeft','ArrowUp'].includes(event.key) ? -20 : 20;
+    adjustWindow(win, {[key]:displayedWindowRect(win)[key]+delta});
+    saveLayout();
   });
   element.append(resize);
   element.addEventListener('pointerdown',()=>focus(win));
@@ -411,7 +466,8 @@ function openWindow(app, options = {}) {
   return win;
 }
 window.addEventListener('resize',()=> {
-  const narrow=matchMedia('(max-width:650px)').matches;
+  const narrow=mediaNarrow.matches;
+  const area = workspace();
   const available=[...windows.values()].filter(win=>!win.minimized);
   // Fall back to the topmost remaining window if no open window holds focus,
   // without changing its saved layout.
@@ -421,7 +477,7 @@ window.addEventListener('resize',()=> {
     $('#active-app').textContent=active?.app.title||'桌面';
   }
   for(const win of windows.values()){
-    fit(win);
+    fit(win, area);
     win.element.hidden=win.minimized||(narrow&&win!==active);
     win.bridge?.setVisible(!win.element.hidden&&document.visibilityState==='visible');
   }
