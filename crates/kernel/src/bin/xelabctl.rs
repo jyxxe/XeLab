@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use std::{
+    collections::HashSet,
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     time::Duration,
@@ -315,6 +316,12 @@ async fn run(args: Args) -> Result<()> {
             }
             let (mut route, method, op) =
                 selected.ok_or_else(|| Error::invalid("Unknown operationId"))?;
+            let parameters = op["parameters"].as_array().unwrap();
+            let mut path_parameters: HashSet<_> = parameters
+                .iter()
+                .filter(|parameter| parameter["in"] == "path")
+                .filter_map(|parameter| parameter["name"].as_str())
+                .collect();
             for item in path {
                 let (k, v) = item
                     .split_once('=')
@@ -322,9 +329,12 @@ async fn run(args: Args) -> Result<()> {
                 if v.contains(['/', '?', '#', '%']) {
                     return Err(Error::invalid("Invalid path argument"));
                 }
+                if !path_parameters.remove(k) {
+                    return Err(Error::invalid("Unknown or repeated path argument"));
+                }
                 route = route.replace(&format!("{{{k}}}"), v);
             }
-            if route.contains('{') {
+            if !path_parameters.is_empty() || route.contains('{') {
                 return Err(Error::invalid("Missing path argument"));
             }
             let mut url = xelab_kernel::config::checked_origin(&endpoint)?;
@@ -418,12 +428,7 @@ async fn run(args: Args) -> Result<()> {
             if let Some(value) = if_match {
                 request = request.header("if-match", value);
             }
-            if op["parameters"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|p| p["name"] == "Idempotency-Key")
-            {
+            if parameters.iter().any(|p| p["name"] == "Idempotency-Key") {
                 request = request.header(
                     "idempotency-key",
                     idempotency_key.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
