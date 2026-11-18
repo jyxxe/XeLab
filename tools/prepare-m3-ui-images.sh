@@ -35,6 +35,7 @@ openssl pkey -inform DER -in "$private_dir/publisher.der" -out "$private_dir/pub
 publisher=00000000-0000-4000-8000-000000000001
 python3 examples/webui/build_artifact.py --publisher-id "$publisher" --platform "$platform" --output examples/webui/generated-m3-ui
 python3 examples/ui-reference/build_artifact.py --publisher-id "$publisher" --platform "$platform" --output examples/ui-reference/generated-m3-ui
+env_entries=()
 for plugin in webui ui-reference; do
   tag="docker.io/xelab-ci/m3-$plugin:test"
   artifact="examples/$plugin/generated-m3-ui"
@@ -55,16 +56,14 @@ for plugin in webui ui-reference; do
   ctr_test images tag "$tag" "$image"
   python3 examples/echo/sign_artifact.py --manifest "$artifact/xelab/plugin.json" --image "$image" --key "$private_dir/publisher.key" > "$artifact/install.json"
   if [[ "$plugin" == webui ]]; then variable=XELAB_TEST_WEBUI_IMAGE; else variable=XELAB_TEST_UI_REFERENCE_IMAGE; fi
-  python3 - "$env_file" "$variable" "$image" <<'PY'
-import os,sys
-fd=os.open(sys.argv[1],os.O_WRONLY|os.O_APPEND|os.O_CREAT|os.O_NOFOLLOW,0o600)
-with os.fdopen(fd,'a') as output: output.write(sys.argv[2]+'='+sys.argv[3]+'\n')
-PY
+  env_entries+=("$variable=$image")
   echo "$variable=$image"
 done
-python3 - "$env_file" "$namespace" <<'PY'
+# Only publish the image pair once both signed artifacts are ready.
+env_entries+=("XELAB_M3_UI_NAMESPACE=$namespace" "XELAB_M3_UI_TEST=1")
+python3 - "$env_file" "${env_entries[@]}" <<'PY'
 import os,sys
 fd=os.open(sys.argv[1],os.O_WRONLY|os.O_APPEND|os.O_CREAT|os.O_NOFOLLOW,0o600)
 with os.fdopen(fd,'a') as output:
-    output.write('XELAB_M3_UI_NAMESPACE='+sys.argv[2]+'\nXELAB_M3_UI_TEST=1\n')
+    output.write('\n'.join(sys.argv[2:])+'\n')
 PY
