@@ -2,9 +2,22 @@
 
 [文档总目录](../README.md)
 
-> 规格版本：2.8.0；状态：待实现的规范性设计。MUST/必须表示实现及验收要求，不能理解为现有功能。
+> 规格版本 2.8.0。当前用法以仓库中的 `xelabctl` 为准。后续规格章节用于设计和验收。
 
-## 通用 API 命令
+## 当前用法
+
+从仓库根目录构建 CLI，通过 HTTPS 读取节点状态。`session.token` 为当前操作者的凭证文件，`core-ca.pem` 为服务器证书的受信任 CA。 [构建和运行指南](../../crates/kernel/README.md)
+
+```sh
+cargo build --locked --bin xelabctl
+target/debug/xelabctl api getNode \
+  --endpoint https://kernel.example.org:8443 \
+  --ca-file core-ca.pem --token-file session.token
+```
+
+命令将 JSON 响应写到 stdout，将错误诊断写到 stderr。用 `xelabctl --help` 查看当前宿主命令，用 `xelabctl api --help` 查看 API 选项。
+
+## 通用 API 规格
 
 ```text
 xelabctl [--endpoint URL | --socket PATH] [--token-file PATH]
@@ -18,7 +31,7 @@ OPERATION_ID 必须来自 [HTTP 目录](../api/README.md)，参数名与 Schema 
 
 token-file 必须为仅本人可读文件；body-file=- 从 stdin 读取，密码和 secret 不放命令行参数。TLS 默认验证；socket 来源也需映射到经批准宿主身份或用户凭证，不能对任意 localhost 进程放行。
 
-## 宿主专用命令
+## 宿主专用命令规格
 
 | 命令 | 参数 | 输入/输出及权限 |
 |---|---|---|
@@ -33,5 +46,3 @@ bootstrap 只成功一次；recover-owner 不能与活动迁移/恢复事务并�
 ## 退出码
 
 0 成功；2 参数/Schema 错误；3 未认证；4 无权；5 状态/版本冲突；6 超时或结果未知；7 资源/服务不可用；8 内部错误。收到 202 默认输出 Operation 不等待；需要轮询由 `api getOperation` 明确执行。
-
-CLI 规范为待实现接口；仓库当前没有可执行 xelabctl 二进制。
