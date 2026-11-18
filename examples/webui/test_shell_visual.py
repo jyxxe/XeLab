@@ -403,6 +403,46 @@ class ShellVisual(unittest.TestCase):
         self.assertEqual(self.page.evaluate(
             "() => getComputedStyle(document.querySelector('.menubar')).height"), "44px")
 
+    def window_rect(self, window):
+        return window.evaluate("el => ['left', 'top', 'width', 'height'].map(key => parseInt(el.style[key], 10))")
+
+    def test_maximized_window_shortcuts_preserve_restore_geometry(self):
+        self.open()
+        window = self.fixture.app("系统状态")
+        title = window.locator(".window-title")
+        resize = window.get_by_role("button", name="调整系统状态大小", exact=True)
+        maximize = window.get_by_role("button", name="最大化或恢复系统状态", exact=True)
+        x, y, width, height = self.window_rect(window)
+
+        title.press("Alt+ArrowRight")
+        title.press("Alt+Shift+ArrowDown")
+        resize.press("ArrowRight")
+        expected = [x + 20, y, width + 20, height + 20]
+        self.assertEqual(self.window_rect(window), expected)
+
+        maximize.click()
+        maximized = self.window_rect(window)
+        self.assertNotEqual(maximized, expected)
+        title.press("Alt+ArrowRight")
+        title.press("Alt+Shift+ArrowDown")
+        resize.press("ArrowRight")
+        self.assertEqual(self.window_rect(window), maximized)
+
+        maximize.click()
+        self.assertEqual(self.window_rect(window), expected)
+
+    def test_narrow_window_shortcuts_do_not_change_desktop_geometry(self):
+        self.open()
+        self.page.set_viewport_size({"width": 640, "height": 900})
+        window = self.fixture.app("系统状态")
+        title = window.locator(".window-title")
+        expected = self.window_rect(window)
+        title.press("Alt+ArrowDown")
+        title.press("Alt+Shift+ArrowUp")
+
+        self.page.set_viewport_size({"width": 1280, "height": 900})
+        self.assertEqual(self.window_rect(window), expected)
+
     def open_builtin(self, title, launcher=False):
         if launcher:
             self.page.get_by_role("button", name="打开应用启动器", exact=True).click()
