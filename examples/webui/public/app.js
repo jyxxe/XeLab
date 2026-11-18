@@ -652,12 +652,13 @@ async function preferenceMutation(intentId,mutate,sourceCurrent){
   const current=()=>epoch===sessionEpoch&&(sourceCurrent?.()??true);
   if(!current())return;
   let intent=widgetIntents.get(intentId);
+  const retrying=Boolean(intent);
   if(!intent){
     const loaded=await request('getMyUiPreferences');
     if(!current())return;
     const body=structuredClone(loaded.data.spec);
-    const onDispatch=mutate(body);
-    intent={body,etag:loaded.etag||revision(loaded.data),key:crypto.randomUUID(),onDispatch};
+    const {onDispatch,onEtagMismatch}=mutate(body)??{};
+    intent={body,etag:loaded.etag||revision(loaded.data),key:crypto.randomUUID(),onDispatch,onEtagMismatch};
   }
   const beforeFetch=()=>{
     if(!current())throw new ApiError('CANCELED','偏好操作的来源已关闭。');
@@ -665,7 +666,18 @@ async function preferenceMutation(intentId,mutate,sourceCurrent){
     intent.onDispatch?.();
     widgetIntents.set(intentId,intent);
   };
-  const saved=await request('setMyUiPreferences',{body:intent.body,etag:intent.etag,idempotencyKey:intent.key,beforeFetch});
+  let saved;
+  try {
+    saved=await request('setMyUiPreferences',{body:intent.body,etag:intent.etag,idempotencyKey:intent.key,beforeFetch});
+  } catch (error) {
+    // A first-attempt ETag rejection confirms the write did not happen.
+    // A retry may no longer have access to an earlier committed result.
+    if (!retrying && error?.status === 412 && error.code === 'ETAG_MISMATCH') {
+      if (widgetIntents.get(intentId) === intent) widgetIntents.delete(intentId);
+      intent.onEtagMismatch?.();
+    }
+    throw error;
+  }
   widgetIntents.delete(intentId);preferences=saved.data;preferenceEtag=saved.etag||revision(saved.data);preview=structuredClone(saved.data.spec);applyTheme();await renderWidgets();await resolveDockPins();renderLauncher();
 }
 async function widgetMutation(intentId,mutate,sourceCurrent){return preferenceMutation(intentId,body=>mutate(body.widgets),sourceCurrent);}
@@ -733,7 +745,10 @@ async function addWidget(value,sourceCurrent){
     while(items.some(other=>overlaps(placement,other))&&placement.row<255)placement.row++;
     if(items.some(other=>overlaps(placement,other)))throw new Error('当前网格没有可用位置，请先调整组件布局。');
     items.push(placement);
-    return()=>widgetPinned.set(id,fixed);
+    return {
+      onDispatch: () => widgetPinned.set(id, fixed),
+      onEtagMismatch: () => widgetPinned.delete(id),
+    };
   },sourceCurrent);
 }
 function overlaps(left,right){return left.column<right.column+right.columns&&left.column+left.columns>right.column&&left.row<right.row+right.rows&&left.row+left.rows>right.row;}
