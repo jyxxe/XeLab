@@ -90,13 +90,14 @@ def effective_resources(probe):
         cpu = probe.affinity() * 1000
     except OSError:
         cpu = None
-    result = {"memtotal_bytes": memory, "affinity_cpu_millis": cpu, "effective_cpu_millis": cpu, "effective_memory_bytes": memory}
+    result = {"memtotal_bytes": memory, "affinity_cpu_millis": cpu,
+              "effective_cpu_millis": None, "effective_memory_bytes": None}
     if memory is None or cpu is None:
         return dict(result, state="unknown" if state != "missing" else "unavailable")
     state, content = read_optional(probe, "/proc/self/cgroup")
     if state != "ok":
         return dict(result, state="unavailable" if state == "missing" else "unknown")
-    relative = next((line[3:] for line in content.splitlines() if line.startswith("0::")), None)
+    relative = next((line[3:] for line in content.splitlines() if line.startswith("0::/")), None)
     if relative is None:
         return dict(result, state="unavailable")
     current = (CGROUP_ROOT / relative.lstrip("/")).resolve()
@@ -106,6 +107,10 @@ def effective_resources(probe):
     for ancestor in [current, *current.parents]:
         if not ancestor.is_relative_to(CGROUP_ROOT):
             break
+        # Confirm the group is visible before interpreting absent limit files.
+        state, _ = read_optional(probe, ancestor / "cgroup.controllers")
+        if state != "ok":
+            return dict(result, state="unknown")
         state, content = read_optional(probe, ancestor / "cpu.max")
         if state == "unknown":
             unknown = True
