@@ -33,6 +33,8 @@ python3 docs/tools/render_reference.py
 python3 docs/tools/validate_docs.py
 ```
 
+Markdown 链接检查覆盖内联链接的相对路径、井号标题生成的 GitHub 锚点及独立的 `<a name>` 和 `<a id>` 锚点。Markdown 片段支持百分号编码。
+
 严格模式额外校验 OpenAPI、所有 JSON Schema、请求与手工样例、TOML、Proto 编译及方法集合、SQL 语法。所有检查均只读，不连接部署、运行插件或应用数据库迁移。
 
 api/、rpc/ 为生成区域；渲染器清理不再属于规范的生成页，不适合放手写说明。主题设计在 architecture/、identity/ 等目录维护。
