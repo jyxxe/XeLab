@@ -515,22 +515,37 @@ function editor(title, operation, {params={}, initial={}, etag, body=true, note=
   return openWindow({id:`editor-${operation}`,title,render:async win => {
     const key = crypto.randomUUID();
     const input = node('textarea',{'aria-label':'请求 JSON',spellcheck:false},JSON.stringify(initial,null,2));
+    const retryNote = node('p',{class:'muted',hidden:true},'再次提交会重发原请求。需要更改时，请先核实结果，再打开新的编辑器。');
     const outcome = node('div',{'aria-live':'polite'});
+    let intent = null;
     const submit = button('提交',async()=> {
       if(win.credentialChanged){toast('原请求来源已改变，请先核实结果。');return;}
-      let value;
-      try { value = body ? JSON.parse(input.value) : undefined; } catch { outcome.replaceChildren(state('error','JSON 格式错误','请修正后再提交。'));return; }
+      const retrying = intent !== null;
+      if (!retrying) {
+        try { intent = {body:body ? JSON.parse(input.value) : undefined}; }
+        catch { outcome.replaceChildren(state('error','JSON 格式错误','请修正后再提交。'));return; }
+      }
+      let sent = false;
+      input.readOnly = true;
       submit.disabled = true;
       outcome.replaceChildren(state('loading','请求中…','请保留原请求键，网络失败不等于操作回滚。'));
       try {
-        const options={params,body:value,etag,idempotencyKey:key,signal:win.controller.signal};
-        if(operation==='invokeSkill')options.waitBudgetMs=skillWaitBudget(value);
+        const options={params,body:intent.body,etag,idempotencyKey:key,signal:win.controller.signal,beforeFetch:()=> { sent = true; }};
+        if(operation==='invokeSkill')options.waitBudgetMs=skillWaitBudget(intent.body);
         const result = await request(operation,options);
         outcome.replaceChildren(node('p',{},'核心已返回以下实际结果；异步 Operation 尚需检查其终态。'),raw(result.data));
-      } catch (error) { outcome.replaceChildren(failure(error)); }
-      finally { submit.disabled = Boolean(win.credentialChanged); }
+      } catch (error) {
+        // Skill errors can carry a Call ID even when they have status 400.
+        const invalidInput = error?.status === 400 && error.detail?.code === 'INVALID_ARGUMENT' && error.detail.resource_id === null;
+        if (!retrying && (!sent || invalidInput)) intent = null;
+        outcome.replaceChildren(failure(error));
+      } finally {
+        input.readOnly = intent !== null;
+        retryNote.hidden = intent === null;
+        submit.disabled = Boolean(win.credentialChanged);
+      }
     },{class:'primary','data-intent-submit':true});
-    win.content.replaceChildren(node('div',{class:'editor-form'},node('p',{class:'muted'},note),...(body?[node('label',{},'请求 JSON',input)]:[]),node('p',{class:'code'},`幂等键：${key}`),submit,outcome));
+    win.content.replaceChildren(node('div',{class:'editor-form'},node('p',{class:'muted'},note),...(body?[node('label',{},'请求 JSON',input)]:[]),node('p',{class:'code'},`幂等键：${key}`),submit,retryNote,outcome));
   }},{ephemeral:true});
 }
 function details(title, data) { return openWindow({id:'details',title,render:async win=>win.content.replaceChildren(raw(data))},{ephemeral:true}); }
