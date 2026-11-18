@@ -24,9 +24,17 @@ struct Echo {
     results: Arc<RwLock<std::collections::HashMap<String, SavedResult>>>,
     effects: Arc<AtomicU64>,
     cells: Arc<RwLock<std::collections::BTreeMap<String, String>>>,
-    active_streams: Arc<RwLock<std::collections::HashMap<String, watch::Sender<bool>>>>,
+    active_streams: Arc<RwLock<std::collections::HashMap<String, watch::Sender<StreamSignal>>>>,
     health_observed: watch::Sender<u64>,
 }
+
+#[derive(Clone, Copy)]
+enum StreamSignal {
+    Running,
+    Cancel,
+    Drain,
+}
+
 #[derive(Clone)]
 struct SavedResult {
     key: String,
@@ -147,7 +155,7 @@ impl PluginLifecycle for Echo {
         self.draining.store(true, Ordering::SeqCst);
         let active = self.active_streams.read().await;
         for cancellation in active.values() {
-            let _ = cancellation.send(true);
+            let _ = cancellation.send(StreamSignal::Drain);
         }
         Ok(Response::new(rpc::DrainResponse {
             accepting_requests: false,
@@ -316,13 +324,15 @@ impl CapabilityService for Echo {
                 .unwrap_or(0),
         );
         let fault = input["fault"].as_str().unwrap_or("none").to_owned();
+        let confirm_cancellation = cap["side_effect"] == "none" && fault == "none";
         let message = input["message"].as_str().unwrap().to_owned();
         let call = request.call_id;
+        let request_id = context.request_id.clone();
         let key = context.idempotency_key.clone();
         let input_digest = request.input_digest;
         let deadline = context.deadline_unix_ms;
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        let (cancellation, mut canceled) = watch::channel(false);
+        let (cancellation, mut canceled) = watch::channel(StreamSignal::Running);
         let mut active = self.active_streams.write().await;
         if active.len() >= 4 || active.contains_key(&call) {
             return Err(Status::resource_exhausted("Stream capacity unavailable"));
@@ -340,36 +350,53 @@ impl CapabilityService for Echo {
         tokio::spawn(async move {
             let produce = async {
                 for index in 0..count {
-                    tokio::select! {
-                        _ = sender.closed() => return,
-                        _ = canceled.changed() => return,
-                        _ = tokio::time::sleep(delay) => (),
-                    }
-                    if this.draining.load(Ordering::SeqCst)
-                        || chrono::Utc::now().timestamp_millis() >= deadline
-                    {
-                        return;
-                    }
-                    let item = if fault == "item" && index == 0 {
-                        serde_json::json!({"index":"invalid","message":message})
-                    } else {
-                        serde_json::json!({"index":index,"message":message})
-                    };
-                    let sequence = index + 1 + u64::from(fault == "sequence" && index > 0);
-                    let chunk = rpc::InvokeChunk {
-                        call_id: if fault == "call-id" && index == 0 {
-                            uuid::Uuid::nil().to_string()
+                    let emit_item = async {
+                        tokio::time::sleep(delay).await;
+                        if this.draining.load(Ordering::SeqCst)
+                            || chrono::Utc::now().timestamp_millis() >= deadline
+                        {
+                            return false;
+                        }
+                        let item = if fault == "item" && index == 0 {
+                            serde_json::json!({"index":"invalid","message":message})
                         } else {
-                            call.clone()
-                        },
-                        sequence,
-                        body: Some(rpc::invoke_chunk::Body::ItemJson(
-                            serde_json::to_vec(&item).unwrap(),
-                        )),
+                            serde_json::json!({"index":index,"message":message})
+                        };
+                        let sequence = index + 1 + u64::from(fault == "sequence" && index > 0);
+                        let chunk = rpc::InvokeChunk {
+                            call_id: if fault == "call-id" && index == 0 {
+                                uuid::Uuid::nil().to_string()
+                            } else {
+                                call.clone()
+                            },
+                            sequence,
+                            body: Some(rpc::invoke_chunk::Body::ItemJson(
+                                serde_json::to_vec(&item).unwrap(),
+                            )),
+                        };
+                        sender.send(Ok(chunk)).await.is_ok()
                     };
                     tokio::select! {
-                        _ = canceled.changed() => return,
-                        sent = sender.send(Ok(chunk)) => if sent.is_err() { return; },
+                        biased;
+                        _ = sender.closed() => return,
+                        _ = canceled.changed() => {
+                            let explicit = matches!(*canceled.borrow(), StreamSignal::Cancel);
+                            if confirm_cancellation && explicit
+                                && chrono::Utc::now().timestamp_millis() < deadline
+                            {
+                                let terminal = rpc::InvokeChunk {
+                                    call_id: call.clone(),
+                                    sequence: index + 1,
+                                    body: Some(rpc::invoke_chunk::Body::Canceled(rpc::Ack {
+                                        request_id: request_id.clone(),
+                                        accepted: true,
+                                    })),
+                                };
+                                let _ = sender.send(Ok(terminal)).await;
+                            }
+                            return;
+                        }
+                        emitted = emit_item => if !emitted { return; },
                     }
                 }
                 if fault == "missing-terminal" {
@@ -468,7 +495,7 @@ impl CapabilityService for Echo {
     ) -> Result<Response<rpc::Ack>, Status> {
         let request = r.into_inner();
         if let Some(cancellation) = self.active_streams.read().await.get(&request.call_id) {
-            let _ = cancellation.send(true);
+            let _ = cancellation.send(StreamSignal::Cancel);
         }
         Ok(Response::new(rpc::Ack {
             request_id: request.context.map(|c| c.request_id).unwrap_or_default(),
@@ -535,6 +562,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::StreamExt;
     use serde_json::json;
 
     fn fixture(effect: &str) -> (Echo, rpc::InvokeRequest) {
@@ -589,6 +617,64 @@ mod tests {
         .unwrap();
         request.input_digest = digest(&request.input_json);
         (echo, request)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn explicit_stream_cancel_emits_terminal_only_for_pure_echo() {
+        for effect in ["none", "queryable"] {
+            let (echo, mut request) = fixture(effect);
+            request.input_json = serde_json::to_vec(
+                &json!({"message":"cancel after one item", "count":4, "delay_ms":500}),
+            )
+            .unwrap();
+            request.input_digest = digest(&request.input_json);
+            let call_id = request.call_id.clone();
+            let request_id = request.context.as_ref().unwrap().request_id.clone();
+            let mut stream = echo
+                .invoke_stream(Request::new(request))
+                .await
+                .unwrap()
+                .into_inner();
+            let first = stream.next().await.unwrap().unwrap();
+            assert_eq!(first.call_id, call_id);
+            assert_eq!(first.sequence, 1);
+            assert!(matches!(
+                first.body,
+                Some(rpc::invoke_chunk::Body::ItemJson(_))
+            ));
+
+            let cancel = rpc::CancelCallRequest {
+                context: Some(xelab_kernel::controller::context(None)),
+                call_id: call_id.clone(),
+            };
+            assert!(
+                echo.cancel(Request::new(cancel))
+                    .await
+                    .unwrap()
+                    .into_inner()
+                    .accepted
+            );
+            if effect == "none" {
+                let terminal = stream
+                    .next()
+                    .await
+                    .expect("missing canceled terminal")
+                    .unwrap();
+                assert_eq!(terminal.call_id, call_id);
+                assert_eq!(terminal.sequence, 2);
+                assert_eq!(
+                    terminal.body,
+                    Some(rpc::invoke_chunk::Body::Canceled(rpc::Ack {
+                        accepted: true,
+                        request_id,
+                    }))
+                );
+            }
+
+            assert!(stream.next().await.is_none());
+            assert!(echo.active_streams.read().await.is_empty());
+            assert!(echo.results.read().await.is_empty());
+        }
     }
 
     #[tokio::test]
