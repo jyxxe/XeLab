@@ -24,6 +24,8 @@ def build(root, publisher, platform="linux/amd64", implementation="rust", reques
         raise ValueError("The Apply observer requires an explicit business format")
     if implementation == "cpp" and (request_secret or request_blob or volume_access):
         raise ValueError("The C++ reference supports only the ordinary Echo capabilities")
+    if request_blob and implementation != "python":
+        raise ValueError("The Blob proxy reference requires the Python implementation")
     publisher = str(uuid.UUID(publisher))
     schema = {"type": "object", "properties": {"message": {"type": "string", "maxLength": 1024}}, "required": ["message"], "additionalProperties": False}
     input_schema = json.loads(json.dumps(schema))
@@ -188,7 +190,7 @@ if __name__ == "__main__":
     parser.add_argument("--implementation", choices=["rust", "python", "cpp"], default="rust")
     parser.add_argument("--request-secret", action="store_true", help="Enable the explicit Secret lease acceptance probe")
     parser.add_argument("--volume-access", choices=["ro", "rw"], help="Enable explicit persistent-volume acceptance")
-    parser.add_argument("--request-blob", action="store_true", help="Enable explicit Blob proxy acceptance with a separate contract")
+    parser.add_argument("--request-blob", action="store_true", help="Enable Blob proxy acceptance (requires --implementation python)")
     parser.add_argument("--plugin-version", choices=["1.0.0", "2.0.0", "3.0.0"], default="1.0.0", help="Plugin release version; existing capability contract versions remain fixed")
     parser.add_argument("--failed-startup", action="store_true", help="Build an explicit failing startup acceptance artifact")
     parser.add_argument("--data-schema", choices=["1", "2"], help="Reference DataMigration format; kernel admission remains disabled until its durable coordinator is complete")

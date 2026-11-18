@@ -380,6 +380,50 @@ mod tests {
         } else {
             "linux/amd64"
         };
+        let generate = |directory: &Path, arguments: &[&str]| {
+            std::process::Command::new("python3")
+                .arg(&builder)
+                .args([
+                    "--publisher-id",
+                    "00000000-0000-4000-8000-000000000001",
+                    "--platform",
+                    platform,
+                    "--output",
+                ])
+                .arg(directory)
+                .args(arguments)
+                .env("PYTHONDONTWRITEBYTECODE", "1")
+                .output()
+                .unwrap()
+        };
+        let unsupported: &[(&str, &[&str], &str)] = &[
+            (
+                "rust-blob",
+                &["--request-blob"],
+                "The Blob proxy reference requires the Python implementation",
+            ),
+            (
+                "cpp-blob",
+                &["--implementation", "cpp", "--request-blob"],
+                "The C++ reference supports only the ordinary Echo capabilities",
+            ),
+        ];
+        for &(variant, arguments, diagnostic) in unsupported {
+            let directory = root.path().join(variant);
+            let output = generate(&directory, arguments);
+            assert!(
+                !output.status.success(),
+                "Reference generator accepted {variant}"
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains(diagnostic),
+                "Unexpected generator error for {variant}"
+            );
+            assert!(
+                !directory.exists(),
+                "Generator wrote an artifact for {variant}"
+            );
+        }
         let variants: &[(&str, &[&str], bool)] = &[
             ("rust-default", &[], false),
             ("cpp-default", &["--implementation", "cpp"], false),
@@ -389,7 +433,6 @@ mod tests {
                 &["--plugin-version", "3.0.0", "--failed-startup"],
                 false,
             ),
-            ("rust-blob", &["--request-blob"], false),
             (
                 "python-secret",
                 &["--implementation", "python", "--request-secret"],
@@ -429,20 +472,7 @@ mod tests {
         ];
         for &(variant, arguments, versioned) in variants {
             let directory = root.path().join(variant);
-            let output = std::process::Command::new("python3")
-                .arg(&builder)
-                .args([
-                    "--publisher-id",
-                    "00000000-0000-4000-8000-000000000001",
-                    "--platform",
-                    platform,
-                    "--output",
-                ])
-                .arg(&directory)
-                .args(arguments)
-                .env("PYTHONDONTWRITEBYTECODE", "1")
-                .output()
-                .unwrap();
+            let output = generate(&directory, arguments);
             assert!(
                 output.status.success(),
                 "Reference generator failed for {variant}"
