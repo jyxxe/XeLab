@@ -228,9 +228,7 @@ void RunPlugin() {
     Check(!chunk.has_completed(), "Canceled stream completed");
   }
   CheckStatus(canceled->Finish(), StatusCode::CANCELLED, "Stream transport cancellation");
-  if (manifest.at("plugin_id") == "org.xelab.echo-cpp") {
-    CheckExplicitCancel(*capability, stream_contract);
-  }
+  CheckExplicitCancel(*capability, stream_contract);
 
   rpc::DrainRequest drain;
   *drain.mutable_context() = Context();
