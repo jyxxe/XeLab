@@ -1,7 +1,7 @@
 #![allow(clippy::result_large_err)] // Tonic service trait signatures.
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc,
+    Arc, OnceLock,
 };
 use tokio::sync::{watch, RwLock};
 use tonic::{Request, Response, Status};
@@ -19,7 +19,7 @@ use xelab_plugin_sdk::{
 struct Echo {
     manifest: Arc<Vec<u8>>,
     generation: u64,
-    initialized: Arc<AtomicBool>,
+    initialized_config: Arc<OnceLock<String>>,
     draining: Arc<AtomicBool>,
     results: Arc<RwLock<std::collections::HashMap<String, SavedResult>>>,
     effects: Arc<AtomicU64>,
@@ -43,6 +43,10 @@ struct SavedResult {
 }
 
 impl Echo {
+    fn ready(&self) -> bool {
+        self.initialized_config.get().is_some() && !self.draining.load(Ordering::SeqCst)
+    }
+
     async fn next_health(&self, deadline: i64) -> Result<(), Status> {
         // Subscribe after the result is committed. watch retains a subsequent
         // real Health observation even if it arrives before changed() is polled.
@@ -107,8 +111,14 @@ impl PluginLifecycle for Echo {
         {
             return Err(Status::failed_precondition("Identity or config differs"));
         }
-        self.initialized.store(true, Ordering::SeqCst);
-        self.draining.store(false, Ordering::SeqCst);
+        let initialized = self
+            .initialized_config
+            .get_or_init(|| r.config_digest.clone());
+        if initialized != &r.config_digest {
+            return Err(Status::failed_precondition(
+                "Configuration already fixed for this generation",
+            ));
+        }
         Ok(Response::new(rpc::InitializeResponse {
             observed_generation: self.generation,
             initialized: true,
@@ -122,8 +132,7 @@ impl PluginLifecycle for Echo {
             .map_err(|_| Status::internal("Invalid manifest"))?;
         // The SDK admits authenticated kernel connections. Signal readiness
         // only after a real probe reaches this service.
-        let ready =
-            self.initialized.load(Ordering::SeqCst) && !self.draining.load(Ordering::SeqCst);
+        let ready = self.ready();
         if ready {
             self.health_observed
                 .send_modify(|epoch| *epoch = epoch.wrapping_add(1));
@@ -181,7 +190,7 @@ impl CapabilityService for Echo {
         r: Request<rpc::InvokeRequest>,
     ) -> Result<Response<rpc::InvokeResponse>, Status> {
         let r = r.into_inner();
-        if !self.initialized.load(Ordering::SeqCst) || self.draining.load(Ordering::SeqCst) {
+        if !self.ready() {
             return Err(Status::unavailable("Not initialized"));
         }
         if digest(&r.input_json) != r.input_digest {
@@ -274,7 +283,7 @@ impl CapabilityService for Echo {
         &self,
         request: Request<rpc::InvokeRequest>,
     ) -> Result<Response<Self::InvokeStreamStream>, Status> {
-        if !self.initialized.load(Ordering::SeqCst) || self.draining.load(Ordering::SeqCst) {
+        if !self.ready() {
             return Err(Status::unavailable("Not initialized"));
         }
         let request = request.into_inner();
@@ -541,7 +550,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let echo = Echo {
         manifest: Arc::new(std::fs::read("/xelab/plugin.json")?),
         generation: std::env::var("XELAB_GENERATION")?.parse()?,
-        initialized: Arc::new(AtomicBool::new(false)),
+        initialized_config: Arc::new(OnceLock::new()),
         draining: Arc::new(AtomicBool::new(false)),
         results: Default::default(),
         effects: Default::default(),
@@ -577,7 +586,7 @@ mod tests {
         let echo = Echo {
             manifest: Arc::new(serde_json::to_vec(&manifest).unwrap()),
             generation: 1,
-            initialized: Arc::new(AtomicBool::new(true)),
+            initialized_config: Arc::new(OnceLock::from(digest(b"{}"))),
             draining: Arc::new(AtomicBool::new(false)),
             results: Default::default(),
             effects: Default::default(),
