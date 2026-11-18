@@ -12,6 +12,7 @@ import json
 import unittest
 
 import test_browser as desktop
+from test_bridge import contribution
 
 
 class ShellVisual(unittest.TestCase):
@@ -220,6 +221,90 @@ class ShellVisual(unittest.TestCase):
         self.page.reload()
         window.wait_for()
         self.assertEqual(self.page.evaluate(read_rect, key), original)
+
+    def test_left_dock_growth_keeps_close_button_reachable(self):
+        value = contribution()
+        self.fixture.contributions[value["spec"]["id"]] = value
+        self.fixture.saved["spec"]["dock"]["position"] = "left"
+        self.open()
+        dock = self.page.locator('#dock[data-position="left"]')
+        dock.wait_for()
+        window = self.fixture.app("系统状态")
+        for _ in range(11):
+            window.locator(".window-title").press("Alt+ArrowDown")
+        initial_width = dock.bounding_box()["width"]
+
+        self.page.get_by_role("button", name="打开应用启动器", exact=True).click()
+        self.page.get_by_role("button", name="固定 " + value["spec"]["title"], exact=True).click()
+        self.page.get_by_role("button", name="取消固定 " + value["spec"]["title"], exact=True).last.wait_for()
+        self.page.locator("#launcher-close").click()
+
+        dock_bounds = dock.bounding_box()
+        self.assertGreater(dock_bounds["width"], initial_width)
+        close = window.get_by_role("button", name="关闭系统状态", exact=True)
+        close.click(trial=True, timeout=1200)
+        self.assertGreaterEqual(window.bounding_box()["x"], dock_bounds["x"] + dock_bounds["width"])
+        close.click()
+        window.wait_for(state="detached")
+
+    def test_right_dock_leaves_resize_reachable_at_displayed_width(self):
+        self.page.set_viewport_size({"width": 730, "height": 900})
+        self.fixture.saved["spec"]["dock"]["position"] = "right"
+        self.open()
+        dock = self.page.locator('#dock[data-position="right"]')
+        dock.wait_for()
+        window = self.fixture.app("系统状态")
+        resize = window.get_by_role("button", name="调整系统状态大小", exact=True)
+        resize.click(trial=True, timeout=1200)
+        before = window.bounding_box()
+        self.assertLessEqual(before["x"] + before["width"], dock.bounding_box()["x"])
+        key = f"xelab:windows:{desktop.CORE}:browser-component:{desktop.ACCOUNT}"
+        read_rect = "key => JSON.parse(localStorage.getItem(key)).find(entry => entry.app === 'resources').rect"
+        saved = self.page.evaluate(read_rect, key)
+        self.assertGreater(saved["x"], before["x"])
+
+        handle = resize.bounding_box()
+        x, y = handle["x"] + handle["width"] / 2, handle["y"] + handle["height"] / 2
+        self.page.mouse.move(x, y)
+        self.page.mouse.down()
+        self.page.mouse.move(x - 40, y, steps=4)
+        self.assertEqual(window.bounding_box()["x"], before["x"])
+        self.assertEqual(window.bounding_box()["width"], before["width"] - 40)
+        self.page.mouse.move(x, y)
+        self.page.mouse.up()
+        self.assertEqual(window.bounding_box(), before)
+        self.assertEqual(self.page.evaluate(read_rect, key), saved)
+
+        resize.press("ArrowLeft")
+        self.assertEqual(window.bounding_box()["x"], before["x"])
+        self.assertEqual(window.bounding_box()["width"], before["width"] - 20)
+
+    def test_side_dock_round_trip_preserves_saved_desktop_geometry(self):
+        self.page.set_viewport_size({"width": 730, "height": 900})
+        self.fixture.saved["spec"]["theme"]["reduce_motion"] = True
+        self.open()
+        self.page.locator("html.reduced-motion").wait_for()
+        self.fixture.app("系统状态")
+        resources = self.page.locator('.window[data-app="resources"]')
+        original_bounds = resources.bounding_box()
+        settings = self.fixture.app("设置")
+        dock_position = settings.get_by_label("Dock 位置", exact=True)
+        key = f"xelab:windows:{desktop.CORE}:browser-component:{desktop.ACCOUNT}"
+        read_rect = "key => JSON.parse(localStorage.getItem(key)).find(entry => entry.app === 'resources').rect"
+        original_rect = self.page.evaluate(read_rect, key)
+
+        for position in ("left", "right"):
+            with self.subTest(position=position):
+                dock_position.select_option(position)
+                title = resources.locator(".window-title")
+                title.focus()
+                self.assertLess(resources.bounding_box()["width"], original_bounds["width"])
+                title.press("Alt+ArrowLeft" if position == "left" else "Alt+ArrowRight")
+                self.assertEqual(self.page.evaluate(read_rect, key), original_rect)
+
+        dock_position.select_option("bottom")
+        self.assertEqual(resources.bounding_box(), original_bounds)
+        self.assertEqual(self.page.evaluate(read_rect, key), original_rect)
 
     def test_closing_stacked_window_focuses_topmost_remaining_z_order(self):
         self.open()
