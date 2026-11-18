@@ -208,4 +208,8 @@ button:disabled{box-shadow:none}
   .window-toolbar-actions button{flex:0 1 auto}
 }
 
+@media(max-width:650px) and (max-height:320px){
+  .window-toolbar{position:static}
+}
+
 .list-page-error:not(:empty){margin-top:12px}

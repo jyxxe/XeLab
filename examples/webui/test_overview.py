@@ -355,6 +355,42 @@ class OverviewWindow(unittest.TestCase):
         self.page.wait_for_function("document.querySelectorAll('.overview-section[data-section=node] .overview-facts dd').length > 0")
         self.assertEqual(self.count(NODE_PATH), 2)
 
+    def test_short_narrow_screen_can_scroll_overview_actions_into_reach(self):
+        self.page.set_viewport_size({"width": 320, "height": 240})
+        self.open()
+        shortcut = self.page.locator('#dock button[data-app-id="overview"]')
+        shortcut.wait_for()
+        dock_button = shortcut.bounding_box()
+        self.page.mouse.click(dock_button["x"] + dock_button["width"] / 2,
+                              dock_button["y"] + dock_button["height"] / 2)
+        window = self.page.locator('.window[data-app="overview"]')
+        window.locator(".overview-facts").first.wait_for(state="attached")
+        refresh = self.section(window, "node").get_by_role("button", name="刷新节点资源")
+        content = window.locator(".window-content").bounding_box()
+        self.page.mouse.move(content["x"] + content["width"] / 2, content["y"] + 20)
+
+        for _ in range(18):
+            position = refresh.evaluate("""button => {
+                const rect = button.getBoundingClientRect();
+                const x = rect.left + rect.width / 2;
+                const visible = [rect.top + 2, rect.bottom - 2].every(
+                    y => button.contains(document.elementFromPoint(x, y)));
+                return visible ? [x, rect.top + rect.height / 2] : null;
+            }""")
+            if position:
+                break
+            self.page.mouse.wheel(0, 24)
+            self.page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+
+        self.assertIsNotNone(position, "wheel scrolling should expose the full section refresh target")
+        self.assertEqual(self.page.evaluate("scrollY"), 0)
+        with self.page.expect_response(CORE + NODE_PATH):
+            self.page.mouse.click(*position)
+        self.assertEqual(self.count(NODE_PATH), 2)
+        for width, height in ((390, 844), (1280, 900)):
+            self.page.set_viewport_size({"width": width, "height": height})
+            self.assertEqual(window.locator(".window-toolbar").evaluate("el => getComputedStyle(el).position"), "sticky")
+
     def test_keyboard_tab_focus_and_activation(self):
         self.deployment_pages = [{"items": [deployment_item()]},
                                  {"items": [deployment_item(identifier=DEPLOYMENT_2, name="keyboard page")]}]
