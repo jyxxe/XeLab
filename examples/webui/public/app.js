@@ -1050,25 +1050,31 @@ async function settings(win) {
 }
 async function unavailable(win) {win.content.replaceChildren(toolbar(win,win.app.title),state('unavailable','当前版本尚不可用','Batch、Workflow、微插件与知识库属于后续执行系统。此桌面未伪造任务、数据或成功响应。'));}
 async function tasks(win) {
-  const input=node('input',{'aria-label':'Operation UUID',placeholder:'已接受操作的 UUID'});
+  const input=node('input',{'aria-label':'Operation UUID',placeholder:'已接受操作的 UUID',value:win.operationId});
   const result=node('div');
   let sequence=0;
-  const inspect=async()=>{
+  const inspect=async id=>{
     const current=++sequence;
     const {signal}=win.controller;
+    const isCurrent=()=>current===sequence&&!signal.aborted&&result.isConnected;
     result.replaceChildren(state('loading','查询中…'));
     try{
-      const response=await request('getOperation',{params:{operation_id:input.value.trim()},signal});
-      if(current!==sequence||signal.aborted||!result.isConnected)return;
+      const response=await request('getOperation',{params:{operation_id:id},signal},isCurrent);
+      if(!isCurrent())return;
       result.replaceChildren(raw(response.data));
     }catch(error){
-      if(current!==sequence||signal.aborted||!result.isConnected)return;
+      if(!isCurrent())return;
       result.replaceChildren(failure(error));
     }
   };
   const form=node('form',{class:'inline-field'},input,button('查询 Operation',()=>{},{type:'submit'}));
-  form.addEventListener('submit',event=>{event.preventDefault();inspect();});
+  form.addEventListener('submit',event=>{
+    event.preventDefault();
+    win.operationId=input.value.trim();
+    inspect(win.operationId);
+  });
   win.content.replaceChildren(toolbar(win,'任务与能力'),node('p',{},'查询核心已经接受的 Operation；结果以其持久终态为准。'),form,result,state('unavailable','Batch / Workflow / 微插件 / 知识库尚不可用','未安装或实现的后续执行系统没有可展示的运行结果。'));
+  if(win.operationId)await inspect(win.operationId);
 }
 // Read-only overview (issue #14). Each section calls exactly one existing
 // public API and renders only whitelisted non-sensitive scalars: plugin

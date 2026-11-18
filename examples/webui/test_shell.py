@@ -1241,6 +1241,55 @@ class ShellBrowser(unittest.TestCase):
         self.assertFalse(any(call["path"].startswith("/api/platform/v1/operations/")
                              for call in self.fixture.calls))
 
+    def test_task_toolbar_refresh_reads_the_last_operation_in_that_window(self):
+        first_id = desktop.DEPLOYMENT
+        other_id = "00000000-0000-4000-8000-000000000109"
+        pending = {"id": first_id, "kind": "installPlugin", "state": "pending", "progress_percent": 0,
+                   "revision": 1, "created_at": desktop.NOW, "updated_at": desktop.NOW,
+                   "resource_id": None, "result": None, "error": None}
+        self.operation_responses[first_id] = (200, pending)
+        self.operation_responses[other_id] = (200, {**pending, "id": other_id, "state": "running"})
+        reads = []
+        operation_url = desktop.CORE + "/api/platform/v1/operations/"
+
+        def record_read(request):
+            if request.method == "GET" and request.url.startswith(operation_url):
+                reads.append(request.url.removeprefix(operation_url))
+
+        self.page.on("request", record_read)
+        self.fixture.open()
+        windows = self.page.locator('.window[data-app="tasks"]')
+        for index, (operation_id, state) in enumerate(((first_id, "pending"), (other_id, "running"))):
+            self.open_launcher()
+            self.page.get_by_role("button", name="启动任务与知识库", exact=True).click()
+            window = windows.nth(index)
+            field = window.get_by_role("textbox", name="Operation UUID", exact=True)
+            self.assertEqual(field.input_value(), "")
+            self.assertEqual(len(reads), index)
+            field.fill(operation_id)
+            field.press("Enter")
+            window.get_by_text(f'"state": "{state}"', exact=False).wait_for()
+
+        self.operation_responses[first_id] = (200, {**pending, "state": "succeeded",
+                                                   "revision": 2, "progress_percent": 100})
+        self.open_launcher()
+        self.page.get_by_role("button", name="聚焦窗口1 任务与知识库", exact=True).click()
+        first = windows.first
+        first.get_by_role("button", name="刷新任务与能力", exact=True).click()
+        self.assertEqual(first.get_by_role("textbox", name="Operation UUID", exact=True).input_value(), first_id)
+        first.get_by_text('"state": "succeeded"', exact=False).wait_for()
+        other = windows.nth(1)
+        self.assertEqual(other.get_by_role("textbox", name="Operation UUID", exact=True).input_value(), other_id)
+        other.get_by_text('"state": "running"', exact=False).wait_for()
+        self.assertEqual(reads, [first_id, other_id, first_id])
+
+        self.page.reload()
+        self.page.wait_for_function("""document.querySelectorAll(
+            '.window[data-app="tasks"] input[aria-label="Operation UUID"]').length === 2""")
+        for window in windows.all():
+            self.assertEqual(window.get_by_role("textbox", name="Operation UUID", exact=True).input_value(), "")
+        self.assertEqual(reads, [first_id, other_id, first_id])
+
     def test_settings_save_error_renders_valid_live_status_and_recovers(self):
         self.fail_preferences = 1
         self.fixture.open()
