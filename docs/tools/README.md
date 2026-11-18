@@ -24,6 +24,9 @@ python3 docs/tools/render_reference.py
 .venv-docs/bin/python docs/tools/render_rpc.py
 ```
 
+严格模式核对逐 RPC 页及目录的生成内容。方法专属字段说明和错误说明写入
+`rpc-semantics.json` 的 `request_field_rules`、`response_field_rules` 和 `error_notes`。
+
 只检查目录、链接、引用和契约对应：
 
 ```bash
