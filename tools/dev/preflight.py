@@ -38,7 +38,10 @@ class Probe:
         return "socket" if stat.S_ISSOCK(mode) else "other"
 
     def affinity(self):
-        return len(os.sched_getaffinity(0))
+        get_affinity = getattr(os, "sched_getaffinity", None)
+        if get_affinity is None:
+            raise OSError("CPU affinity is unavailable on this platform")
+        return len(get_affinity(0))
 
     def euid(self):
         return os.geteuid()

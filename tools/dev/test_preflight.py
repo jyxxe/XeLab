@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -202,6 +203,29 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(checks["host_administration"]["state"], "unavailable")
         self.assertEqual(build_report(healthy(euid=0))["checks"]["host_administration"]["state"], "ok")
         self.assertEqual(build_report(healthy(uname=("Darwin", "24.0")))["checks"]["kernel"]["state"], "unavailable")
+
+    def test_darwin_without_affinity_api_generates_report(self):
+        darwin = SimpleNamespace(
+            uname=lambda: SimpleNamespace(sysname="Darwin", release="24.0"),
+            geteuid=lambda: 1000,
+            access=lambda _path, _mode: False,
+            W_OK=2,
+        )
+        with mock.patch.object(preflight, "os", darwin), \
+                mock.patch.object(preflight.Probe, "read", side_effect=FileNotFoundError):
+            code, out, err = call_main(preflight.Probe(), "--json")
+
+        self.assertEqual((code, err), (0, ""))
+        report = json.loads(out)
+        self.assertEqual(report["checks"]["kernel"], {"state": "unavailable", "release": "24.0"})
+        self.assertEqual(report["checks"]["resources"], {
+            "state": "unavailable",
+            "memtotal_bytes": None,
+            "affinity_cpu_millis": None,
+            "effective_cpu_millis": None,
+            "effective_memory_bytes": None,
+        })
+        self.assertEqual(report["acceptance"], "not-assessed")
 
     def test_output_redacts_personal_paths_and_cgroup_names(self):
         probe = healthy()
