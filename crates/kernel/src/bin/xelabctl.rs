@@ -378,6 +378,8 @@ async fn run(args: Args) -> Result<()> {
                 ));
             }
             if operation_id == "uploadBlob" {
+                use std::os::unix::fs::OpenOptionsExt;
+
                 let path = body_file
                     .ok_or_else(|| Error::invalid("uploadBlob requires a regular --body-file"))?;
                 if path == "-" {
@@ -385,7 +387,11 @@ async fn run(args: Args) -> Result<()> {
                         "Binary upload requires a regular file with known length",
                     ));
                 }
-                let mut file = std::fs::File::open(&path)?;
+                // Inspect the opened file without waiting for a FIFO writer.
+                let mut file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&path)?;
                 let meta = file.metadata()?;
                 if !meta.is_file() || meta.len() > 67108864 {
                     return Err(Error::invalid(
