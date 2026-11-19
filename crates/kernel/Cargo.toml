@@ -17,6 +17,7 @@ hmac = "0.12"
 http-body = "1"
 http-body-util = "0.1"
 ipnet = "2"
+jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
 jsonschema = { version = "0.18", default-features = false, features = ["draft202012"] }
 libc = "0.2"
 prost = "0.13"

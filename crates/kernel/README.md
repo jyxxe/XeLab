@@ -19,6 +19,7 @@
 | 任务提交与查询 | `createTask/getTask/listTasks/listTaskSteps/listAttempts`；提交时固定 Workflow 版本、deadline、授权来源和提供者；步骤的尝试记录按所属任务的 `task.read` 分页读取，无记录时返回空页 | 服务身份执行需单独审批。HTTP 与真实 PostgreSQL 回归见 `crates/kernel/tests/workflows.rs` |
 | 任务步骤领取、续租、输入准备与结果提交 | 进程内 `task_engine::claim` 复核依赖与原委托，为首次就绪步骤绑定 worker、fence 和最长 30 秒的租约。`renew` 核对同一 worker、尝试与执行 ID、fence、有效租约及原授权，每次最多续至当前时间后 30 秒，且受首次领取起算的步骤超时、任务 deadline 和授权期限约束。`prepare_dispatch` 复核有效租约和原授权，按固定工作流的映射从字面值、任务输入和已成功的上游步骤输出生成请求，保留步骤业务幂等键和已固定的部署。`commit` 复核租约身份及原授权，校验成功输出的契约，原子写入结果、回执、后继状态及 outbox。相同结果可在租约和授权有效时幂等确认。失败或未知会阻止后继就绪，迟到提交留有审计 | 全部步骤成功时，单个终点的输出写入 `Task.output`。多个终点各自保留步骤输出，`Task.output` 为 `NULL`。同步 worker 的定时续租循环和经 Broker 向插件实际派发待接入 |
 | 任务租约过期对账 | 控制器每轮最多处理 16 个由 worker 领取且仍匹配当前步骤 fence 的活动尝试，以数据库时钟复核租约和任务截止中较早的时间。尝试记为 `expired`，步骤记为 `unknown`，同事务写入 outbox。运行中的任务在其他活动尝试收敛后汇总为 `unknown`，保留当前的授权暂停、依赖等待或取消意图 | 使用现有活动尝试索引和元数据字段。Broker 结果核实、插件取消、人工核实及重试待实现 |
+| 定时计划预览 | `xelabctl preview-schedule` 离线计算五字段 cron 的 UTC 触发时刻，使用随程序构建的 IANA 时区数据 | 定时计划 API、触发持久化、停机补发和重叠策略待实现 |
 | HTTP | #43 已合并签名原始 OpenAPI、精确操作/动作/Schema、共享 Broker 账本、直接 HTTP SSE、隔离来源静态 GET/HEAD 与物理槽；#47 扩展固定 HTTP Skill 的六方法、成功状态和 SSE | #47 精确 HTTP Skill 六方法/流真实 OCI 门禁已通过；不是任意 URL/路径模板/查询参数代理，未声明协议拒绝 |
 | 独立 WebUI/消息桥 | #45 实现 UID 65532 OCI 桌面、公开管理 API/OAuth 客户端、window/widget、固定 alias 的 skill.call、同部署 window.open、通道撤权/登出/升级失效及独立 UI 参考插件 | 组件与打包探针通过不能替代真实核心 OCI/Owner OAuth/iframe 全链；#45 精确完整/专项门禁均通过，未来 batch 方法明确不可用 |
 | 持久卷 | 独立 XFS 硬配额、预留/扩容/回收、实际计数、单写者 fence、OCI 挂载、新私有卷恢复、同格式克隆/回退、内部格式证明 | 多副本应用行为、公开格式安装/迁移、正式独立宿主恢复验收 |
@@ -79,6 +80,15 @@ v20 库可原地升级。历史 attempt 的 `worker_id` 保留为 SQL `NULL`，�
 守护进程不会隐式迁移数据库。
 
 ## 管理与插件示例
+
+离线预览五字段 cron 可指定时区及 RFC 3339 时间起点。默认时区为 `Asia/Shanghai`，默认请求 5 次触发。
+
+```bash
+xelabctl preview-schedule --cron '30 1 * * *' --timezone America/New_York \
+  --after 2026-11-01T04:00:00Z --count 3
+```
+
+`fire_at` 返回严格晚于 `--after` 的 UTC 时刻，数量上限为 100。夏令时跳过不存在的本地时刻，重复时刻取第一次。日和星期字段都使用非 `*` 表达式时按 OR 匹配，并输出 `DAY_OF_MONTH_OR_DAY_OF_WEEK`。搜索窗口最多 500 个本地历年，结果不足时输出 `SEARCH_LIMIT_REACHED`。
 
 CLI 的 `api` 子命令从原 OpenAPI 读取 operationId、路径及方法。所有服务请求使用 HTTPS；自签测试服务证书可以用 `--ca-file` 指定，不提供跳过校验选项。JSON 输出到 stdout，错误摘要到 stderr。
 

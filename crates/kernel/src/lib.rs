@@ -37,6 +37,7 @@ pub mod policy;
 pub mod recovery;
 pub mod restores;
 pub mod runtime;
+pub mod schedule_cron;
 pub mod schema_jobs;
 pub mod secrets;
 pub(crate) mod skill_streams;
