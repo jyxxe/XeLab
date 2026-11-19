@@ -50,6 +50,7 @@ pub mod volumes;
 pub mod webui;
 mod workflows;
 
+pub use tasks::task_engine;
 pub use xelab_plugin_sdk::rpc;
 
 pub const SPEC_VERSION: &str = "2.8.0";

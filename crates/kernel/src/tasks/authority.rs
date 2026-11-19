@@ -5,7 +5,7 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use serde_json::json;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use tokio_postgres::GenericClient;
 use uuid::Uuid;
 
@@ -48,46 +48,16 @@ pub(super) fn retain_live_paths(
     Ok(())
 }
 
-/// Check all original grant issuers after policy expansion. Physical credential
-/// expiry is separate from conditions carried by a rule and from the submitter's
-/// own credential chain.
+/// Bound each original grant by its issuer's entire account and credential
+/// graph. Each target combines these cutoffs with its own rule conditions.
 pub(super) async fn source_expiries(
     c: &(impl GenericClient + Sync),
     ctx: &Context,
     sources: &[Uuid],
 ) -> Result<HashMap<Uuid, DateTime<Utc>>> {
-    let chains = Policy::for_context(c, ctx)
-        .live_grant_issuer_chains(sources)
-        .await?;
-    let credentials: Vec<_> = chains
-        .values()
-        .flat_map(|chain| chain.iter().copied())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let expiries: HashMap<_, _> = c
-        .query(
-            "SELECT id,expires_at FROM credentials WHERE id=ANY($1::uuid[])",
-            &[&credentials],
-        )
-        .await?
-        .into_iter()
-        .map(|row| (row.get::<_, Uuid>(0), row.get::<_, DateTime<Utc>>(1)))
-        .collect();
-    if expiries.len() != credentials.len() {
-        return Err(Error::denied());
-    }
-    Ok(chains
-        .into_iter()
-        .map(|(grant, chain)| {
-            let expiry = chain
-                .iter()
-                .map(|id| expiries[id])
-                .min()
-                .unwrap_or(DateTime::<Utc>::MAX_UTC);
-            (grant, expiry)
-        })
-        .collect())
+    Policy::for_context(c, ctx)
+        .live_grant_issuer_expiries(sources)
+        .await
 }
 
 /// The caller must hold the authorization fence on the admission transaction.
@@ -96,21 +66,15 @@ pub(super) async fn issuer_expiry(
     c: &(impl GenericClient + Sync),
     ctx: &Context,
 ) -> Result<DateTime<Utc>> {
-    let chain =
-        auth::validate_sources(c, Some(ctx.credential), Some(ctx.subject), ctx.peer).await?;
-    if chain != ctx.chain {
+    let validity =
+        auth::source_validity(c, Some(ctx.credential), Some(ctx.subject), ctx.peer).await?;
+    if validity.credentials != ctx.chain {
         return Err(Error::credential());
     }
     crate::oauth_http::validate_source_origins(c, &[ctx.credential], ctx.browser_origin.as_deref())
         .await?;
-    let expiry: Option<DateTime<Utc>> = c
-        .query_one(
-            "SELECT min(expires_at) FROM credentials WHERE id=ANY($1::uuid[])",
-            &[&chain],
-        )
-        .await?
-        .get(0);
-    expiry
-        .filter(|expiry| *expiry > Utc::now())
-        .ok_or_else(Error::credential)
+    if validity.expires_at <= Utc::now() {
+        return Err(Error::credential());
+    }
+    Ok(validity.expires_at)
 }
