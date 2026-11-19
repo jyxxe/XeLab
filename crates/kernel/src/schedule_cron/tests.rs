@@ -159,3 +159,141 @@ fn bounded_search_returns_rare_leap_dates_and_reports_impossible_dates() {
     assert!(result.fire_at.is_empty());
     assert_eq!(result.warnings, [PreviewWarning::SearchLimitReached]);
 }
+
+#[test]
+fn recovery_selects_the_latest_missed_occurrence_across_a_dst_fold() {
+    let schedule = CronSchedule::parse("* * * * *", "America/New_York").unwrap();
+    let plan = schedule
+        .plan_recovery(RecoveryInputs {
+            after: utc("2026-10-31T00:00:00Z"),
+            through: utc("2026-11-01T06:35:00Z"),
+            misfire: MisfirePolicy::RunOnce,
+            overlap: OverlapPolicy::Skip,
+            has_active_task: false,
+            pending_at: None,
+        })
+        .unwrap();
+
+    let first_fold_last_minute = utc("2026-11-01T05:59:00Z");
+    assert_eq!(plan.latest_missed_at, Some(first_fold_last_minute));
+    assert_eq!(plan.next_fire_at, Some(utc("2026-11-01T07:00:00Z")));
+    assert_eq!(
+        plan.decision,
+        RecoveryDecision::Ready {
+            scheduled_at: first_fold_last_minute,
+        }
+    );
+}
+
+#[test]
+fn recovery_composes_misfire_with_overlap_and_an_existing_queue() {
+    let schedule = CronSchedule::parse("*/5 * * * *", "UTC").unwrap();
+    let after = utc("2026-01-01T14:00:00Z");
+    let through = utc("2026-01-01T14:10:00Z");
+    let plan = |misfire, overlap, has_active_task, pending_at| {
+        schedule
+            .plan_recovery(RecoveryInputs {
+                after,
+                through,
+                misfire,
+                overlap,
+                has_active_task,
+                pending_at,
+            })
+            .unwrap()
+    };
+    for (misfire, selected) in [
+        (MisfirePolicy::Skip, after),
+        (MisfirePolicy::RunOnce, through),
+    ] {
+        assert_eq!(
+            plan(misfire, OverlapPolicy::QueueOne, true, Some(after)).decision,
+            RecoveryDecision::Queued {
+                scheduled_at: selected,
+            }
+        );
+        assert_eq!(
+            plan(misfire, OverlapPolicy::QueueOne, false, Some(after)).decision,
+            RecoveryDecision::Ready {
+                scheduled_at: selected,
+            }
+        );
+    }
+    let skipped = plan(MisfirePolicy::Skip, OverlapPolicy::Skip, false, None);
+    assert_eq!(skipped.latest_missed_at, Some(through));
+    assert_eq!(skipped.next_fire_at, Some(utc("2026-01-01T14:15:00Z")));
+    assert_eq!(
+        skipped.decision,
+        RecoveryDecision::Skipped {
+            reason: SkipReason::Misfire,
+        }
+    );
+    assert_eq!(
+        plan(MisfirePolicy::RunOnce, OverlapPolicy::Skip, true, None).decision,
+        RecoveryDecision::Skipped {
+            reason: SkipReason::Overlap,
+        }
+    );
+}
+
+#[test]
+fn recovery_skips_dst_gaps_and_respects_subsecond_utc_cutoffs() {
+    let schedule = CronSchedule::parse("30 2 * * *", "America/New_York").unwrap();
+    let plan = schedule
+        .plan_recovery(RecoveryInputs {
+            after: utc("2026-03-07T07:30:00Z"),
+            through: utc("2026-03-08T08:00:00Z"),
+            misfire: MisfirePolicy::RunOnce,
+            overlap: OverlapPolicy::Skip,
+            has_active_task: false,
+            pending_at: None,
+        })
+        .unwrap();
+    assert_eq!(plan.decision, RecoveryDecision::Idle);
+    assert_eq!(plan.latest_missed_at, None);
+    assert_eq!(plan.next_fire_at, Some(utc("2026-03-09T06:30:00Z")));
+
+    let schedule = CronSchedule::parse("0 9 * * *", "Asia/Kathmandu").unwrap();
+    let plan = |after, through| {
+        schedule
+            .plan_recovery(RecoveryInputs {
+                after: utc(after),
+                through: utc(through),
+                misfire: MisfirePolicy::RunOnce,
+                overlap: OverlapPolicy::Skip,
+                has_active_task: false,
+                pending_at: None,
+            })
+            .unwrap()
+    };
+    let fire = "1900-01-01T03:18:44Z";
+    assert_eq!(
+        plan("1900-01-01T03:18:43.999999Z", fire).latest_missed_at,
+        Some(utc(fire))
+    );
+    assert_eq!(plan(fire, "1900-01-01T03:18:44.1Z").latest_missed_at, None);
+}
+
+#[test]
+fn recovery_distinguishes_no_occurrence_from_exhausted_lookback() {
+    let schedule = CronSchedule::parse("0 0 31 2 *", "UTC").unwrap();
+    let plan = |after| {
+        schedule.plan_recovery(RecoveryInputs {
+            after: utc(after),
+            through: utc("2601-01-01T00:00:00Z"),
+            misfire: MisfirePolicy::RunOnce,
+            overlap: OverlapPolicy::Skip,
+            has_active_task: false,
+            pending_at: None,
+        })
+    };
+    let no_matches = plan("2600-01-01T00:00:00Z").unwrap();
+    assert_eq!(no_matches.decision, RecoveryDecision::Idle);
+    assert_eq!(no_matches.latest_missed_at, None);
+    assert_eq!(no_matches.next_fire_at, None);
+    assert_eq!(no_matches.warnings, [PreviewWarning::SearchLimitReached]);
+    assert_eq!(
+        plan("2000-01-01T00:00:00Z").unwrap_err().code,
+        "RESOURCE_EXHAUSTED"
+    );
+}

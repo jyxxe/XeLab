@@ -20,7 +20,7 @@
 | 任务步骤领取、续租、输入准备与结果提交 | 进程内 `task_engine::claim` 复核依赖与原委托，为首次就绪步骤绑定 worker、fence 和最长 30 秒的租约。`renew` 核对同一 worker、尝试与执行 ID、fence、有效租约及原授权，每次最多续至当前时间后 30 秒，且受首次领取起算的步骤超时、任务 deadline 和授权期限约束。`prepare_dispatch` 复核有效租约和原授权，按固定工作流的映射从字面值、任务输入和已成功的上游步骤输出生成请求，保留步骤业务幂等键和已固定的部署。`commit` 复核租约身份及原授权，校验成功输出的契约，原子写入结果、回执、后继状态及 outbox。相同结果可在租约和授权有效时幂等确认。失败或未知会阻止后继就绪，迟到提交留有审计 | 全部步骤成功时，单个终点的输出写入 `Task.output`。多个终点各自保留步骤输出，`Task.output` 为 `NULL`。同步 worker 的定时续租循环和经 Broker 向插件实际派发待接入 |
 | 任务租约过期对账 | 控制器每轮最多处理 16 个由 worker 领取且仍匹配当前步骤 fence 的活动尝试，以数据库时钟复核租约和任务截止中较早的时间。尝试记为 `expired`，步骤记为 `unknown`，同事务写入 outbox。运行中的任务在其他活动尝试收敛后汇总为 `unknown`，保留当前的授权暂停、依赖等待或取消意图 | 使用现有活动尝试索引和元数据字段。Broker 结果核实、插件取消、人工核实及重试待实现 |
 | 任务取消 | `cancelTask` 使用任务 ETag 和幂等键登记取消，取消尚未开始的步骤，并阻止新领取、续租和派发准备。原 worker 可在原租约、fence 和授权有效期内提交已收到的终态结果。全部步骤均已停止且无未知结果时任务可进入 `canceled` | 活动、过期和未知尝试均可阻止完成取消，并保留旧历史中的不确定性。任务已是 `unknown` 时保留其状态和结果证据。Broker 取消信号和插件停止证明仍待接入 |
-| 定时计划预览 | `xelabctl preview-schedule` 离线计算五字段 cron 的 UTC 触发时刻，使用随程序构建的 IANA 时区数据 | 定时计划 API、触发持久化、停机补发和重叠策略待实现 |
+| 定时计划预览 | `xelabctl preview-schedule` 离线计算五字段 cron 的 UTC 触发时刻。`plan-schedule-recovery` 根据指定停机区间、活动任务和等待触发预览补发与重叠决策 | 定时计划 API、触发持久化和调度任务提交待实现 |
 | HTTP | #43 已合并签名原始 OpenAPI、精确操作/动作/Schema、共享 Broker 账本、直接 HTTP SSE、隔离来源静态 GET/HEAD 与物理槽；#47 扩展固定 HTTP Skill 的六方法、成功状态和 SSE | #47 精确 HTTP Skill 六方法/流真实 OCI 门禁已通过；不是任意 URL/路径模板/查询参数代理，未声明协议拒绝 |
 | 独立 WebUI/消息桥 | #45 实现 UID 65532 OCI 桌面、公开管理 API/OAuth 客户端、window/widget、固定 alias 的 skill.call、同部署 window.open、通道撤权/登出/升级失效及独立 UI 参考插件 | 组件与打包探针通过不能替代真实核心 OCI/Owner OAuth/iframe 全链；#45 精确完整/专项门禁均通过，未来 batch 方法明确不可用 |
 | 持久卷 | 独立 XFS 硬配额、预留/扩容/回收、实际计数、单写者 fence、OCI 挂载、新私有卷恢复、同格式克隆/回退、内部格式证明 | 多副本应用行为、公开格式安装/迁移、正式独立宿主恢复验收 |
@@ -90,6 +90,16 @@ xelabctl preview-schedule --cron '30 1 * * *' --timezone America/New_York \
 ```
 
 `fire_at` 返回严格晚于 `--after` 的 UTC 时刻，数量上限为 100。夏令时跳过不存在的本地时刻，重复时刻取第一次。日和星期字段都使用非 `*` 表达式时按 OR 匹配，并输出 `DAY_OF_MONTH_OR_DAY_OF_WEEK`。搜索窗口最多 500 个本地历年，结果不足时输出 `SEARCH_LIMIT_REACHED`。
+
+离线恢复决策接受两个 RFC 3339 时间戳。`--after` 是已处理的最后时刻（不含），`--through` 是本轮恢复截止时刻（含）。若计划仍有未终结任务，请提供 `--has-active-task`。仅在 `queue_one` 下提供 `--pending-at`，该时刻须是当前计划版本的有效触发且不晚于 `--after`。计划修改后先丢弃旧版本的等待触发。
+
+```bash
+xelabctl plan-schedule-recovery --cron '30 1 * * *' --timezone America/New_York \
+  --after 2026-10-31T05:30:00Z --through 2026-11-01T06:30:00Z \
+  --misfire run_once --overlap queue_one --has-active-task
+```
+
+`latest_missed_at` 是区间内最近一次有效 UTC 触发。默认 `skip` 丢弃漏掉的触发，已有等待触发仍可保留。`run_once` 只选最近的时刻，与已有等待触发比较后取较新者。结果为 `ready`、`queued`、`skipped` 或 `idle`，包含恢复截止后最近的 `next_fire_at`。向前与向后搜索都最多扫描 500 个本地历年。向后达到上限且无法确认结果时返回 `RESOURCE_EXHAUSTED`。预览只计算决策，实际调度仍需持久化触发并重验原授权。
 
 CLI 的 `api` 子命令从原 OpenAPI 读取 operationId、路径及方法。所有服务请求使用 HTTPS；自签测试服务证书可以用 `--ca-file` 指定，不提供跳过校验选项。JSON 输出到 stdout，错误摘要到 stderr。
 
