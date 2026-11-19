@@ -768,7 +768,7 @@ async fn submit_signed_skill(f: &Fixture, c: &Client, entry: &str) -> SkillTask 
     .await;
     f.grant(
         subject,
-        "Member",
+        "Owner",
         json!({"kind":"workflow","match":"ids","ids":[workflow]}),
         "skill-workflow-read",
     )
