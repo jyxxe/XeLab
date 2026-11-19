@@ -408,7 +408,7 @@ fn dispatch<'a>(
         let name = op["operationId"].as_str().unwrap();
         crate::workflows::validate_query(name, uri.query().unwrap_or(""))?;
         crate::tasks::validate_query(name, uri.query().unwrap_or(""))?;
-        if matches!(name, "getSchedule" | "deleteSchedule")
+        if matches!(name, "createSchedule" | "getSchedule" | "deleteSchedule")
             && uri.query().is_some_and(|query| !query.is_empty())
         {
             return Err(Error::invalid("Unexpected schedule query parameter"));
@@ -667,11 +667,16 @@ fn dispatch<'a>(
         }
         tx.batch_execute("SAVEPOINT mutation").await?;
         let mut retry_cutoff = None;
+        let mut schedule_cutoff = None;
         let execution=async {
     let result = if name == "retryTask" {
         let (task, cutoff) = crate::tasks::retry::request(&tx,&app.auth,&ctx,path_id(&params,"task_id")?,&headers).await?;
         retry_cutoff = Some(cutoff);
         (task, 200)
+    } else if name == "createSchedule" {
+        let (schedule, cutoff) = crate::schedules::create(&tx,&ctx,&body).await?;
+        schedule_cutoff = Some(cutoff);
+        (schedule, 201)
     } else if identity::handles(name) {
         identity::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
     } else if crate::events::handles(name) {
@@ -1023,6 +1028,8 @@ fn dispatch<'a>(
         let commit_authorization = if let Some(cutoff) = retry_cutoff {
             let task = id(&result.0, "id")?;
             crate::tasks::retry::validate_commit(&tx, &ctx, task, cutoff).await
+        } else if let Some(cutoff) = schedule_cutoff {
+            crate::schedules::validate_create_commit(&tx, &ctx, &body, cutoff).await
         } else if name == "deleteSchedule" {
             // Audit and idempotency writes can wait after the stop has run.
             crate::schedules::authorize_delete(&tx, &ctx, path_id(&params, "schedule_id")?).await
@@ -1102,6 +1109,9 @@ async fn authorize_operation(
     }
     if crate::tasks::handles(name) {
         return crate::tasks::authorize(c, ctx, name, params, body).await;
+    }
+    if name == "createSchedule" {
+        return crate::schedules::authorize_create(c, ctx, body).await;
     }
     if name == "deleteSchedule" {
         return crate::schedules::authorize_delete(c, ctx, path_id(params, "schedule_id")?).await;

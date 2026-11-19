@@ -85,12 +85,17 @@ async fn actual_postgres_task_final_rules_drop_expired_independent_issuer() {
     };
     let mut paths = vec![expired_path.clone(), live_path.clone()];
     let mut rules = Default::default();
-    super::collect_live_rules(&mut paths, &ctx, expiry, &expiries, &mut rules).unwrap();
+    super::admission::collect_live_rules(&mut paths, &ctx, expiry, &expiries, &mut rules).unwrap();
     assert_eq!(paths, vec![live_path]);
     assert_eq!(rules.len(), 1);
-    let error =
-        super::collect_live_rules(&mut vec![expired_path], &ctx, expiry, &expiries, &mut rules)
-            .unwrap_err();
+    let error = super::admission::collect_live_rules(
+        &mut vec![expired_path],
+        &ctx,
+        expiry,
+        &expiries,
+        &mut rules,
+    )
+    .unwrap_err();
     assert_eq!(error.code, "PERMISSION_DENIED");
     tx.commit().await.unwrap();
 }
@@ -189,6 +194,21 @@ async fn actual_postgres_task_migration_preserves_history_and_restart_distinguis
     c.execute("INSERT INTO execution_delegations(id,subject_id,maximum_rules,run_as,expires_at,status,created_at) VALUES($1,$3,'[]','user',now()+interval '1 hour','active',now()),($2,$3,'[]','user',now()+interval '1 hour','active',now())", &[&historical_delegation,&transient_delegation,&owner]).await.unwrap();
     let historical_task = Uuid::new_v4();
     c.execute("INSERT INTO tasks(id,owner_id,workflow_id,delegation_id,input,deadline_at,state,created_at,updated_at) VALUES($1,$2,$3,$4,'{\"legacy\":true}',now()+interval '1 hour','queued',now(),now())", &[&historical_task,&owner,&workflow,&historical_delegation]).await.unwrap();
+    let historical_schedule = Uuid::new_v4();
+    let schedule_spec =
+        json!({"name":"Restart schedule","workflow_id":workflow,"cron":"* * * * *","input":{}});
+    c.execute(
+        "INSERT INTO schedules(id,owner_id,spec,delegation_id,created_at,updated_at)
+        VALUES($1,$2,$3,$4,now(),now())",
+        &[
+            &historical_schedule,
+            &owner,
+            &schedule_spec,
+            &historical_delegation,
+        ],
+    )
+    .await
+    .unwrap();
     let historical_step = Uuid::new_v4();
     c.execute("INSERT INTO task_steps(id,task_id,step_key,state,created_at,updated_at) VALUES($1,$2,'echo','ready',now(),now())", &[&historical_step,&historical_task]).await.unwrap();
     let old_task: Value = c
@@ -215,6 +235,15 @@ async fn actual_postgres_task_migration_preserves_history_and_restart_distinguis
     assert_eq!(&after[..before.len()], &before);
     assert_eq!(after.len(), db::SCHEMA_VERSION as usize);
     assert_eq!(after[before.len()].0, LAST_PRE_TASK_ADMISSION + 1);
+    let old_schedule = c
+        .query_one(
+            "SELECT admission,spec FROM schedules WHERE id=$1",
+            &[&historical_schedule],
+        )
+        .await
+        .unwrap();
+    assert!(old_schedule.get::<_, Option<Value>>(0).is_none());
+    assert_eq!(old_schedule.get::<_, Value>(1), schedule_spec);
     let migrated = c
         .query_one(
             "SELECT to_jsonb(t)-'admission',admission IS NULL FROM tasks t WHERE id=$1",
@@ -260,9 +289,22 @@ async fn actual_postgres_task_migration_preserves_history_and_restart_distinguis
     let new = create(&tx, &ctx, &json!({"workflow_id":workflow,"input":{}}))
         .await
         .unwrap();
+    let (new_schedule, _) = crate::schedules::create(&tx, &ctx, &schedule_spec)
+        .await
+        .unwrap();
+    let (shared_schedule, _) = crate::schedules::create(&tx, &ctx, &schedule_spec)
+        .await
+        .unwrap();
+    let shared_delegation = contracts::id(&shared_schedule, "delegation_id").unwrap();
+    tx.execute(
+        "INSERT INTO calls(id,owner_id,credential_id,delegation_id,contract,input_digest,state,deadline_at,created_at)
+         VALUES($1,$2,$3,$4,$5,'restart-call','running',now()+interval '30 seconds',now())",
+        &[&Uuid::new_v4(), &owner, &ctx.credential, &shared_delegation, &contract],
+    ).await.unwrap();
     tx.commit().await.unwrap();
     let task = contracts::id(&new, "id").unwrap();
     let delegation = contracts::id(&new, "delegation_id").unwrap();
+    let schedule_delegation = contracts::id(&new_schedule, "delegation_id").unwrap();
     let proof: Value = c
         .query_one("SELECT admission FROM tasks WHERE id=$1", &[&task])
         .await
@@ -283,6 +325,8 @@ async fn actual_postgres_task_migration_preserves_history_and_restart_distinguis
     );
     assert_eq!(delegation_status(&c, transient_delegation).await, "revoked");
     assert_eq!(delegation_status(&c, delegation).await, "active");
+    assert_eq!(delegation_status(&c, schedule_delegation).await, "active");
+    assert_eq!(delegation_status(&c, shared_delegation).await, "revoked");
     assert_eq!(
         c.query_one("SELECT admission FROM tasks WHERE id=$1", &[&task])
             .await
@@ -300,6 +344,7 @@ async fn actual_postgres_task_migration_preserves_history_and_restart_distinguis
         .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(delegation_status(&c, delegation).await, "revoked");
+    assert_eq!(delegation_status(&c, schedule_delegation).await, "revoked");
     assert_eq!(
         c.query_one("SELECT admission FROM tasks WHERE id=$1", &[&task])
             .await

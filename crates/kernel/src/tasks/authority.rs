@@ -32,6 +32,35 @@ pub(super) async fn freeze(
     Ok(frozen)
 }
 
+pub(super) async fn freeze_task_creation(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+) -> Result<Vec<Path>> {
+    let resource = Resource::new("task", "new", Some(ctx.subject));
+    let action = "task.create";
+    if !ctx.proxy_allows(action, &resource)
+        || !policy::registered(c, action, &resource.kind).await?
+    {
+        return Err(Error::denied());
+    }
+    let mut frozen: Vec<_> = Policy::for_context(c, ctx)
+        .credential(ctx.credential, 0)
+        .await?
+        .into_iter()
+        .filter(|path| {
+            path.rule["action"] == action
+                && auth::selector_matches(&path.rule["resource"], &resource)
+        })
+        .collect();
+    retain_live_paths(&mut frozen, ctx, Utc::now())?;
+    // The verified proposed owner supplies scope for "new" before a Task row
+    // exists. Narrow the matching rules only after that comparison.
+    for path in &mut frozen {
+        path.rule["resource"] = resource.json();
+    }
+    Ok(frozen)
+}
+
 pub(super) fn retain_live_paths(
     paths: &mut Vec<Path>,
     ctx: &Context,

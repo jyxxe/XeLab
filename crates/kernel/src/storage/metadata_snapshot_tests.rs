@@ -903,6 +903,40 @@ async fn actual_postgres_m5_admission_snapshot_round_trip_resets_execution_autho
         )
         .await
         .unwrap();
+    let scheduled_workflow = Uuid::new_v4();
+    let scheduled_spec = serde_json::json!({
+        "name":"Scheduled snapshot workflow","input_schema":{"type":"object"},
+        "steps":[{"id":"echo","contract":contract,"depends_on":[],"input_mapping":{},
+                  "provider_deployment_id":deployment,"timeout_ms":1000}]
+    });
+    let schedule_tx = source.transaction().await.unwrap();
+    crate::db::auth_lock(&schedule_tx, false).await.unwrap();
+    schedule_tx
+        .execute(
+            "INSERT INTO workflows(id,owner_id,name,version,spec,status,created_at,updated_at)
+         VALUES($1,$2,'Scheduled snapshot workflow',1,$3,'active',now(),now())",
+            &[&scheduled_workflow, &owner, &scheduled_spec],
+        )
+        .await
+        .unwrap();
+    let (admitted_schedule_value, _) = crate::schedules::create(
+        &schedule_tx,
+        &ctx,
+        &serde_json::json!({"name":"Admitted Schedule","workflow_id":scheduled_workflow,
+                          "cron":"* * * * *","input":{}}),
+    )
+    .await
+    .unwrap();
+    schedule_tx.commit().await.unwrap();
+    let admitted_schedule = crate::contracts::id(&admitted_schedule_value, "id").unwrap();
+    let proof: serde_json::Value = source
+        .query_one(
+            "SELECT admission FROM schedules WHERE id=$1",
+            &[&admitted_schedule],
+        )
+        .await
+        .unwrap()
+        .get(0);
     let admitted = serde_json::json!({"version":1,"steps":[{"step_key":"root","deployment_id":deployment,
         "installation_id":installation,"binding":{"kind":"capability","contract":contract}}]});
     source
@@ -1098,6 +1132,23 @@ async fn actual_postgres_m5_admission_snapshot_round_trip_resets_execution_autho
     assert_eq!(
         restored_schedule["next_fire_at"],
         serde_json::json!(next_fire_at)
+    );
+    let restored = destination
+        .query_one(
+            "SELECT s.admission,d.status FROM schedules s JOIN execution_delegations d
+           ON d.id=s.delegation_id WHERE s.id=$1",
+            &[&admitted_schedule],
+        )
+        .await
+        .unwrap();
+    assert_eq!(restored.get::<_, serde_json::Value>(0), proof);
+    assert_eq!(restored.get::<_, String>(1), "revoked");
+    assert_eq!(
+        crate::plugin_catalog::read_schedule(&destination, admitted_schedule, Some(owner))
+            .await
+            .unwrap()
+            .unwrap(),
+        admitted_schedule_value
     );
     for table in ["micro_plugins", "extension_plugins", "skill_batches"] {
         assert!(destination
