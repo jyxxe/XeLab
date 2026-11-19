@@ -7,6 +7,8 @@ mod http_host;
 mod schedule_catalog;
 #[path = "support/schedule_create.rs"]
 mod schedule_create;
+#[path = "support/schedule_update.rs"]
+mod schedule_update;
 #[path = "support/task_admission.rs"]
 mod task_admission;
 #[path = "support/task_attempts.rs"]

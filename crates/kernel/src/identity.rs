@@ -75,7 +75,7 @@ pub fn audit_resource(
         "registerSkill" => Some(("skill", &response["id"])),
         "createWorkflow" => Some(("workflow", &response["id"])),
         "createTask" => Some(("task", &response["id"])),
-        "createSchedule" => Some(("schedule", &response["id"])),
+        "createSchedule" | "updateSchedule" => Some(("schedule", &response["id"])),
         "cancelTask" | "retryTask" => Some(("task", &response["id"])),
         "resolveUnknownStep" => Some(("task", &response["task_id"])),
         "createClient" => Some(("client", &response["id"])),
