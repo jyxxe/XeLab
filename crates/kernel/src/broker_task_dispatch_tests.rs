@@ -27,7 +27,10 @@ use std::{
     fs,
     net::{Ipv4Addr, SocketAddr},
     os::unix::fs::PermissionsExt,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 use tokio::{
@@ -231,11 +234,7 @@ impl Fixture {
     }
 
     async fn start_task(&self, downstream: bool) -> Uuid {
-        let mut steps = vec![json!({
-            "id":"echo","contract":self.contract,"provider_deployment_id":self.deployment,
-            "depends_on":[],"input_mapping":{"message":{"task_input":"/message"}},
-            "timeout_ms":10_000
-        })];
+        let mut steps = vec![self.direct_step(self.deployment, 10_000)];
         if downstream {
             steps.push(json!({
                 "id":"next","contract":self.contract,"provider_deployment_id":self.deployment,
@@ -244,21 +243,78 @@ impl Fixture {
                 }},"timeout_ms":10_000
             }));
         }
-        let workflow = self.post("/api/platform/v1/workflows", "signed-dispatch-workflow", json!({
-            "name":"signed-dispatch-workflow","input_schema":{
+        self.submit_workflow("signed-dispatch", steps).await
+    }
+
+    fn direct_step(&self, deployment: Uuid, timeout_ms: u32) -> Value {
+        json!({
+            "id":"echo","contract":self.contract,"provider_deployment_id":deployment,
+            "depends_on":[],"input_mapping":{"message":{"task_input":"/message"}},
+            "timeout_ms":timeout_ms
+        })
+    }
+
+    async fn submit_workflow(&self, name: &str, steps: Vec<Value>) -> Uuid {
+        let workflow = self.post("/api/platform/v1/workflows", &format!("{name}-workflow"), json!({
+            "name":name,"input_schema":{
                 "type":"object","required":["message"],"properties":{"message":{"type":"string"}}
             },"steps":steps
         })).await;
         let task = self
             .post(
                 "/api/platform/v1/tasks",
-                "signed-dispatch-task",
+                &format!("{name}-task"),
                 json!({
                     "workflow_id": workflow["id"], "input":{"message":"from workflow"}
                 }),
             )
             .await;
         id(&task, "id").unwrap()
+    }
+
+    async fn register_skill(&self, c: &Client) -> Uuid {
+        let mut manifest: Value = c
+            .query_one(
+                "SELECT manifest FROM installations WHERE id=$1",
+                &[&self.installation],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let cap = &manifest["capabilities"][0];
+        let definition = json!({
+            "name":format!("{}.runner-skill", manifest["plugin_id"].as_str().unwrap()),
+            "version":"1.0.0","description":"Unsupported automatic worker Skill",
+            "input_schema":cap["input_schema"],"output_schema":cap["output_schema"],
+            "stream_item_schema":null,"target":{"kind":"capability","plugin_id":manifest["plugin_id"],
+                "contract":cap["contract"]},"mapping":"identity","maximum_timeout_ms":20_000,
+            "input_blobs":false,"tags":[]
+        });
+        manifest["skills"] = json!([definition]);
+        update_manifest(c, self.installation, &manifest).await;
+        let skill = self
+            .post(
+                "/api/platform/v1/skills",
+                "register-runner-skill",
+                json!({
+                    "installation_id":self.installation,"definition":definition,"enabled":true
+                }),
+            )
+            .await;
+        id(&skill, "id").unwrap()
+    }
+
+    async fn set_provider_concurrency(&self, c: &Client, limit: u32) {
+        let mut manifest: Value = c
+            .query_one(
+                "SELECT manifest FROM installations WHERE id=$1",
+                &[&self.installation],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        manifest["concurrency"]["max_active_requests"] = json!(limit);
+        update_manifest(c, self.installation, &manifest).await;
     }
 
     async fn serve(
@@ -307,6 +363,17 @@ impl Fixture {
                 .unwrap();
         }))
     }
+}
+
+async fn update_manifest(c: &Client, installation: Uuid, manifest: &Value) {
+    crate::artifact::validate_profile(manifest).unwrap();
+    let hash = digest(&serde_json::to_vec(manifest).unwrap());
+    c.execute(
+        "UPDATE installations SET manifest=$2,manifest_digest=$3 WHERE id=$1",
+        &[&installation, &manifest, &hash],
+    )
+    .await
+    .unwrap();
 }
 
 async fn install_provider(
@@ -462,6 +529,61 @@ async fn task_state(c: &Client, task: Uuid) -> (String, Value) {
         .await
         .unwrap();
     (row.get(0), row.get(1))
+}
+
+async fn never_claimed(c: &Client, task: Uuid) {
+    let row = c
+        .query_one(
+            "SELECT t.state,s.state,s.attempt_count,
+        NOT EXISTS(SELECT FROM attempts a WHERE a.step_id=s.id)
+        FROM tasks t JOIN task_steps s ON s.task_id=t.id WHERE t.id=$1",
+            &[&task],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, &str>(0), "queued");
+    assert_eq!(row.get::<_, &str>(1), "ready");
+    assert_eq!(row.get::<_, i32>(2), 0);
+    assert!(row.get::<_, bool>(3));
+}
+
+async fn wait_task(c: &Client, task: Uuid, expected: &str) {
+    tokio::time::timeout(Duration::from_secs(7), async {
+        loop {
+            let state = task_state(c, task).await.0;
+            if state == expected {
+                return;
+            }
+            assert!(
+                !matches!(
+                    state.as_str(),
+                    "succeeded" | "failed" | "unknown" | "canceled"
+                ),
+                "task reached terminal state {state} while awaiting {expected}"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("task {task} never became {expected}"));
+}
+
+async fn wait_invocations(provider: &Provider, count: usize) {
+    loop {
+        if provider.requests.lock().await.len() >= count {
+            return;
+        }
+        provider.entered.notified().await;
+    }
+}
+
+async fn stop_runner(f: &Fixture, handle: JoinHandle<()>) {
+    f.app.ready.store(false, Ordering::SeqCst);
+    f.app.shutdown.store(true, Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("task worker did not stop")
+        .unwrap();
 }
 
 async fn check_settlement(
@@ -1093,6 +1215,313 @@ async fn signed_terminal_rejection_commits_and_replays_without_resending() {
         returned
     );
     assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn automatic_worker_waits_for_readiness_and_skips_older_unsupported_targets() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let c = f.app.db.connect().await.unwrap();
+    let skill = f.register_skill(&c).await;
+    let mut skill_step = f.direct_step(f.deployment, 20_000);
+    let skill_fields = skill_step.as_object_mut().unwrap();
+    skill_fields.remove("contract");
+    skill_fields.remove("provider_deployment_id");
+    skill_step["skill_id"] = json!(skill);
+    let old_skill = f
+        .submit_workflow("runner-older-skill", vec![skill_step])
+        .await;
+    let old_long = f
+        .submit_workflow(
+            "runner-older-long",
+            vec![f.direct_step(f.deployment, 60_000)],
+        )
+        .await;
+    let supported = f
+        .submit_workflow(
+            "runner-supported",
+            vec![f.direct_step(f.deployment, 20_000)],
+        )
+        .await;
+    let provider = Provider::default();
+    let _server = f.serve(f.instance, GENERATION, provider.clone()).await;
+    f.app.ready.store(false, Ordering::SeqCst);
+    let worker = tokio::spawn(task_engine::run(f.app.clone()));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(600), wait_invocations(&provider, 1))
+            .await
+            .is_err(),
+        "worker sent an invocation before readiness"
+    );
+    never_claimed(&c, supported).await;
+
+    f.app.ready.store(true, Ordering::SeqCst);
+    wait_task(&c, supported, "succeeded").await;
+    assert_eq!(
+        task_state(&c, supported).await.1,
+        json!({"message":"echo from workflow"})
+    );
+    never_claimed(&c, old_skill).await;
+    never_claimed(&c, old_long).await;
+    assert_eq!(provider.requests.lock().await.len(), 1);
+    stop_runner(&f, worker).await;
+}
+
+#[tokio::test]
+async fn automatic_worker_bounds_parallel_claims_and_leaves_ready_work_on_shutdown() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let c = f.app.db.connect().await.unwrap();
+    for name in ["runner-first", "runner-second"] {
+        f.submit_workflow(name, vec![f.direct_step(f.deployment, 20_000)])
+            .await;
+    }
+    let third = f
+        .submit_workflow("runner-third", vec![f.direct_step(f.deployment, 20_000)])
+        .await;
+    let fourth = f
+        .submit_workflow("runner-fourth", vec![f.direct_step(f.deployment, 20_000)])
+        .await;
+    let gate = Arc::new(Semaphore::new(0));
+    let provider = Provider {
+        gate: Some(gate.clone()),
+        ..Provider::default()
+    };
+    let _server = f.serve(f.instance, GENERATION, provider.clone()).await;
+    let worker = tokio::spawn(task_engine::run(f.app.clone()));
+    tokio::time::timeout(Duration::from_secs(6), wait_invocations(&provider, 2))
+        .await
+        .expect("the two standard worker slots must run independently");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(600), wait_invocations(&provider, 3))
+            .await
+            .is_err(),
+        "worker exceeded its two in-flight slots"
+    );
+    never_claimed(&c, third).await;
+    never_claimed(&c, fourth).await;
+
+    gate.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(6), wait_invocations(&provider, 3))
+        .await
+        .expect("a completed invocation did not release the next worker slot");
+    stop_runner(&f, worker).await;
+    gate.add_permits(3);
+    never_claimed(&c, fourth).await;
+    assert_eq!(provider.requests.lock().await.len(), 3);
+}
+
+#[tokio::test]
+async fn automatic_claim_keeps_busy_and_quota_blocked_work_unclaimed() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let c = f.app.db.connect().await.unwrap();
+    f.set_provider_concurrency(&c, 1).await;
+    let held_task = f
+        .submit_workflow("runner-held", vec![f.direct_step(f.deployment, 25_000)])
+        .await;
+    let held_lease = claim(&f).await;
+    let held_gate = Arc::new(Semaphore::new(0));
+    let held_provider = Provider {
+        gate: Some(held_gate.clone()),
+        ..Provider::default()
+    };
+    let _held_server = f.serve(f.instance, GENERATION, held_provider.clone()).await;
+    let app = f.app.clone();
+    let held = tokio::spawn(async move { task_engine::dispatch(&app, &held_lease).await });
+    tokio::time::timeout(Duration::from_secs(5), wait_invocations(&held_provider, 1))
+        .await
+        .expect("the installed provider must hold its only business slot");
+    let queued_busy = f
+        .submit_workflow(
+            "runner-provider-busy",
+            vec![f.direct_step(f.deployment, 25_000)],
+        )
+        .await;
+    let worker = Uuid::new_v4();
+    assert!(crate::broker::dispatch_next_task(&f.app, worker)
+        .await
+        .unwrap()
+        .is_none());
+    never_claimed(&c, queued_busy).await;
+
+    let (free_deployment, free_instance) =
+        install_provider(&c, f.owner, f.installation, &f.contract).await;
+    let free_provider = Provider::default();
+    let _free_server = f
+        .serve(free_instance, GENERATION, free_provider.clone())
+        .await;
+    let queued_quota = f
+        .submit_workflow(
+            "runner-quota-blocked",
+            vec![f.direct_step(free_deployment, 25_000)],
+        )
+        .await;
+    let set_quota =
+        "UPDATE quotas SET spec=jsonb_set(spec,'{maximum_concurrent_calls}',to_jsonb($2::integer))
+                         WHERE account_id=$1";
+    c.execute(set_quota, &[&f.owner, &1_i32]).await.unwrap();
+    assert!(crate::broker::dispatch_next_task(&f.app, worker)
+        .await
+        .unwrap()
+        .is_none());
+    never_claimed(&c, queued_busy).await;
+    never_claimed(&c, queued_quota).await;
+    assert!(free_provider.requests.lock().await.is_empty());
+    let row = c
+        .query_one(
+            "SELECT concurrent_calls_used,(SELECT count(*) FROM calls),
+                                  (SELECT count(*) FROM task_attempt_calls)
+                             FROM quotas WHERE account_id=$1",
+            &[&f.owner],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            row.get::<_, i64>(0),
+            row.get::<_, i64>(1),
+            row.get::<_, i64>(2)
+        ),
+        (1, 1, 1)
+    );
+
+    c.execute(set_quota, &[&f.owner, &16_i32]).await.unwrap();
+    let step = crate::broker::dispatch_next_task(&f.app, worker)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(step["task_id"], json!(queued_quota));
+    assert_eq!(task_state(&c, queued_quota).await.0, "succeeded");
+    assert_eq!(free_provider.requests.lock().await.len(), 1);
+    never_claimed(&c, queued_busy).await;
+    held_gate.add_permits(2);
+    held.await.unwrap().unwrap();
+    assert_eq!(task_state(&c, held_task).await.0, "succeeded");
+    let unblocked = crate::broker::dispatch_next_task(&f.app, worker)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unblocked["task_id"], json!(queued_busy));
+    assert_eq!(held_provider.requests.lock().await.len(), 2);
+}
+
+#[tokio::test]
+async fn automatic_worker_reaches_later_ready_work_after_a_full_blocked_batch() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let c = f.app.db.connect().await.unwrap();
+    f.set_provider_concurrency(&c, 1).await;
+    f.submit_workflow(
+        "runner-saturated",
+        vec![f.direct_step(f.deployment, 30_000)],
+    )
+    .await;
+    let held_lease = claim(&f).await;
+    let held_gate = Arc::new(Semaphore::new(0));
+    let held_provider = Provider {
+        gate: Some(held_gate),
+        ..Provider::default()
+    };
+    let _held_server = f.serve(f.instance, GENERATION, held_provider.clone()).await;
+    let app = f.app.clone();
+    let held = tokio::spawn(async move { task_engine::dispatch(&app, &held_lease).await });
+    tokio::time::timeout(Duration::from_secs(5), wait_invocations(&held_provider, 1))
+        .await
+        .expect("the original invocation must occupy its only provider slot");
+
+    let mut blocked = Vec::new();
+    for index in 0..17 {
+        blocked.push(
+            f.submit_workflow(
+                &format!("runner-blocked-{index}"),
+                vec![f.direct_step(f.deployment, 20_000)],
+            )
+            .await,
+        );
+    }
+    let (free_deployment, free_instance) =
+        install_provider(&c, f.owner, f.installation, &f.contract).await;
+    let free_provider = Provider::default();
+    let _free_server = f
+        .serve(free_instance, GENERATION, free_provider.clone())
+        .await;
+    let younger = f
+        .submit_workflow(
+            "runner-after-blocked-batch",
+            vec![f.direct_step(free_deployment, 20_000)],
+        )
+        .await;
+
+    let worker = tokio::spawn(task_engine::run(f.app.clone()));
+    wait_task(&c, younger, "succeeded").await;
+    assert_eq!(free_provider.requests.lock().await.len(), 1);
+    assert_eq!(held_provider.requests.lock().await.len(), 1);
+    for task in blocked {
+        never_claimed(&c, task).await;
+    }
+    stop_runner(&f, worker).await;
+    tokio::time::timeout(Duration::from_secs(3), held)
+        .await
+        .expect("the held fixture must observe shutdown")
+        .unwrap()
+        .expect_err("the stopped kernel cannot confirm the held invocation");
+}
+
+#[tokio::test]
+async fn automatic_worker_does_not_reissue_an_unconfirmed_call_after_restart() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let first_task = f
+        .submit_workflow(
+            "runner-lost-result",
+            vec![f.direct_step(f.deployment, 20_000)],
+        )
+        .await;
+    let c = f.app.db.connect().await.unwrap();
+    let provider = Provider {
+        reply: ProviderReply::Unavailable,
+        ..Provider::default()
+    };
+    let _server = f.serve(f.instance, GENERATION, provider.clone()).await;
+    let worker = tokio::spawn(task_engine::run(f.app.clone()));
+    wait_task(&c, first_task, "unknown").await;
+    let first = provider.requests.lock().await[0].clone();
+    check_settlement(&c, first_task, &first, f.instance, "unknown").await;
+    stop_runner(&f, worker).await;
+
+    f.app.shutdown.store(false, Ordering::SeqCst);
+    f.app.ready.store(true, Ordering::SeqCst);
+    let new_task = f
+        .submit_workflow(
+            "runner-after-restart",
+            vec![f.direct_step(f.deployment, 20_000)],
+        )
+        .await;
+    let worker = tokio::spawn(task_engine::run(f.app.clone()));
+    wait_task(&c, new_task, "unknown").await;
+    stop_runner(&f, worker).await;
+    assert_eq!(
+        task_state(&c, first_task).await,
+        ("unknown".into(), Value::Null)
+    );
+    let requests = provider.requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert_ne!(requests[1].call_id, first.call_id);
+    let tried = c
+        .query_one(
+            "SELECT count(*) FROM attempts a JOIN task_steps s ON s.id=a.step_id
+                             WHERE s.task_id=$1 AND a.state='unknown'",
+            &[&first_task],
+        )
+        .await
+        .unwrap();
+    assert_eq!(tried.get::<_, i64>(0), 1);
 }
 
 #[tokio::test]

@@ -140,7 +140,14 @@ async fn start(mut config: Config, (cpu, memory): (i64, i64)) -> Result<()> {
         shutdown: AtomicBool::new(false),
         blob_uploads: tokio::sync::Semaphore::new(if config.compact() { 1 } else { 4 }),
     });
+    let listen = config.listen()?;
+    let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+        config.text("server", "tls_cert_file"),
+        config.text("server", "tls_key_file"),
+    )
+    .await?;
     let worker = tokio::spawn(controller::run(app.clone()));
+    let mut task_worker = tokio::spawn(xelab_kernel::task_engine::run(app.clone()));
     let volume_worker = tokio::spawn(xelab_kernel::volumes::run(app.clone()));
     let blob_worker = tokio::spawn(xelab_kernel::blobs::run(app.clone()));
     let backup_worker = tokio::spawn(xelab_kernel::backups::run(app.clone()));
@@ -154,11 +161,6 @@ async fn start(mut config: Config, (cpu, memory): (i64, i64)) -> Result<()> {
             host_app.shutdown.store(true, Ordering::SeqCst);
         }
     });
-    let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(
-        config.text("server", "tls_cert_file"),
-        config.text("server", "tls_key_file"),
-    )
-    .await?;
     let handle = axum_server::Handle::new();
     let monitor_app = app.clone();
     let monitor_handle = handle.clone();
@@ -187,10 +189,11 @@ async fn start(mut config: Config, (cpu, memory): (i64, i64)) -> Result<()> {
                 .unwrap(),
         )));
     });
-    axum_server::bind_rustls(config.listen()?, tls)
+    let served = axum_server::bind_rustls(listen, tls)
         .handle(handle)
         .serve(router(app.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>())
-        .await?;
+        .await;
+    app.ready.store(false, Ordering::SeqCst);
     app.shutdown.store(true, Ordering::SeqCst);
     worker.abort();
     host_worker.abort();
@@ -199,12 +202,21 @@ async fn start(mut config: Config, (cpu, memory): (i64, i64)) -> Result<()> {
     upgrade_worker.abort();
     schema_worker.abort();
     volume_worker.abort();
+    let grace = std::time::Duration::from_millis(
+        app.config.value["resources"]["shutdown_grace_ms"]
+            .as_u64()
+            .unwrap(),
+    );
+    if tokio::time::timeout(grace, &mut task_worker).await.is_err() {
+        task_worker.abort();
+        let _ = task_worker.await;
+    }
     if let Ok(c) = app.db.connect().await {
         let _ = c
             .execute("UPDATE node_budget SET admission_enabled=false", &[])
             .await;
     }
-    Ok(())
+    served.map_err(Error::from)
 }
 
 #[cfg(test)]

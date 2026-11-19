@@ -710,9 +710,11 @@ impl Request<'_> {
     }
 }
 
+const TASK_ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
+const AUTOMATIC_CANDIDATES_PER_POLL: usize = 16;
+
 pub(super) async fn admit_task(app: &App, lease: &AttemptLease) -> Result<TaskAdmission> {
-    const ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
-    let limit = Instant::now() + ADMISSION_TIMEOUT;
+    let limit = Instant::now() + TASK_ADMISSION_TIMEOUT;
     timeout_at(limit, admit_task_bounded(app, lease, limit))
         .await
         .map_err(|_| call_expired())?
@@ -746,7 +748,125 @@ async fn admit_task_bounded(
             "Task is no longer accepting new Call admission",
         ));
     }
-    let prepared = task_engine::broker_input(&tx, &proof).await?;
+    let staged = stage_task_call(&tx, app, lease, proof, limit).await?;
+    tx.commit().await?;
+    if !staged.may_send(app) {
+        // COMMIT may have completed after the dispatch budget. The ledger is
+        // still authoritative but this invocation must never send an RPC.
+        return Ok(TaskAdmission::Existing(staged.call.id));
+    }
+    Ok(TaskAdmission::Dispatch(staged.call))
+}
+
+/// Select and admit one short fixed Capability step without publishing a
+/// provisional Attempt separately from the Broker Call it will execute.
+pub(super) async fn admit_next_task(
+    app: &App,
+    worker_id: Uuid,
+    after: &mut Option<(DateTime<Utc>, Uuid)>,
+) -> Result<Option<(AttemptLease, Box<Call>)>> {
+    let limit = Instant::now() + TASK_ADMISSION_TIMEOUT;
+    timeout_at(limit, admit_next_task_bounded(app, worker_id, after, limit))
+        .await
+        .map_err(|_| call_expired())?
+}
+
+async fn admit_next_task_bounded(
+    app: &App,
+    worker_id: Uuid,
+    after: &mut Option<(DateTime<Utc>, Uuid)>,
+    limit: Instant,
+) -> Result<Option<(AttemptLease, Box<Call>)>> {
+    crate::skill_streams::ensure_active(app)?;
+    let mut connection = app
+        .db
+        .connect_scoped(limit.saturating_duration_since(Instant::now()))
+        .await?;
+    for _ in 0..AUTOMATIC_CANDIDATES_PER_POLL {
+        crate::skill_streams::ensure_active(app)?;
+        let tx = connection.transaction().await?;
+        db::call_lock(&tx).await?;
+        let Some(candidate) = task_engine::next_automatic_candidate(&tx, *after).await? else {
+            tx.rollback().await?;
+            *after = None;
+            return Ok(None);
+        };
+        let step_id: Uuid = candidate.try_get("step_id")?;
+        let created_at: DateTime<Utc> = candidate.try_get("step_created_at")?;
+        let staging = async {
+            let Some(lease) =
+                task_engine::lease_automatic_candidate(&tx, &app.auth, &candidate, worker_id)
+                    .await?
+            else {
+                return Ok(None);
+            };
+            let proof =
+                task_engine::broker_dispatch_proof(&tx, &app.auth, &lease, BrokerLeaseUse::Send)
+                    .await?;
+            let staged = stage_task_call(&tx, app, &lease, proof, limit).await?;
+            Ok::<_, Error>(Some((lease, staged)))
+        }
+        .await;
+        match staging {
+            Ok(Some((lease, staged))) => {
+                tx.commit().await?;
+                *after = None;
+                if !staged.may_send(app) {
+                    return Err(Error::new(
+                        "OUTCOME_UNKNOWN",
+                        "Task Call committed without a live transport budget",
+                        axum::http::StatusCode::CONFLICT,
+                    )
+                    .with_resource(staged.call.id));
+                }
+                return Ok(Some((lease, staged.call)));
+            }
+            Ok(None) => {}
+            Err(error) if skip_automatic_candidate(&error) => {
+                tracing::debug!(%step_id, reason_code=error.code, "Task Call admission deferred");
+            }
+            Err(error) => return Err(error),
+        }
+        // All writes to the step, lease, quota and Call disappear together.
+        tx.rollback().await?;
+        *after = Some((created_at, step_id));
+    }
+    Ok(None)
+}
+
+fn skip_automatic_candidate(error: &Error) -> bool {
+    matches!(
+        error.code,
+        "PERMISSION_DENIED" | "INVALID_CREDENTIAL" | "TASK_PROVIDER_UNAVAILABLE"
+            | "RESOURCE_EXHAUSTED" | "QUOTA_EXCEEDED" | "DEADLINE_EXCEEDED"
+            | "INVALID_ARGUMENT" | "STATE_CONFLICT" | "RESOURCE_NOT_FOUND"
+    ) || matches!(error.message,
+        "No healthy fixed provider is available"
+            | "Admitted task provider or RPC binding is unavailable"
+            | "Task dispatch requires an exact signed direct Capability without proxy or dependencies"
+    )
+}
+
+struct StagedTaskCall {
+    call: Box<Call>,
+    sampled: Instant,
+    remaining: Duration,
+}
+
+impl StagedTaskCall {
+    fn may_send(&self, app: &App) -> bool {
+        self.sampled.elapsed() < self.remaining && crate::skill_streams::ensure_active(app).is_ok()
+    }
+}
+
+async fn stage_task_call(
+    tx: &Transaction<'_>,
+    app: &App,
+    lease: &AttemptLease,
+    proof: task_engine::BrokerDispatchProof,
+    limit: Instant,
+) -> Result<StagedTaskCall> {
+    let prepared = task_engine::broker_input(tx, &proof).await?;
     let contract = &proof.contract;
     let name = string(contract, "name")?;
     let version = string(contract, "version")?;
@@ -757,7 +877,7 @@ async fn admit_task_bounded(
         &[&name,&version,&digest],
     ).await?.ok_or_else(Error::not_found)?.try_get(0)?;
     let row = provider(
-        &tx,
+        tx,
         name,
         version,
         Some(proof.deployment),
@@ -805,11 +925,11 @@ async fn admit_task_bounded(
         return Err(Error::invalid("Capability input exceeds its byte limit"));
     }
     validate_business(&definition["input_schema"], input)?;
-    let authority = CurrentAuthority::new(&tx, &proof.ctx)
+    let authority = CurrentAuthority::new(tx, &proof.ctx)
         .await?
-        .restrict_to_original_sources(&tx, &proof.ctx, &proof.business_paths)
+        .restrict_to_original_sources(tx, &proof.ctx, &proof.business_paths)
         .await?;
-    authority.require(&tx, &proof.ctx, "capability.invoke", &capability)?;
+    authority.require(tx, &proof.ctx, "capability.invoke", &capability)?;
     let timeout = unsigned(&prepared.request["timeout_ms"])? as i64;
     let now: DateTime<Utc> = tx
         .query_one("SELECT clock_timestamp()", &[])
@@ -836,7 +956,7 @@ async fn admit_task_bounded(
         }),
         authority: Some(authority),
     };
-    let call = record_call(&tx, app, candidate, input, &proof.business_key, None).await?;
+    let call = record_call(tx, app, candidate, input, &proof.business_key, None).await?;
     tx.execute(
         "INSERT INTO task_attempt_calls(attempt_id,call_id,installation_id) VALUES($1,$2,$3)",
         &[&lease.attempt_id, &call.id, &proof.installation],
@@ -848,20 +968,18 @@ async fn admit_task_bounded(
     ).await?;
     // Include waiting on the retained link, triggers and every ledger write.
     tx.batch_execute("SET CONSTRAINTS ALL IMMEDIATE").await?;
-    let cutoff = validate_task_call(&tx, app, lease, call.id, false).await?;
+    let cutoff = validate_task_call(tx, app, lease, call.id, false).await?;
     let sampled = Instant::now();
-    let remaining = task_engine::broker_remaining(&tx, cutoff).await?;
+    let remaining = task_engine::broker_remaining(tx, cutoff).await?;
     crate::skill_streams::ensure_active(app)?;
     if sampled.elapsed() >= remaining || Instant::now() >= limit {
         return Err(call_expired());
     }
-    tx.commit().await?;
-    if sampled.elapsed() >= remaining || crate::skill_streams::ensure_active(app).is_err() {
-        // COMMIT may have completed after the dispatch budget. The ledger is
-        // still authoritative but this invocation must never send an RPC.
-        return Ok(TaskAdmission::Existing(call.id));
-    }
-    Ok(TaskAdmission::Dispatch(Box::new(call)))
+    Ok(StagedTaskCall {
+        call: Box::new(call),
+        sampled,
+        remaining,
+    })
 }
 
 /// A monitor holds the shared authorization fence. Settlement also owns the

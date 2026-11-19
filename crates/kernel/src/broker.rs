@@ -20,7 +20,8 @@ mod task_dispatch;
 #[cfg(test)]
 #[path = "broker_task_dispatch_tests.rs"]
 mod task_dispatch_tests;
-pub use task_dispatch::dispatch_task;
+pub(crate) use task_dispatch::dispatch_next_task_after;
+pub use task_dispatch::{dispatch_next_task, dispatch_task};
 #[path = "broker_unary_failure.rs"]
 mod unary_failure;
 pub(crate) use http::check_route_approval as check_http_approval;
