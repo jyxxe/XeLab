@@ -212,6 +212,40 @@ class ShellVisual(unittest.TestCase):
         self.page.evaluate("() => new Promise(resolve => requestAnimationFrame(resolve))")
         self.assertEqual(window.evaluate(bounds), original)
 
+    def test_short_desktop_bounds_keep_windows_above_dock_and_survive_resize(self):
+        self.open()
+        window = self.fixture.app("系统状态")
+        dock = self.page.locator("#dock")
+        original = window.bounding_box()
+        layout_key = f"xelab:windows:{desktop.CORE}:browser-component:{desktop.ACCOUNT}"
+        read_rect = "key => JSON.parse(localStorage.getItem(key))[0].rect"
+        saved = self.page.evaluate(read_rect, layout_key)
+
+        self.page.set_viewport_size({"width": 900, "height": 340})
+        self.page.evaluate("() => new Promise(resolve => requestAnimationFrame(resolve))")
+        for action in ("最大化系统状态", "恢复系统状态窗口大小"):
+            bounds = window.bounding_box()
+            self.assertLessEqual(bounds["y"] + bounds["height"], dock.bounding_box()["y"])
+            window.get_by_role("button", name=action, exact=True).click()
+            self.assertEqual(self.page.evaluate(read_rect, layout_key), saved)
+        before_drag = window.bounding_box()
+        title = window.locator(".window-title").bounding_box()
+        resize = window.get_by_role("button", name="调整系统状态大小", exact=True)
+        resize.click(trial=True)
+        for handle, delta in ((title, 24), (resize.bounding_box(), -24)):
+            x = handle["x"] + handle["width"] / 2
+            y = handle["y"] + handle["height"] / 2
+            self.page.mouse.move(x, y)
+            self.page.mouse.down()
+            self.page.mouse.move(x, y + delta, steps=3)
+            self.page.mouse.up()
+            self.assertEqual(window.bounding_box(), before_drag)
+            self.assertEqual(self.page.evaluate(read_rect, layout_key), saved)
+
+        self.page.set_viewport_size({"width": 1280, "height": 900})
+        self.page.evaluate("() => new Promise(resolve => requestAnimationFrame(resolve))")
+        self.assertEqual(window.bounding_box(), original)
+
     def test_narrow_viewport_reload_preserves_saved_desktop_window_rect(self):
         self.open()
         window = self.fixture.app("系统状态")
