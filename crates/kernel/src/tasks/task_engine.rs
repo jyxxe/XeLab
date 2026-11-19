@@ -1,5 +1,8 @@
 //! Trusted, in-process TaskEngine operations.
-use super::claim_authority;
+mod commit;
+pub use commit::commit;
+
+use super::{claim_authority, commit_effects};
 use crate::{
     auth::Auth,
     contracts::unsigned,
@@ -32,6 +35,7 @@ const READY_STEP: &str = "
        AND t.state IN ('queued','running') AND t.deadline_at>clock_timestamp()
        AND t.admission IS NOT NULL AND node.definition->>'id'=s.step_key
        AND jsonb_typeof(node.definition->'depends_on')='array'
+       AND NOT EXISTS (SELECT FROM task_steps stopped WHERE stopped.task_id=t.id AND stopped.state IN ('failed','unknown'))
        AND NOT EXISTS (SELECT FROM attempts a WHERE a.step_id=s.id)
        AND NOT EXISTS (
            SELECT FROM jsonb_array_elements_text(node.definition->'depends_on') dependency(key)
@@ -63,7 +67,7 @@ async fn claim_ready(db: &Db, auth: &Auth, worker_id: Uuid) -> Result<Option<Val
         };
         let step: Value = candidate.get("step");
         let task_id: Uuid = candidate.get("task_id");
-        if !lock_predecessors(&tx, task_id, &step["depends_on"]).await? {
+        if !still_claimable(&tx, task_id, &step["depends_on"]).await? {
             tx.rollback().await?;
             skipped_steps.push(candidate.get("step_id"));
             continue;
@@ -90,7 +94,7 @@ async fn claim_ready(db: &Db, auth: &Auth, worker_id: Uuid) -> Result<Option<Val
             .min(candidate.get("expires_at"))
             .min(candidate.get("deadline_at"));
         let timeout_ms = unsigned(&step["timeout_ms"])?;
-        let Some(attempt) = lease(&tx, &candidate, expiry, timeout_ms).await? else {
+        let Some(attempt) = lease(&tx, &candidate, worker_id, expiry, timeout_ms).await? else {
             // Issuance crossed the authority cutoff or the task deadline.
             suspend(&tx, task_id, "paused_authorization").await?;
             tx.commit().await?;
@@ -115,16 +119,13 @@ async fn claim_ready(db: &Db, auth: &Auth, worker_id: Uuid) -> Result<Option<Val
     }
 }
 
-// READY_STEP only prefilters dependencies. Lock the chosen child's predecessors
-// through commit without taking locks on behalf of discarded candidates.
-async fn lock_predecessors(
+// READY_STEP uses a pre-lock snapshot. Under the task lock check for a failed
+// sibling again and lock the chosen child's predecessors through commit.
+async fn still_claimable(
     tx: &Transaction<'_>,
     task_id: Uuid,
     dependencies: &Value,
 ) -> Result<bool> {
-    if dependencies.as_array().is_some_and(Vec::is_empty) {
-        return Ok(true);
-    }
     let row = tx
         .query_one(
             "WITH required AS (
@@ -134,7 +135,8 @@ async fn lock_predecessors(
                  WHERE s.task_id=$1 AND s.state='succeeded'
                  ORDER BY s.id FOR SHARE OF s SKIP LOCKED
              )
-             SELECT (SELECT count(*) FROM locked) = (SELECT count(*) FROM required)",
+             SELECT (SELECT count(*) FROM locked) = (SELECT count(*) FROM required)
+                AND NOT EXISTS (SELECT FROM task_steps WHERE task_id=$1 AND state IN ('failed','unknown'))",
             &[&task_id, dependencies],
         )
         .await?;
@@ -154,6 +156,7 @@ async fn suspend(tx: &Transaction<'_>, task_id: Uuid, state: &str) -> Result<()>
 async fn lease(
     tx: &Transaction<'_>,
     candidate: &Row,
+    worker_id: Uuid,
     expiry: DateTime<Utc>,
     timeout_ms: u64,
 ) -> Result<Option<Row>> {
@@ -165,8 +168,8 @@ async fn lease(
         .query_opt(
             "WITH issued AS MATERIALIZED (SELECT clock_timestamp() AS at)
          INSERT INTO attempts AS a(id,step_id,number,execution_id,idempotency_key,fence,
-                                   lease_expires_at,state,created_at,updated_at)
-         SELECT $1,$2,1,$3,$4,$5,least($6,at+$7::int*interval '1 millisecond'),'leased',at,at
+                                   lease_expires_at,state,created_at,updated_at,worker_id)
+         SELECT $1,$2,1,$3,$4,$5,least($6,at+$7::int*interval '1 millisecond'),'leased',at,at,$8
            FROM issued WHERE at<$6
          RETURNING to_jsonb(a) AS attempt,created_at,updated_at,lease_expires_at",
             &[
@@ -177,6 +180,7 @@ async fn lease(
                 &fence,
                 &expiry,
                 &lease_ms,
+                &worker_id,
             ],
         )
         .await?;

@@ -13,6 +13,10 @@ mod task_claim;
 mod task_claim_authority;
 #[path = "support/task_claim_http.rs"]
 mod task_claim_http;
+#[path = "support/task_commit.rs"]
+mod task_commit;
+#[path = "support/task_commit_races.rs"]
+mod task_commit_races;
 #[path = "support/workflow_authority_wait.rs"]
 mod workflow_authority_wait;
 

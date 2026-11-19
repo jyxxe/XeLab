@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 mod authority;
 mod claim_authority;
+mod commit_effects;
 mod reads;
 #[cfg(test)]
 mod restart_tests;
