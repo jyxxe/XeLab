@@ -86,6 +86,27 @@ class LabelSyncTests(unittest.TestCase):
         self.assertEqual(api.calls[-1], ("PATCH", "/labels/17", {"color": "#d73a4a", "description": LABEL["description"]}))
         self.assertEqual(self.run_sync(api, apply=True), 0)
 
+    def test_unicode_casefold_match_is_left_unmanaged(self):
+        managed = dict(LABEL, name="status:needs-triage")
+        custom = dict(managed, name="\u017ftatus:needs-triage", color="#000000", id=17)
+        api = FakeAPI([custom])
+        self.assertEqual(self.run_sync(api, [managed], apply=True), 1)
+        self.assertEqual(api.labels[0], custom)
+        self.assertEqual(api.calls[-1], ("POST", "/labels", dict(managed, color="#" + managed["color"])))
+        self.assertEqual(self.run_sync(api, [managed], apply=True), 0)
+
+    def test_conflicting_managed_ids_across_pages_stop_before_any_write(self):
+        first = dict(LABEL, name="Type:Bug", id=17)
+        second = dict(LABEL, id=18)
+        unrelated = [dict(LABEL, name=f"external-{n}") for n in range(99)]
+        planned = [dict(LABEL, name="type:feature"), LABEL]
+        for apply in (False, True):
+            with self.subTest(apply=apply):
+                api = FakeAPI([first, *unrelated, second])
+                with self.assertRaisesRegex(ValueError, "ambiguous.*type:bug"):
+                    self.run_sync(api, planned, apply=apply)
+                self.assertEqual([method for method, _, _ in api.calls], ["GET", "GET"])
+
     def test_rejects_non_numeric_label_id_before_update(self):
         api = FakeAPI([dict(LABEL, color="#000000", id="bad-id")])
         with self.assertRaisesRegex(ValueError, "label ID"):

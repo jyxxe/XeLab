@@ -53,10 +53,22 @@ class LabelClient(Forgejo):
 
 
 def synchronize(api, labels, apply=False):
-    existing = {item["name"].casefold(): item for item in api.pages("/labels")}
+    managed_names = {label["name"].lower() for label in labels}
+    existing = {}
+    for item in api.pages("/labels"):
+        name = item["name"]
+        if not name.isascii():
+            continue
+        key = name.lower()
+        if key not in managed_names:
+            continue
+        if key in existing and existing[key].get("id") != item.get("id"):
+            raise ValueError(f"ambiguous Forgejo label IDs for {key}")
+        existing[key] = item
+
     changes = 0
     for label in labels:
-        current = existing.get(label["name"].casefold())
+        current = existing.get(label["name"].lower())
         if current is None:
             method, path = "POST", "/labels"
             payload = dict(label, color="#" + label["color"])
