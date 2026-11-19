@@ -54,7 +54,7 @@ async fn insert_schedule(
         "owner_id":owner,"spec":spec,"delegation_id":delegation,"next_fire_at":next_fire_at})
 }
 
-async fn scoped_key(fixture: &Fixture, name: &str, rules: Value) -> String {
+pub(super) async fn scoped_key(fixture: &Fixture, name: &str, rules: Value) -> String {
     let reply = request(
         &fixture.router,
         Method::POST,

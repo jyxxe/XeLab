@@ -2,17 +2,16 @@
 //! must revalidate the original grants and provider binding before each step.
 use crate::{
     auth::{self, Auth, Context, Resource},
-    contracts::{id, reject_jsonb_nul, string, unsigned, validate, validate_business},
+    contracts::{id, string, unsigned},
     error::{Error, Result},
-    policy::Path,
 };
 use axum::http::HeaderMap;
-use chrono::{DateTime, Duration, Utc};
-use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use serde_json::Value;
+use std::collections::HashMap;
 use tokio_postgres::{GenericClient, Transaction};
 use uuid::Uuid;
 
+pub(crate) mod admission;
 mod authority;
 mod cancel;
 mod claim_authority;
@@ -72,16 +71,7 @@ pub(crate) async fn authorize(
         return reads::authorize(c, ctx, name, params).await;
     }
     authorize_create(c, ctx).await?;
-    let workflow = id(body, "workflow_id")?;
-    let row = c
-        .query_opt("SELECT owner_id FROM workflows WHERE id=$1", &[&workflow])
-        .await?
-        .ok_or_else(Error::not_found)?;
-    let resource = Resource::new("workflow", workflow, Some(row.get(0)));
-    if !crate::policy::allows(c, ctx, "workflow.read", &resource).await? {
-        return Err(Error::not_found());
-    }
-    Ok(())
+    admission::authorize_workflow_read(c, ctx, id(body, "workflow_id")?).await
 }
 
 async fn authorize_task_action(
@@ -103,7 +93,7 @@ async fn authorize_task_action(
     result
 }
 
-async fn authorize_create(c: &(impl GenericClient + Sync), ctx: &Context) -> Result<()> {
+pub(crate) async fn authorize_create(c: &(impl GenericClient + Sync), ctx: &Context) -> Result<()> {
     auth::authorize(
         c,
         ctx,
@@ -157,122 +147,32 @@ async fn create(c: &(impl GenericClient + Sync), ctx: &Context, body: &Value) ->
         ));
     }
     let workflow = id(body, "workflow_id")?;
-    let row = c
-        .query_opt(
-            "SELECT owner_id,spec,status FROM workflows WHERE id=$1 FOR SHARE",
-            &[&workflow],
-        )
-        .await?
-        .ok_or_else(Error::not_found)?;
-    if row.get::<_, String>("status") != "active" {
-        return Err(Error::conflict("Workflow version is archived"));
-    }
-    let spec: Value = row.get("spec");
-    validate("WorkflowSpec", &spec)?;
-    reject_jsonb_nul(&body["input"])?;
-    validate_business(&spec["input_schema"], &body["input"])?;
     let timeout = body
         .get("timeout_ms")
         .map(unsigned)
         .transpose()?
-        .unwrap_or(86_400_000);
-    let submitted: DateTime<Utc> = c.query_one("SELECT clock_timestamp()", &[]).await?.get(0);
-    let deadline = submitted + Duration::milliseconds(timeout as i64);
-    let workflow_resource = Resource::new("workflow", workflow, Some(row.get("owner_id")));
-    let steps = spec["steps"].as_array().unwrap();
-    let mut admissions = Vec::with_capacity(steps.len());
-    for step in steps {
-        if unsigned(&step["timeout_ms"])? > timeout {
-            return Err(Error::invalid("Workflow step exceeds the task deadline"));
-        }
-        admissions.push(targets::resolve(c, ctx, step).await?);
-    }
-
-    // Freeze authority after all provider locks, which can outlive grant conditions.
-    let mut workflow_paths = authority::freeze(c, ctx, "workflow.read", &workflow_resource).await?;
-    let mut budget = 0;
-    crate::plugin_catalog::reserve_authority_bytes(
-        &mut budget,
-        serde_json::to_vec(&workflow_paths)?.len(),
-    )?;
-    for bound in &mut admissions {
-        for target in &mut bound.targets {
-            let paths = authority::freeze(c, ctx, &target.action, &target.resource).await?;
-            crate::plugin_catalog::reserve_authority_bytes(
-                &mut budget,
-                serde_json::to_vec(&paths)?.len(),
-            )?;
-            target.paths = paths;
-        }
-    }
-
-    let target_paths = admissions
-        .iter()
-        .flat_map(|bound| &bound.targets)
-        .flat_map(|target| &target.paths);
-    let grant_ids: Vec<_> = workflow_paths
-        .iter()
-        .chain(target_paths)
-        .flat_map(|path| path.sources.iter().copied())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let source_expiries = authority::source_expiries(c, ctx, &grant_ids).await?;
-    authorize_create(c, ctx).await?;
-    let authority_expires = deadline.min(authority::issuer_expiry(c, ctx).await?);
-    let checked_at: DateTime<Utc> = c.query_one("SELECT clock_timestamp()", &[]).await?.get(0);
-    if authority_expires <= checked_at {
-        return Err(Error::new(
-            "DEADLINE_EXCEEDED",
-            "Task admission exceeded its live deadline",
-            axum::http::StatusCode::GATEWAY_TIMEOUT,
-        ));
-    }
-    let mut rules = BTreeMap::new();
-    collect_live_rules(
-        &mut workflow_paths,
+        .unwrap_or(admission::DEFAULT_TASK_TIMEOUT_MS);
+    let admission = admission::prepare(
+        c,
         ctx,
-        checked_at,
-        &source_expiries,
-        &mut rules,
-    )?;
-    for bound in &mut admissions {
-        for target in &mut bound.targets {
-            collect_live_rules(
-                &mut target.paths,
-                ctx,
-                checked_at,
-                &source_expiries,
-                &mut rules,
-            )?;
-        }
-    }
-    let admission = json!({
-        "version": 1,
-        "peer": ctx.peer,
-        "browser_origin": ctx.browser_origin,
-        "credential_chain": ctx.chain,
-        "workflow_paths": workflow_paths,
-        "steps": admissions.iter().map(targets::StepAdmission::record).collect::<Vec<_>>(),
-    });
-    // Cap the full persisted record, including non-rule metadata.
-    crate::plugin_catalog::reserve_authority_bytes(&mut 0, serde_json::to_vec(&admission)?.len())?;
-    // This union is only the overall ceiling. Execution must also require the
-    // chosen step's own targets and original sources, never a sibling's paths.
-    let maximum_rules = Value::Array(rules.into_values().collect());
+        workflow,
+        &body["input"],
+        admission::Purpose::Task(timeout),
+    )
+    .await?;
     let task = Uuid::new_v4();
     let delegation = Uuid::new_v4();
     c.execute(
         "INSERT INTO execution_delegations(id,subject_id,issuer_credential_id,maximum_rules,run_as,expires_at,status,created_at)
          VALUES($1,$2,$3,$4,'user',$5,'active',$6)",
-        &[&delegation, &ctx.subject, &ctx.credential, &maximum_rules, &authority_expires, &submitted],
+        &[&delegation, &ctx.subject, &ctx.credential, &admission.maximum_rules, &admission.expires_at, &admission.submitted],
     ).await?;
     c.execute(
         "INSERT INTO tasks(id,owner_id,workflow_id,delegation_id,input,deadline_at,state,created_at,updated_at,admission)
          VALUES($1,$2,$3,$4,$5,$6,'queued',$7,$7,$8)",
-        &[&task, &ctx.subject, &workflow, &delegation, &body["input"], &deadline, &submitted, &admission],
+        &[&task, &ctx.subject, &workflow, &delegation, &body["input"], &admission.deadline, &admission.submitted, &admission.record],
     ).await?;
-    for (step, binding) in steps.iter().zip(&admissions) {
+    for (step, binding) in admission.steps.iter().zip(&admission.bindings) {
         let state = if step["depends_on"].as_array().unwrap().is_empty() {
             "ready"
         } else {
@@ -281,7 +181,7 @@ async fn create(c: &(impl GenericClient + Sync), ctx: &Context, body: &Value) ->
         c.execute(
             "INSERT INTO task_steps(id,task_id,step_key,provider_deployment_id,state,created_at,updated_at)
              VALUES($1,$2,$3,$4,$5,$6,$6)",
-            &[&Uuid::new_v4(), &task, &string(step, "id")?, &binding.deployment_id(), &state, &submitted],
+            &[&Uuid::new_v4(), &task, &string(step, "id")?, &binding.deployment_id(), &state, &admission.submitted],
         ).await?;
     }
     crate::plugin_catalog::read_task(c, task, None)
@@ -289,36 +189,20 @@ async fn create(c: &(impl GenericClient + Sync), ctx: &Context, body: &Value) ->
         .ok_or_else(Error::not_found)
 }
 
-fn collect_live_rules(
-    paths: &mut Vec<Path>,
-    ctx: &Context,
-    checked_at: DateTime<Utc>,
-    source_expiries: &HashMap<Uuid, DateTime<Utc>>,
-    rules: &mut BTreeMap<String, Value>,
-) -> Result<()> {
-    paths.retain(|path| {
-        path.sources.iter().all(|grant| {
-            source_expiries
-                .get(grant)
-                .is_some_and(|expiry| *expiry > checked_at)
-        })
-    });
-    authority::retain_live_paths(paths, ctx, checked_at)?;
-    for path in paths {
-        rules
-            .entry(serde_json::to_string(&path.rule)?)
-            .or_insert_with(|| path.rule.clone());
-    }
-    Ok(())
-}
-
-/// Controller restart revokes short call authority. A submitted Task retains
-/// its original, time-bounded proof for later revalidation.
+/// Controller restart revokes transient authority. Submitted tasks and schedules
+/// retain their original, time-bounded proof for later revalidation.
 pub(crate) async fn revoke_transient_delegations(c: &(impl GenericClient + Sync)) -> Result<()> {
     c.execute(
         "UPDATE execution_delegations e SET status='revoked' WHERE e.status='active'
-         AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.delegation_id=e.id AND t.admission IS NOT NULL)",
+         AND NOT EXISTS (SELECT FROM tasks t WHERE t.delegation_id=e.id AND t.admission IS NOT NULL)
+         AND NOT EXISTS (
+             SELECT FROM schedules s WHERE s.delegation_id=e.id AND s.admission IS NOT NULL
+               AND s.owner_id=e.subject_id AND e.issuer_credential_id IS NOT NULL
+               AND e.run_as='user' AND e.service_account_id IS NULL
+               AND NOT EXISTS (SELECT FROM calls WHERE delegation_id=s.delegation_id)
+         )",
         &[],
-    ).await?;
+    )
+    .await?;
     Ok(())
 }
