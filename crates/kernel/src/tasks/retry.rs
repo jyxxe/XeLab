@@ -4,6 +4,7 @@ use crate::{
     api::etag,
     auth::{Auth, Context},
     contracts::unsigned,
+    db,
     error::{Error, Result},
     plugin_catalog::read_task,
 };
@@ -41,6 +42,40 @@ const SAFE_HISTORY: &str = "
       FROM attempts old LEFT JOIN task_step_resolutions r ON r.attempt_id=old.id
      WHERE old.step_id=s.id";
 
+// A released slot alone does not prove that the old workload stopped. The
+// Controller writes this call-specific audit in the transaction after stop.
+const FENCED_CALL: &str = "
+    c.state='unknown' AND c.result IS NULL AND c.completed_at IS NULL
+    AND coalesce(c.error->>'code','')<>'CANCELED'
+    AND c.owner_id=t.owner_id AND c.credential_id=original.issuer_credential_id
+    AND c.idempotency_key=prior.idempotency_key
+    AND c.skill_id IS NULL AND c.skill_definition_digest IS NULL AND c.http_binding IS NULL
+    AND i.deployment_id=s.provider_deployment_id
+    AND prior.state IN ('expired','unknown')
+    AND EXISTS (SELECT FROM task_step_resolutions resolution WHERE resolution.attempt_id=prior.id
+                  AND resolution.resolution='confirmed_not_executed')
+    AND EXISTS (SELECT FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.admission->'steps')='array'
+                    THEN t.admission->'steps' ELSE '[]'::jsonb END) frozen
+                  WHERE frozen->>'step_key'=s.step_key AND frozen->'installation_id'=to_jsonb(b.installation_id)
+                    AND frozen->'deployment_id'=to_jsonb(s.provider_deployment_id)
+                    AND frozen->'binding'->>'kind'='capability' AND frozen->'binding'->'contract'=c.contract)
+    AND EXISTS (SELECT FROM reservations slot WHERE slot.id=c.id AND slot.kind='call'
+                  AND slot.account_id=t.owner_id AND slot.status='released')
+    AND EXISTS (SELECT FROM execution_delegations d WHERE d.id=c.delegation_id
+                  AND d.subject_id=t.owner_id AND d.issuer_credential_id=c.credential_id
+                  AND d.status<>'active' AND d.id<>t.delegation_id)
+    AND EXISTS (SELECT FROM rpc_delegations rpc WHERE rpc.call_id=c.id
+                  AND rpc.execution_delegation_id=c.delegation_id
+                  AND rpc.instance_id=c.provider_instance_id AND rpc.subject_id=c.owner_id
+                  AND rpc.issuer_credential_id=c.credential_id AND rpc.status<>'active')
+    AND NOT EXISTS (SELECT FROM rpc_delegations rpc WHERE rpc.call_id=c.id
+                      AND rpc.execution_delegation_id=c.delegation_id AND rpc.status='active')
+    AND EXISTS (SELECT FROM audit_events audit WHERE audit.subject_id=c.owner_id
+                  AND audit.created_at>=c.created_at AND audit.credential_id IS NULL
+                  AND audit.action='capability.invoke' AND audit.outcome='failed'
+                  AND audit.reason_code='CALL_LEASE_EXPIRED'
+                  AND audit.resource=jsonb_build_object('kind','call','match','ids','ids',jsonb_build_array(c.id)))";
+
 pub(super) async fn authorize(
     c: &(impl GenericClient + Sync),
     ctx: &Context,
@@ -62,6 +97,9 @@ pub(crate) async fn request(
     headers: &HeaderMap,
 ) -> Result<(Value, DateTime<Utc>)> {
     authorize(tx, ctx, task).await?;
+    // QueryResult can give an old Call a known outcome under this ledger.
+    // Take it before Schedule and Task locks, in Broker admission order.
+    db::call_lock(tx).await?;
     let schedule = crate::schedules::trigger::lock_retry_origin(tx, task).await?;
     // As in settlement and cancellation, the parent fences all child changes.
     let parent = tx
@@ -112,8 +150,9 @@ pub(crate) async fn request(
         let step: Value = candidate
             .try_get::<_, Option<Value>>("step")?
             .ok_or_else(unsafe_step)?;
+        let previous = candidate.try_get("attempt_count")?;
         if candidate.try_get::<_, Option<Uuid>>("prior_id")?.is_none()
-            || !within_budget(&step, candidate.try_get("attempt_count")?)?
+            || !within_budget(&step, previous)?
             || !(1..9_007_199_254_740_991_i64).contains(&candidate.try_get("fence")?)
             || !dependencies_succeeded(tx, task, &step["depends_on"]).await?
         {
@@ -122,6 +161,7 @@ pub(crate) async fn request(
         if !candidate.try_get::<_, bool>("delegation_live")? {
             return Err(Error::denied());
         }
+        linked_history(tx, candidate.try_get("step_id")?, previous, None).await?;
         cutoff = cutoff
             .min(candidate.try_get("expires_at")?)
             .min(claim_authority::revalidate(tx, auth, candidate, &step, ctx.request).await?);
@@ -182,6 +222,85 @@ fn within_budget(step: &Value, previous: i32) -> Result<bool> {
         .unwrap_or(1);
     Ok(u64::try_from(previous)
         .is_ok_and(|count| count > 0 && count < maximum && maximum <= MAX_ATTEMPTS))
+}
+
+/// Check all earlier linked Calls under the Call ledger and Task lock. An
+/// independent query may retain its wire budget even if recovery revoked its
+/// token. A provider can also restart without changing its generation.
+async fn linked_history(
+    tx: &Transaction<'_>,
+    step: Uuid,
+    previous: i32,
+    input_digest: Option<&str>,
+) -> Result<bool> {
+    let sql = format!("SELECT count(*),coalesce(bool_and(
+            ({FENCED_CALL}) IS TRUE
+            AND ($3::text IS NULL OR c.input_digest=$3)
+            AND NOT EXISTS (SELECT FROM rpc_delegations query WHERE query.call_id=c.id
+                              AND query.execution_delegation_id<>c.delegation_id
+                              AND query.expires_at>clock_timestamp())),false)
+         FROM attempts prior JOIN task_steps s ON s.id=prior.step_id
+         JOIN tasks t ON t.id=s.task_id JOIN execution_delegations original ON original.id=t.delegation_id
+         JOIN task_attempt_calls b ON b.attempt_id=prior.id JOIN calls c ON c.id=b.call_id
+         LEFT JOIN instances i ON i.id=c.provider_instance_id
+        WHERE s.id=$1 AND prior.number BETWEEN 1 AND $2");
+    let row = tx
+        .query_one(&sql, &[&step, &previous, &input_digest])
+        .await?;
+    let count: i64 = row.try_get(0)?;
+    if count == 0 {
+        return Ok(false);
+    }
+    if count != i64::from(previous) || !row.try_get::<_, bool>(1)? {
+        return Err(Error::conflict(
+            "A previous Task Call lacks verified physical fencing or matching retry input",
+        ));
+    }
+    Ok(true)
+}
+
+/// A retired Call remains readable. Gate both QueryResult admission and
+/// settlement. Legacy queue intents only close the gate after physical stop.
+pub(crate) async fn call_retired_for_retry(tx: &Transaction<'_>, call: Uuid) -> Result<bool> {
+    let sql = format!(
+        "SELECT EXISTS (SELECT FROM task_attempt_calls b JOIN calls c ON c.id=b.call_id
+        JOIN attempts prior ON prior.id=b.attempt_id JOIN task_steps s ON s.id=prior.step_id
+        JOIN tasks t ON t.id=s.task_id JOIN execution_delegations original ON original.id=t.delegation_id
+        LEFT JOIN instances i ON i.id=c.provider_instance_id
+        WHERE b.call_id=$1 AND EXISTS ({QUEUE_PROOF}) AND ({FENCED_CALL}) IS TRUE)"
+    );
+    Ok(tx.query_one(&sql, &[&call]).await?.try_get(0)?)
+}
+
+pub(super) async fn validate_linked_successor(
+    tx: &Transaction<'_>,
+    step: Uuid,
+    step_definition: &Value,
+    successor: Uuid,
+    number: i32,
+    input_digest: &str,
+) -> Result<()> {
+    let previous = number - 1;
+    if !within_budget(step_definition, previous)? {
+        return Err(unsafe_step());
+    }
+    let sql = format!("SELECT EXISTS (SELECT FROM attempts successor
+        JOIN task_steps s ON s.id=successor.step_id
+        JOIN attempts prior ON prior.step_id=s.id AND prior.number=successor.number-1 AND prior.fence=successor.fence-1
+        JOIN task_step_resolutions resolution ON resolution.attempt_id=prior.id
+       WHERE successor.id=$1 AND s.id=$2 AND successor.number=$3
+         AND successor.number=s.attempt_count AND successor.fence=s.fence
+         AND successor.idempotency_key=prior.idempotency_key AND resolution.resolution='confirmed_not_executed'
+         AND EXISTS ({QUEUE_PROOF}))");
+    if !tx
+        .query_one(&sql, &[&successor, &step, &number])
+        .await?
+        .try_get::<_, bool>(0)?
+        || !linked_history(tx, step, previous, Some(input_digest)).await?
+    {
+        return Err(unsafe_step());
+    }
+    Ok(())
 }
 
 async fn check_cutoff(tx: &Transaction<'_>, cutoff: DateTime<Utc>) -> Result<()> {
@@ -267,6 +386,15 @@ pub(super) async fn inconsistent_snapshot(c: &(impl GenericClient + Sync)) -> Re
                SELECT FROM attempts prior JOIN task_step_resolutions r ON r.attempt_id=prior.id
                WHERE prior.step_id=s.id AND prior.number=successor.number-1 AND prior.fence=successor.fence-1
                  AND prior.idempotency_key=successor.idempotency_key AND r.resolution='confirmed_not_executed'
-                 AND EXISTS ({QUEUE_PROOF})))");
+                 AND EXISTS ({QUEUE_PROOF})))
+       OR EXISTS (SELECT FROM task_attempt_calls link JOIN attempts successor ON successor.id=link.attempt_id
+           JOIN calls current ON current.id=link.call_id JOIN task_steps s ON s.id=successor.step_id
+           JOIN tasks t ON t.id=s.task_id JOIN execution_delegations original ON original.id=t.delegation_id
+           WHERE successor.number>1 AND successor.number-1<>(
+               SELECT count(*) FROM attempts prior JOIN task_attempt_calls b ON b.attempt_id=prior.id
+                 JOIN calls c ON c.id=b.call_id LEFT JOIN instances i ON i.id=c.provider_instance_id
+               WHERE prior.step_id=s.id AND prior.number BETWEEN 1 AND successor.number-1
+                 AND c.idempotency_key=current.idempotency_key AND c.input_digest=current.input_digest
+                 AND EXISTS ({QUEUE_PROOF}) AND ({FENCED_CALL}) IS TRUE))");
     Ok(c.query_one(&sql, &[]).await?.try_get(0)?)
 }

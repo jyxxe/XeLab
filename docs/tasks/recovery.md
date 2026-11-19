@@ -19,6 +19,8 @@
 
 resolveUnknownStep 只在 unknown 状态允许。confirmed_succeeded 必须提供可信证据及满足输出 Schema 的 output；confirmed_not_executed 表示外部核实未执行，随后由显式 retry 决定重排。证据及操作者全审计。
 
+已通过 Broker 派发的固定签名一元 Capability，还须等待 Controller 确认旧调用的运行进程已停止、撤销派生委托并释放预留。启动时批量释放的预留仍须有逐 Call 的停止审计才允许重排。若旧调用已有确定结果，或旧 QueryResult 仍在有效窗口内，核心拒绝重排。重排提交后，旧 Call 仍可读取其历史记录，迟到的查询结果不能改写它。后续 worker 复核原授权、原业务键及输入摘要，在一次事务内创建新的 Attempt、Call 和预留，并提高 fence。自动派发重试覆盖固定签名的直接 Capability，并遵循现有尝试次数上限。Skill 沿用原执行路径。
+
 未确认的“认为失败”不是 confirmed_not_executed。不能通过修改 task.state 跳过核实。补偿动作是新的获授权步骤，也可能失败，不能宣称自动恢复原世界状态。
 
 ## 检查点
