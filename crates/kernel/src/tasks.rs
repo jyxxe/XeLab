@@ -6,6 +6,7 @@ use crate::{
     error::{Error, Result},
     policy::Path,
 };
+use axum::http::HeaderMap;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -13,6 +14,7 @@ use tokio_postgres::GenericClient;
 use uuid::Uuid;
 
 mod authority;
+mod cancel;
 mod claim_authority;
 mod commit_effects;
 mod dispatch_input;
@@ -26,12 +28,12 @@ pub mod task_engine;
 pub(crate) fn handles(name: &str) -> bool {
     matches!(
         name,
-        "createTask" | "getTask" | "listTasks" | "listTaskSteps" | "listAttempts"
+        "createTask" | "cancelTask" | "getTask" | "listTasks" | "listTaskSteps" | "listAttempts"
     )
 }
 
 pub(crate) fn validate_query(name: &str, query: &str) -> Result<()> {
-    if matches!(name, "createTask" | "getTask") && !query.is_empty() {
+    if matches!(name, "createTask" | "cancelTask" | "getTask") && !query.is_empty() {
         return Err(Error::invalid("Unexpected task query parameter"));
     }
     Ok(())
@@ -44,6 +46,9 @@ pub(crate) async fn authorize(
     params: &HashMap<String, String>,
     body: &Value,
 ) -> Result<()> {
+    if name == "cancelTask" {
+        return cancel::authorize(c, ctx, crate::api::path_id(params, "task_id")?).await;
+    }
     if name != "createTask" {
         return reads::authorize(c, ctx, name, params).await;
     }
@@ -70,6 +75,7 @@ async fn authorize_create(c: &(impl GenericClient + Sync), ctx: &Context) -> Res
     .await
 }
 
+#[allow(clippy::too_many_arguments)] // Shared HTTP dispatch inputs.
 pub(crate) async fn execute(
     c: &(impl GenericClient + Sync),
     auth: &Auth,
@@ -77,12 +83,17 @@ pub(crate) async fn execute(
     name: &str,
     params: &HashMap<String, String>,
     body: &Value,
+    headers: &HeaderMap,
     query: &str,
 ) -> Result<(Value, u16)> {
-    if name == "createTask" {
-        return Ok((create(c, ctx, body).await?, 201));
+    match name {
+        "createTask" => Ok((create(c, ctx, body).await?, 201)),
+        "cancelTask" => Ok((
+            cancel::request(c, ctx, crate::api::path_id(params, "task_id")?, headers).await?,
+            200,
+        )),
+        _ => reads::execute(c, auth, ctx, name, params, query).await,
     }
-    reads::execute(c, auth, ctx, name, params, query).await
 }
 
 async fn create(c: &(impl GenericClient + Sync), ctx: &Context, body: &Value) -> Result<Value> {

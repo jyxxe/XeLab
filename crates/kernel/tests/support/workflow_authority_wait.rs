@@ -38,7 +38,7 @@ async fn expiring_rule_key(f: &Fixture, c: &Client, action: &str) -> (String, Da
     )
 }
 
-async fn wait_for_rule_expiry(
+pub(super) async fn wait_for_rule_expiry(
     c: &Client,
     blocker_pid: i32,
     expires_at: DateTime<Utc>,
