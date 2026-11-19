@@ -3,9 +3,11 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, OnceLock,
     },
+    time::Duration,
 };
+use tokio::time::Instant;
 use xelab_kernel::{
     admission,
     api::{router, App},
@@ -146,6 +148,13 @@ async fn start(mut config: Config, (cpu, memory): (i64, i64)) -> Result<()> {
         config.text("server", "tls_key_file"),
     )
     .await?;
+    let shutdown_grace = Duration::from_millis(
+        app.config.value["resources"]["shutdown_grace_ms"]
+            .as_u64()
+            .unwrap(),
+    );
+    let failure_grace = shutdown_grace.min(Duration::from_secs(1));
+    let shutdown_deadline = Arc::new(OnceLock::new());
     let worker = tokio::spawn(controller::run(app.clone()));
     let mut task_worker = tokio::spawn(xelab_kernel::task_engine::run(app.clone()));
     let volume_worker = tokio::spawn(xelab_kernel::volumes::run(app.clone()));
@@ -154,47 +163,43 @@ async fn start(mut config: Config, (cpu, memory): (i64, i64)) -> Result<()> {
     let upgrade_worker = tokio::spawn(xelab_kernel::upgrades::run(app.clone()));
     let schema_worker = tokio::spawn(xelab_kernel::schema_jobs::run(app.clone()));
     let host_app = app.clone();
+    let host_deadline = shutdown_deadline.clone();
     let host_worker = tokio::spawn(async move {
         if xelab_kernel::host::serve(host_app.clone()).await.is_err() {
             tracing::error!(reason_code = "HOST_SERVICE_STOPPED");
-            host_app.ready.store(false, Ordering::SeqCst);
-            host_app.shutdown.store(true, Ordering::SeqCst);
+            begin_shutdown(&host_app, &host_deadline, failure_grace);
         }
     });
     let handle = axum_server::Handle::new();
     let monitor_app = app.clone();
+    let monitor_deadline = shutdown_deadline.clone();
     let monitor_handle = handle.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             if monitor_app.leader.is_closed() || monitor_app.shutdown.load(Ordering::SeqCst) {
-                monitor_app.ready.store(false, Ordering::SeqCst);
-                monitor_app.shutdown.store(true, Ordering::SeqCst);
-                monitor_handle.graceful_shutdown(Some(std::time::Duration::from_secs(1)));
+                let deadline = begin_shutdown(&monitor_app, &monitor_deadline, failure_grace);
+                monitor_handle
+                    .graceful_shutdown(Some(deadline.saturating_duration_since(Instant::now())));
                 break;
             }
         }
     });
     let stop = handle.clone();
     let signal_app = app.clone();
+    let signal_deadline = shutdown_deadline.clone();
     tokio::spawn(async move {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("signal registration");
         tokio::select! {_=tokio::signal::ctrl_c()=>(),_=term.recv()=>()};
-        signal_app.ready.store(false, Ordering::SeqCst);
-        signal_app.shutdown.store(true, Ordering::SeqCst);
-        stop.graceful_shutdown(Some(std::time::Duration::from_millis(
-            signal_app.config.value["resources"]["shutdown_grace_ms"]
-                .as_u64()
-                .unwrap(),
-        )));
+        let deadline = begin_shutdown(&signal_app, &signal_deadline, shutdown_grace);
+        stop.graceful_shutdown(Some(deadline.saturating_duration_since(Instant::now())));
     });
     let served = axum_server::bind_rustls(listen, tls)
         .handle(handle)
         .serve(router(app.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>())
         .await;
-    app.ready.store(false, Ordering::SeqCst);
-    app.shutdown.store(true, Ordering::SeqCst);
+    let deadline = begin_shutdown(&app, &shutdown_deadline, shutdown_grace);
     worker.abort();
     host_worker.abort();
     blob_worker.abort();
@@ -202,12 +207,10 @@ async fn start(mut config: Config, (cpu, memory): (i64, i64)) -> Result<()> {
     upgrade_worker.abort();
     schema_worker.abort();
     volume_worker.abort();
-    let grace = std::time::Duration::from_millis(
-        app.config.value["resources"]["shutdown_grace_ms"]
-            .as_u64()
-            .unwrap(),
-    );
-    if tokio::time::timeout(grace, &mut task_worker).await.is_err() {
+    if tokio::time::timeout_at(deadline, &mut task_worker)
+        .await
+        .is_err()
+    {
         task_worker.abort();
         let _ = task_worker.await;
     }
@@ -219,9 +222,28 @@ async fn start(mut config: Config, (cpu, memory): (i64, i64)) -> Result<()> {
     served.map_err(Error::from)
 }
 
+fn drain_cutoff(deadline: &OnceLock<Instant>, grace: Duration) -> Instant {
+    *deadline.get_or_init(|| Instant::now() + grace)
+}
+
+fn begin_shutdown(app: &App, deadline: &OnceLock<Instant>, grace: Duration) -> Instant {
+    let cutoff = drain_cutoff(deadline, grace);
+    app.ready.store(false, Ordering::SeqCst);
+    app.shutdown.store(true, Ordering::SeqCst);
+    cutoff
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_and_task_shutdown_share_the_first_deadline() {
+        let deadline = OnceLock::new();
+        let first = drain_cutoff(&deadline, Duration::from_secs(1));
+        assert_eq!(drain_cutoff(&deadline, Duration::from_secs(30)), first);
+        assert_eq!(drain_cutoff(&deadline, Duration::ZERO), first);
+    }
 
     #[test]
     fn compact_startup_descriptor_requires_complete_positive_capacity() {
