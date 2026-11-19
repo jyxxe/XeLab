@@ -5,9 +5,11 @@
 
 | 工具 | 行为 | 写操作 |
 |---|---|---|
-| `sync_labels.py` | 按 `.github/labels.json` 预览/同步受管标签 | 仅 `--apply` 且持授权 `GH_TOKEN` 时创建/更新标签；从不删除或改名 |
+| `sync_labels.py` | 按 `.github/labels.json` 预览/同步 Forgejo 仓库标签 | 仅显式 `--apply` 并提供令牌文件时创建/更新；从不删除或改名 |
 | `triage_report.py` | 只读分流报告：状态、指派、认领候选、重复候选 | 无（仅 GET） |
 | `validate.py` | 校验 Issue 表单子集与 workflow 信任边界 | 无 |
+
+标签首次导入与后续核对见[标签操作步骤](../../docs/implementation/issue-automation.md)。
 
 ## triage_report.py：只读分流报告
 
@@ -55,4 +57,4 @@ python3 -m unittest discover -s tools/issues -p 'test_*.py' -v
 python3 tools/issues/validate.py
 ```
 
-`issue-proposals.yml` 已在 push/PR 时运行上述单元测试；本目录新增测试自动纳入。
+本地检查不依赖 Runner。`issue-proposals.yml` 保留同一组检查；是否真正运行，以目标 Forgejo 提交的状态为准。

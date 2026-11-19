@@ -8,7 +8,7 @@ import unittest
 
 import yaml
 
-from validate import ROOT, read, validate
+from validate import ROOT, SECURITY_POLICY, read, validate
 
 
 class IssueFormValidationTests(unittest.TestCase):
@@ -17,6 +17,21 @@ class IssueFormValidationTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         shutil.copytree(ROOT / '.github', self.root / '.github')
+
+    def test_policy_must_point_to_local_dev_in_both_entry_points(self):
+        for filename in ('config.yml', '04-security.yml'):
+            with self.subTest(filename=filename):
+                path = self.root / '.github/ISSUE_TEMPLATE' / filename
+                original = path.read_text(encoding='utf-8')
+                path.write_text(original.replace(SECURITY_POLICY, 'https://example.invalid/SECURITY.md'), encoding='utf-8')
+                with self.assertRaisesRegex(ValueError, 'security'):
+                    self.validate_silently()
+                path.write_text(original, encoding='utf-8')
+
+    def test_retired_label_writer_cannot_be_reintroduced(self):
+        (self.root / '.github/workflows/issue-labels.yml').touch()
+        with self.assertRaisesRegex(ValueError, 'manual Forgejo'):
+            self.validate_silently()
 
     def edit(self, filename, field_id, mutate):
         path = self.root / '.github/ISSUE_TEMPLATE' / filename

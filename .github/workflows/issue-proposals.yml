@@ -5,15 +5,13 @@ on:
       - '.github/ISSUE_TEMPLATE/**'
       - '.github/labels.json'
       - '.github/workflows/issue-proposals.yml'
-      - '.github/workflows/issue-labels.yml'
       - 'tools/issues/**'
   push:
-    branches: [main]
+    branches: [dev]
     paths:
       - '.github/ISSUE_TEMPLATE/**'
       - '.github/labels.json'
       - '.github/workflows/issue-proposals.yml'
-      - '.github/workflows/issue-labels.yml'
       - 'tools/issues/**'
   workflow_dispatch:
 permissions:

@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # then deliberately updating the anchors as part of that review.
 PRIVATE_CHANNEL_OPTION = "请求私密报告渠道（不公开细节）"
 SECURITY_CONFIRMATION = "确认标题、正文和附件不含未公开漏洞细节，必要时仅请求私密渠道。"
+SECURITY_POLICY = "http://127.0.0.1:3000/xelab-admin/XeLab/src/branch/dev/SECURITY.md"
 
 
 class Loader(yaml.SafeLoader):
@@ -54,7 +55,7 @@ def validate(root=ROOT):
     directory = root / ".github/ISSUE_TEMPLATE"
     config = read(directory / "config.yml")
     require(config["blank_issues_enabled"] is False, "use structured public forms")
-    require(any(x["url"].endswith("/SECURITY.md") for x in config["contact_links"]), "missing security policy route")
+    require([link["url"] for link in config["contact_links"]] == [SECURITY_POLICY], "unexpected security policy route")
     names, kinds = set(), set()
     paths = sorted(path for path in directory.glob("*.yml") if path.name != "config.yml")
     require(len(paths) == 5, "expected five proposal forms")
@@ -105,30 +106,24 @@ def validate(root=ROOT):
                 require(len(set(attrs["options"])) == len(attrs["options"]), "duplicate choices")
         require(required_ids <= ids, "missing common submission fields")
         if types == ["type:security"]:
-            require("disclosure" in ids and "SECURITY.md" in form["body"][0]["attributes"]["value"], "missing security disclosure guard")
+            require("disclosure" in ids and f"]({SECURITY_POLICY})" in form["body"][0]["attributes"]["value"], "missing security disclosure guard")
     require(kinds == {"type:" + kind for kind in ("bug", "feature", "architecture", "security", "research")}, "incorrect proposal categories")
     workflows = root / ".github/workflows"
     checks = read(workflows / "issue-proposals.yml")
-    sync = read(workflows / "issue-labels.yml")
+    require(not (workflows / "issue-labels.yml").exists(), "label writes must remain a manual Forgejo operation")
     require(set(checks["on"]) == {"push", "pull_request", "workflow_dispatch"}, "unexpected checks trigger")
-    require(set(sync["on"]) == {"push", "workflow_dispatch"}, "untrusted event must not trigger label writes")
-    for workflow in (checks, sync):
-        require(workflow["permissions"] == {"contents": "read"}, "default token must be read-only")
-        require(workflow["on"]["push"]["branches"] == ["main"], "push must target main")
-        for job in workflow["jobs"].values():
-            require(job["runs-on"] == "ubuntu-24.04", "no self-hosted issue runner")
-            for step in job["steps"]:
-                if "uses" in step:
-                    require(re.fullmatch(r"actions/checkout@[a-f0-9]{40}", step["uses"]), "pin checkout to full SHA")
-                    require(step["with"]["persist-credentials"] is False, "must not persist token")
-                require("${{" not in step.get("run", ""), "no expression interpolation in shell")
+    require(checks["permissions"] == {"contents": "read"}, "default token must be read-only")
+    require(checks["on"]["push"]["branches"] == ["dev"], "push must target dev")
     require(set(checks["jobs"]) == {"validate"}, "unexpected check job")
-    require("permissions" not in checks["jobs"]["validate"], "PR job must inherit read-only permissions")
-    require(set(sync["jobs"]) == {"sync"}, "unexpected write job")
-    job = sync["jobs"]["sync"]
-    require(job["if"] == "github.ref == 'refs/heads/main'", "manual sync must use main")
-    require(job["permissions"] == {"contents": "read", "issues": "write"}, "label sync has excessive permissions")
-    require(job["steps"][0]["with"]["ref"] == "main", "only checkout trusted main for writes")
+    job = checks["jobs"]["validate"]
+    require("permissions" not in job, "PR job must inherit read-only permissions")
+    require(job["runs-on"] == "ubuntu-24.04", "unexpected issue runner")
+    for step in job["steps"]:
+        if "uses" in step:
+            require(re.fullmatch(r"actions/checkout@[a-f0-9]{40}", step["uses"]), "pin checkout to full SHA")
+            require(step["with"]["persist-credentials"] is False, "must not persist token")
+        require("${{" not in step.get("run", ""), "no expression interpolation in shell")
+        require("--apply" not in step.get("run", ""), "proposal checks must not write labels")
     print(f"Validated {len(paths)} forms, {len(labels)} labels and workflow trust boundaries")
 
 

@@ -1,7 +1,9 @@
 """Repository-scoped client for explicitly selected Forgejo instances."""
 import json
+import os
 from pathlib import Path
 import re
+import stat
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
@@ -24,8 +26,8 @@ class Forgejo:
         try:
             parts = urlsplit(instance)
             loopback = parts.hostname in {"127.0.0.1", "::1", "localhost"}
-            valid = (parts.hostname and parts.port != 0 and parts.username is None and not parts.query
-                     and not parts.fragment and "\\" not in instance and not re.search(r"[\x00-\x20\x7f]", instance)
+            valid = (parts.hostname and parts.port != 0 and parts.username is None
+                     and not re.search(r"[?#\\\x00-\x20\x7f]", instance)
                      and (parts.scheme == "https" or (parts.scheme == "http" and loopback)))
         except ValueError:
             valid = False
@@ -36,7 +38,11 @@ class Forgejo:
         self.opener = build_opener(ProxyHandler({}) if loopback else ProxyHandler(), NoRedirect())
         self.headers = {"Accept": "application/json"}
         if token_file is not None:
-            token = token_file.read_text(encoding="ascii").strip()
+            with token_file.open(encoding="ascii") as source:
+                mode = os.fstat(source.fileno()).st_mode
+                if not stat.S_ISREG(mode) or mode & 0o077:
+                    raise ValueError("--token-file must be a private regular file (chmod 600)")
+                token = source.read().strip()
             if not re.fullmatch(r"[!-~]+", token):
                 raise ValueError("expected one nonempty Forgejo token in the token file")
             self.headers["Authorization"] = "token " + token

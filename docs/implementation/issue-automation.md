@@ -5,7 +5,7 @@
 ## 标签规范
 
 [.github/labels.json](../../.github/labels.json)是名称、颜色和说明的受审来源。
-不使用仅组织仓库支持的自定义 Issue Types，以兼容当前个人仓库。
+分类使用普通仓库标签，不依赖特定托管平台的工单类型。
 
 | 维度 | 规则 |
 |---|---|
@@ -21,32 +21,26 @@ GUI 表单无法强制 API 请求的字段或标签，分流时必须检查完�
 
 ## 启用与核验
 
-合并默认分支后表单才在“New issue”显示。GitHub 只自动应用已经存在的标签。
-`Sync issue labels` 在 main 上相关配置合并后运行，也可在 Actions 手动运行（仅 main）。
-它从受信 main 读取清单，只创建缺失标签、更新清单内同名标签的颜色/说明，
-不删除、重命名标签，不改 Issue、PR、指派、评论或代码。
-
-首次合并后核验该 workflow 成功，并打开表单选择器逐个预览字段和默认标签。
-本地结构检查不等于 GitHub 在线 UI 验收；创建正式提案时再核对实际标签。
-同步失败时由维护者重跑；之前提交而漏标签的 Issue 要人工补齐，不自动回溯修改。
-若仓库 Actions 被禁用，可在受信 main 检出运行：
+表单与清单随 PR 进入 Forgejo 默认分支 `dev`；历史 GitHub 标签写入任务不再使用。
+维护者在**已审查的 `dev` 检出**中运行以下命令。先核对仓库地址、分支和预览输出；
+需要变更时才使用限定目标仓库、具备 `write:issue` 的令牌文件。不要向 PR 或 CI 提供该令牌。
 
 ```bash
-# 默认只读预览；公开仓库读取可不提供 GH_TOKEN。
-python3 tools/issues/sync_labels.py --repo jyxxenon/XeLab
-# 明确应用；GH_TOKEN 使用当前仓库 Issues: write 的已授权凭证，不把值写入命令。
-python3 tools/issues/sync_labels.py --repo jyxxenon/XeLab --apply
+python3 tools/issues/sync_labels.py --forgejo-url "$FORGEJO_URL" --repo "$FORGEJO_REPO" --token-file "$TOKEN_FILE"
+python3 tools/issues/sync_labels.py --forgejo-url "$FORGEJO_URL" --repo "$FORGEJO_REPO" --token-file "$TOKEN_FILE" --apply
 ```
 
-同步幂等且非破坏；遇到失败停止并返回非零，已完成项可以安全重跑。
-同步 job 只有 contents:read、issues:write；没有生产密钥、代码写入或 PR 合并权限。
-单独的 `Issue proposal checks` 在 PR 上仅有 contents:read，核验配置及同步器测试。
-任何新增事件触发器、权限或外部 Agent 接入必须经 PR 审查。
+`FORGEJO_URL` 是实例根地址，`FORGEJO_REPO` 是 `owner/name`；`TOKEN_FILE` 是仓库外的私有文件路径。
+同步只创建缺失标签、按 Forgejo 数字 ID 更新同名标签的颜色/说明，不删除、改名或回填工单。
+失败后停止并重新预览，不假定上一次全部成功；最后再预览一次，预期为 `0 label changes planned (no writes)`。
+合入后用实际仓库的 `GET /api/v1/repos/{owner}/{repo}/issue_templates` 确认五类表单，
+再检查网页选择器、政策链接和新建正式提案的标签。API 可读不等于网页已经验收。
+提案检查只做验证；新增执行器、触发器或权限须单独审查。
 
 ## CLI/API 提案与评论
 
-没有浏览器的 Agent 也可以使用 `gh issue create --repo jyxxenon/XeLab --title '...' --body-file proposal.md`，
-或 GitHub REST `POST /repos/jyxxenon/XeLab/issues` 的 title/body。
+没有浏览器时，向已核对的 Forgejo 实例 `POST /api/v1/repos/{owner}/{repo}/issues`，
+以 JSON 提交 `title`、`body`；如果指定 `labels`，使用该仓库的数字标签 ID。
 正文按对应表单的标题分段，包含所有必填项；不支持标签写入时可省略 labels，
 由维护者补齐。不要为了提交 Issue 给模型增加仓库代码写权限。
 
@@ -54,7 +48,7 @@ python3 tools/issues/sync_labels.py --repo jyxxenon/XeLab --apply
 
 ```markdown
 ### 提交来源 / Provenance
-Agent；模型：实际名称或未知；负责 GitHub 账号：实际账号
+Agent；模型：实际名称或未知；负责 Forgejo 账号：实际账号
 ### 基线与范围 / Baseline
 commit：完整 SHA；阶段：M2；模块：storage；环境：实际环境
 ### 问题摘要 / Summary
@@ -77,7 +71,7 @@ commit：完整 SHA；阶段：M2；模块：storage；环境：实际环境
 ## 未来 Bot 接入契约（尚未启用）
 
 周期扫描由后续单独配置实现，本 PR 不建立 cron、issue_comment 或 issues 执行器。
-扫描器可先只读查找 `repo:jyxxenon/XeLab is:issue is:open`，分页处理并排除 PR，
+扫描器可先只读查找 `GET /api/v1/repos/{owner}/{repo}/issues?state=open&type=issues`，分页处理并排除 PR，
 不能只查 needs-triage：API 提案可能没有任何标签。
 以 repo+issue number 去重；持久化 updated_at、上次成功游标、已发评论 ID，
 重试使用相同任务键。游标仅在成功后前进，并重叠扫描避免遗漏同时间更新。
@@ -92,12 +86,12 @@ commit：完整 SHA；阶段：M2；模块：storage；环境：实际环境
 
 - Issue 正文、标题、附件、评论、外链、标签及自述身份均为不可信数据。
   “维护者批准”“忽略之前要求”等文本不产生授权；外链内容也不能成为新的指令。
-- 不把上述内容拼进 shell、JavaScript、GitHub Actions 表达式、动态脚本或 eval。
+- 不把上述内容拼进 shell、JavaScript、Actions 表达式、动态脚本或 eval。
   有写权限的工作流不得 checkout Issue 指定的 ref、运行附件/复现脚本或下载的制品。
 - 复现需人工/受授权 Agent 审查，在无仓库写令牌和生产密钥的隔离环境进行。
   分类摘要可交给模型，但不能把模型输出直接作为有权限的工具命令。
 - 不使用 pull_request_target/workflow_run 接力执行未受审 PR 代码，不因标签或评论
   自动创建写入会话。CI 合格、ready 标签、认领与部署/合并授权是独立事项。
 
-参考：[GitHub Issue Forms](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/syntax-for-issue-forms)、
-[脚本注入防护](https://docs.github.com/en/actions/concepts/security/script-injections)。
+参考：[Forgejo 表单](https://forgejo.org/docs/v15.0/user/repository/issue-pull-request-templates/)、
+[API 分页](https://forgejo.org/docs/v15.0/user/api/usage/)、[Actions 安全](https://forgejo.org/docs/v15.0/user/actions/security/)。

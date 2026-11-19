@@ -24,6 +24,7 @@ class ForgejoTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             token_file = Path(directory) / "token"
             token_file.write_text("test-forgejo-token\n")
+            token_file.chmod(0o600)
             api = Forgejo("http://127.0.0.1:3000/git/", "example/project", token_file)
             pages = [response([1], '<ignored>; rel="last"', '<https://elsewhere.invalid/>; rel="next"'),
                      response([2], '<ignored>; rel="prev"')]
@@ -43,8 +44,16 @@ class ForgejoTests(unittest.TestCase):
                 self.assertEqual(list(api.pages("/issues/1/comments")), [])
             self.assertIsNone(opened.call_args.args[0].get_header("Authorization"))
 
+    def test_group_readable_token_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            token_file = Path(directory) / "token"
+            token_file.write_text("test-only")
+            token_file.chmod(0o640)
+            with self.assertRaisesRegex(ValueError, "private regular file"):
+                Forgejo("https://forge.example", "example/project", token_file)
+
     def test_invalid_instance_is_rejected_before_reading_credentials(self):
         for instance in ("", "http://remote.example", "https://user:password@host", "file:///tmp",
-                         "https://host/?token=secret", "https://host/#fragment", "https://host:invalid"):
+                         "https://host/?token=secret", "https://host/#fragment", "https://host?", "https://host#", "https://host:invalid"):
             with self.subTest(instance=instance), self.assertRaises(ValueError):
                 Forgejo(instance, "example/project", Path("does-not-exist"))
