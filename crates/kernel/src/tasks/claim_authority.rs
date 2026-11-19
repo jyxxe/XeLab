@@ -364,7 +364,7 @@ async fn step_targets(
     let contract = if let Some(skill) = skill {
         let installation = installation.ok_or_else(Error::denied)?;
         let row = tx.query_opt(
-            "SELECT definition,created_by FROM skills WHERE id=$1 AND installation_id=$2 AND enabled
+            "SELECT definition,definition_digest,created_by FROM skills WHERE id=$1 AND installation_id=$2 AND enabled
              AND archived_at IS NULL FOR SHARE", &[&skill, &installation],
         ).await?.ok_or_else(provider_unavailable)?;
         targets.push(bound_target(
@@ -372,46 +372,52 @@ async fn step_targets(
             "skill.invoke",
             Resource::new("skill", skill, Some(row.try_get("created_by")?)),
         )?);
-        let digest = stored_digest(binding, "definition_digest")?;
         let definition: Value = row.try_get("definition")?;
-        match binding["kind"].as_str() {
-            Some("skill_http") => {
+        let digest: &str = row.try_get("definition_digest")?;
+        // Verify the locked Skill against its own digest and signed candidate first.
+        let binding_kind = match definition["target"]["kind"].as_str() {
+            Some("http") => {
                 crate::skills::check_admitted_http_binding(tx, skill, digest, installation)
                     .await
                     .map_err(binding_error)?;
-                let registry = crate::http_contracts::load(tx, installation)
-                    .await
-                    .map_err(binding_error)?;
-                let op = registry.bind_skill(&definition)?;
-                if binding["operation_id"] != op.id
-                    || binding["http_contract_digest"] != op.contract_digest
-                    || binding["method"] != op.method.as_str()
-                    || binding["path"] != op.path
-                {
-                    // Both the Skill and its signed HTTP operation were verified.
-                    // The saved fields contradict that immutable definition.
-                    return Err(Error::denied());
-                }
-                let owner = fixed
-                    .as_ref()
-                    .ok_or_else(Error::denied)?
-                    .try_get("owner_id")?;
-                let resource = Resource::new(
-                    "plugin",
-                    string(&definition["target"], "plugin_id")?,
-                    Some(owner),
-                );
-                targets.push(bound_target(&saved[1], &op.route.action, resource)?);
-                return Ok(targets);
+                "skill_http"
             }
-            Some("skill_capability") => {
+            Some("capability") => {
                 crate::skills::check_admitted_capability_binding(tx, skill, digest, installation)
                     .await
                     .map_err(binding_error)?;
-                definition["target"]["contract"].clone()
+                "skill_capability"
             }
-            _ => return Err(Error::denied()),
+            _ => return Err(provider_unavailable()),
+        };
+        if binding["kind"] != binding_kind || binding["definition_digest"] != digest {
+            return Err(Error::denied());
         }
+        if binding_kind == "skill_http" {
+            let registry = crate::http_contracts::load(tx, installation)
+                .await
+                .map_err(binding_error)?;
+            let op = registry.bind_skill(&definition)?;
+            if binding["operation_id"] != op.id
+                || binding["http_contract_digest"] != op.contract_digest
+                || binding["method"] != op.method.as_str()
+                || binding["path"] != op.path
+            {
+                return Err(Error::denied());
+            }
+            let owner = fixed
+                .as_ref()
+                .ok_or_else(Error::denied)?
+                .try_get("owner_id")?;
+            let resource = Resource::new(
+                "plugin",
+                string(&definition["target"], "plugin_id")?,
+                Some(owner),
+            );
+            targets.push(bound_target(&saved[1], &op.route.action, resource)?);
+            return Ok(targets);
+        }
+        definition["target"]["contract"].clone()
     } else {
         step["contract"].clone()
     };

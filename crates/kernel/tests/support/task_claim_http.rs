@@ -121,6 +121,18 @@ async fn submit(f: &Fixture, db: &Client, workflow: Uuid, key: &str) -> Uuid {
     row.get("id")
 }
 
+async fn assert_paused_without_attempt(db: &Client, step: Uuid) {
+    let row = db.query_one(
+        "SELECT t.state,s.fence,s.attempt_count,(SELECT count(*) FROM attempts WHERE step_id=s.id)
+         AS attempts FROM tasks t JOIN task_steps s ON s.task_id=t.id WHERE s.id=$1",
+        &[&step],
+    ).await.unwrap();
+    assert_eq!(row.get::<_, String>("state"), "paused_authorization");
+    assert_eq!(row.get::<_, i64>("fence"), 0);
+    assert_eq!(row.get::<_, i32>("attempt_count"), 0);
+    assert_eq!(row.get::<_, i64>("attempts"), 0);
+}
+
 #[tokio::test]
 async fn fixed_http_skill_claim_requires_the_original_route_grant() {
     let Some(f) = Fixture::new().await else {
@@ -136,6 +148,20 @@ async fn fixed_http_skill_claim_requires_the_original_route_grant() {
         .await
         .expect(201);
     let workflow = contracts::id(&workflow.body, "id").unwrap();
+    let damaged = submit(&f, &db, workflow, "damaged-definition-digest").await;
+    let wrong_digest = contracts::digest(b"different Skill definition");
+    assert_eq!(
+        db.execute(
+            "UPDATE tasks t SET admission=jsonb_set(t.admission,
+                 '{steps,0,binding,definition_digest}',to_jsonb($2::text),false)
+             FROM task_steps s WHERE s.id=$1 AND t.id=s.task_id
+               AND t.admission #>> '{steps,0,binding,definition_digest}' <> $2",
+            &[&damaged, &wrong_digest],
+        )
+        .await
+        .unwrap(),
+        1
+    );
     let first = submit(&f, &db, workflow, "original-grant").await;
     let attempt = claim(&f.db, &f.auth, Uuid::new_v4())
         .await
@@ -143,6 +169,7 @@ async fn fixed_http_skill_claim_requires_the_original_route_grant() {
         .expect("HTTP step lease");
     assert_eq!(contracts::id(&attempt, "step_id").unwrap(), first);
     assert_eq!(attempt["state"], "leased");
+    assert_paused_without_attempt(&db, damaged).await;
 
     let second = submit(&f, &db, workflow, "revoked-grant").await;
     assert_eq!(
@@ -156,13 +183,5 @@ async fn fixed_http_skill_claim_requires_the_original_route_grant() {
         1
     );
     assert_eq!(claim(&f.db, &f.auth, Uuid::new_v4()).await.unwrap(), None);
-    let row = db.query_one(
-        "SELECT t.state,s.fence,s.attempt_count,(SELECT count(*) FROM attempts WHERE step_id=s.id)
-         AS attempts FROM tasks t JOIN task_steps s ON s.task_id=t.id WHERE s.id=$1",
-        &[&second],
-    ).await.unwrap();
-    assert_eq!(row.get::<_, String>("state"), "paused_authorization");
-    assert_eq!(row.get::<_, i64>("fence"), 0);
-    assert_eq!(row.get::<_, i32>("attempt_count"), 0);
-    assert_eq!(row.get::<_, i64>("attempts"), 0);
+    assert_paused_without_attempt(&db, second).await;
 }
