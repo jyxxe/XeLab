@@ -322,11 +322,53 @@ async fn tick(app: &App, first: bool, state: &mut ControllerState) -> Result<()>
 // stable across process fencing so the Broker can emit canceled(requested).
 const FENCE_EXPIRED_CALLS: &str = "UPDATE calls SET state='unknown',error=CASE WHEN error->>'code'='CANCELED' THEN error ELSE $2 END WHERE provider_instance_id=$1 AND (state IN ('accepted','running') OR (state='unknown' AND EXISTS(SELECT 1 FROM reservations WHERE id=calls.id AND kind='call' AND status<>'released'))) RETURNING id,owner_id";
 
+// Task Calls carry a fixed business deadline and an independent rolling
+// fence. The earliest bound wins even if a row retained any older deadline.
+const RECOVERABLE_CALLS: &str = "
+    SELECT c.provider_instance_id,c.state
+      FROM calls c JOIN reservations r ON r.id=c.id AND r.kind='call' AND r.status<>'released'
+      LEFT JOIN task_attempt_calls b ON b.call_id=c.id
+      LEFT JOIN attempts a ON a.id=b.attempt_id
+      LEFT JOIN task_steps s ON s.id=a.step_id
+      LEFT JOIN tasks t ON t.id=s.task_id
+      LEFT JOIN execution_delegations e ON e.id=c.delegation_id AND b.attempt_id IS NOT NULL
+     WHERE c.provider_instance_id IS NOT NULL
+       AND (c.state='unknown' OR (c.state IN ('accepted','running') AND
+             CASE WHEN b.attempt_id IS NULL THEN c.deadline_at<clock_timestamp()-interval '1 second'
+                  ELSE least(c.deadline_at,r.expires_at,a.lease_expires_at,t.deadline_at,e.expires_at,
+                       (SELECT min(rpc.expires_at) FROM rpc_delegations rpc
+                         WHERE rpc.call_id=c.id AND rpc.execution_delegation_id=e.id))
+                       <=clock_timestamp() END))";
+
+pub(crate) async fn expired_call_providers(
+    c: &(impl tokio_postgres::GenericClient + Sync),
+) -> Result<Vec<Uuid>> {
+    let sql = format!(
+        "SELECT DISTINCT provider_instance_id FROM ({RECOVERABLE_CALLS}) expired
+        UNION SELECT instance_id FROM plugin_http_requests
+         WHERE state='unknown' OR expires_at<clock_timestamp()-interval '1 second'"
+    );
+    c.query(&sql, &[])
+        .await?
+        .into_iter()
+        .map(|row| row.try_get(0).map_err(Error::from))
+        .collect()
+}
+
 async fn recover_expired_calls(app: &App) -> Result<()> {
     let mut c = app.db.connect().await?;
-    let rows=c.query("SELECT DISTINCT provider_instance_id FROM calls c JOIN reservations r ON r.id=c.id AND r.kind='call' AND r.status<>'released' WHERE (c.state='unknown' OR (c.state IN ('accepted','running') AND deadline_at<now()-interval '1 second')) AND provider_instance_id IS NOT NULL UNION SELECT instance_id FROM plugin_http_requests WHERE state='unknown' OR expires_at<now()-interval '1 second'", &[]).await?;
-    for row in rows {
-        let instance: Uuid = row.get(0);
+    let expired = expired_call_providers(&c).await?;
+    let reasons_sql = format!("WITH eligible_calls AS (
+         SELECT state FROM ({RECOVERABLE_CALLS}) expired WHERE provider_instance_id=$1
+       ), eligible_http AS (
+         SELECT state,expires_at FROM plugin_http_requests WHERE instance_id=$1
+       ) SELECT EXISTS(SELECT FROM eligible_calls) OR EXISTS(SELECT FROM eligible_http
+                     WHERE state='unknown' OR expires_at<clock_timestamp()-interval '1 second'),
+         (SELECT count(*) FROM eligible_calls WHERE state='unknown'),
+         (SELECT count(*) FROM eligible_calls WHERE state IN ('accepted','running')),
+         (SELECT count(*) FROM eligible_http WHERE state='unknown'),
+         (SELECT count(*) FROM eligible_http WHERE expires_at<clock_timestamp()-interval '1 second')");
+    for instance in expired {
         let tx = c.transaction().await?;
         db::call_lock(&tx).await?;
         // A running provider cannot receive another call after this fence commits.
@@ -339,7 +381,7 @@ async fn recover_expired_calls(app: &App) -> Result<()> {
             .get(0);
         // Preserve the exact recovery predicates and capture their fixed counts
         // before a successful physical fence deletes the durable evidence.
-        let reasons = tx.query_one("SELECT EXISTS(SELECT 1 FROM calls c JOIN reservations r ON r.id=c.id AND r.kind='call' AND r.status<>'released' WHERE c.provider_instance_id=$1 AND (c.state='unknown' OR (c.state IN ('accepted','running') AND c.deadline_at<now()-interval '1 second'))) OR EXISTS(SELECT 1 FROM plugin_http_requests WHERE instance_id=$1 AND (state='unknown' OR expires_at<now()-interval '1 second')),(SELECT count(*) FROM calls c JOIN reservations r ON r.id=c.id AND r.kind='call' AND r.status<>'released' WHERE c.provider_instance_id=$1 AND c.state='unknown'),(SELECT count(*) FROM calls c JOIN reservations r ON r.id=c.id AND r.kind='call' AND r.status<>'released' WHERE c.provider_instance_id=$1 AND c.state IN ('accepted','running') AND c.deadline_at<now()-interval '1 second'),(SELECT count(*) FROM plugin_http_requests WHERE instance_id=$1 AND state='unknown'),(SELECT count(*) FROM plugin_http_requests WHERE instance_id=$1 AND expires_at<now()-interval '1 second')",&[&instance]).await?;
+        let reasons = tx.query_one(&reasons_sql, &[&instance]).await?;
         let needed: bool = reasons.get(0);
         let counts: [i64; 4] = std::array::from_fn(|index| reasons.get(index + 1));
         if !needed {
