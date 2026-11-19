@@ -237,6 +237,60 @@ pub(crate) async fn create_scheduled(
     schedule: &Row,
     spec: &Value,
 ) -> Result<(Uuid, DateTime<Utc>, Context)> {
+    let proof = validate_scheduled(tx, auth, schedule, spec, None).await?;
+    let LiveSchedule {
+        ctx,
+        workflow,
+        workflow_spec,
+        deployments,
+        cutoff,
+    } = proof;
+    let submitted: DateTime<Utc> = tx.query_one("SELECT clock_timestamp()", &[]).await?.get(0);
+    let deadline = submitted + Duration::milliseconds(admission::DEFAULT_TASK_TIMEOUT_MS as i64);
+    let expires = cutoff.min(deadline);
+    if expires <= submitted {
+        return Err(Error::denied());
+    }
+    let proof: Value = schedule.try_get("admission")?;
+    let maximum: Value = schedule.try_get("maximum_rules")?;
+    let task = TaskSubmission {
+        owner: ctx.subject,
+        issuer: ctx.credential,
+        workflow,
+        input: &spec["input"],
+        proof: &proof["task_admission"],
+        maximum: &maximum,
+        submitted,
+        deadline,
+        expires,
+    }
+    .persist(
+        tx,
+        workflow_spec["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(deployments),
+    )
+    .await?;
+    Ok((task, expires, ctx))
+}
+
+pub(crate) struct LiveSchedule {
+    ctx: Context,
+    workflow: Uuid,
+    workflow_spec: Value,
+    deployments: Vec<Option<Uuid>>,
+    pub(crate) cutoff: DateTime<Utc>,
+}
+
+pub(crate) async fn validate_scheduled(
+    tx: &Transaction<'_>,
+    auth: &Auth,
+    schedule: &Row,
+    spec: &Value,
+    editor: Option<&Context>,
+) -> Result<LiveSchedule> {
     if !schedule.try_get::<_, bool>("delegation_live")? {
         return Err(Error::denied());
     }
@@ -266,37 +320,16 @@ pub(crate) async fn create_scheduled(
         workflow_resource,
         &workflow_spec,
         Uuid::new_v4(),
+        editor,
     )
     .await?;
-    let submitted: DateTime<Utc> = tx.query_one("SELECT clock_timestamp()", &[]).await?.get(0);
-    let deadline = submitted + Duration::milliseconds(admission::DEFAULT_TASK_TIMEOUT_MS as i64);
-    let expires = cutoff.min(schedule.try_get("expires_at")?).min(deadline);
-    if expires <= submitted {
-        return Err(Error::denied());
-    }
-    let proof: Value = schedule.try_get("admission")?;
-    let maximum: Value = schedule.try_get("maximum_rules")?;
-    let task = TaskSubmission {
-        owner: ctx.subject,
-        issuer: ctx.credential,
+    Ok(LiveSchedule {
+        ctx,
         workflow,
-        input: &spec["input"],
-        proof: &proof["task_admission"],
-        maximum: &maximum,
-        submitted,
-        deadline,
-        expires,
-    }
-    .persist(
-        tx,
-        workflow_spec["steps"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .zip(deployments),
-    )
-    .await?;
-    Ok((task, expires, ctx))
+        workflow_spec,
+        deployments,
+        cutoff: cutoff.min(schedule.try_get("expires_at")?),
+    })
 }
 
 /// Controller restart revokes transient authority. Submitted tasks and schedules

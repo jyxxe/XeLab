@@ -210,6 +210,7 @@ pub(super) async fn revalidate_schedule(
     workflow: Resource,
     workflow_spec: &Value,
     request_id: Uuid,
+    editor: Option<&Context>,
 ) -> Result<(Context, DateTime<Utc>, Vec<Option<Uuid>>)> {
     let proof: Value = schedule.try_get("admission")?;
     let admission = &proof["task_admission"];
@@ -251,7 +252,7 @@ pub(super) async fn revalidate_schedule(
         deployments.push(deployment);
         targets.extend(step_targets(tx, step, record, deployment).await?);
     }
-    let until = revalidate_schedule_targets(tx, &ctx, targets, &ceiling).await?;
+    let until = revalidate_schedule_targets(tx, &ctx, targets, &ceiling, editor).await?;
     Ok((ctx, until, deployments))
 }
 
@@ -272,14 +273,11 @@ async fn revalidate_schedule_targets(
     ctx: &Context,
     targets: Vec<Target>,
     ceiling: &[Path],
+    editor: Option<&Context>,
 ) -> Result<DateTime<Utc>> {
     let mut checked = Vec::with_capacity(targets.len());
     for target in targets {
-        let current = if target.action == "task.create" {
-            authority::freeze_task_creation(tx, ctx).await?
-        } else {
-            authority::freeze(tx, ctx, &target.action, &target.resource).await?
-        };
+        let current = schedule_target_paths(tx, ctx, &target).await?;
         let policy = Policy::for_context(tx, ctx).with_resource_owner(&target.resource);
         crate::policy::bounded(&target.paths)?;
         let mut combined = Vec::new();
@@ -304,9 +302,21 @@ async fn revalidate_schedule_targets(
         let expires = policy
             .live_grant_issuer_expiries(&source_ids(&paths))
             .await?;
-        checked.push((paths, expires));
+        checked.push((paths, expires, ctx.peer));
+        if let Some(editor) = editor {
+            // A narrower editor credential cannot use the schedule's saved
+            // actor to introduce a new business input or timing.
+            let paths = schedule_target_paths(tx, editor, &target).await?;
+            let expires = Policy::for_context(tx, editor)
+                .live_grant_issuer_expiries(&source_ids(&paths))
+                .await?;
+            checked.push((paths, expires, editor.peer));
+        }
     }
     let mut until = authority::issuer_expiry(tx, ctx).await?;
+    if let Some(editor) = editor {
+        until = until.min(authority::issuer_expiry(tx, editor).await?);
+    }
     let now = tx
         .query_one("SELECT clock_timestamp()", &[])
         .await?
@@ -314,10 +324,22 @@ async fn revalidate_schedule_targets(
     if until <= now {
         return Err(Error::credential());
     }
-    for (paths, expires) in checked {
-        until = until.min(target_expiry(&paths, ctx.peer, &expires, now)?);
+    for (paths, expires, peer) in checked {
+        until = until.min(target_expiry(&paths, peer, &expires, now)?);
     }
     Ok(until)
+}
+
+async fn schedule_target_paths(
+    tx: &Transaction<'_>,
+    ctx: &Context,
+    target: &Target,
+) -> Result<Vec<Path>> {
+    if target.action == "task.create" {
+        authority::freeze_task_creation(tx, ctx).await
+    } else {
+        authority::freeze(tx, ctx, &target.action, &target.resource).await
+    }
 }
 
 /// Bound the issued Call by any surviving alternative that quota charging may choose.
