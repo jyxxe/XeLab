@@ -3,12 +3,11 @@
 import argparse
 from collections import Counter
 import json
-import os
 import re
 import sys
 import unicodedata
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, build_opener, HTTPRedirectHandler
+from forgejo import Forgejo, connection_args
 
 SCHEMA = 1
 CREDENTIAL = re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|MERGE_TOKEN|AGENT_TOKEN", re.IGNORECASE)
@@ -20,39 +19,6 @@ STOPWORDS = {
 }
 NOTE = ("Read-only report. Duplicate and claim matches are candidates for manual review, "
         "never definitive rulings; no issue state was changed.")
-
-
-class NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        # Do not forward an authorization header to a redirect target.
-        raise ValueError("GitHub redirect refused; verify the current repository name")
-
-
-class GitHub:
-    def __init__(self, repo, token):
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) or any(part in {".", ".."} for part in repo.split("/")):
-            raise ValueError("repository must be owner/name")
-        self.repo = repo
-        self.base = "https://api.github.com/repos/" + repo
-        self.token = token
-        self.opener = build_opener(NoRedirect())
-
-    def request(self, path):
-        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-        if self.token:
-            headers["Authorization"] = "Bearer " + self.token
-        with self.opener.open(Request(self.base + path, headers=headers, method="GET"), timeout=30) as response:
-            return json.load(response)
-
-
-def pages(api, path):
-    page = 1
-    while True:
-        batch = api.request(f"{path}{'&' if '?' in path else '?'}per_page=100&page={page}")
-        yield from batch
-        if len(batch) < 100:
-            return
-        page += 1
 
 
 def redact(text):
@@ -78,7 +44,7 @@ def keywords(title):
 def claim_candidates(api, number):
     claims = []
     seen = set()
-    for comment in pages(api, f"/issues/{number}/comments"):
+    for comment in api.pages(f"/issues/{number}/comments"):
         body = comment.get("body") or ""
         url = comment["html_url"]
         matched = any(marker in body for marker in CLAIM_MARKERS) or BRANCH_CLAIM.search(body)
@@ -117,11 +83,11 @@ def duplicate_candidates(issues):
 
 def build_report(api):
     # Page boundaries can overlap; retain one, last-seen record per repository issue number.
-    items = {item["number"]: item for item in pages(api, "/issues?state=open")}.values()
-    prs = [item for item in items if "pull_request" in item]
+    items = {item["number"]: item for item in api.pages("/issues?state=open")}.values()
+    prs = [item for item in items if item.get("pull_request") is not None]
     issues = []
-    for item in sorted((i for i in items if "pull_request" not in i), key=lambda i: i["number"]):
-        labels = sorted(label["name"] for label in item.get("labels", []))
+    for item in sorted((i for i in items if i.get("pull_request") is None), key=lambda i: i["number"]):
+        labels = sorted(label["name"] for label in (item.get("labels") or []))
         status = next((label for label in labels if label.startswith("status:")), "no-status")
         claims = [] if item.get("comments") == 0 else claim_candidates(api, item["number"])
         claim_counts = Counter(claim["user"].casefold() for claim in claims)
@@ -131,7 +97,7 @@ def build_report(api):
             "url": item["html_url"],
             "labels": labels,
             "status": status,
-            "assignees": sorted(a["login"] for a in item.get("assignees", [])),
+            "assignees": sorted(a["login"] for a in (item.get("assignees") or [])),
             "claim_candidates": claims,
             "multiple_claimants": len(claim_counts) > 1,
             "repeated_claim_candidates": any(count > 1 for count in claim_counts.values()),
@@ -175,15 +141,15 @@ def render_text(report):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", required=True)
+    connection_args(parser)
     parser.add_argument("--json", action="store_true", help="emit stable machine-readable JSON instead of text")
     args = parser.parse_args(argv)
     try:
-        api = GitHub(args.repo, os.environ.get("GITHUB_TOKEN", ""))
+        api = Forgejo(args.forgejo_url, args.repo, args.token_file)
         report = build_report(api)
         print(json.dumps(report, sort_keys=True, indent=2, ensure_ascii=False) if args.json else render_text(report))
     except HTTPError as error:
-        print(f"GitHub API returned HTTP {error.code}; stopped. Review permissions/rate limits and retry.", file=sys.stderr)
+        print(f"Forgejo API returned HTTP {error.code}; stopped. Review permissions/rate limits and retry.", file=sys.stderr)
         return 1
     except (ValueError, OSError, URLError) as error:
         print(f"Triage report stopped: {error}", file=sys.stderr)

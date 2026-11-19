@@ -2,13 +2,13 @@
 """Add/update reviewed labels; preview by default, never delete or relabel issues."""
 import argparse
 import json
-import os
 from pathlib import Path
 import re
 import sys
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
-from urllib.request import Request, build_opener, HTTPRedirectHandler
+from urllib.request import Request
+
+from forgejo import Forgejo, connection_args
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -43,77 +43,63 @@ def load_labels(path):
     return labels
 
 
-class NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        # Do not forward an authorization header to a redirect target.
-        raise ValueError("GitHub redirect refused; verify the current repository name")
-
-
-class GitHub:
-    def __init__(self, repo, token):
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
-            raise ValueError("repository must be owner/name")
-        if any(part in {".", ".."} for part in repo.split("/")):
-            raise ValueError("invalid repository")
-        self.base = "https://api.github.com/repos/" + repo
-        self.token = token
-        self.opener = build_opener(NoRedirect())
-
-    def request(self, method, path, data=None):
-        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-        if self.token:
-            headers["Authorization"] = "Bearer " + self.token
-        payload = None if data is None else json.dumps(data).encode("utf-8")
-        if payload is not None:
-            headers["Content-Type"] = "application/json"
-        request = Request(self.base + path, data=payload, headers=headers, method=method)
+class LabelClient(Forgejo):
+    def write_label(self, method, path, data):
+        request = Request(self.base + path, data=json.dumps(data).encode(), method=method,
+                          headers={**self.headers, "Content-Type": "application/json"})
         with self.opener.open(request, timeout=30) as response:
-            return json.load(response)
+            if response.status not in {200, 201}:
+                raise ValueError("unexpected Forgejo label response; inspect the repository before retrying")
 
 
 def synchronize(api, labels, apply=False):
+    managed_names = {label["name"].lower() for label in labels}
     existing = {}
-    page = 1
-    while True:
-        batch = api.request("GET", f"/labels?per_page=100&page={page}")
-        for label in batch:
-            existing[label["name"].casefold()] = label
-        if len(batch) < 100:
-            break
-        page += 1
+    for item in api.pages("/labels"):
+        name = item["name"]
+        if not name.isascii():
+            continue
+        key = name.lower()
+        if key not in managed_names:
+            continue
+        if key in existing and existing[key].get("id") != item.get("id"):
+            raise ValueError(f"ambiguous Forgejo label IDs for {key}")
+        existing[key] = item
+
     changes = 0
     for label in labels:
-        current = existing.get(label["name"].casefold())
+        current = existing.get(label["name"].lower())
         if current is None:
             method, path = "POST", "/labels"
-            payload = label
-        elif (current["color"].lower(), current.get("description") or "") != (label["color"], label["description"]):
-            method, path = "PATCH", "/labels/" + quote(current["name"], safe="")
-            # Preserve spelling and all labels outside the manifest; never rename.
-            payload = {key: label[key] for key in ("color", "description")}
+            payload = dict(label, color="#" + label["color"])
+        elif (current["color"].removeprefix("#").lower(), current.get("description") or "") != (label["color"], label["description"]):
+            label_id = current.get("id")
+            if type(label_id) is not int or label_id <= 0:
+                raise ValueError("invalid Forgejo label ID; refusing to update")
+            method, path = "PATCH", f"/labels/{label_id}"
+            payload = {"color": "#" + label["color"], "description": label["description"]}
         else:
             continue
         print(f"{'apply' if apply else 'preview'} {method} {label['name']}")
         if apply:
-            api.request(method, path, payload)
+            api.write_label(method, path, payload)
         changes += 1
     return changes
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", required=True)
+    connection_args(parser)
     parser.add_argument("--apply", action="store_true", help="explicitly create/update managed labels")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         labels = load_labels(ROOT / ".github/labels.json")
-        token = os.environ.get("GH_TOKEN", "")
-        if args.apply and not token:
-            raise ValueError("--apply requires an authorized GH_TOKEN")
-        changes = synchronize(GitHub(args.repo, token), labels, args.apply)
+        if args.apply and args.token_file is None:
+            raise ValueError("--apply requires an authorized Forgejo --token-file")
+        changes = synchronize(LabelClient(args.forgejo_url, args.repo, args.token_file), labels, args.apply)
         print(f"{changes} label changes {'applied' if args.apply else 'planned (no writes)'}")
     except HTTPError as error:
-        print(f"GitHub API returned HTTP {error.code}; stopped. Review permissions/rate limits and retry.", file=sys.stderr)
+        print(f"Forgejo API returned HTTP {error.code}; stopped. Preview again before retrying.", file=sys.stderr)
         return 1
     except (ValueError, OSError, URLError) as error:
         print(f"Label sync stopped: {error}", file=sys.stderr)

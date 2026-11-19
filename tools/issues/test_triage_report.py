@@ -10,7 +10,8 @@ from urllib.error import HTTPError
 from urllib.request import Request
 
 import triage_report
-from triage_report import GitHub, NoRedirect, build_report, render_text
+from forgejo import Forgejo, NoRedirect
+from triage_report import build_report, render_text
 
 SECRET = "ghp_" + "z" * 36
 
@@ -30,7 +31,7 @@ def comment(user, body, created_at="2026-11-10T00:00:00Z"):
             "html_url": f"https://github.com/example/project/issues/1#issuecomment-{user}"}
 
 
-class FakeAPI:
+class FakeAPI(Forgejo):
     def __init__(self, issues=(), comments=None, fail_paths=()):
         self.repo = "example/project"
         self.issues = list(issues)
@@ -38,26 +39,26 @@ class FakeAPI:
         self.fail_paths = set(fail_paths)
         self.calls = []
 
-    def request(self, path):
+    def read_page(self, path):
         self.calls.append(("GET", path))
         if path in self.fail_paths:
             raise HTTPError("https://api.github.com", 403, "forbidden", {}, None)
         if path.startswith("/issues?state=open&"):
             page = int(path.rsplit("=", 1)[1])
-            return self.issues[(page - 1) * 100:page * 100]
-        match = re.fullmatch(r"/issues/(\d+)/comments\?per_page=100&page=(\d+)", path)
+            return self.issues[(page - 1) * 100:page * 100], page * 100 < len(self.issues)
+        match = re.fullmatch(r"/issues/(\d+)/comments\?limit=100&page=(\d+)", path)
         if match:
             batch = self.comments.get(int(match.group(1)), [])
             page = int(match.group(2))
-            return batch[(page - 1) * 100:page * 100]
+            return batch[(page - 1) * 100:page * 100], page * 100 < len(batch)
         raise AssertionError("unexpected path " + path)
 
 
 def call_main(api, *extra):
     out, err = io.StringIO(), io.StringIO()
-    with mock.patch.dict(os.environ, {"GITHUB_TOKEN": SECRET}), mock.patch.object(triage_report, "GitHub", return_value=api):
+    with mock.patch.dict(os.environ, {"GITHUB_TOKEN": SECRET}), mock.patch.object(triage_report, "Forgejo", return_value=api):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = triage_report.main(["--repo", "example/project", *extra])
+            code = triage_report.main(["--repo", "example/project", "--forgejo-url", "https://forge.example", *extra])
     return code, out.getvalue(), err.getvalue()
 
 
@@ -68,7 +69,7 @@ class TriageTests(unittest.TestCase):
         report = build_report(api)
         self.assertEqual((report["open_issues"], report["excluded_prs"]), (101, 1))
         self.assertEqual([i["number"] for i in report["issues"]], list(range(1, 102)))
-        self.assertIn(("GET", "/issues?state=open&per_page=100&page=2"), api.calls)
+        self.assertIn(("GET", "/issues?state=open&limit=100&page=2"), api.calls)
 
     def test_repeated_page_issue_is_counted_and_loaded_once(self):
         items = [issue(n, f"task {n}") for n in range(100, 0, -1)] + [issue(1, "task 1")]
@@ -84,7 +85,7 @@ class TriageTests(unittest.TestCase):
         self.assertEqual(report["multiple_claimants"], [1])
         self.assertEqual(report["repeated_claim_candidates"], [1])
         self.assertEqual(report["duplicate_candidates"], [])
-        self.assertEqual(api.calls.count(("GET", "/issues/1/comments?per_page=100&page=1")), 1)
+        self.assertEqual(api.calls.count(("GET", "/issues/1/comments?limit=100&page=1")), 1)
 
     def test_repeated_page_pr_is_excluded_once(self):
         items = [issue(n, f"PR {n}", pr=True) for n in range(100, 0, -1)] + [issue(1, "PR 1", pr=True)]
@@ -92,8 +93,8 @@ class TriageTests(unittest.TestCase):
         report = build_report(api)
         self.assertEqual((report["open_issues"], report["excluded_prs"]), (0, 100))
         self.assertEqual(report["issues"], [])
-        self.assertEqual(api.calls, [("GET", "/issues?state=open&per_page=100&page=1"),
-                                     ("GET", "/issues?state=open&per_page=100&page=2")])
+        self.assertEqual(api.calls, [("GET", "/issues?state=open&limit=100&page=1"),
+                                     ("GET", "/issues?state=open&limit=100&page=2")])
 
     def test_later_page_issue_metadata_is_used_once(self):
         items = [issue(n, f"task {n}") for n in range(100, 0, -1)]
@@ -238,7 +239,7 @@ class TriageTests(unittest.TestCase):
         api = FakeAPI(issues=[issue(1, "many comments")], comments={1: comments})
         report = build_report(api)
         self.assertEqual(len(report["issues"][0]["claim_candidates"]), 1)
-        self.assertIn(("GET", "/issues/1/comments?per_page=100&page=2"), api.calls)
+        self.assertIn(("GET", "/issues/1/comments?limit=100&page=2"), api.calls)
 
     def test_credential_like_title_is_redacted(self):
         api = FakeAPI(issues=[issue(1, "broken token " + SECRET + " in title")])
@@ -352,9 +353,9 @@ class TriageTests(unittest.TestCase):
             },
         )
         report = build_report(api)
-        self.assertNotIn(("GET", "/issues/1/comments?per_page=100&page=1"), api.calls)
-        self.assertIn(("GET", "/issues/2/comments?per_page=100&page=1"), api.calls)
-        self.assertIn(("GET", "/issues/3/comments?per_page=100&page=1"), api.calls)
+        self.assertNotIn(("GET", "/issues/1/comments?limit=100&page=1"), api.calls)
+        self.assertIn(("GET", "/issues/2/comments?limit=100&page=1"), api.calls)
+        self.assertIn(("GET", "/issues/3/comments?limit=100&page=1"), api.calls)
         by_num = {item["number"]: item for item in report["issues"]}
         self.assertEqual(by_num[1]["claim_candidates"], [])
         self.assertEqual(len(by_num[2]["claim_candidates"]), 1)
@@ -368,7 +369,7 @@ class TriageTests(unittest.TestCase):
             self.assertEqual(call, ("GET", call[1]))
 
     def test_api_error_stops_safely(self):
-        api = FakeAPI(fail_paths={"/issues?state=open&per_page=100&page=1"})
+        api = FakeAPI(fail_paths={"/issues?state=open&limit=100&page=1"})
         code, out, err = call_main(api)
         self.assertEqual((code, out), (1, ""))
         self.assertIn("HTTP 403", err)
@@ -393,7 +394,15 @@ class TriageTests(unittest.TestCase):
     def test_repository_cannot_supply_host_query_or_traversal(self):
         for repo in ["https://evil.invalid/repo", "a/b?token=1", "a/b/../c", "a/..", "../b"]:
             with self.subTest(repo=repo), self.assertRaises(ValueError):
-                GitHub(repo, "not-a-real-token")
+                Forgejo("https://forge.example", repo)
+
+    def test_null_forgejo_fields_are_an_unassigned_issue_not_a_pr(self):
+        api = FakeAPI([dict(issue(1, "open"), pull_request=None, labels=None, assignees=None),
+                       issue(2, "change", pr=True)])
+        report = build_report(api)
+        self.assertEqual((report["open_issues"], report["excluded_prs"]), (1, 1))
+        self.assertEqual(report["unassigned"], [1])
+        self.assertEqual(report["needs_triage"], [1])
 
     def test_redirect_cannot_forward_authorization(self):
         with self.assertRaises(ValueError):

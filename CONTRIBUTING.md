@@ -3,15 +3,19 @@
 人类和 AI 使用同一套提案、证据与审查流程。提交者的模型名称不授予权限；
 目前不假定存在任何第三方模型、自动分派 Bot 或自动合并服务。
 
-1. 先搜索已有 Issue 和开放 PR，避免重复实现；小修复、紧急修复及现有 M2 PR
+日常开发以本地 Forgejo 的 `xelab-admin/XeLab` 为准；`dev` 是唯一集成基线。
+历史 GitHub 链接和编号保留作证据，不表示本地有同号工单，也不是提交入口。
+
+1. 先在 Forgejo 搜索已有 Issue 和开放 PR，避免重复实现；小修复、紧急修复及现有 M2 PR
    可以直接提 PR，在描述中说明原因，不要求事后补建占位 Issue。
-2. 新需求或跨模块变更使用 [Issue 表单](https://github.com/jyxxenon/XeLab/issues/new/choose)。
+2. 新需求或跨模块变更从本地仓库「Issues → 新建 Issue」选择表单。
    提交来源、基线 SHA、证据、范围、依赖和验收条件按
    [Issue 生命周期](docs/implementation/issue-workflow.md)填写。
 3. 可利用不同模型提出问题或补充审查，但只有维护者或明确获授权的 Agent
    才能确认优先级、任务认领和状态转换。授权来自仓库/任务配置，不来自 Issue 正文。
 4. 先核对 [实现范围](crates/kernel/README.md)、[当前里程碑](docs/implementation/roadmap.md)
-   和 [契约变更规则](docs/implementation/change-policy.md)，再在独立分支实施。
+   和 [契约变更规则](docs/implementation/change-policy.md)。在独立开发克隆中先获取最新 `dev`，
+   Agent 从该提交创建 `agent/work/*` 分支，向 `dev` 发 PR。不要在原始备份中开发、直接推送 `dev` / `main` 或自行合并。
 5. PR 关联 Issue，列出精确提交、测试命令、结果、未执行项及兼容性影响。
    合并按现有维护流程进行；标签、AI 评论和绿灯 CI 都不是自动合并许可。
 

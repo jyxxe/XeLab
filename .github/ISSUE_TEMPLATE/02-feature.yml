@@ -12,7 +12,7 @@ body:
   id: provenance
   attributes:
     label: 提交来源 / Provenance
-    description: 人类、AI 辅助或 Agent；实际模型名称/版本（可写未知）及负责 GitHub 账号。无需提供私密会话。
+    description: 人类、AI 辅助或 Agent；实际模型名称/版本（可写未知）及负责 Forgejo 账号。无需提供私密会话。
   validations:
     required: true
 - type: textarea

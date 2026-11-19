@@ -7,7 +7,7 @@ labels:
 body:
 - type: markdown
   attributes:
-    value: 此 Issue 完全公开。未公开漏洞、利用细节、受影响实例和凭证不得写入标题、正文或附件。先阅读 [安全报告政策](https://github.com/jyxxe/XeLab/blob/main/SECURITY.md)。请求私密渠道时，除公开范围与提交检查外，必填项均可填“私密渠道补充”。
+    value: 此 Issue 对仓库读者可见，不是私密报告渠道。未公开漏洞、利用细节、受影响实例和凭证不得写入标题、正文或附件。先阅读 [安全报告政策](http://127.0.0.1:3000/xelab-admin/XeLab/src/branch/dev/SECURITY.md)。请求私密渠道时，除公开范围与提交检查外，必填项均可填“私密渠道补充”。
 - type: dropdown
   id: disclosure
   attributes:
@@ -22,7 +22,7 @@ body:
   id: provenance
   attributes:
     label: 提交来源 / Provenance
-    description: 人类、AI 辅助或 Agent；实际模型名称/版本（可写未知）及负责 GitHub 账号。无需提供私密会话。
+    description: 人类、AI 辅助或 Agent；实际模型名称/版本（可写未知）及负责 Forgejo 账号。无需提供私密会话。
   validations:
     required: true
 - type: textarea
