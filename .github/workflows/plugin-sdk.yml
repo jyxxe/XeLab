@@ -9,11 +9,7 @@ on:
       - "crates/plugin-sdk/**"
       - "crates/kernel/Cargo.toml"
       - "crates/kernel/migrations/**"
-      - "crates/kernel/src/artifact.rs"
-      - "crates/kernel/src/controller.rs"
-      - "crates/kernel/src/runtime.rs"
-      - "crates/kernel/src/skill_streams.rs"
-      - "crates/kernel/src/bin/xelab-echo.rs"
+      - "crates/kernel/src/**"
       - "crates/kernel/build.rs"
       - "crates/kernel/tests/sdk_oci.rs"
       - "crates/kernel/tests/support/http_host.rs"
@@ -38,11 +34,7 @@ on:
       - "crates/plugin-sdk/**"
       - "crates/kernel/Cargo.toml"
       - "crates/kernel/migrations/**"
-      - "crates/kernel/src/artifact.rs"
-      - "crates/kernel/src/controller.rs"
-      - "crates/kernel/src/runtime.rs"
-      - "crates/kernel/src/skill_streams.rs"
-      - "crates/kernel/src/bin/xelab-echo.rs"
+      - "crates/kernel/src/**"
       - "crates/kernel/build.rs"
       - "crates/kernel/tests/sdk_oci.rs"
       - "crates/kernel/tests/support/http_host.rs"
@@ -79,10 +71,13 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y cmake libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc \
             libssl-dev nlohmann-json3-dev
-      - name: Configure the SDK as a library dependency
+      - name: Build and run the C++ SDK library consumer
         run: |
-          cmake -S sdk/cpp/tests/consumer -B "$RUNNER_TEMP/xelab-cpp-consumer" \
+          consumer="$RUNNER_TEMP/xelab-cpp-consumer"
+          cmake -S sdk/cpp/tests/consumer -B "$consumer" \
             -DCMAKE_DISABLE_FIND_PACKAGE_nlohmann_json=TRUE
+          cmake --build "$consumer" --parallel 2
+          "$consumer/xelab-sdk-consumer"
       - name: Build both reference plugins and the shared RPC client
         run: |
           rust_artifacts="$RUNNER_TEMP/xelab-sdk-rust-echo-artifacts.jsonl"
