@@ -1,7 +1,7 @@
 //! Revalidate the proof persisted by task submission under the claim's authorization fence.
 use super::{authority, targets::Target};
 use crate::{
-    auth::{Auth, Resource},
+    auth::{Auth, Context, Resource},
     contracts::{id, string},
     error::{Error, Result},
     policy::{Path, Policy},
@@ -39,7 +39,26 @@ pub(super) async fn revalidate(
     step: &Value,
     worker_id: Uuid,
 ) -> Result<DateTime<Utc>> {
-    let admission: Value = candidate.try_get("admission")?;
+    Ok(
+        revalidate_proof(tx, auth, candidate, step, worker_id, false)
+            .await?
+            .until,
+    )
+}
+
+pub(super) struct Revalidated {
+    pub ctx: Context,
+    pub business_paths: Vec<Path>,
+    pub until: DateTime<Utc>,
+}
+
+pub(super) async fn resume_original(
+    tx: &Transaction<'_>,
+    auth: &Auth,
+    candidate: &Row,
+    request_id: Uuid,
+    admission: &Value,
+) -> Result<Context> {
     if admission["version"] != 1 {
         return Err(Error::denied());
     }
@@ -48,7 +67,7 @@ pub(super) async fn revalidate(
         .ok_or_else(Error::credential)?;
     let peer =
         serde_json::from_value(admission["peer"].clone()).map_err(|_| Error::credential())?;
-    let mut ctx = auth.resume(tx, issuer, peer, worker_id).await?;
+    let mut ctx = auth.resume(tx, issuer, peer, request_id).await?;
     if ctx.subject != candidate.try_get::<_, Uuid>("subject_id")?
         || ctx.subject != candidate.try_get::<_, Uuid>("owner_id")?
         || admission["credential_chain"] != json!(ctx.chain)
@@ -62,7 +81,19 @@ pub(super) async fn revalidate(
             .clone(),
     )
     .map_err(|_| Error::credential())?;
+    Ok(ctx)
+}
 
+pub(super) async fn revalidate_proof(
+    tx: &Transaction<'_>,
+    auth: &Auth,
+    candidate: &Row,
+    step: &Value,
+    request_id: Uuid,
+    for_dispatch: bool,
+) -> Result<Revalidated> {
+    let admission: Value = candidate.try_get("admission")?;
+    let ctx = resume_original(tx, auth, candidate, request_id, &admission).await?;
     let step_key = string(step, "id")?;
     let mut matches = admission["steps"]
         .as_array()
@@ -113,6 +144,7 @@ pub(super) async fn revalidate(
         return Err(Error::credential());
     }
     let mut until = issuer_expiry;
+    let mut business_paths = Vec::new();
     for (target, current) in proofs {
         let mut policy = Policy::for_context(tx, &ctx).with_resource_owner(&target.resource);
         let matches_target = |path: &Path| {
@@ -160,8 +192,35 @@ pub(super) async fn revalidate(
         // original grants, then choose the longest surviving alternative.
         let saved_until = target_expiry(&target.paths, ctx.peer, &source_rights, now)?;
         until = until.min(saved_until).min(current_until).min(maximum_until);
+        if for_dispatch && target.action == "capability.invoke" {
+            business_paths = policy.intersection(&target.paths, &ceiling).await?;
+        }
     }
-    Ok(until)
+    Ok(Revalidated {
+        ctx,
+        business_paths,
+        until,
+    })
+}
+
+/// Bound the issued Call by any surviving alternative that quota charging may choose.
+pub(super) async fn dispatch_paths_until(
+    tx: &Transaction<'_>,
+    ctx: &Context,
+    paths: &[Path],
+) -> Result<DateTime<Utc>> {
+    let cutoffs = Policy::for_context(tx, ctx)
+        .live_grant_issuer_expiries(&source_ids(paths))
+        .await?;
+    let now = tx
+        .query_one("SELECT clock_timestamp()", &[])
+        .await?
+        .try_get(0)?;
+    paths
+        .iter()
+        .filter_map(|path| longest_expiry(std::iter::once(path), ctx.peer, &cutoffs, now))
+        .min()
+        .ok_or_else(Error::denied)
 }
 
 #[cfg(test)]

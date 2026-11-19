@@ -203,6 +203,25 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
         self.rules = crate::policy::rules(&self.paths);
         Ok(self)
     }
+
+    /// Task funding may only consume the credentials on a frozen proof.
+    /// Policy intersection can add a newer independent source alongside a
+    /// retained one. Discard those combined alternatives for task dispatch.
+    pub(crate) async fn restrict_to_original_sources(
+        mut self,
+        transaction: &tokio_postgres::Transaction<'_>,
+        ctx: &Context,
+        saved: &[crate::policy::Path],
+    ) -> Result<Self> {
+        self.paths = self.revalidate(transaction, ctx, saved).await?;
+        self.paths.retain(|path| {
+            saved
+                .iter()
+                .any(|original| path.sources == original.sources)
+        });
+        self.rules = crate::policy::rules(&self.paths);
+        Ok(self)
+    }
     pub(crate) fn bind_plugin(
         &mut self,
         transaction: &tokio_postgres::Transaction<'_>,

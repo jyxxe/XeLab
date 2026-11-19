@@ -28,7 +28,8 @@ const LOCK_ATTEMPT: &str = "
            a.execution_id=$2 AND a.worker_id IS NOT DISTINCT FROM $3 AND a.fence=$4
              AND a.fence BETWEEN 1 AND 9007199254740991
              AND s.fence=a.fence AND s.attempt_count=a.number AS current_identity,
-           a.created_at,a.lease_expires_at,a.state AS attempt_state,s.state AS step_state
+           a.created_at,a.lease_expires_at,a.number,a.idempotency_key,
+           a.state AS attempt_state,s.state AS step_state
       FROM attempts a JOIN task_steps s ON s.id=a.step_id JOIN tasks t ON t.id=s.task_id
       JOIN workflows w ON w.id=t.workflow_id JOIN execution_delegations e ON e.id=t.delegation_id
      WHERE a.id=$1 AND t.id=$5 FOR UPDATE OF a,s FOR SHARE OF e,w";
@@ -93,28 +94,11 @@ impl<'a> LockedAttempt<'a> {
         operation: Operation,
     ) -> Result<Self> {
         auth_lock(&tx, false).await?;
-        let Some(task) = tx.query_opt(LOCK_TASK, &[&lease.attempt_id]).await? else {
-            return operation.reject(tx, lease, None).await;
-        };
-        let row = tx
-            .query_opt(
-                LOCK_ATTEMPT,
-                &[
-                    &lease.attempt_id,
-                    &lease.execution_id,
-                    &lease.worker_id,
-                    &lease.fence,
-                    &task.get::<_, Uuid>(0),
-                ],
-            )
-            .await?;
-        let Some(row) = row else {
+        let Some(row) = lock_row(&tx, lease).await? else {
             return operation.reject(tx, lease, None).await;
         };
         // A locking SELECT can wait after evaluating its projection.
-        let lease_end = row
-            .get::<_, DateTime<Utc>>("lease_expires_at")
-            .min(row.get("deadline_at"));
+        let lease_end = lease_end(&row);
         if !row.get::<_, bool>("current_identity") || !live(&tx, lease_end).await? {
             return operation.reject(tx, lease, Some(&row)).await;
         }
@@ -129,15 +113,7 @@ impl<'a> LockedAttempt<'a> {
     }
 
     pub fn active(&self) -> bool {
-        let task_state: &str = self.row.get("task_state");
-        matches!(
-            self.row.get::<_, &str>("attempt_state"),
-            "leased" | "running"
-        ) && self.row.get::<_, &str>("step_state") == "running"
-            && (task_state == "running"
-                // Keep results already in flight without allowing work to
-                // start or extending the lease after cancellation.
-                || (task_state == "cancel_requested" && matches!(self.operation, Operation::Commit)))
+        active(&self.row, matches!(self.operation, Operation::Commit))
     }
 
     pub async fn finish(self) -> Result<Row> {
@@ -203,6 +179,37 @@ impl<'a> LockedAttempt<'a> {
         self.tx.commit().await?;
         Err(error)
     }
+}
+
+/// The caller already owns the shared authorization fence.
+pub(super) async fn lock_row(tx: &Transaction<'_>, lease: &AttemptLease) -> Result<Option<Row>> {
+    let Some(task) = tx.query_opt(LOCK_TASK, &[&lease.attempt_id]).await? else {
+        return Ok(None);
+    };
+    Ok(tx
+        .query_opt(
+            LOCK_ATTEMPT,
+            &[
+                &lease.attempt_id,
+                &lease.execution_id,
+                &lease.worker_id,
+                &lease.fence,
+                &task.get::<_, Uuid>(0),
+            ],
+        )
+        .await?)
+}
+
+pub(super) fn lease_end(row: &Row) -> DateTime<Utc> {
+    row.get::<_, DateTime<Utc>>("lease_expires_at")
+        .min(row.get("deadline_at"))
+}
+
+pub(super) fn active(row: &Row, allow_cancel_requested: bool) -> bool {
+    let task_state: &str = row.get("task_state");
+    matches!(row.get::<_, &str>("attempt_state"), "leased" | "running")
+        && row.get::<_, &str>("step_state") == "running"
+        && (task_state == "running" || (task_state == "cancel_requested" && allow_cancel_requested))
 }
 
 pub(in crate::tasks) async fn live(tx: &Transaction<'_>, until: DateTime<Utc>) -> Result<bool> {

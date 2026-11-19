@@ -15,6 +15,12 @@ use uuid::Uuid;
 mod admission;
 #[path = "broker_http.rs"]
 mod http;
+#[path = "broker_task_dispatch.rs"]
+mod task_dispatch;
+#[cfg(test)]
+#[path = "broker_task_dispatch_tests.rs"]
+mod task_dispatch_tests;
+pub use task_dispatch::dispatch_task;
 #[path = "broker_unary_failure.rs"]
 mod unary_failure;
 pub(crate) use http::check_route_approval as check_http_approval;
@@ -24,6 +30,67 @@ pub(crate) use http::target_resource as business_target;
 enum CallReply {
     Completed(Value),
     Rejected(Error),
+}
+
+struct ReplyBinding<'a> {
+    call: Uuid,
+    instance: Uuid,
+    contract: &'a Value,
+    wire_contract: &'a rpc::ContractRef,
+    definition: &'a Value,
+    skill: Option<&'a crate::skills::ResolvedSkill>,
+    terminal_version: u32,
+}
+
+impl ReplyBinding<'_> {
+    fn decode(self, app: &App, response: rpc::InvokeResponse) -> Result<CallReply> {
+        let Self {
+            call,
+            instance,
+            contract,
+            wire_contract,
+            definition,
+            skill,
+            terminal_version,
+        } = self;
+        if let Some(error) =
+            unary_failure::decode(&response, call, wire_contract, terminal_version)?
+        {
+            return Ok(CallReply::Rejected(error));
+        }
+        if response.call_id != call.to_string()
+            || digest(&response.output_json) != response.output_digest
+        {
+            return Err(Error::conflict(
+                "Plugin returned a different call or output digest",
+            ));
+        }
+        let output = strict_json(
+            &response.output_json,
+            app.config
+                .json_limit(unsigned(&definition["maximum_output_bytes"])? as usize),
+        )?;
+        validate_business(&definition["output_schema"], &output)?;
+        if let Some(skill) = skill {
+            validate_business(&skill.definition["output_schema"], &output)?;
+        }
+        let mut result = json!({"call_id":call,"contract":contract,"provider_instance_id":instance,
+            "output":output,"completed_at":chrono::Utc::now()});
+        if let Some(skill) = skill {
+            result["skill_id"] = json!(skill.id);
+            result["skill_definition_digest"] = json!(skill.definition_digest);
+        }
+        validate("CallResult", &result)?;
+        Ok(CallReply::Completed(result))
+    }
+}
+
+fn rpc_contract(contract: &Value) -> Result<rpc::ContractRef> {
+    Ok(rpc::ContractRef {
+        name: string(contract, "name")?.to_owned(),
+        version: string(contract, "version")?.to_owned(),
+        schema_digest: string(contract, "schema_digest")?.to_owned(),
+    })
 }
 
 pub(crate) enum CallSettlement<'a> {
@@ -283,17 +350,14 @@ fn invoke_inner<'a>(
             id: call,
             delegation,
             accounts,
+            ..
         } = *admitted;
         let instance = provider.id;
         let generation = provider.generation;
-        let name = string(&contract, "name")?;
-        let version = string(&contract, "version")?;
-        let schema_digest = string(&contract, "schema_digest")?;
-        let wire_contract = rpc::ContractRef {
-            name: name.to_owned(),
-            version: version.to_owned(),
-            schema_digest: schema_digest.to_owned(),
-        };
+        let wire_contract = rpc_contract(&contract)?;
+        let name = wire_contract.name.as_str();
+        let version = wire_contract.version.as_str();
+        let schema_digest = wire_contract.schema_digest.as_str();
         let terminal_version = terminal.as_ref().map_or(0, |_| unary_failure::VERSION);
         let execution_deadline = deadline_bound.min(
             tokio::time::Instant::now()
@@ -422,37 +486,20 @@ fn invoke_inner<'a>(
                     .map_err(unary_capability_error)?
                     .into_inner()
             };
-            if let Some(error) =
-                unary_failure::decode(&response, call, &wire_contract, terminal_version)?
-            {
-                return Ok(CallReply::Rejected(error));
+            let reply = ReplyBinding {
+                call,
+                instance,
+                contract: &contract,
+                wire_contract: &wire_contract,
+                definition: &definition,
+                skill: skill.as_ref(),
+                terminal_version,
             }
-            if response.call_id != call.to_string()
-                || digest(&response.output_json) != response.output_digest
-            {
-                return Err(Error::conflict(
-                    "Plugin returned a different call or output digest",
-                ));
+            .decode(app, response)?;
+            if let (Some(stream), CallReply::Completed(value)) = (stream, &reply) {
+                stream.validate_completed(value)?;
             }
-            let output = strict_json(
-                &response.output_json,
-                app.config
-                    .json_limit(unsigned(&definition["maximum_output_bytes"])? as usize),
-            )?;
-            validate_business(&definition["output_schema"], &output)?;
-            if let Some(skill) = &skill {
-                validate_business(&skill.definition["output_schema"], &output)?;
-            }
-            let mut out = json!({"call_id":call,"contract":contract,"provider_instance_id":instance,"output":output,"completed_at":chrono::Utc::now()});
-            if let Some(skill) = &skill {
-                out["skill_id"] = json!(skill.id);
-                out["skill_definition_digest"] = json!(skill.definition_digest);
-            }
-            validate("CallResult", &out)?;
-            if let Some(stream) = stream {
-                stream.validate_completed(&out)?;
-            }
-            Ok(CallReply::Completed(out))
+            Ok(reply)
         };
         let monitor = async {
             if !protected {

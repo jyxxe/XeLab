@@ -1,11 +1,17 @@
 //! Trusted, in-process TaskEngine operations.
 mod active;
 mod commit;
+mod dispatch;
 mod expiry;
 mod lease;
 pub use super::dispatch_input::DispatchInput;
+pub use crate::broker::dispatch_task as dispatch;
 pub(super) use active::live;
 pub use commit::commit;
+pub(crate) use dispatch::{
+    broker_dispatch_proof, broker_input, broker_paths_until, broker_remaining, BrokerDispatchProof,
+    BrokerLeaseUse,
+};
 pub(crate) use expiry::expire_leases;
 pub use lease::{prepare_dispatch, renew, AttemptLease};
 

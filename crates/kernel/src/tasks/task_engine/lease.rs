@@ -14,6 +14,7 @@ use crate::{
 use chrono::{DateTime, TimeDelta, Utc};
 use serde_json::Value;
 use std::time::Instant;
+use tokio_postgres::Row;
 use uuid::Uuid;
 
 /// Identity of a claim held by a trusted in-process worker.
@@ -103,13 +104,7 @@ async fn with_active_lease<T>(
         return attempt.reject().await;
     }
     let (attempt, authorized_until) = attempt.authorize(auth, false).await?;
-    let timeout_ms = i32::try_from(unsigned(&attempt.step["timeout_ms"])?)
-        .map_err(|_| Error::invalid("Step timeout is out of range"))?;
-    let step_end = attempt
-        .row
-        .get::<_, DateTime<Utc>>("created_at")
-        .checked_add_signed(TimeDelta::milliseconds(i64::from(timeout_ms)))
-        .ok_or_else(|| Error::invalid("Step deadline is out of range"))?;
+    let step_end = step_deadline(&attempt.row, &attempt.step)?;
     let limit = authorized_until.min(step_end);
     let old_end = limit.min(attempt.lease_end);
     if !live(&attempt.tx, old_end).await? {
@@ -161,4 +156,12 @@ async fn with_active_lease<T>(
             .await;
     }
     Ok(value)
+}
+
+pub(super) fn step_deadline(row: &Row, step: &Value) -> Result<DateTime<Utc>> {
+    let timeout_ms = i32::try_from(unsigned(&step["timeout_ms"])?)
+        .map_err(|_| Error::invalid("Step timeout is out of range"))?;
+    row.get::<_, DateTime<Utc>>("created_at")
+        .checked_add_signed(TimeDelta::milliseconds(i64::from(timeout_ms)))
+        .ok_or_else(|| Error::invalid("Step deadline is out of range"))
 }

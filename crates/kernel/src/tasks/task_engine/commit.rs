@@ -1,7 +1,7 @@
 //! Accept a result only while the original claim and its authority are live.
 use super::{
     active::{live, LockedAttempt, Operation},
-    commit_effects, AttemptLease, ENGINE_TIMEOUT,
+    claim_authority, commit_effects, AttemptLease, ENGINE_TIMEOUT,
 };
 use crate::{
     auth::Auth,
@@ -9,6 +9,7 @@ use crate::{
     db::Db,
     error::{Error, Result},
 };
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -112,7 +113,10 @@ async fn commit_result(db: &Db, auth: &Auth, worker: Uuid, value: &Value) -> Res
     }
 
     let (attempt, authorized_until) = attempt.authorize(auth, replay).await?;
-    let cutoff = attempt.lease_end.min(authorized_until);
+    let mut cutoff = attempt.lease_end.min(authorized_until);
+    if let Some(call_cutoff) = linked_result_cutoff(&attempt, auth, &input).await? {
+        cutoff = cutoff.min(call_cutoff);
+    }
     let tx = &attempt.tx;
     let step = attempt.row.get("step_id");
     let task = attempt.row.get("task_id");
@@ -153,4 +157,61 @@ async fn commit_result(db: &Db, auth: &Auth, worker: Uuid, value: &Value) -> Res
     }
     attempt.tx.commit().await?;
     Ok(result)
+}
+
+// Caller holds the authorization, parent task and exact worker/attempt locks.
+// The Call is already settled: its short-lived physical RPC token is revoked.
+async fn linked_result_cutoff(
+    attempt: &LockedAttempt<'_>,
+    auth: &Auth,
+    input: &Input<'_>,
+) -> Result<Option<DateTime<Utc>>> {
+    let row = &attempt.row;
+    let owner: Uuid = row.try_get("owner_id")?;
+    let issuer: Option<Uuid> = row.try_get("issuer_credential_id")?;
+    let key: &str = row.try_get("idempotency_key")?;
+    let tx = &attempt.tx;
+    let result = tx
+        .query_opt(
+            "SELECT c.id,c.owner_id=$5 AND c.credential_id=$6 AND c.idempotency_key=$7
+            AND c.state=$2 AND CASE
+                WHEN $2='succeeded' THEN c.result->'output'=$3 AND c.error IS NULL
+                     AND c.completed_at<=c.deadline_at
+                WHEN $2='failed' THEN c.result IS NULL AND coalesce(c.error,'null'::jsonb)=$4
+                     AND c.completed_at<=c.deadline_at
+                WHEN $2='unknown' THEN c.result IS NULL AND coalesce(c.error,'null'::jsonb)=$4
+                ELSE false END AS matches
+           FROM task_attempt_calls b JOIN calls c ON c.id=b.call_id
+          WHERE b.attempt_id=$1 FOR SHARE OF c",
+            &[
+                &input.attempt,
+                &input.state,
+                input.output,
+                input.error,
+                &owner,
+                &issuer,
+                &key,
+            ],
+        )
+        .await?;
+    let Some(result) = result else {
+        return Ok(None);
+    };
+    if result.try_get::<_, Option<bool>>("matches")? != Some(true) {
+        return Err(Error::conflict(
+            "Attempt result does not match its settled Call",
+        ));
+    }
+    if input.state == "unknown" {
+        return Ok(None);
+    }
+    let admission: Value = row.try_get("admission")?;
+    let ctx =
+        claim_authority::resume_original(tx, auth, row, attempt.lease.execution_id, &admission)
+            .await?;
+    let call = result.try_get("id")?;
+    let paths = crate::host_blobs::checked_call_sources(tx, &ctx, call).await?;
+    Ok(Some(
+        claim_authority::dispatch_paths_until(tx, &ctx, &paths).await?,
+    ))
 }

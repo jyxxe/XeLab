@@ -1,5 +1,7 @@
 //! Authorization and the active-slot transaction for Capability RPCs.
-use super::{business_slot_available, reserve_call_quota, skill_result, unary_failure};
+use super::{
+    business_slot_available, reserve_business, reserve_call_quota, skill_result, unary_failure,
+};
 use crate::{
     api::App,
     auth::{authorize, Context, CurrentAuthority, Resource},
@@ -10,6 +12,7 @@ use crate::{
     host_blobs, host_calls,
     policy::Path,
     skills::ResolvedSkill,
+    task_engine::{self, AttemptLease, BrokerLeaseUse},
 };
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
@@ -37,6 +40,11 @@ pub(super) enum Admission {
     Dispatch(Box<Call>),
 }
 
+pub(super) enum TaskAdmission {
+    Existing(Uuid),
+    Dispatch(Box<Call>),
+}
+
 pub(super) struct Call {
     pub ctx: Context,
     pub skill: Option<ResolvedSkill>,
@@ -51,6 +59,7 @@ pub(super) struct Call {
     pub id: Uuid,
     pub delegation: String,
     pub accounts: Vec<Uuid>,
+    pub business_key: String,
 }
 
 struct WaitingCall {
@@ -242,7 +251,7 @@ impl Request<'_> {
             fixed,
             Some(row.get("installation_id")),
             None,
-            false,
+            ProviderUse::Ordinary { lock: false },
         )
         .await?;
         let instance = Instance {
@@ -260,94 +269,24 @@ impl Request<'_> {
         path: &str,
         fingerprint: &str,
     ) -> Result<Call> {
-        let Candidate {
-            ctx,
-            skill,
-            instance,
-            deployment,
-            manifest,
-            contract,
-            definition,
-            capability,
-            deadline,
-            protected,
-            terminal,
-            authority,
-        } = candidate;
-        let (accounts, charged) = reserve_call_quota(
-            tx,
-            &ctx,
-            "capability.invoke",
-            &capability,
-            skill.as_ref(),
-            authority.as_ref(),
-        )
-        .await?;
-        let call = host_calls::new_call(tx, self.app, self.token).await?;
-        if deadline <= Utc::now() {
-            return Err(call_expired());
-        }
-        let bytes = serde_json::to_vec(&self.input["input"])?;
         let business_key = self.input["idempotency_key"].as_str().unwrap_or(self.key);
-        tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,idempotency_key,state,deadline_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,'running',$8,now())",&[&call,&ctx.subject,&ctx.credential,&instance.id,&contract,&digest(&bytes),&business_key,&deadline]).await?;
-        if let Some(skill) = &skill {
-            tx.execute(
-                "UPDATE calls SET skill_id=$2,skill_definition_digest=$3 WHERE id=$1",
-                &[&call, &skill.id, &skill.definition_digest],
-            )
-            .await?;
-        }
-        for credential in charged {
-            tx.execute(
-                "INSERT INTO call_credential_charges(call_id,credential_id) VALUES($1,$2)",
-                &[&call, &credential],
-            )
-            .await?;
-        }
-        tx.execute("INSERT INTO reservations(id,account_id,kind,expires_at,status,created_at) VALUES($1,$2,'call',$3,'active',now())", &[&call,&ctx.subject,&deadline]).await?;
-        host_calls::bind_child(tx, self.app, self.token, call, instance.id).await?;
-        let delegation = self
-            .app
-            .auth
-            .issue_rpc(tx, &ctx, call, instance.id, instance.generation, deadline)
-            .await?;
-        host_blobs::grant_skill_call(
+        let staged = record_call(
             tx,
             self.app,
-            &ctx,
-            call,
-            deployment,
-            &manifest,
-            &definition,
+            candidate,
             &self.input["input"],
-            skill
-                .as_ref()
-                .is_none_or(|s| s.definition["input_blobs"] == true),
+            business_key,
+            Some(self.token),
         )
         .await?;
-        if protected {
-            host_blobs::check_call_sources(tx, &ctx, call).await?;
-        }
+        let ctx = &staged.ctx;
+        let call = staged.id;
         tx.execute("DELETE FROM idempotency_records WHERE subject_id=$1 AND credential_id=$2 AND method='POST' AND path=$4 AND key=$3 AND expires_at<=now()",&[&ctx.subject,&ctx.credential,&self.key,&path]).await?;
         tx.execute("INSERT INTO idempotency_records(subject_id,credential_id,method,path,key,fingerprint,resource_id,expires_at,created_at) VALUES($1,$2,'POST',$6,$3,$4,$5,now()+interval '24 hours',now())",&[&ctx.subject,&ctx.credential,&self.key,&fingerprint,&call.to_string(),&path]).await?;
         if let Some(stream) = self.stream {
             stream.ensure_open()?;
         }
-        Ok(Call {
-            ctx,
-            skill,
-            instance,
-            deployment,
-            contract,
-            definition,
-            bytes,
-            deadline,
-            protected,
-            terminal,
-            id: call,
-            delegation,
-            accounts,
-        })
+        Ok(staged)
     }
 
     async fn prepare<'tx, 'db>(
@@ -505,7 +444,7 @@ impl Request<'_> {
                 Some(waiter.deployment),
                 installation,
                 Some(waiter.ticket.instance),
-                front,
+                ProviderUse::Ordinary { lock: front },
             )
             .await?;
             crate::dependencies::check_ready(tx, app, row.get("deployment_id")).await?;
@@ -603,7 +542,16 @@ impl Request<'_> {
         let row = if let Some(row) = pinned {
             row
         } else {
-            let row = provider(tx, name, version, fixed, installation, None, can_admit).await?;
+            let row = provider(
+                tx,
+                name,
+                version,
+                fixed,
+                installation,
+                None,
+                ProviderUse::Ordinary { lock: can_admit },
+            )
+            .await?;
             crate::dependencies::check_ready(tx, app, row.get("deployment_id")).await?;
             row
         };
@@ -762,8 +710,413 @@ impl Request<'_> {
     }
 }
 
+pub(super) async fn admit_task(app: &App, lease: &AttemptLease) -> Result<TaskAdmission> {
+    const ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
+    let limit = Instant::now() + ADMISSION_TIMEOUT;
+    timeout_at(limit, admit_task_bounded(app, lease, limit))
+        .await
+        .map_err(|_| call_expired())?
+}
+
+async fn admit_task_bounded(
+    app: &App,
+    lease: &AttemptLease,
+    limit: Instant,
+) -> Result<TaskAdmission> {
+    crate::skill_streams::ensure_active(app)?;
+    let mut connection = app
+        .db
+        .connect_scoped(limit.saturating_duration_since(Instant::now()))
+        .await?;
+    let tx = connection.transaction().await?;
+    db::call_lock(&tx).await?;
+    let proof =
+        task_engine::broker_dispatch_proof(&tx, &app.auth, lease, BrokerLeaseUse::Admission)
+            .await?;
+    if let Some(row) = task_call(&tx, lease, &proof, None).await? {
+        let call = row.try_get("id")?;
+        let cutoff = charged_task_cutoff(&tx, &proof.ctx, call).await?;
+        task_engine::broker_remaining(&tx, proof.deadline.min(cutoff)).await?;
+        crate::skill_streams::ensure_active(app)?;
+        tx.commit().await?;
+        return Ok(TaskAdmission::Existing(call));
+    }
+    if !proof.active {
+        return Err(Error::conflict(
+            "Task is no longer accepting new Call admission",
+        ));
+    }
+    let prepared = task_engine::broker_input(&tx, &proof).await?;
+    let contract = &proof.contract;
+    let name = string(contract, "name")?;
+    let version = string(contract, "version")?;
+    let digest = string(contract, "schema_digest")?;
+    let capability = Resource::new("capability", format!("{name}@{version}"), None);
+    let definition: Value = tx.query_opt(
+        "SELECT spec FROM capability_contracts WHERE name=$1 AND version=$2 AND schema_digest=$3 FOR SHARE",
+        &[&name,&version,&digest],
+    ).await?.ok_or_else(Error::not_found)?.try_get(0)?;
+    let row = provider(
+        &tx,
+        name,
+        version,
+        Some(proof.deployment),
+        Some(proof.installation),
+        None,
+        ProviderUse::FixedTask,
+    )
+    .await?;
+    let instance = Instance {
+        id: row.try_get("id")?,
+        generation: row.try_get("generation")?,
+    };
+    let manifest: Value = row.try_get("manifest")?;
+    crate::artifact::validate_runtime_profile(&manifest)?;
+    let proxy = manifest["requested_rules"].as_array().is_some_and(|rules| {
+        rules.iter().any(|request| {
+            host_blobs::proxy_action(
+                request["rule"]["action"].as_str().unwrap_or(""),
+                request["rule"]["resource"]["kind"].as_str().unwrap_or(""),
+            )
+        })
+    });
+    if proxy
+        || manifest["dependencies"]
+            .as_array()
+            .is_some_and(|deps| !deps.is_empty())
+        || manifest
+            .get("business_entry")
+            .is_some_and(|entry| entry != "direct")
+        || manifest["data_schema_version"] != "none"
+        || definition["contract"] != *contract
+        || !unary_failure::signed_capability(&manifest, contract, &definition)
+    {
+        return Err(Error::unavailable("Task dispatch requires an exact signed direct Capability without proxy or dependencies"));
+    }
+    if app.runtime.business_queue.has_waiters(instance) {
+        return Err(Error::exhausted());
+    }
+    let input = &prepared.request["input"];
+    if serde_json::to_vec(input)?.len()
+        > app
+            .config
+            .json_limit(unsigned(&definition["maximum_input_bytes"])? as usize)
+    {
+        return Err(Error::invalid("Capability input exceeds its byte limit"));
+    }
+    validate_business(&definition["input_schema"], input)?;
+    let authority = CurrentAuthority::new(&tx, &proof.ctx)
+        .await?
+        .restrict_to_original_sources(&tx, &proof.ctx, &proof.business_paths)
+        .await?;
+    authority.require(&tx, &proof.ctx, "capability.invoke", &capability)?;
+    let timeout = unsigned(&prepared.request["timeout_ms"])? as i64;
+    let now: DateTime<Utc> = tx
+        .query_one("SELECT clock_timestamp()", &[])
+        .await?
+        .try_get(0)?;
+    let deadline = proof
+        .deadline
+        .min(now + chrono::Duration::milliseconds(timeout));
+    let candidate = Candidate {
+        ctx: proof.ctx,
+        skill: None,
+        instance,
+        deployment: proof.deployment,
+        manifest,
+        contract: contract.clone(),
+        definition,
+        capability,
+        deadline,
+        protected: true,
+        terminal: Some(unary_failure::Binding {
+            installation: proof.installation,
+            manifest_digest: row.try_get("manifest_digest")?,
+            has_proxy: false,
+        }),
+        authority: Some(authority),
+    };
+    let call = record_call(&tx, app, candidate, input, &proof.business_key, None).await?;
+    tx.execute(
+        "INSERT INTO task_attempt_calls(attempt_id,call_id,installation_id) VALUES($1,$2,$3)",
+        &[&lease.attempt_id, &call.id, &proof.installation],
+    )
+    .await?;
+    tx.execute(
+        "UPDATE attempts SET state='running',revision=revision+1,updated_at=clock_timestamp() WHERE id=$1",
+        &[&lease.attempt_id],
+    ).await?;
+    // Include waiting on the retained link, triggers and every ledger write.
+    tx.batch_execute("SET CONSTRAINTS ALL IMMEDIATE").await?;
+    let cutoff = validate_task_call(&tx, app, lease, call.id, false).await?;
+    let sampled = Instant::now();
+    let remaining = task_engine::broker_remaining(&tx, cutoff).await?;
+    crate::skill_streams::ensure_active(app)?;
+    if sampled.elapsed() >= remaining || Instant::now() >= limit {
+        return Err(call_expired());
+    }
+    tx.commit().await?;
+    if sampled.elapsed() >= remaining || crate::skill_streams::ensure_active(app).is_err() {
+        // COMMIT may have completed after the dispatch budget. The ledger is
+        // still authoritative but this invocation must never send an RPC.
+        return Ok(TaskAdmission::Existing(call.id));
+    }
+    Ok(TaskAdmission::Dispatch(Box::new(call)))
+}
+
+/// A monitor holds the shared authorization fence. Settlement also owns the
+/// Call ledger. Validation never commits, rolls back, or changes any state.
+pub(super) async fn validate_task_call(
+    tx: &Transaction<'_>,
+    app: &App,
+    lease: &AttemptLease,
+    call: Uuid,
+    allow_cancel_requested: bool,
+) -> Result<DateTime<Utc>> {
+    crate::skill_streams::ensure_active(app)?;
+    let purpose = if allow_cancel_requested {
+        BrokerLeaseUse::Observe
+    } else {
+        BrokerLeaseUse::Send
+    };
+    let proof = task_engine::broker_dispatch_proof(tx, &app.auth, lease, purpose).await?;
+    let call_row = task_call(tx, lease, &proof, Some(call))
+        .await?
+        .ok_or_else(Error::denied)?;
+    if call_row.try_get::<_, &str>("state")? != "running" {
+        return Err(Error::conflict("Admitted Call is no longer running"));
+    }
+    let name = string(&proof.contract, "name")?;
+    let version = string(&proof.contract, "version")?;
+    let rpc_until: DateTime<Utc> = tx.query_opt(
+        "SELECT r.expires_at FROM calls c
+           JOIN instances i ON i.id=c.provider_instance_id
+           JOIN deployments d ON d.id=i.deployment_id
+           JOIN installations n ON n.id=d.installation_id
+           JOIN provider_records p ON p.instance_id=i.id AND p.name=$2 AND p.version=$3
+           JOIN execution_delegations e ON e.id=c.delegation_id
+           JOIN rpc_delegations r ON r.call_id=c.id AND r.execution_delegation_id=e.id
+              AND r.instance_id=i.id AND r.generation=i.generation
+          WHERE c.id=$1 AND d.id=$4 AND n.id=$5 AND i.phase='ready' AND i.health='alive'
+            AND p.availability='ready' AND p.observed_generation=i.generation
+            AND p.observed_at>clock_timestamp()-interval '1 millisecond'*
+                ((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint
+                +(n.manifest->'health'->>'timeout_ms')::bigint)
+            AND e.status='active' AND e.subject_id=c.owner_id AND e.issuer_credential_id=c.credential_id
+            AND e.expires_at>=r.expires_at AND r.status='active'
+            AND r.subject_id=c.owner_id AND r.issuer_credential_id=c.credential_id
+          FOR SHARE OF i,p,e,r",
+        &[&call, &name, &version, &proof.deployment, &proof.installation],
+    ).await?.ok_or_else(|| Error::unavailable("Admitted task provider or RPC binding is unavailable"))?.try_get(0)?;
+    let cutoff = charged_task_cutoff(tx, &proof.ctx, call).await?;
+    let deadline = proof
+        .deadline
+        .min(call_row.try_get("deadline_at")?)
+        .min(rpc_until)
+        .min(cutoff);
+    task_engine::broker_remaining(tx, deadline).await?;
+    crate::skill_streams::ensure_active(app)?;
+    Ok(deadline)
+}
+
+async fn charged_task_cutoff(
+    tx: &Transaction<'_>,
+    ctx: &Context,
+    call: Uuid,
+) -> Result<DateTime<Utc>> {
+    let paths = host_blobs::checked_call_sources(tx, ctx, call).await?;
+    task_engine::broker_paths_until(tx, ctx, &paths).await
+}
+
+async fn task_call(
+    tx: &Transaction<'_>,
+    lease: &AttemptLease,
+    proof: &task_engine::BrokerDispatchProof,
+    call: Option<Uuid>,
+) -> Result<Option<Row>> {
+    let row = tx
+        .query_opt(
+            "SELECT c.id,c.state,c.deadline_at,
+            b.installation_id=$2 AND c.owner_id=$3 AND c.credential_id=$4 AND c.contract=$5
+              AND c.idempotency_key=$6 AND i.deployment_id=$7
+              AND c.skill_id IS NULL AND c.http_binding IS NULL AS matches
+           FROM task_attempt_calls b JOIN calls c ON c.id=b.call_id
+           LEFT JOIN instances i ON i.id=c.provider_instance_id
+          WHERE b.attempt_id=$1 FOR SHARE OF c",
+            &[
+                &lease.attempt_id,
+                &proof.installation,
+                &proof.ctx.subject,
+                &proof.ctx.credential,
+                &proof.contract,
+                &proof.business_key,
+                &proof.deployment,
+            ],
+        )
+        .await?;
+    if let Some(row) = &row {
+        if row.try_get::<_, Option<bool>>("matches")? != Some(true)
+            || call.is_some_and(|id| row.get::<_, Uuid>("id") != id)
+        {
+            return Err(Error::denied());
+        }
+    }
+    Ok(row)
+}
+
+/// Both callers reach this point with the live provider and the Call ledger
+/// locked. Worker dispatch uses an independent per-Attempt association and an
+/// exact task proof. Ordinary requests retain their existing HTTP replay gate.
+async fn record_call(
+    tx: &Transaction<'_>,
+    app: &App,
+    candidate: Candidate<'_, '_>,
+    input: &Value,
+    business_key: &str,
+    token: Option<&str>,
+) -> Result<Call> {
+    let Candidate {
+        ctx,
+        skill,
+        instance,
+        deployment,
+        manifest,
+        contract,
+        definition,
+        capability,
+        deadline,
+        protected,
+        terminal,
+        authority,
+    } = candidate;
+    let (accounts, charged) = if token.is_some() {
+        reserve_call_quota(
+            tx,
+            &ctx,
+            "capability.invoke",
+            &capability,
+            skill.as_ref(),
+            authority.as_ref(),
+        )
+        .await?
+    } else {
+        reserve_business(
+            tx,
+            &ctx,
+            instance.id,
+            &manifest,
+            "capability.invoke",
+            &capability,
+            None,
+            authority.as_ref(),
+        )
+        .await?
+    };
+    let deadline = if token.is_some() {
+        deadline
+    } else {
+        let authority = authority.as_ref().ok_or_else(Error::denied)?;
+        let paths = host_blobs::retain_charged_paths(
+            tx,
+            &ctx,
+            authority.paths(tx, &ctx, &capability)?.to_vec(),
+            &charged,
+            "capability.invoke",
+        )
+        .await?;
+        deadline.min(task_engine::broker_paths_until(tx, &ctx, &paths).await?)
+    };
+    let call = if let Some(token) = token {
+        host_calls::new_call(tx, app, token).await?
+    } else {
+        Uuid::new_v4()
+    };
+    if deadline <= Utc::now() {
+        return Err(call_expired());
+    }
+    let bytes = serde_json::to_vec(input)?;
+    tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,idempotency_key,state,deadline_at,created_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7,'running',$8,now())",
+        &[&call,&ctx.subject,&ctx.credential,&instance.id,&contract,&digest(&bytes),&business_key,&deadline]).await?;
+    if let Some(skill) = &skill {
+        tx.execute(
+            "UPDATE calls SET skill_id=$2,skill_definition_digest=$3 WHERE id=$1",
+            &[&call, &skill.id, &skill.definition_digest],
+        )
+        .await?;
+    }
+    for credential in charged {
+        tx.execute(
+            "INSERT INTO call_credential_charges(call_id,credential_id) VALUES($1,$2)",
+            &[&call, &credential],
+        )
+        .await?;
+    }
+    tx.execute(
+        "INSERT INTO reservations(id,account_id,kind,expires_at,status,created_at)
+        VALUES($1,$2,'call',$3,'active',now())",
+        &[&call, &ctx.subject, &deadline],
+    )
+    .await?;
+    if let Some(token) = token {
+        host_calls::bind_child(tx, app, token, call, instance.id).await?;
+    }
+    let delegation = app
+        .auth
+        .issue_rpc(tx, &ctx, call, instance.id, instance.generation, deadline)
+        .await?;
+    if token.is_some() {
+        host_blobs::grant_skill_call(
+            tx,
+            app,
+            &ctx,
+            call,
+            deployment,
+            &manifest,
+            &definition,
+            input,
+            skill
+                .as_ref()
+                .is_none_or(|s| s.definition["input_blobs"] == true),
+        )
+        .await?;
+        if protected {
+            host_blobs::check_call_sources(tx, &ctx, call).await?;
+        }
+    } else {
+        host_blobs::grant_task_call(
+            tx,
+            &ctx,
+            call,
+            authority.as_ref().ok_or_else(Error::denied)?,
+        )
+        .await?;
+    }
+    Ok(Call {
+        ctx,
+        skill,
+        instance,
+        deployment,
+        contract,
+        definition,
+        bytes,
+        deadline,
+        protected,
+        terminal,
+        id: call,
+        delegation,
+        accounts,
+        business_key: business_key.to_owned(),
+    })
+}
+
 fn skill_resource(skill: &ResolvedSkill) -> Resource {
     Resource::new("skill", skill.id, Some(skill.owner))
+}
+
+enum ProviderUse {
+    Ordinary { lock: bool },
+    FixedTask,
 }
 
 async fn provider(
@@ -773,14 +1126,14 @@ async fn provider(
     fixed: Option<Uuid>,
     installation: Option<Uuid>,
     pinned: Option<Instance>,
-    lock_instance: bool,
+    selection: ProviderUse,
 ) -> Result<Row> {
     let instance = pinned.map(|instance| instance.id);
     let generation = pinned.map(|instance| instance.generation);
-    let lock = if lock_instance {
-        " FOR UPDATE OF i"
-    } else {
-        ""
+    let fixed_task = matches!(selection, ProviderUse::FixedTask);
+    let lock = match selection {
+        ProviderUse::Ordinary { lock: false } => "",
+        _ => " FOR UPDATE OF i",
     };
     let statement = format!(
         "SELECT i.id,i.generation,d.id AS deployment_id,n.manifest,n.id AS installation_id,n.manifest_digest
@@ -793,6 +1146,7 @@ async fn provider(
             AND i.phase='ready' AND d.spec->>'enabled'='true' AND d.archived_at IS NULL
             AND ($3::uuid IS NULL OR d.id=$3) AND ($4::uuid IS NULL OR n.id=$4)
             AND ($5::uuid IS NULL OR (i.id=$5 AND i.generation=$6 AND p.observed_generation=$6))
+            AND (NOT $7 OR (i.health='alive' AND p.observed_generation=i.generation))
           ORDER BY i.id LIMIT 1{lock}",
     );
     c.query_opt(
@@ -804,6 +1158,7 @@ async fn provider(
             &installation,
             &instance,
             &generation,
+            &fixed_task,
         ],
     )
     .await?

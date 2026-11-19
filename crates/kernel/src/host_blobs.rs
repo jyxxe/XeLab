@@ -443,6 +443,25 @@ pub(crate) async fn grant_http_call(
     Ok(())
 }
 
+/// Persist the charged Capability proof supplied by the task's own admission.
+pub(crate) async fn grant_task_call(
+    c: &tokio_postgres::Transaction<'_>,
+    ctx: &Context,
+    call: Uuid,
+    authority: &auth::CurrentAuthority<'_, '_>,
+) -> Result<()> {
+    let (action, resource) = crate::broker::business_target(c, call).await?;
+    if action != "capability.invoke" || resource.kind != "capability" {
+        return Err(Error::denied());
+    }
+    let paths =
+        charged_business_paths(c, ctx, call, authority.paths(c, ctx, &resource)?.to_vec()).await?;
+    // The task freezes only this invocation. No deployment approval, proxy
+    // paths, resource IDs, or inherited proxy ceilings belong to its Call.
+    persist_call_sources(c, ctx, call, &paths, &[], &BTreeSet::new(), &[]).await?;
+    check_call_sources(c, ctx, call).await
+}
+
 /// Resolve declared input Blobs with the same authority used at dispatch.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn authorize_skill_blob_inputs(
@@ -607,8 +626,21 @@ async fn grant_call_inner(
     if pinned {
         paths = charged_business_paths(c, ctx, call, paths).await?;
     }
-    if serde_json::to_vec(&proxy_paths)?.len() > 1048576
-        || serde_json::to_vec(&paths)?.len() > 4194304
+    persist_call_sources(c, ctx, call, &paths, &proxy_paths, &ids, &ceilings).await?;
+    Ok(paths)
+}
+
+async fn persist_call_sources(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    call: Uuid,
+    paths: &[Path],
+    proxy_paths: &[Path],
+    ids: &BTreeSet<Uuid>,
+    ceilings: &[Value],
+) -> Result<()> {
+    if serde_json::to_vec(proxy_paths)?.len() > 1048576
+        || serde_json::to_vec(paths)?.len() > 4194304
     {
         return Err(Error::exhausted());
     }
@@ -619,10 +651,10 @@ async fn grant_call_inner(
         &[&call, &json!(proxy_paths), &json!(ceilings)],
     )
     .await?;
-    let mut maximum = paths.clone();
-    maximum.extend(proxy_paths);
+    let mut maximum = paths.to_vec();
+    maximum.extend_from_slice(proxy_paths);
     c.execute("UPDATE execution_delegations SET maximum_rules=$2 WHERE id=(SELECT delegation_id FROM calls WHERE id=$1)",&[&call,&policy::rules(&maximum)]).await?;
-    Ok(paths)
+    Ok(())
 }
 // Lifetime limits are checked when Broker chooses/charges each business proof.
 // Freezing every currently visible alternative would preserve even an exhausted,
@@ -642,8 +674,18 @@ async fn charged_business_paths(
         .iter()
         .map(|row| row.get(0))
         .collect();
-    let mut filtered = Vec::new();
     let (target_action, _) = crate::broker::business_target(c, call).await?;
+    retain_charged_paths(c, ctx, paths, &charged, &target_action).await
+}
+
+pub(crate) async fn retain_charged_paths(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    paths: Vec<Path>,
+    charged: &BTreeSet<Uuid>,
+    target_action: &str,
+) -> Result<Vec<Path>> {
+    let mut filtered = Vec::new();
     'candidate: for path in paths {
         if path.rule["action"] != target_action && path.rule["action"] != "skill.invoke" {
             filtered.push(path);
@@ -667,7 +709,7 @@ async fn charged_business_paths(
                 Err(error) => return Err(error),
             }
         }
-        if required.is_subset(&charged) {
+        if required.is_subset(charged) {
             filtered.push(path);
         }
     }
@@ -681,6 +723,14 @@ pub(crate) async fn check_call_sources(
     ctx: &Context,
     call: Uuid,
 ) -> Result<()> {
+    checked_call_sources(c, ctx, call).await.map(|_| ())
+}
+
+pub(crate) async fn checked_call_sources(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    call: Uuid,
+) -> Result<Vec<Path>> {
     let row = c.query_opt(
         "SELECT c.owner_id,c.credential_id,c.http_binding,c.skill_id,s.created_by,x.source_paths,x.read_blob_ids FROM calls c LEFT JOIN skills s ON s.id=c.skill_id LEFT JOIN host_rpc_contexts x ON x.call_id=c.id WHERE c.id=$1",
         &[&call],
@@ -691,7 +741,7 @@ pub(crate) async fn check_call_sources(
         // ordinary RPC calls freeze the same charged proof as Skill calls.
         let effectful: bool = c.query_one("SELECT EXISTS(SELECT 1 FROM calls c JOIN capability_contracts p ON p.name=c.contract->>'name' AND p.version=c.contract->>'version' AND p.schema_digest=c.contract->>'schema_digest' WHERE c.id=$1 AND p.spec->>'side_effect' IN ('idempotent','queryable','non_repeatable'))", &[&call]).await?.get(0);
         if !effectful && row.get::<_, Option<Value>>("source_paths").is_none() {
-            return Ok(());
+            return Ok(Vec::new());
         }
     }
     if row.get::<_, Uuid>("owner_id") != ctx.subject
@@ -757,7 +807,7 @@ pub(crate) async fn check_call_sources(
             return Err(Error::denied());
         }
     }
-    Ok(())
+    Ok(paths)
 }
 
 #[derive(Clone, Copy)]
