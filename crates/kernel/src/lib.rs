@@ -52,6 +52,7 @@ pub mod volumes;
 pub mod webui;
 mod workflows;
 
+pub use schedules::trigger::run as run_schedules;
 pub use tasks::task_engine;
 pub use xelab_plugin_sdk::rpc;
 
