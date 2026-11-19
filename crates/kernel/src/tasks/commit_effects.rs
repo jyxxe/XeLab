@@ -76,6 +76,43 @@ pub(super) async fn read_step(tx: &Transaction<'_>, step_id: Uuid) -> Result<Val
     object_value(&step, "TaskStep")
 }
 
+/// Record an unknown result for the step of a locked, expired attempt.
+pub(super) async fn expire_step(
+    tx: &Transaction<'_>,
+    attempt_id: Uuid,
+    step_id: Uuid,
+    task_id: Uuid,
+    aggregate_running_task: bool,
+) -> Result<()> {
+    let changed = tx
+        .execute(
+            "UPDATE task_steps SET state='unknown',output=NULL,revision=revision+1,updated_at=clock_timestamp()
+             WHERE id=$1 AND task_id=$2 AND state='running'",
+            &[&step_id, &task_id],
+        )
+        .await?;
+    if changed != 1 {
+        return Err(Error::conflict(
+            "Expired attempt no longer has a running step",
+        ));
+    }
+    let error = Error::new(
+        "OUTCOME_UNKNOWN",
+        "Task claim expired before the result was committed",
+        axum::http::StatusCode::CONFLICT,
+    );
+    if aggregate_running_task {
+        aggregate(tx, task_id, step_id, "unknown", &error.detail()).await?;
+    }
+    outbox(
+        tx,
+        "task.step.lease_expired",
+        step_id,
+        &json!({"task_id":task_id,"step_id":step_id,"attempt_id":attempt_id,"state":"unknown","reason_code":error.code}),
+    )
+    .await
+}
+
 async fn validate_output(
     tx: &Transaction<'_>,
     step_id: Uuid,

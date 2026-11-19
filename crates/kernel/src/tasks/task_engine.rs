@@ -1,9 +1,11 @@
 //! Trusted, in-process TaskEngine operations.
 mod active;
 mod commit;
+mod expiry;
 mod lease;
 pub use super::dispatch_input::DispatchInput;
 pub use commit::commit;
+pub(crate) use expiry::expire_leases;
 pub use lease::{prepare_dispatch, renew, AttemptLease};
 
 use super::{claim_authority, commit_effects};
