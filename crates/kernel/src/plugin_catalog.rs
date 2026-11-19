@@ -40,6 +40,7 @@ fn collection(name: &str) -> Result<Collection> {
         "listWorkflows" => ("workflows", "Workflow", "workflow.read", "workflow", "SELECT t.id,t.created_at,t.id::text AS resource_id,t.owner_id,NULL::text AS plugin_id,NULL::uuid AS deployment_id FROM workflows t"),
         "listTasks" => ("tasks", "Task", "task.read", "task", "SELECT t.id,t.created_at,t.id::text AS resource_id,t.owner_id,NULL::text AS plugin_id,NULL::uuid AS deployment_id,t.state FROM tasks t"),
         "listTaskSteps" => ("task_steps", "TaskStep", "task.read", "task", "SELECT s.id,s.created_at,t.id::text AS resource_id,t.owner_id,NULL::text AS plugin_id,NULL::uuid AS deployment_id,s.task_id FROM task_steps s JOIN tasks t ON t.id=s.task_id"),
+        "listAttempts" => ("attempts", "Attempt", "task.read", "task", "SELECT a.id,a.created_at,a.updated_at,a.lease_expires_at,t.id::text AS resource_id,t.owner_id,NULL::text AS plugin_id,NULL::uuid AS deployment_id,a.step_id,to_jsonb(a) AS attempt FROM attempts a JOIN task_steps s ON s.id=a.step_id JOIN tasks t ON t.id=s.task_id"),
         _ => return Err(Error::invalid("Unknown plugin catalog operation")),
     };
     Ok(Collection {
@@ -64,7 +65,7 @@ struct Cursor {
     binding: Value,
     watermark: DateTime<Utc>,
     last_time: DateTime<Utc>,
-    last_id: String,
+    last_id: Option<Uuid>,
     expires_at: DateTime<Utc>,
 }
 fn cipher(auth: &Auth, domain: &'static str) -> Result<LessSafeKey> {
@@ -271,6 +272,16 @@ pub(crate) async fn list_task_steps(
     list(c, auth, ctx, "listTaskSteps", query, Some(task)).await
 }
 
+pub(crate) async fn list_attempts(
+    c: &(impl GenericClient + Sync),
+    auth: &Auth,
+    ctx: &Context,
+    step: Uuid,
+    query: &str,
+) -> Result<(Value, u16)> {
+    list(c, auth, ctx, "listAttempts", query, Some(step)).await
+}
+
 pub(crate) async fn read_task(
     c: &(impl GenericClient + Sync),
     task: Uuid,
@@ -290,7 +301,7 @@ async fn list(
     ctx: &Context,
     name: &str,
     query: &str,
-    task: Option<Uuid>,
+    parent: Option<Uuid>,
 ) -> Result<(Value, u16)> {
     let selected = collection(name)?;
     if !policy::registered(c, selected.action, selected.kind).await? {
@@ -361,8 +372,13 @@ async fn list(
     if name == "listTasks" {
         binding["state"] = json!(state);
     }
-    if let Some(task) = task {
-        binding["task_id"] = json!(task);
+    if let Some(parent) = parent {
+        let key = if name == "listAttempts" {
+            "step_id"
+        } else {
+            "task_id"
+        };
+        binding[key] = json!(parent);
     }
     let now = Utc::now();
     let mut cursor = if let Some(value) = supplied_cursor {
@@ -372,7 +388,7 @@ async fn list(
             binding: binding.clone(),
             watermark: now,
             last_time: DateTime::<Utc>::UNIX_EPOCH,
-            last_id: String::new(),
+            last_id: None,
             expires_at: now + chrono::Duration::minutes(15),
         }
     };
@@ -380,7 +396,6 @@ async fn list(
         || cursor.expires_at <= now
         || cursor.watermark > now
         || cursor.last_time > cursor.watermark
-        || cursor.last_time < DateTime::<Utc>::UNIX_EPOCH
         || cursor.expires_at != cursor.watermark + chrono::Duration::minutes(15)
     {
         return Err(Error::invalid(
@@ -408,16 +423,20 @@ async fn list(
             params.push(&state);
             "AND ($9::text IS NULL OR state COLLATE \"C\"=$9)"
         }
-        "listTaskSteps" => {
-            if task.is_none() {
+        "listTaskSteps" | "listAttempts" => {
+            if parent.is_none() {
                 return Err(Error::not_found());
             }
-            params.push(&task);
-            "AND task_id=$9"
+            params.push(&parent);
+            if name == "listAttempts" {
+                "AND step_id=$9"
+            } else {
+                "AND task_id=$9"
+            }
         }
         _ => "",
     };
-    let sql = format!("WITH catalog AS ({}) SELECT * FROM catalog WHERE created_at<=$1 AND (created_at,id::text)>($2,$3) AND ($4 OR resource_id=ANY($5::text[]) OR owner_id=ANY($6::uuid[])) AND ($7::text IS NULL OR plugin_id=$7) AND ($8::uuid IS NULL OR deployment_id=$8) {task_filter} ORDER BY created_at,id LIMIT 201",selected.source);
+    let sql = format!("WITH catalog AS ({}) SELECT * FROM catalog WHERE created_at<=$1 AND ($3::uuid IS NULL OR (created_at,id)>($2,$3)) AND ($4 OR resource_id=ANY($5::text[]) OR owner_id=ANY($6::uuid[])) AND ($7::text IS NULL OR plugin_id=$7) AND ($8::uuid IS NULL OR deployment_id=$8) {task_filter} ORDER BY created_at,id LIMIT 201",selected.source);
     let rows = c.query(&sql, &params).await?;
     let rules = policy::rules(&paths);
     let mut items = Vec::new();
@@ -444,10 +463,16 @@ async fn list(
             // transaction. Recheck against the same snapshot as the payload.
             let Some(value) = read_task(c, id, state.as_deref()).await? else {
                 cursor.last_time = row.get("created_at");
-                cursor.last_id = id.to_string();
+                cursor.last_id = Some(id);
                 continue;
             };
             value
+        } else if name == "listAttempts" {
+            let mut attempt: Value = row.get("attempt");
+            for field in ["created_at", "updated_at", "lease_expires_at"] {
+                attempt[field] = json!(row.get::<_, DateTime<Utc>>(field));
+            }
+            object_value(&attempt, "Attempt")?
         } else {
             read_object(c, selected.table, id, selected.model).await?
         };
@@ -462,7 +487,7 @@ async fn list(
         bytes += size;
         items.push(value);
         cursor.last_time = row.get("created_at");
-        cursor.last_id = id.to_string();
+        cursor.last_id = Some(id);
     }
     let next = if more {
         Some(encode(auth, &cursor)?)

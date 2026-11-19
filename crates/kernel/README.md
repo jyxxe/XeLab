@@ -16,7 +16,7 @@
 | 调用 | 固定契约/安装/部署、双层授权、共享实例并发、树配额/源链计费、幂等/unknown 账本、有界 SSE 缓冲与取消围栏；普通无版本数据格式 capability 四类副作用的单次/声明流和原实例 QueryResult | #46 精确真实 OCI 副作用/QueryResult 门禁已通过；符合签名范围的一元 Capability Skill 可按实例排队；Task 执行、Batch、Schedule 待实现 |
 | 事件 | 持久化发布/outbox、24h 去重、独立游标、30s 租约、旧租约 fencing、退避重投/死信、保留和容量上限、SSE/HostService、原生快照及恢复授权重置 | 当前源代码与专项证据见 [M4 事件](../../docs/implementation/m4-events.md)和[#54](https://github.com/jyxxe/XeLab/issues/54)；正式 daemon/独立宿主及 AWS 仍由 #50 跟踪 |
 | 工作流定义 | `createWorkflow/getWorkflow/listWorkflows/archiveWorkflow`；同一所有者和名称下递增不可变版本，校验 DAG、输入映射和签名目标，按当前权限分页，使用 ETag 归档 | 归档阻止同一版本的新任务，历史任务继续可读 |
-| 任务提交与查询 | `createTask/getTask/listTasks/listTaskSteps`；在一个事务中固定 Workflow 版本、deadline、执行权限上限、授权来源和需要固定的提供者，初始化步骤状态 | TaskEngine 领取与执行待实现。服务身份执行需单独审批。HTTP 与真实 PostgreSQL 回归见 `crates/kernel/tests/workflows.rs` |
+| 任务提交与查询 | `createTask/getTask/listTasks/listTaskSteps/listAttempts`；提交时固定 Workflow 版本、deadline、授权来源和提供者；步骤的尝试记录按所属任务的 `task.read` 分页读取，无记录时返回空页 | 查询不会创建 Attempt 或领取步骤。TaskEngine 领取与执行待实现。服务身份执行需单独审批。HTTP 与真实 PostgreSQL 回归见 `crates/kernel/tests/workflows.rs` |
 | HTTP | #43 已合并签名原始 OpenAPI、精确操作/动作/Schema、共享 Broker 账本、直接 HTTP SSE、隔离来源静态 GET/HEAD 与物理槽；#47 扩展固定 HTTP Skill 的六方法、成功状态和 SSE | #47 精确 HTTP Skill 六方法/流真实 OCI 门禁已通过；不是任意 URL/路径模板/查询参数代理，未声明协议拒绝 |
 | 独立 WebUI/消息桥 | #45 实现 UID 65532 OCI 桌面、公开管理 API/OAuth 客户端、window/widget、固定 alias 的 skill.call、同部署 window.open、通道撤权/登出/升级失效及独立 UI 参考插件 | 组件与打包探针通过不能替代真实核心 OCI/Owner OAuth/iframe 全链；#45 精确完整/专项门禁均通过，未来 batch 方法明确不可用 |
 | 持久卷 | 独立 XFS 硬配额、预留/扩容/回收、实际计数、单写者 fence、OCI 挂载、新私有卷恢复、同格式克隆/回退、内部格式证明 | 多副本应用行为、公开格式安装/迁移、正式独立宿主恢复验收 |

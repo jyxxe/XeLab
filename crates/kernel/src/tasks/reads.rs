@@ -16,17 +16,28 @@ pub(super) async fn authorize(
 ) -> Result<()> {
     match name {
         "listTasks" => Ok(()), // The catalog filters each task by current authority.
-        "getTask" | "listTaskSteps" => {
-            let task = path_id(params, "task_id")?;
+        "getTask" | "listTaskSteps" | "listAttempts" => {
+            let (lookup, parent) = if name == "listAttempts" {
+                ("SELECT t.id,t.owner_id FROM task_steps s JOIN tasks t ON t.id=s.task_id WHERE s.id=$1", path_id(params, "step_id")?)
+            } else {
+                (
+                    "SELECT id,owner_id FROM tasks WHERE id=$1",
+                    path_id(params, "task_id")?,
+                )
+            };
             let row = c
-                .query_opt("SELECT owner_id FROM tasks WHERE id=$1", &[&task])
+                .query_opt(lookup, &[&parent])
                 .await?
                 .ok_or_else(Error::not_found)?;
             auth::authorize(
                 c,
                 ctx,
                 "task.read",
-                &Resource::new("task", task, Some(row.get(0))),
+                &Resource::new(
+                    "task",
+                    row.get::<_, uuid::Uuid>("id"),
+                    Some(row.get("owner_id")),
+                ),
             )
             .await
             .map_err(|error| {
@@ -59,6 +70,9 @@ pub(super) async fn execute(
         "listTasks" => plugin_catalog::execute(c, auth, ctx, name, query).await,
         "listTaskSteps" => {
             plugin_catalog::list_task_steps(c, auth, ctx, path_id(params, "task_id")?, query).await
+        }
+        "listAttempts" => {
+            plugin_catalog::list_attempts(c, auth, ctx, path_id(params, "step_id")?, query).await
         }
         _ => Err(Error::not_found()),
     }
