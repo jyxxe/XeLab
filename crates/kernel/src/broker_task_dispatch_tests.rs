@@ -224,12 +224,25 @@ impl Fixture {
         revision: Option<i64>,
         expected_status: u16,
     ) -> Value {
+        self.post_as(&self.token, uri, key, body, revision, expected_status)
+            .await
+    }
+
+    async fn post_as(
+        &self,
+        token: &str,
+        uri: &str,
+        key: &str,
+        body: Value,
+        revision: Option<i64>,
+        expected_status: u16,
+    ) -> Value {
         let mut builder = Request::post(uri)
             .header(
                 "host",
                 crate::plugin_http_gateway::core_authority(&self.app.config).unwrap(),
             )
-            .header("authorization", format!("Bearer {}", self.token))
+            .header("authorization", format!("Bearer {token}"))
             .header("content-type", "application/json")
             .header("idempotency-key", key);
         if let Some(revision) = revision {
@@ -271,24 +284,36 @@ impl Fixture {
     }
 
     async fn submit_workflow(&self, name: &str, steps: Vec<Value>) -> Uuid {
+        let workflow = self.publish_workflow(name, steps).await;
+        self.submit_task(&self.token, name, workflow).await
+    }
+
+    async fn publish_workflow(&self, name: &str, steps: Vec<Value>) -> Uuid {
         let workflow = self.post("/api/platform/v1/workflows", &format!("{name}-workflow"), json!({
             "name":name,"input_schema":{
                 "type":"object","required":["message"],"properties":{"message":{"type":"string"}}
             },"steps":steps
         })).await;
+        id(&workflow, "id").unwrap()
+    }
+
+    async fn submit_task(&self, token: &str, name: &str, workflow: Uuid) -> Uuid {
         let task = self
-            .post(
+            .post_as(
+                token,
                 "/api/platform/v1/tasks",
                 &format!("{name}-task"),
                 json!({
-                    "workflow_id": workflow["id"], "input":{"message":"from workflow"}
+                    "workflow_id": workflow, "input":{"message":"from workflow"}
                 }),
+                None,
+                201,
             )
             .await;
         id(&task, "id").unwrap()
     }
 
-    async fn register_skill(&self, c: &Client) -> Uuid {
+    async fn register_skill(&self, c: &Client, entry: &str, input_blobs: bool) -> Uuid {
         let mut manifest: Value = c
             .query_one(
                 "SELECT manifest FROM installations WHERE id=$1",
@@ -300,12 +325,13 @@ impl Fixture {
         let cap = &manifest["capabilities"][0];
         let definition = json!({
             "name":format!("{}.runner-skill", manifest["plugin_id"].as_str().unwrap()),
-            "version":"1.0.0","description":"Unsupported automatic worker Skill",
+            "version":"1.0.0","description":"Fixed signed capability Skill",
             "input_schema":cap["input_schema"],"output_schema":cap["output_schema"],
             "stream_item_schema":null,"target":{"kind":"capability","plugin_id":manifest["plugin_id"],
                 "contract":cap["contract"]},"mapping":"identity","maximum_timeout_ms":20_000,
-            "input_blobs":false,"tags":[]
+            "input_blobs":input_blobs,"tags":[]
         });
+        manifest["business_entry"] = json!(entry);
         manifest["skills"] = json!([definition]);
         update_manifest(c, self.installation, &manifest).await;
         let skill = self
@@ -318,6 +344,17 @@ impl Fixture {
             )
             .await;
         id(&skill, "id").unwrap()
+    }
+
+    async fn grant(&self, subject: Uuid, role: &str, scope: Value, key: &str) -> Uuid {
+        let grant = self
+            .post(
+                &format!("/api/platform/v1/accounts/{subject}/grants"),
+                key,
+                json!({"source":"role","role_id":role,"scope":scope}),
+            )
+            .await;
+        id(&grant, "id").unwrap()
     }
 
     async fn set_provider_concurrency(&self, c: &Client, limit: u32) {
@@ -678,6 +715,153 @@ async fn stop_runner(f: &Fixture, handle: JoinHandle<()>) {
         .await
         .expect("task worker did not stop")
         .unwrap();
+}
+
+fn skill_step(skill: Uuid) -> Value {
+    json!({
+        "id":"echo","skill_id":skill,"depends_on":[],
+        "input_mapping":{"message":{"task_input":"/message"}},"timeout_ms":20_000
+    })
+}
+
+struct SkillTask {
+    task: Uuid,
+    skill: Uuid,
+    submitter: auth::Context,
+    common_issuer: Uuid,
+    skill_grant: Uuid,
+    capability_grant: Uuid,
+}
+
+async fn submit_signed_skill(f: &Fixture, c: &Client, entry: &str) -> SkillTask {
+    let skill = f.register_skill(c, entry, false).await;
+    let workflow = f
+        .publish_workflow("signed-capability-skill", vec![skill_step(skill)])
+        .await;
+    let subject = Uuid::new_v4();
+    // An unrelated account receives only the four grants needed to submit
+    // this Task. None of its permissions is inherited from the Owner.
+    c.execute(
+        "INSERT INTO accounts(id,kind,status,display_name,password_hash,created_at,updated_at)
+         SELECT $1,'user','active','Skill task submitter',password_hash,now(),now()
+           FROM accounts WHERE id=$2",
+        &[&subject, &f.owner],
+    )
+    .await
+    .unwrap();
+    c.execute("INSERT INTO account_closure VALUES($1,$1,0)", &[&subject])
+        .await
+        .unwrap();
+    c.execute(
+        "INSERT INTO quotas(account_id,spec,daily_bucket,created_at,updated_at)
+         SELECT $1,spec,current_date,now(),now() FROM quotas WHERE account_id=$2",
+        &[&subject, &f.owner],
+    )
+    .await
+    .unwrap();
+    f.grant(
+        subject,
+        "Member",
+        json!({"kind":"task","match":"owned_by","owner_id":subject}),
+        "skill-task-create",
+    )
+    .await;
+    f.grant(
+        subject,
+        "Member",
+        json!({"kind":"workflow","match":"ids","ids":[workflow]}),
+        "skill-workflow-read",
+    )
+    .await;
+    let skill_grant = f
+        .grant(
+            subject,
+            "Owner",
+            json!({"kind":"skill","match":"ids","ids":[skill]}),
+            "skill-invoke-only",
+        )
+        .await;
+    let capability_grant = f
+        .grant(
+            subject,
+            "Guest",
+            json!({"kind":"capability","match":"ids","ids":[capability_identifier(&f.contract)]}),
+            "capability-invoke-only",
+        )
+        .await;
+    let common_issuer = c
+        .query_one(
+            "SELECT s.issuer_credential_id,c.issuer_credential_id
+           FROM grants s,grants c WHERE s.id=$1 AND c.id=$2",
+            &[&skill_grant, &capability_grant],
+        )
+        .await
+        .unwrap();
+    let issuer: Uuid = common_issuer.get(0);
+    assert_eq!(issuer, common_issuer.get::<_, Uuid>(1));
+    let peer = "127.0.0.1".parse().unwrap();
+    let token = f
+        .app
+        .auth
+        .login(c, subject, PASSWORD.into(), peer, Uuid::new_v4())
+        .await
+        .unwrap();
+    let bearer = token["access_token"].as_str().unwrap();
+    let context = f
+        .app
+        .auth
+        .authenticate(c, bearer, peer, Uuid::new_v4())
+        .await
+        .unwrap();
+    let task = f
+        .submit_task(bearer, "signed-capability-skill", workflow)
+        .await;
+    SkillTask {
+        task,
+        skill,
+        submitter: context,
+        common_issuer: issuer,
+        skill_grant,
+        capability_grant,
+    }
+}
+
+fn capability_identifier(contract: &Value) -> String {
+    format!(
+        "{}@{}",
+        contract["name"].as_str().unwrap(),
+        contract["version"].as_str().unwrap()
+    )
+}
+
+async fn revoke_skill_only(c: &mut Client, f: &Fixture, signed: &SkillTask) {
+    let tx = c.transaction().await.unwrap();
+    crate::db::auth_lock(&tx, true).await.unwrap();
+    tx.execute(
+        "UPDATE grants SET status='revoked',revision=revision+1,updated_at=clock_timestamp()
+         WHERE id=$1",
+        &[&signed.skill_grant],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    auth::authorize(
+        c,
+        &signed.submitter,
+        "capability.invoke",
+        &auth::Resource::new("capability", capability_identifier(&f.contract), None),
+    )
+    .await
+    .expect("underlying Capability permission must still be live");
+    let denial = auth::authorize(
+        c,
+        &signed.submitter,
+        "skill.invoke",
+        &auth::Resource::new("skill", signed.skill, Some(f.owner)),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(denial.code, "PERMISSION_DENIED");
 }
 
 async fn check_settlement(
@@ -1313,19 +1497,203 @@ async fn signed_terminal_rejection_commits_and_replays_without_resending() {
 }
 
 #[tokio::test]
+async fn automatic_fixed_signed_skill_records_exact_dual_provenance_and_invokes_once() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let mut c = f.app.db.connect().await.unwrap();
+    let signed = submit_signed_skill(&f, &c, "skill_required").await;
+    let gate = Arc::new(Semaphore::new(0));
+    let provider = Provider {
+        gate: Some(gate.clone()),
+        ..Provider::default()
+    };
+    let _server = f.serve(f.instance, GENERATION, provider.clone()).await;
+    let worker = tokio::spawn(task_engine::run(f.app.clone()));
+    tokio::time::timeout(Duration::from_secs(5), wait_invocations(&provider, 1))
+        .await
+        .expect("the automatic worker must reach the exact Skill on its mTLS provider");
+    let wire = provider.requests.lock().await[0].clone();
+    let linked = linked_lease(&c, &wire).await;
+    assert_eq!(wire.input_json, br#"{"message":"from workflow"}"#);
+    let ctx = wire.context.as_ref().unwrap();
+    assert_eq!(ctx.subject_id, signed.submitter.subject.to_string());
+    assert!(!ctx.delegation_token.is_empty());
+
+    let row = c.query_one(
+        "SELECT c.skill_id,c.skill_definition_digest,k.definition_digest,c.contract,c.provider_instance_id,
+                l.installation_id,t.admission->'steps'->0->'binding' AS pinned,
+                e.maximum_rules,h.source_paths,
+                h.proxy_source_paths='[]' AND h.proxy_ceilings='[]' AND h.read_blob_ids='[]'
+                  AS no_proxy,
+                (SELECT array_agg(credential_id ORDER BY credential_id)
+                   FROM call_credential_charges WHERE call_id=c.id) AS charges,
+                a.number,a.idempotency_key=c.idempotency_key AS stable_key
+           FROM calls c JOIN skills k ON k.id=c.skill_id
+           JOIN task_attempt_calls l ON l.call_id=c.id JOIN attempts a ON a.id=l.attempt_id
+           JOIN task_steps s ON s.id=a.step_id JOIN tasks t ON t.id=s.task_id
+           JOIN execution_delegations e ON e.id=c.delegation_id
+           JOIN host_rpc_contexts h ON h.call_id=c.id
+          WHERE c.id=$1 AND t.id=$2",
+        &[&linked.call,&signed.task],
+    ).await.unwrap();
+    assert_eq!(row.get::<_, Uuid>("skill_id"), signed.skill);
+    let definition_digest: String = row.get("skill_definition_digest");
+    assert_eq!(definition_digest, row.get::<_, String>("definition_digest"));
+    assert_eq!(row.get::<_, Value>("contract"), f.contract);
+    assert_eq!(row.get::<_, Uuid>("provider_instance_id"), f.instance);
+    assert_eq!(row.get::<_, Uuid>("installation_id"), f.installation);
+    let pinned: Value = row.get("pinned");
+    assert_eq!(pinned["kind"], "skill_capability");
+    assert_eq!(pinned["skill_id"], json!(signed.skill));
+    assert_eq!(pinned["definition_digest"], definition_digest);
+    assert_eq!(pinned["contract"], f.contract);
+    assert_eq!(row.get::<_, i32>("number"), 1);
+    assert!(row.get::<_, bool>("stable_key"));
+    assert!(row.get::<_, bool>("no_proxy"));
+    let mut credentials = vec![signed.submitter.credential, signed.common_issuer];
+    credentials.sort_unstable();
+    assert_eq!(row.get::<_, Vec<Uuid>>("charges"), credentials);
+
+    let sources: Value = row.get("source_paths");
+    let maximum: Value = row.get("maximum_rules");
+    let expected = [
+        (
+            "skill.invoke",
+            json!({"kind":"skill","match":"ids","ids":[signed.skill]}),
+            signed.skill_grant,
+        ),
+        (
+            "capability.invoke",
+            json!({"kind":"capability","match":"ids",
+                                     "ids":[capability_identifier(&f.contract)]}),
+            signed.capability_grant,
+        ),
+    ];
+    assert_eq!(sources.as_array().unwrap().len(), expected.len());
+    assert_eq!(maximum.as_array().unwrap().len(), expected.len());
+    for (action, resource, grant) in expected {
+        let path = sources
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|path| path["rule"]["action"] == action)
+            .expect("the action's original provenance must be stored");
+        assert_eq!(path["rule"]["resource"], resource);
+        assert!(path["sources"].as_array().unwrap().contains(&json!(grant)));
+        assert!(maximum.as_array().unwrap().contains(&path["rule"]));
+    }
+
+    gate.add_permits(1);
+    wait_task(&c, signed.task, "succeeded").await;
+    assert_eq!(
+        task_state(&c, signed.task).await.1,
+        json!({"message":"echo from workflow"})
+    );
+    let call = c
+        .query_one(
+            "SELECT result, state FROM calls WHERE id=$1",
+            &[&linked.call],
+        )
+        .await
+        .unwrap();
+    assert_eq!(call.get::<_, &str>("state"), "succeeded");
+    let call: Value = call.get("result");
+    assert_eq!(call["skill_id"], json!(signed.skill));
+    assert_eq!(call["skill_definition_digest"], definition_digest);
+    let replay = task_engine::dispatch(&f.app, &linked.attempt)
+        .await
+        .unwrap();
+    assert_eq!(replay["state"], "succeeded");
+    revoke_skill_only(&mut c, &f, &signed).await;
+    task_engine::dispatch(&f.app, &linked.attempt)
+        .await
+        .expect_err("old result replay still requires the original Skill right");
+    assert_eq!(provider.requests.lock().await.len(), 1);
+    assert_eq!(
+        c.query_one("SELECT count(*) FROM calls", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        1
+    );
+    stop_runner(&f, worker).await;
+}
+
+#[tokio::test]
+async fn withdrawing_skill_only_during_automatic_dispatch_bars_settlement_and_replay() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let mut c = f.app.db.connect().await.unwrap();
+    let signed = submit_signed_skill(&f, &c, "direct").await;
+    let gate = Arc::new(Semaphore::new(0));
+    let provider = Provider {
+        gate: Some(gate.clone()),
+        ..Provider::default()
+    };
+    let _server = f.serve(f.instance, GENERATION, provider.clone()).await;
+    let worker = tokio::spawn(task_engine::run(f.app.clone()));
+    tokio::time::timeout(Duration::from_secs(5), wait_invocations(&provider, 1))
+        .await
+        .expect("the exact Skill must already be in-flight before removing its grant");
+    let wire = provider.requests.lock().await[0].clone();
+    let linked = linked_lease(&c, &wire).await;
+    revoke_skill_only(&mut c, &f, &signed).await;
+    gate.add_permits(1);
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let state: String = c
+                .query_one("SELECT state FROM calls WHERE id=$1", &[&linked.call])
+                .await
+                .unwrap()
+                .get(0);
+            if state == "unknown" {
+                break;
+            }
+            assert_eq!(
+                state, "running",
+                "late result must never become a terminal receipt"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("late output must be fenced without waiting for the original deadline");
+    let row = c
+        .query_one(
+            "SELECT c.result IS NULL AS no_result,res.status AS reservation,r.status AS rpc,
+                NOT EXISTS (SELECT FROM attempt_commit_receipts WHERE attempt_id=$2) AS no_receipt
+           FROM calls c JOIN reservations res ON res.id=c.id
+          JOIN rpc_delegations r ON r.call_id=c.id WHERE c.id=$1",
+            &[&linked.call, &linked.attempt.attempt_id],
+        )
+        .await
+        .unwrap();
+    assert!(row.get::<_, bool>("no_result"));
+    assert!(row.get::<_, bool>("no_receipt"));
+    assert_eq!(row.get::<_, &str>("reservation"), "active");
+    assert_eq!(row.get::<_, &str>("rpc"), "revoked");
+    let (state, output) = task_state(&c, signed.task).await;
+    assert_ne!(state, "succeeded");
+    assert_eq!(output, Value::Null);
+    task_engine::dispatch(&f.app, &linked.attempt)
+        .await
+        .expect_err("retained Capability permission cannot reenter a withdrawn Skill Call");
+    assert_eq!(provider.requests.lock().await.len(), 1);
+    stop_runner(&f, worker).await;
+}
+
+#[tokio::test]
 async fn automatic_worker_waits_for_readiness_and_skips_older_unsupported_targets() {
     let Some(f) = Fixture::new().await else {
         return;
     };
     let c = f.app.db.connect().await.unwrap();
-    let skill = f.register_skill(&c).await;
-    let mut skill_step = f.direct_step(f.deployment, 20_000);
-    let skill_fields = skill_step.as_object_mut().unwrap();
-    skill_fields.remove("contract");
-    skill_fields.remove("provider_deployment_id");
-    skill_step["skill_id"] = json!(skill);
+    let skill = f.register_skill(&c, "direct", true).await;
     let old_skill = f
-        .submit_workflow("runner-older-skill", vec![skill_step])
+        .submit_workflow("runner-older-blob-skill", vec![skill_step(skill)])
         .await;
     let old_long = f
         .submit_workflow(
