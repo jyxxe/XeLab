@@ -7,7 +7,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::time::Instant;
+use tokio::{task::JoinSet, time::Instant};
 use xelab_kernel::{
     admission,
     api::{router, App},
@@ -156,7 +156,9 @@ async fn start(mut config: Config, (cpu, memory): (i64, i64)) -> Result<()> {
     let failure_grace = shutdown_grace.min(Duration::from_secs(1));
     let shutdown_deadline = Arc::new(OnceLock::new());
     let worker = tokio::spawn(controller::run(app.clone()));
-    let mut task_worker = tokio::spawn(xelab_kernel::task_engine::run(app.clone()));
+    let mut execution_workers = JoinSet::new();
+    execution_workers.spawn(xelab_kernel::task_engine::run(app.clone()));
+    execution_workers.spawn(xelab_kernel::run_schedules(app.clone()));
     let volume_worker = tokio::spawn(xelab_kernel::volumes::run(app.clone()));
     let blob_worker = tokio::spawn(xelab_kernel::blobs::run(app.clone()));
     let backup_worker = tokio::spawn(xelab_kernel::backups::run(app.clone()));
@@ -207,12 +209,15 @@ async fn start(mut config: Config, (cpu, memory): (i64, i64)) -> Result<()> {
     upgrade_worker.abort();
     schema_worker.abort();
     volume_worker.abort();
-    if tokio::time::timeout_at(deadline, &mut task_worker)
-        .await
-        .is_err()
-    {
-        task_worker.abort();
-        let _ = task_worker.await;
+    let drain = async {
+        while let Some(exit) = execution_workers.join_next().await {
+            if exit.is_err() {
+                tracing::error!(reason_code = "EXECUTION_WORKER_STOPPED");
+            }
+        }
+    };
+    if tokio::time::timeout_at(deadline, drain).await.is_err() {
+        execution_workers.shutdown().await;
     }
     if let Ok(c) = app.db.connect().await {
         let _ = c
@@ -238,7 +243,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn http_and_task_shutdown_share_the_first_deadline() {
+    fn http_and_execution_workers_share_the_first_shutdown_deadline() {
         let deadline = OnceLock::new();
         let first = drain_cutoff(&deadline, Duration::from_secs(1));
         assert_eq!(drain_cutoff(&deadline, Duration::from_secs(30)), first);
