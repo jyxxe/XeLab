@@ -10,8 +10,8 @@ pub use crate::broker::dispatch_task as dispatch;
 pub(super) use active::live;
 pub use commit::commit;
 pub(crate) use dispatch::{
-    broker_dispatch_proof, broker_input, broker_paths_until, broker_remaining, BrokerDispatchProof,
-    BrokerLeaseUse,
+    broker_dispatch_proof, broker_input, broker_paths_until, broker_remaining, broker_retry_input,
+    BrokerDispatchProof, BrokerLeaseUse,
 };
 pub(crate) use expiry::expire_leases;
 pub use lease::{prepare_dispatch, renew, AttemptLease};
@@ -53,7 +53,7 @@ const READY_STEP: &str = "
        AND t.admission IS NOT NULL AND node.definition->>'id'=s.step_key
        AND jsonb_typeof(node.definition->'depends_on')='array'
        AND (NOT $2::boolean OR (
-           s.attempt_count=0 AND s.provider_deployment_id IS NOT NULL
+           s.provider_deployment_id IS NOT NULL
            AND e.status='active' AND e.run_as='user' AND e.service_account_id IS NULL
            AND e.issuer_credential_id IS NOT NULL AND e.subject_id=t.owner_id
            AND e.expires_at>clock_timestamp()
@@ -91,7 +91,7 @@ const READY_STEP: &str = "
                      AND coalesce(n.manifest->>'business_entry','direct')='direct'
                      AND frozen.record->'binding'->>'kind'='capability'
                      AND c.spec->'contract'=node.definition->'contract')
-                    OR (k.id IS NOT NULL AND k.enabled AND k.archived_at IS NULL
+                    OR (s.attempt_count=0 AND k.id IS NOT NULL AND k.enabled AND k.archived_at IS NULL
                      AND coalesce(n.manifest->>'business_entry','direct') IN ('direct','skill_required')
                      AND frozen.record->'binding'->>'kind'='skill_capability'
                      AND frozen.record->'binding'->'skill_id'=to_jsonb(k.id)
@@ -130,6 +130,8 @@ const READY_STEP: &str = "
                  )
            )
        ))
+       AND (s.attempt_count=0 OR $2::boolean = EXISTS (
+           SELECT FROM attempts a JOIN task_attempt_calls b ON b.attempt_id=a.id WHERE a.step_id=s.id))
        AND NOT EXISTS (SELECT FROM task_steps stopped WHERE stopped.task_id=t.id AND stopped.state IN ('failed','unknown'))
        AND ((s.attempt_count=0 AND NOT EXISTS (SELECT FROM attempts a WHERE a.step_id=s.id))
          OR (s.attempt_count>0 AND EXISTS (
@@ -255,7 +257,7 @@ pub(crate) async fn next_automatic_candidate(
         .await?)
 }
 
-/// Start the first lease provisionally, under the candidate's parent lock.
+/// Start an eligible Broker lease provisionally, under the candidate's parent lock.
 /// The caller may commit it only together with its new Broker Call.
 pub(crate) async fn lease_automatic_candidate(
     tx: &Transaction<'_>,
@@ -269,7 +271,7 @@ pub(crate) async fn lease_automatic_candidate(
     }
     let previous: i32 = candidate.try_get("attempt_count")?;
     let timeout_ms = unsigned(&step["timeout_ms"])?;
-    if previous != 0 || !(100..=300_000).contains(&timeout_ms) {
+    if !(100..=300_000).contains(&timeout_ms) {
         return Ok(None);
     }
     if !candidate.try_get::<_, bool>("delegation_live")? {
@@ -280,24 +282,24 @@ pub(crate) async fn lease_automatic_candidate(
         .min(candidate.try_get("expires_at")?)
         .min(candidate.try_get("deadline_at")?);
     let step_id: Uuid = candidate.try_get("step_id")?;
-    lease(
-        tx,
-        candidate,
-        worker_id,
-        expiry,
-        timeout_ms,
-        &step_id.to_string(),
-    )
-    .await?
-    .map(|attempt| {
-        Ok(AttemptLease {
-            worker_id,
-            attempt_id: attempt.try_get("id")?,
-            execution_id: attempt.try_get("execution_id")?,
-            fence: attempt.try_get("fence")?,
+    let stable_key = if previous == 0 {
+        step_id.to_string()
+    } else if let Some(key) = retry::queued_key(tx, step_id, &step, previous).await? {
+        key
+    } else {
+        return Ok(None);
+    };
+    lease(tx, candidate, worker_id, expiry, timeout_ms, &stable_key)
+        .await?
+        .map(|attempt| {
+            Ok(AttemptLease {
+                worker_id,
+                attempt_id: attempt.try_get("id")?,
+                execution_id: attempt.try_get("execution_id")?,
+                fence: attempt.try_get("fence")?,
+            })
         })
-    })
-    .transpose()
+        .transpose()
 }
 
 // READY_STEP uses a pre-lock snapshot. Under the task lock check for a failed

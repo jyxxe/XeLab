@@ -921,7 +921,8 @@ async fn stage_task_call(
         return Err(Error::exhausted());
     }
     let input = &prepared.request["input"];
-    if serde_json::to_vec(input)?.len()
+    let input_bytes = serde_json::to_vec(input)?;
+    if input_bytes.len()
         > app
             .config
             .json_limit(unsigned(&definition["maximum_input_bytes"])? as usize)
@@ -929,6 +930,8 @@ async fn stage_task_call(
         return Err(Error::invalid("Capability input exceeds its byte limit"));
     }
     validate_business(&definition["input_schema"], input)?;
+    task_engine::broker_retry_input(tx, &proof, lease, &crate::contracts::digest(&input_bytes))
+        .await?;
     let authority = CurrentAuthority::new(tx, &proof.ctx)
         .await?
         .restrict_to_original_sources(tx, &proof.ctx, &proof.business_paths)

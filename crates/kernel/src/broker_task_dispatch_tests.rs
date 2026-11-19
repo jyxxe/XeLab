@@ -1,5 +1,8 @@
 //! PostgreSQL and real loopback workload mTLS. Installed manifests and runtime
 //! readiness are component fixtures, with no OCI or host privileges required.
+#[path = "broker_task_retry_tests.rs"]
+mod retry_tests;
+
 use crate::{
     api::{self, App},
     auth::{self, Auth},
@@ -374,7 +377,7 @@ impl Fixture {
         &self,
         instance: Uuid,
         certificate_generation: i64,
-        provider: Provider,
+        provider: impl rpc::capability_service_server::CapabilityService,
     ) -> ServerGuard {
         let listener = listener().await;
         let root = self

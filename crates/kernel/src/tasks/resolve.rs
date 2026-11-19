@@ -7,7 +7,7 @@ use crate::{
     api::etag,
     auth::Context,
     contracts::{reject_jsonb_nul, string},
-    db::outbox,
+    db::{self, outbox},
     error::{Error, Result},
 };
 use axum::http::HeaderMap;
@@ -62,6 +62,11 @@ pub(super) async fn apply(
         _ => return Err(Error::invalid("Unsupported step resolution")),
     };
 
+    // A known Broker result conflicts with a non-execution decision. Serialize
+    // with the QueryResult write before taking the Task and Attempt locks.
+    if resolution == "confirmed_not_executed" {
+        db::call_lock(tx).await?;
+    }
     // Match claim, worker settlement and cancellation: parent, step, attempt.
     let parent = tx
         .query_opt(
@@ -107,6 +112,21 @@ pub(super) async fn apply(
         .await?
         .ok_or_else(|| Error::conflict("No unresolved fenced attempt matches the unknown step"))?
         .try_get(0)?;
+
+    if resolution == "confirmed_not_executed"
+        && tx
+            .query_one(
+                "SELECT EXISTS (SELECT FROM task_attempt_calls b JOIN calls c ON c.id=b.call_id
+                             WHERE b.attempt_id=$1 AND c.state IN ('succeeded','failed'))",
+                &[&attempt],
+            )
+            .await?
+            .try_get::<_, bool>(0)?
+    {
+        return Err(Error::conflict(
+            "The Attempt's Call already has a confirmed result",
+        ));
+    }
 
     let admission: Option<Value> = parent.try_get("admission")?;
     let pinned = binding::historical(

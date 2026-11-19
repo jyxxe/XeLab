@@ -153,6 +153,7 @@ async fn resolve_binding(
     ).await?.ok_or_else(Error::not_found)?;
     if row.get::<_, String>("state") != "unknown"
         || row.get::<_, Option<Value>>("http_binding").is_some()
+        || crate::tasks::retry::call_retired_for_retry(tx, call).await?
     {
         return Ok(None);
     }

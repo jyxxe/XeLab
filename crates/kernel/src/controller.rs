@@ -356,6 +356,16 @@ pub(crate) async fn expired_call_providers(
 }
 
 async fn recover_expired_calls(app: &App) -> Result<()> {
+    recover_expired_calls_with_stop(app, |instance| app.runtime.stop(instance)).await
+}
+
+pub(crate) async fn recover_expired_calls_with_stop<F>(
+    app: &App,
+    mut stop: impl FnMut(Uuid) -> F + Send,
+) -> Result<()>
+where
+    F: std::future::Future<Output = Result<()>> + Send,
+{
     let mut c = app.db.connect().await?;
     let expired = expired_call_providers(&c).await?;
     let reasons_sql = format!("WITH eligible_calls AS (
@@ -398,7 +408,7 @@ async fn recover_expired_calls(app: &App) -> Result<()> {
         tx.execute("UPDATE instances SET phase='draining',health='unhealthy',revision=revision+1,updated_at=now() WHERE id=$1 AND phase<>'stopped'",&[&instance]).await?;
         tx.commit().await?;
         tracing::info!(target: "xelab.controller_transition", code = "UNCERTAIN_WORK_FENCE", stage = "recovery", instance_id = %instance, deployment_id = %deployment, call_unknown = counts[0], call_expired = counts[1], static_unknown = counts[2], static_expired = counts[3]);
-        app.runtime.stop(instance).await?;
+        stop(instance).await?;
         // Only confirmed process termination permits slot reuse. Concurrent late
         // responses are fenced by the same call-state conditional update.
         let tx = c.transaction().await?;

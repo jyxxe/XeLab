@@ -1,5 +1,5 @@
 //! Lock the exact task identity inside the Broker's business transaction.
-use super::{active, claim_authority, lease::step_deadline, AttemptLease, DispatchInput};
+use super::{active, claim_authority, lease::step_deadline, retry, AttemptLease, DispatchInput};
 use crate::{
     auth::{Auth, Context},
     contracts::{id, string},
@@ -30,6 +30,8 @@ pub(crate) struct BrokerDispatchProof {
     pub business_key: String,
     pub active: bool,
     pub renewable: bool,
+    attempt_number: i32,
+    step_definition: Value,
 }
 
 pub(crate) struct TaskCallBinding {
@@ -113,19 +115,22 @@ pub(crate) async fn broker_dispatch_proof(
         return Err(Error::denied());
     }
     let unsupported =
-        || Error::unavailable("Task dispatch requires a first fixed unary Capability attempt");
+        || Error::unavailable("Task dispatch requires a fixed unary Capability attempt");
     let step: Value = row.try_get("step")?;
+    let attempt_number: i32 = row.try_get("number")?;
     let deployment = row
         .try_get::<_, Option<Uuid>>("provider_deployment_id")?
         .ok_or_else(unsupported)?;
-    if row.try_get::<_, i32>("number")? != 1 {
+    if !(1..=5).contains(&attempt_number) {
         return Err(unsupported());
     }
     let proof =
         claim_authority::revalidate_proof(tx, auth, &row, &step, lease.execution_id, true).await?;
     let admission: Value = row.try_get("admission")?;
     let binding = TaskCallBinding::from_admission(&admission, &step, deployment)?;
-    if string(&binding.contract, "name")? == "automation.execute" {
+    if string(&binding.contract, "name")? == "automation.execute"
+        || (attempt_number > 1 && binding.skill.is_some())
+    {
         return Err(unsupported());
     }
     let hard_deadline = row
@@ -143,7 +148,31 @@ pub(crate) async fn broker_dispatch_proof(
         business_key: row.try_get("idempotency_key")?,
         active,
         renewable: active::active(&row, false),
+        attempt_number,
+        step_definition: step,
     })
+}
+
+/// Additional admission proof for a successor Call. A live worker lease alone
+/// cannot authorize reusing the step's business key.
+pub(crate) async fn broker_retry_input(
+    tx: &Transaction<'_>,
+    proof: &BrokerDispatchProof,
+    lease: &AttemptLease,
+    input_digest: &str,
+) -> Result<()> {
+    if proof.attempt_number > 1 {
+        retry::validate_linked_successor(
+            tx,
+            proof.step_id,
+            &proof.step_definition,
+            lease.attempt_id,
+            proof.attempt_number,
+            input_digest,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn broker_input(
