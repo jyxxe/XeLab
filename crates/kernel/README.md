@@ -1,6 +1,6 @@
 # XeLab Kernel：M1–M4 与 M5 工作流定义和任务提交
 
-这是基于现有 **2.8.0 契约**的 Rust 实现，crate 版本为 0.1.0。已实现 M1 普通插件、身份与管理闭环，以及 M2 卷、Blob、Secret、部署备份/恢复、整体离线恢复和内部格式监督器。M3 源码提供普通 OCI Skill 的七项公开操作、声明式 HTTP、OAuth/Client/UI 控制面及独立 WebUI/消息桥；内部 Schema 为 **22**。v22 记录人工核实的证据、操作者和对应尝试，v21 的领取身份和结果回执保持原值。源码功能范围与实际验收状态分别记录：逐项测试、精确提交、PR 集成和 main CI 以有时间戳的[持续进度](../../docs/implementation/m3-progress.md)及[目标 #38](https://github.com/jyxxe/XeLab/issues/38)最新证据为准，不能仅凭实现代码宣布完整 M3 完成。正式生产、AWS/独立宿主和完整格式迁移验收仍独立待完成；公开版本化制品安装入口仍关闭。
+这是基于现有 **2.8.0 契约**的 Rust 实现，crate 版本为 0.1.0。已实现 M1 普通插件、身份与管理闭环，以及 M2 卷、Blob、Secret、部署备份/恢复、整体离线恢复和内部格式监督器。M3 源码提供普通 OCI Skill 的七项公开操作、声明式 HTTP、OAuth/Client/UI 控制面及独立 WebUI/消息桥；内部 Schema 为 **23**。v23 保留 Attempt 与 Broker Call 的一对一持久化关联。v22 记录人工核实的证据、操作者和对应尝试，v21 的领取身份和结果回执保持原值。源码功能范围与实际验收状态分别记录：逐项测试、精确提交、PR 集成和 main CI 以有时间戳的[持续进度](../../docs/implementation/m3-progress.md)及[目标 #38](https://github.com/jyxxe/XeLab/issues/38)最新证据为准，不能仅凭实现代码宣布完整 M3 完成。正式生产、AWS/独立宿主和完整格式迁移验收仍独立待完成；公开版本化制品安装入口仍关闭。
 
 ## 已实现与边界
 
@@ -17,7 +17,7 @@
 | 事件 | 持久化发布/outbox、24h 去重、独立游标、30s 租约、旧租约 fencing、退避重投/死信、保留和容量上限、SSE/HostService、原生快照及恢复授权重置 | 当前源代码与专项证据见 [M4 事件](../../docs/implementation/m4-events.md)和[#54](https://github.com/jyxxe/XeLab/issues/54)；正式 daemon/独立宿主及 AWS 仍由 #50 跟踪 |
 | 工作流定义 | `createWorkflow/getWorkflow/listWorkflows/archiveWorkflow`；同一所有者和名称下递增不可变版本，校验 DAG、输入映射和签名目标，按当前权限分页，使用 ETag 归档 | 归档阻止同一版本的新任务，历史任务继续可读 |
 | 任务提交与查询 | `createTask/getTask/listTasks/listTaskSteps/listAttempts`；提交时固定 Workflow 版本、deadline、授权来源和提供者；步骤的尝试记录按所属任务的 `task.read` 分页读取，无记录时返回空页 | 服务身份执行需单独审批。HTTP 与真实 PostgreSQL 回归见 `crates/kernel/tests/workflows.rs` |
-| 任务步骤领取、续租、输入准备与结果提交 | 进程内 `task_engine::claim` 复核依赖与原委托，为首次就绪或经显式重试就绪的步骤绑定 worker、fence 和最长 30 秒的租约。`renew` 核对同一 worker、尝试与执行 ID、fence、有效租约及原授权，每次最多续至当前时间后 30 秒，且受当次首次领取起算的步骤超时、任务 deadline 和授权期限约束。`prepare_dispatch` 复核有效租约和原授权，按固定工作流的映射从字面值、任务输入和已成功的上游步骤输出生成请求，保留步骤业务幂等键和已固定的部署。`commit` 复核租约身份及原授权，校验成功输出的契约，原子写入结果、回执、后继状态及 outbox。相同结果可在租约和授权有效时幂等确认。失败或未知会阻止后继就绪，迟到提交留有审计 | 全部步骤成功时，单个终点的输出写入 `Task.output`。多个终点各自保留步骤输出，`Task.output` 为 `NULL`。同步 worker 的定时续租循环和经 Broker 向插件实际派发待接入 |
+| 任务步骤领取、续租、输入准备与结果提交 | 进程内 `task_engine::claim` 复核依赖与原委托，为首次就绪或经显式重试就绪的步骤绑定 worker、fence 和最长 30 秒的租约。`renew` 核对同一 worker、尝试与执行 ID、fence、有效租约及原授权，每次最多续至当前时间后 30 秒，且受当次首次领取起算的步骤超时、任务 deadline 和授权期限约束。`prepare_dispatch` 复核有效租约和原授权，按固定工作流的映射从字面值、任务输入和已成功的上游步骤输出生成请求，保留步骤业务幂等键和已固定的部署。`commit` 复核租约身份及原授权，校验成功输出的契约，原子写入结果、回执、后继状态及 outbox。相同结果可在租约和授权有效时幂等确认。失败或未知会阻止后继就绪，迟到提交留有审计 | 全部步骤成功时，单个终点的输出写入 `Task.output`。多个终点各自保留步骤输出，`Task.output` 为 `NULL`。准备派发时可读取持久化的原 Call ID。Broker 在提交 Call 时写入关联、同步 worker 的定时续租循环以及向插件实际派发待接入 |
 | 任务租约过期对账 | 控制器每轮最多处理 16 个由 worker 领取且仍匹配当前步骤 fence 的活动尝试，以数据库时钟复核租约和任务截止中较早的时间。尝试记为 `expired`，步骤记为 `unknown`，同事务写入 outbox。运行中的任务在其他活动尝试收敛后汇总为 `unknown`，保留当前的授权暂停、依赖等待或取消意图 | 使用现有活动尝试索引和元数据字段。Broker 自动核实、插件取消及自动重试待实现 |
 | 任务取消 | `cancelTask` 使用任务 ETag 和幂等键登记取消，取消尚未开始的步骤，并阻止新领取、续租和派发准备。原 worker 可在原租约、fence 和授权有效期内提交已收到的终态结果。全部步骤均已停止且无未知结果时任务可进入 `canceled` | 活动、过期和未知尝试均可阻止完成取消，并保留旧历史中的不确定性。任务已是 `unknown` 时保留其状态和结果证据。Broker 取消信号和插件停止证明仍待接入 |
 | 未知步骤人工核实 | `resolveUnknownStep` 按任务授权、步骤 ETag 和幂等键记录操作者及外部核实证据。确认成功需提交原绑定允许的业务输出，确认未执行将步骤记为失败。历史尝试、worker 回执和取消意图保留 | 缺少原绑定的旧步骤无法核实。原尝试不自动重试。人工证据保留在元数据中，普通响应和 outbox 事件仅含标识与结论 |

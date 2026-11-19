@@ -785,12 +785,21 @@ async fn actual_postgres_m5_admission_snapshot_round_trip_resets_execution_autho
         return;
     };
     let mut source = f.app.db.connect().await.unwrap();
-    let owner: Uuid = source
-        .query_one("SELECT created_by FROM backups WHERE id=$1", &[&f.backup])
+    let ctx = f
+        .app
+        .auth
+        .authenticate(
+            &source,
+            &f.token,
+            "127.0.0.1".parse().unwrap(),
+            Uuid::new_v4(),
+        )
         .await
-        .unwrap()
-        .get(0);
+        .unwrap();
+    let owner = ctx.subject;
     let delegation = Uuid::new_v4();
+    let call_delegation = Uuid::new_v4();
+    let call = Uuid::new_v4();
     let workflow = Uuid::new_v4();
     let task = Uuid::new_v4();
     let step = Uuid::new_v4();
@@ -799,10 +808,12 @@ async fn actual_postgres_m5_admission_snapshot_round_trip_resets_execution_autho
     let micro = Uuid::new_v4();
     let extension = Uuid::new_v4();
     let installation = Uuid::new_v4();
+    let deployment = Uuid::new_v4();
+    let instance = Uuid::new_v4();
     let skill = Uuid::new_v4();
     let batch = Uuid::new_v4();
     source
-        .execute("INSERT INTO execution_delegations(id,subject_id,maximum_rules,run_as,expires_at,status,created_at) VALUES($1,$2,'[]','user',now()+interval '1 hour','active',now())",&[&delegation,&owner])
+        .execute("INSERT INTO execution_delegations(id,subject_id,issuer_credential_id,maximum_rules,run_as,expires_at,status,created_at) VALUES($1,$3,$4,'[]','user',now()+interval '30 seconds','active',now()),($2,$3,$4,'[]','user',now()+interval '30 seconds','active',now())",&[&delegation,&call_delegation,&owner,&ctx.credential])
         .await
         .unwrap();
     source
@@ -818,7 +829,7 @@ async fn actual_postgres_m5_admission_snapshot_round_trip_resets_execution_autho
         .await
         .unwrap();
     source
-        .execute("INSERT INTO attempts(id,step_id,number,execution_id,idempotency_key,fence,lease_expires_at,state,created_at,updated_at) VALUES($1,$2,1,$3,'snapshot-attempt-key',1,now()+interval '30 seconds','running',now(),now())",&[&attempt,&step,&Uuid::new_v4()])
+        .execute("INSERT INTO attempts(id,step_id,number,execution_id,idempotency_key,fence,lease_expires_at,state,created_at,updated_at,worker_id) VALUES($1,$2,1,$3,'snapshot-attempt-key',1,now()+interval '30 seconds','running',now(),now(),$4)",&[&attempt,&step,&Uuid::new_v4(),&Uuid::new_v4()])
         .await
         .unwrap();
     let next_fire_at = chrono::DateTime::from_timestamp(1_850_000_000, 123_456_000).unwrap();
@@ -875,6 +886,117 @@ async fn actual_postgres_m5_admission_snapshot_round_trip_resets_execution_autho
         )
         .await
         .unwrap();
+    source
+        .execute(
+            "INSERT INTO deployments(id,owner_id,installation_id,spec,phase,created_at,updated_at)
+        VALUES($1,$2,$3,'{}','ready',now(),now())",
+            &[&deployment, &owner, &installation],
+        )
+        .await
+        .unwrap();
+    source.execute("INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,created_at,updated_at)
+        VALUES($1,$2,1,0,'ready','alive','{}',now(),now())", &[&instance,&deployment]).await.unwrap();
+    source
+        .execute(
+            "UPDATE task_steps SET provider_deployment_id=$2 WHERE id=$1",
+            &[&step, &deployment],
+        )
+        .await
+        .unwrap();
+    let admitted = serde_json::json!({"version":1,"steps":[{"step_key":"root","deployment_id":deployment,
+        "installation_id":installation,"binding":{"kind":"capability","contract":contract}}]});
+    source
+        .execute(
+            "UPDATE tasks SET admission=$2 WHERE id=$1",
+            &[&task, &admitted],
+        )
+        .await
+        .unwrap();
+    source.execute("INSERT INTO calls(id,owner_id,credential_id,delegation_id,contract,input_digest,idempotency_key,
+            state,deadline_at,created_at,provider_instance_id)
+        VALUES($1,$2,$3,$4,$5,$6,'snapshot-attempt-key','running',now()+interval '30 seconds',now(),$7)",
+        &[&call,&owner,&ctx.credential,&call_delegation,&contract,&crate::contracts::digest(b"input"),&instance]).await.unwrap();
+    source
+        .execute(
+            "INSERT INTO task_attempt_calls(attempt_id,call_id,installation_id) VALUES($1,$2,$3)",
+            &[&attempt, &call, &installation],
+        )
+        .await
+        .unwrap();
+    source.execute("INSERT INTO idempotency_records(subject_id,credential_id,method,path,key,fingerprint,resource_id,expires_at,created_at)
+        VALUES($1,$2,'POST','/api/platform/v1/calls','http-only-key','test',$3,now()+interval '1 day',now())",
+        &[&owner,&ctx.credential,&call.to_string()]).await.unwrap();
+    for (field, update) in [
+        (
+            "stable business key",
+            "UPDATE calls SET idempotency_key='another-step-key' WHERE id=$1",
+        ),
+        (
+            "fixed contract",
+            "UPDATE calls SET contract=jsonb_set(contract,'{name}','\"tool.other\"') WHERE id=$1",
+        ),
+        (
+            "provider instance",
+            "UPDATE calls SET provider_instance_id=NULL WHERE id=$1",
+        ),
+    ] {
+        let invalid = source.transaction().await.unwrap();
+        invalid.execute(update, &[&call]).await.unwrap();
+        assert!(
+            crate::tasks::snapshot::validate_snapshot(&invalid)
+                .await
+                .is_err(),
+            "incorrect {field}"
+        );
+        invalid.rollback().await.unwrap();
+    }
+    let invalid = source.transaction().await.unwrap();
+    invalid
+        .execute(
+            "UPDATE calls SET delegation_id=$2 WHERE id=$1",
+            &[&call, &delegation],
+        )
+        .await
+        .unwrap();
+    assert!(
+        crate::tasks::snapshot::validate_snapshot(&invalid)
+            .await
+            .is_err(),
+        "Call must have its own delegation"
+    );
+    invalid.rollback().await.unwrap();
+    let invalid = source.transaction().await.unwrap();
+    let other_call = Uuid::new_v4();
+    invalid.execute("INSERT INTO calls(id,owner_id,credential_id,delegation_id,contract,input_digest,state,deadline_at,created_at)
+        SELECT $2,owner_id,credential_id,delegation_id,contract,input_digest,state,deadline_at,created_at FROM calls WHERE id=$1",
+        &[&call,&other_call]).await.unwrap();
+    assert!(
+        crate::tasks::snapshot::validate_snapshot(&invalid)
+            .await
+            .is_err(),
+        "Calls must not share a derived delegation"
+    );
+    invalid.rollback().await.unwrap();
+
+    // An upgrade changes the live deployment in place. Its historical Call
+    // remains tied to the original installation recorded at admission.
+    let replacement: Uuid = source
+        .query_one(
+            "SELECT installation_id FROM deployments d
+        JOIN backups b ON b.deployment_id=d.id WHERE b.id=$1",
+            &[&f.backup],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_ne!(replacement, installation);
+    source
+        .execute(
+            "UPDATE deployments SET installation_id=$2 WHERE id=$1",
+            &[&deployment, &replacement],
+        )
+        .await
+        .unwrap();
     let definition_hash = crate::skills::definition_digest(&definition).unwrap();
     let definition_name = definition["name"].as_str().unwrap().to_owned();
     source
@@ -924,6 +1046,22 @@ async fn actual_postgres_m5_admission_snapshot_round_trip_resets_execution_autho
     assert_eq!(row.get::<_, String>(1), "1");
     assert_eq!(row.get::<_, String>(2), "running");
     assert_eq!(row.get::<_, String>(3), "running");
+    let linked = destination.query_one("SELECT b.call_id,c.state,e.status,b.installation_id FROM task_attempt_calls b
+        JOIN calls c ON c.id=b.call_id JOIN execution_delegations e ON e.id=c.delegation_id WHERE b.attempt_id=$1",
+        &[&attempt]).await.unwrap();
+    assert_eq!(linked.get::<_, Uuid>(0), call);
+    assert_eq!(linked.get::<_, &str>(1), "unknown");
+    assert_eq!(linked.get::<_, &str>(2), "revoked");
+    assert_eq!(linked.get::<_, Uuid>(3), installation);
+    let http_key_kept: bool = destination
+        .query_one(
+            "SELECT EXISTS(SELECT FROM idempotency_records WHERE key='http-only-key')",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(!http_key_kept);
     // Admission authority is revoked by the restore; the rows survive as data.
     assert_eq!(
         destination

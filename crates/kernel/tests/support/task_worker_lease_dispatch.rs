@@ -85,6 +85,46 @@ async fn maps_inputs_in_dependency_order_and_preserves_the_admitted_targets_and_
         let repeated = prepare_dispatch(&f.db, &f.auth, &lease).await.unwrap();
         assert_eq!(repeated.request, prepared.request);
         assert_eq!(repeated.deadline_at, prepared.deadline_at);
+        assert_eq!(repeated.existing_call_id, None);
+        if step == "middle" {
+            // Stage a durable Call as the Broker will do in its admission
+            // transaction. Preparation can discover it without an HTTP key.
+            let call = Uuid::new_v4();
+            let call_delegation = Uuid::new_v4();
+            let instance = Uuid::new_v4();
+            db.execute(
+                "INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,created_at,updated_at)
+                 VALUES($1,$2,1,0,'ready','alive','{}',now(),now())",
+                &[&instance,&provider],
+            ).await.unwrap();
+            db.execute(
+                "INSERT INTO execution_delegations(id,subject_id,issuer_credential_id,maximum_rules,run_as,expires_at,status,created_at)
+                 SELECT $2,t.owner_id,e.issuer_credential_id,'[]','user',a.lease_expires_at,'revoked',now()
+                 FROM attempts a JOIN task_steps s ON s.id=a.step_id JOIN tasks t ON t.id=s.task_id
+                 JOIN execution_delegations e ON e.id=t.delegation_id WHERE a.id=$1",
+                &[&lease.attempt_id,&call_delegation],
+            ).await.unwrap();
+            db.execute(
+                "INSERT INTO calls(id,owner_id,credential_id,contract,input_digest,idempotency_key,state,deadline_at,
+                     created_at,provider_instance_id,delegation_id)
+                 SELECT $2,t.owner_id,e.issuer_credential_id,$3,$4,a.idempotency_key,'unknown',a.lease_expires_at,now(),$5,$6
+                   FROM attempts a JOIN task_steps s ON s.id=a.step_id JOIN tasks t ON t.id=s.task_id
+                   JOIN execution_delegations e ON e.id=t.delegation_id WHERE a.id=$1",
+                &[&lease.attempt_id,&call,&f.contract,&xelab_kernel::contracts::digest(b"mapped input"),&instance,&call_delegation],
+            ).await.unwrap();
+            db.execute(
+                "INSERT INTO task_attempt_calls(attempt_id,call_id,installation_id)
+                 SELECT $1,$2,installation_id FROM deployments WHERE id=$3",
+                &[&lease.attempt_id, &call, &provider],
+            )
+            .await
+            .unwrap();
+            let linked = prepare_dispatch(&f.db, &f.auth, &lease).await.unwrap();
+            assert_eq!(linked.existing_call_id, Some(call));
+            assert_eq!(linked.request, prepared.request);
+            assert_eq!(linked.deadline_at, prepared.deadline_at);
+            assert_eq!(stored(&db, lease.attempt_id).await, before);
+        }
         if step == "sink" {
             // Keep the committed output in place but withdraw its completion marker.
             let upstream = db.query_one(

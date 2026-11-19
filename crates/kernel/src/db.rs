@@ -31,7 +31,8 @@ const EVENT_STORE: &str = include_str!("../migrations/0019_events.sql");
 const TASK_ADMISSION: &str = include_str!("../migrations/0020_task_admission.sql");
 const ATTEMPT_COMMIT: &str = include_str!("../migrations/0021_attempt_commit.sql");
 const TASK_STEP_RESOLUTIONS: &str = include_str!("../migrations/0022_task_step_resolutions.sql");
-const MIGRATIONS: [&str; 22] = [
+const TASK_ATTEMPT_CALLS: &str = include_str!("../migrations/0023_task_attempt_calls.sql");
+const MIGRATIONS: [&str; 23] = [
     BASELINE,
     CALL_CHARGES,
     SECRET_AUTHORITY,
@@ -54,6 +55,7 @@ const MIGRATIONS: [&str; 22] = [
     TASK_ADMISSION,
     ATTEMPT_COMMIT,
     TASK_STEP_RESOLUTIONS,
+    TASK_ATTEMPT_CALLS,
 ];
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 pub const LEADER_LOCK: i64 = 0x58454c41424d3101;
@@ -850,7 +852,7 @@ mod task_resolution_migration_tests {
                 .await
                 .unwrap()
                 .get::<_, i64>(0),
-            22
+            SCHEMA_VERSION as i64
         );
     }
 }

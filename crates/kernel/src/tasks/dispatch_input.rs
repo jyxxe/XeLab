@@ -20,6 +20,9 @@ pub struct DispatchInput {
     pub skill_id: Option<Uuid>,
     /// The task's admitted deployment, also encoded in the Broker body when pinned.
     pub provider_deployment_id: Option<Uuid>,
+    /// Previously admitted Call for this exact fenced attempt, if any.
+    /// Inspect its durable result instead of starting another Call.
+    pub existing_call_id: Option<Uuid>,
     /// InvokeRequest or SkillInvokeRequest. The key is stable across attempts.
     /// timeout_ms is the static RPC ceiling; prepare_dispatch owns the final time bound.
     pub request: Value,
@@ -41,9 +44,11 @@ pub(super) async fn build(
     let row = tx
         .query_one(
             "SELECT s.task_id,s.step_key,s.provider_deployment_id,a.idempotency_key,
-                CASE WHEN octet_length(w.spec::text)<=8388608 THEN w.spec END AS spec
+                CASE WHEN octet_length(w.spec::text)<=8388608 THEN w.spec END AS spec,
+                bound.call_id AS existing_call_id
            FROM task_steps s JOIN tasks t ON s.task_id=t.id JOIN workflows w ON w.id=t.workflow_id
            JOIN attempts a ON a.step_id=s.id AND a.fence=s.fence AND a.number=s.attempt_count
+           LEFT JOIN task_attempt_calls bound ON bound.attempt_id=a.id
           WHERE s.id=$1",
             &[&step_id],
         )
@@ -102,6 +107,7 @@ pub(super) async fn build(
     Ok(DispatchInput {
         skill_id,
         provider_deployment_id: provider,
+        existing_call_id: row.try_get("existing_call_id")?,
         request,
         deadline_at,
     })
