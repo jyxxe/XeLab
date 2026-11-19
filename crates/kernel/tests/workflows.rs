@@ -23,6 +23,8 @@ mod task_commit;
 mod task_commit_races;
 #[path = "support/task_resolution.rs"]
 mod task_resolution;
+#[path = "support/task_retry.rs"]
+mod task_retry;
 #[path = "support/task_worker_lease.rs"]
 mod task_worker_lease;
 #[path = "support/workflow_authority_wait.rs"]

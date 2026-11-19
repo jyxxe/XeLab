@@ -1,7 +1,8 @@
 //! Persist cancellation intent without inferring an external stop.
+use super::{authorize_task_action, retry};
 use crate::{
     api::etag,
-    auth::{self, Context, Resource},
+    auth::{Context, Resource},
     db,
     error::{Error, Result},
     plugin_catalog::read_task,
@@ -21,25 +22,21 @@ pub(super) async fn authorize(
         .await?
         .ok_or_else(Error::not_found)?
         .get(0);
-    authorize_resource(c, ctx, task, owner).await
+    authorize_task_action(c, ctx, "task.cancel", task, owner).await
 }
 
-async fn authorize_resource(
-    c: &(impl GenericClient + Sync),
-    ctx: &Context,
-    task: Uuid,
-    owner: Uuid,
-) -> Result<()> {
-    let resource = Resource::new("task", task, Some(owner));
-    let result = auth::authorize(c, ctx, "task.cancel", &resource).await;
-    if result
-        .as_ref()
-        .is_err_and(|error| error.code == "PERMISSION_DENIED")
-        && !crate::policy::allows(c, ctx, "task.read", &resource).await?
-    {
-        return Err(Error::not_found());
-    }
-    result
+pub(super) async fn was_requested(c: &(impl GenericClient + Sync), task: Uuid) -> Result<bool> {
+    // Older successful cancellations audited the raw URL parameter. Retain
+    // their intent when an accepted UUID spelling was not canonical.
+    Ok(c.query_one(
+        "SELECT EXISTS(SELECT FROM audit_events WHERE action='cancelTask'
+               AND outcome='succeeded' AND reason_code='COMMITTED'
+               AND (resource=$1 OR (
+                   resource=jsonb_build_object('kind','task','match','ids','ids',jsonb_build_array(resource#>>'{ids,0}'))
+                   AND CASE WHEN pg_input_is_valid(resource#>>'{ids,0}', 'uuid')
+                            THEN (resource#>>'{ids,0}')::uuid END=$2)))",
+        &[&Resource::new("task", task, None).json(), &task],
+    ).await?.try_get(0)?)
 }
 
 pub(super) async fn request(
@@ -57,7 +54,7 @@ pub(super) async fn request(
         .await?
         .ok_or_else(Error::not_found)?;
     let owner = row.try_get("owner_id")?;
-    authorize_resource(c, ctx, task, owner).await?;
+    authorize_task_action(c, ctx, "task.cancel", task, owner).await?;
     etag(headers, row.try_get("revision")?)?;
     let state: &str = row.try_get("state")?;
     if !matches!(state, "succeeded" | "failed" | "canceled") {
@@ -69,6 +66,7 @@ pub(super) async fn request(
                 &[&task],
             )
             .await?;
+        let stopped = stopped + retry::cancel_queued(c, task).await?;
         let next_state = if state == "unknown" {
             state
         } else if settled(c, task).await? {
@@ -84,7 +82,7 @@ pub(super) async fn request(
         .await?
         .ok_or_else(Error::not_found)?;
     // Timed rules may expire while waiting on step writes or the outbox.
-    authorize_resource(c, ctx, task, owner).await?;
+    authorize_task_action(c, ctx, "task.cancel", task, owner).await?;
     Ok(task_record)
 }
 

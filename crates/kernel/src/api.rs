@@ -29,7 +29,7 @@ use std::{
         Arc,
     },
 };
-use tokio_postgres::GenericClient;
+use tokio_postgres::{GenericClient, Transaction};
 use uuid::Uuid;
 
 pub struct App {
@@ -664,8 +664,13 @@ fn dispatch<'a>(
             return Err(error);
         }
         tx.batch_execute("SAVEPOINT mutation").await?;
+        let mut retry_cutoff = None;
         let execution=async {
-    let result = if identity::handles(name) {
+    let result = if name == "retryTask" {
+        let (task, cutoff) = crate::tasks::retry::request(&tx,&app.auth,&ctx,path_id(&params,"task_id")?,&headers).await?;
+        retry_cutoff = Some(cutoff);
+        (task, 200)
+    } else if identity::handles(name) {
         identity::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
     } else if crate::events::handles(name) {
         crate::events::execute(&tx,app,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
@@ -969,18 +974,7 @@ fn dispatch<'a>(
         let result = match execution {
             Ok(value) => value,
             Err(e) => {
-                tx.batch_execute("ROLLBACK TO SAVEPOINT mutation").await?;
-                db::audit(
-                    &tx,
-                    ctx.subject,
-                    Some(ctx.credential),
-                    request_id,
-                    name,
-                    &identity::audit_resource(name, &params, ctx.subject, &Value::Null),
-                    "failed",
-                    e.code,
-                )
-                .await?;
+                audit_failed_mutation(&tx, &ctx, name, &params, &e).await?;
                 tx.commit().await?;
                 return Err(e);
             }
@@ -1020,12 +1014,41 @@ fn dispatch<'a>(
         {
             validate(model, &result.0)?;
         }
+        if let Some(cutoff) = retry_cutoff {
+            let task = id(&result.0, "id")?;
+            if let Err(e) = crate::tasks::retry::validate_commit(&tx, &ctx, task, cutoff).await {
+                audit_failed_mutation(&tx, &ctx, name, &params, &e).await?;
+                tx.commit().await?;
+                return Err(e);
+            }
+        }
         if app.leader.is_closed() {
             return Err(Error::unavailable("Controller leadership is lost"));
         }
         tx.commit().await?;
         Ok(result)
     })
+}
+
+async fn audit_failed_mutation(
+    tx: &Transaction<'_>,
+    ctx: &Context,
+    name: &str,
+    params: &HashMap<String, String>,
+    error: &Error,
+) -> Result<()> {
+    tx.batch_execute("ROLLBACK TO SAVEPOINT mutation").await?;
+    db::audit(
+        tx,
+        ctx.subject,
+        Some(ctx.credential),
+        ctx.request,
+        name,
+        &identity::audit_resource(name, params, ctx.subject, &Value::Null),
+        "failed",
+        error.code,
+    )
+    .await
 }
 
 async fn authorize_operation(

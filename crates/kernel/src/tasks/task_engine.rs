@@ -4,11 +4,12 @@ mod commit;
 mod expiry;
 mod lease;
 pub use super::dispatch_input::DispatchInput;
+pub(super) use active::live;
 pub use commit::commit;
 pub(crate) use expiry::expire_leases;
 pub use lease::{prepare_dispatch, renew, AttemptLease};
 
-use super::{claim_authority, commit_effects};
+use super::{claim_authority, commit_effects, retry};
 use crate::{
     auth::Auth,
     contracts::unsigned,
@@ -25,7 +26,7 @@ use uuid::Uuid;
 const ENGINE_TIMEOUT: Duration = Duration::from_secs(10);
 
 const READY_STEP: &str = "
-    SELECT s.id AS step_id, s.task_id, s.fence, s.provider_deployment_id,
+    SELECT s.id AS step_id, s.task_id, s.fence, s.attempt_count, s.provider_deployment_id,
            t.owner_id, t.workflow_id, t.deadline_at, t.admission, w.owner_id AS workflow_owner_id,
            e.subject_id, e.issuer_credential_id, e.maximum_rules, e.expires_at,
            (e.status='active' AND e.run_as='user' AND e.service_account_id IS NULL
@@ -36,13 +37,16 @@ const READY_STEP: &str = "
       JOIN workflows w ON w.id=t.workflow_id
       JOIN execution_delegations e ON e.id=t.delegation_id
       CROSS JOIN LATERAL jsonb_array_elements(w.spec->'steps') node(definition)
-     WHERE s.state='ready' AND s.attempt_count=0 AND s.fence BETWEEN 0 AND 9007199254740990
+     WHERE s.state='ready' AND s.attempt_count BETWEEN 0 AND 4 AND s.fence BETWEEN 0 AND 9007199254740990
        AND NOT (s.id=ANY($1::uuid[]))
        AND t.state IN ('queued','running') AND t.deadline_at>clock_timestamp()
        AND t.admission IS NOT NULL AND node.definition->>'id'=s.step_key
        AND jsonb_typeof(node.definition->'depends_on')='array'
        AND NOT EXISTS (SELECT FROM task_steps stopped WHERE stopped.task_id=t.id AND stopped.state IN ('failed','unknown'))
-       AND NOT EXISTS (SELECT FROM attempts a WHERE a.step_id=s.id)
+       AND ((s.attempt_count=0 AND NOT EXISTS (SELECT FROM attempts a WHERE a.step_id=s.id))
+         OR (s.attempt_count>0 AND EXISTS (
+             SELECT FROM attempts a JOIN outbox q ON q.id=a.id AND q.topic='task.step.retry_requested'
+             WHERE a.step_id=s.id AND a.number=s.attempt_count AND a.fence=s.fence)))
        AND NOT EXISTS (
            SELECT FROM jsonb_array_elements_text(node.definition->'depends_on') dependency(key)
            WHERE NOT EXISTS (SELECT FROM task_steps upstream
@@ -52,7 +56,7 @@ const READY_STEP: &str = "
      ORDER BY s.created_at,s.id LIMIT 1
        FOR UPDATE OF s SKIP LOCKED FOR NO KEY UPDATE OF t SKIP LOCKED FOR SHARE OF e,w SKIP LOCKED";
 
-/// Claim a first attempt for a trusted kernel worker. The lease is bounded by
+/// Claim a first or explicitly requeued attempt for a trusted kernel worker. The lease is bounded by
 /// the original authority, the step timeout, the task deadline and 30 seconds.
 /// The worker must revalidate authority and the lease before dispatch.
 pub async fn claim(db: &Db, auth: &Auth, worker_id: Uuid) -> Result<Option<Value>> {
@@ -73,11 +77,22 @@ async fn claim_ready(db: &Db, auth: &Auth, worker_id: Uuid) -> Result<Option<Val
         };
         let step: Value = candidate.get("step");
         let task_id: Uuid = candidate.get("task_id");
+        let step_id: Uuid = candidate.get("step_id");
+        let previous: i32 = candidate.get("attempt_count");
         if !still_claimable(&tx, task_id, &step["depends_on"]).await? {
             tx.rollback().await?;
-            skipped_steps.push(candidate.get("step_id"));
+            skipped_steps.push(step_id);
             continue;
         }
+        let stable_key = if previous == 0 {
+            step_id.to_string()
+        } else if let Some(key) = retry::queued_key(&tx, step_id, &step, previous).await? {
+            key
+        } else {
+            tx.rollback().await?;
+            skipped_steps.push(step_id);
+            continue;
+        };
         let authority = if candidate.get("delegation_live") {
             claim_authority::revalidate(&tx, auth, &candidate, &step, worker_id).await
         } else {
@@ -100,7 +115,9 @@ async fn claim_ready(db: &Db, auth: &Auth, worker_id: Uuid) -> Result<Option<Val
             .min(candidate.get("expires_at"))
             .min(candidate.get("deadline_at"));
         let timeout_ms = unsigned(&step["timeout_ms"])?;
-        let Some(attempt) = lease(&tx, &candidate, worker_id, expiry, timeout_ms).await? else {
+        let Some(attempt) =
+            lease(&tx, &candidate, worker_id, expiry, timeout_ms, &stable_key).await?
+        else {
             // Issuance crossed the authority cutoff or the task deadline.
             suspend(&tx, task_id, "paused_authorization").await?;
             tx.commit().await?;
@@ -115,7 +132,7 @@ async fn claim_ready(db: &Db, auth: &Auth, worker_id: Uuid) -> Result<Option<Val
         let remaining = (expires - now).to_std().unwrap_or_default();
         if checked.elapsed() >= remaining {
             tx.rollback().await?;
-            skipped_steps.push(candidate.get("step_id"));
+            skipped_steps.push(step_id);
             continue;
         }
         tx.commit().await?;
@@ -165,24 +182,27 @@ async fn lease(
     worker_id: Uuid,
     expiry: DateTime<Utc>,
     timeout_ms: u64,
+    stable_key: &str,
 ) -> Result<Option<Row>> {
     let step_id: Uuid = candidate.get("step_id");
     let task_id: Uuid = candidate.get("task_id");
     let fence = candidate.get::<_, i64>("fence") + 1;
+    let number = candidate.get::<_, i32>("attempt_count") + 1;
     let lease_ms = timeout_ms.min(30_000) as i32;
     let attempt = tx
         .query_opt(
             "WITH issued AS MATERIALIZED (SELECT clock_timestamp() AS at)
          INSERT INTO attempts AS a(id,step_id,number,execution_id,idempotency_key,fence,
                                    lease_expires_at,state,created_at,updated_at,worker_id)
-         SELECT $1,$2,1,$3,$4,$5,least($6,at+$7::int*interval '1 millisecond'),'leased',at,at,$8
-           FROM issued WHERE at<$6
+         SELECT $1,$2,$3,$4,$5,$6,least($7,at+$8::int*interval '1 millisecond'),'leased',at,at,$9
+           FROM issued WHERE at<$7
          RETURNING to_jsonb(a) AS attempt,created_at,updated_at,lease_expires_at",
             &[
                 &Uuid::new_v4(),
                 &step_id,
+                &number,
                 &Uuid::new_v4(),
-                &step_id.to_string(),
+                &stable_key,
                 &fence,
                 &expiry,
                 &lease_ms,
@@ -193,8 +213,8 @@ async fn lease(
     if let Some(attempt) = &attempt {
         let issued: DateTime<Utc> = attempt.get("created_at");
         tx.execute(
-            "UPDATE task_steps SET state='running',attempt_count=1,fence=$2,revision=revision+1,updated_at=$3 WHERE id=$1",
-            &[&step_id, &fence, &issued],
+            "UPDATE task_steps SET state='running',attempt_count=$2,fence=$3,revision=revision+1,updated_at=$4 WHERE id=$1",
+            &[&step_id, &number, &fence, &issued],
         ).await?;
         tx.execute(
             "UPDATE tasks SET state='running',revision=revision+1,updated_at=$2 WHERE id=$1 AND state='queued'",

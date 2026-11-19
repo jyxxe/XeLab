@@ -1,9 +1,6 @@
 //! Refresh the parent after resolution without rearming a stopped workflow.
 use super::{cancel, commit_effects};
-use crate::{
-    auth::Resource,
-    error::{Error, Result},
-};
+use crate::error::{Error, Result};
 use axum::http::StatusCode;
 use serde_json::Value;
 use tokio_postgres::Transaction;
@@ -27,15 +24,7 @@ pub(super) async fn update(tx: &Transaction<'_>, task: Uuid, previous: &str) -> 
         .await?;
     // cancelTask deliberately retains the unknown state. Its success
     // audit also records a cancellation when there were no pending steps.
-    let canceled_unknown = previous == "unknown"
-        && tx
-            .query_one(
-                "SELECT EXISTS(SELECT FROM audit_events WHERE action='cancelTask'
-                       AND outcome='succeeded' AND reason_code='COMMITTED' AND resource=$1)",
-                &[&Resource::new("task", task, None).json()],
-            )
-            .await?
-            .try_get::<_, bool>(0)?;
+    let canceled_unknown = previous == "unknown" && cancel::was_requested(tx, task).await?;
     if previous == "cancel_requested" || canceled_unknown || steps.try_get::<_, bool>("canceled")? {
         if cancel::settled(tx, task).await? {
             cancel::update_state(tx, task, "canceled").await?;
