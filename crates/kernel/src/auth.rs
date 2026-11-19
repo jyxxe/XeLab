@@ -214,11 +214,7 @@ impl<'transaction, 'client> CurrentAuthority<'transaction, 'client> {
         saved: &[crate::policy::Path],
     ) -> Result<Self> {
         self.paths = self.revalidate(transaction, ctx, saved).await?;
-        self.paths.retain(|path| {
-            saved
-                .iter()
-                .any(|original| path.sources == original.sources)
-        });
+        crate::policy::retain_original_sources(&mut self.paths, saved);
         self.rules = crate::policy::rules(&self.paths);
         Ok(self)
     }

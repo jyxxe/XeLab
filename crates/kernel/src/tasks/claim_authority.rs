@@ -94,16 +94,7 @@ pub(super) async fn revalidate_proof(
 ) -> Result<Revalidated> {
     let admission: Value = candidate.try_get("admission")?;
     let ctx = resume_original(tx, auth, candidate, request_id, &admission).await?;
-    let step_key = string(step, "id")?;
-    let mut matches = admission["steps"]
-        .as_array()
-        .ok_or_else(Error::denied)?
-        .iter()
-        .filter(|record| record["step_key"] == step_key);
-    let record = matches.next().ok_or_else(Error::denied)?;
-    if matches.next().is_some() {
-        return Err(Error::denied());
-    }
+    let record = step_admission(&admission, step)?;
     let deployment: Option<Uuid> = candidate.try_get("provider_deployment_id")?;
     check_deployment(step, record, deployment)?;
 
@@ -192,8 +183,8 @@ pub(super) async fn revalidate_proof(
         // original grants, then choose the longest surviving alternative.
         let saved_until = target_expiry(&target.paths, ctx.peer, &source_rights, now)?;
         until = until.min(saved_until).min(current_until).min(maximum_until);
-        if for_dispatch && target.action == "capability.invoke" {
-            business_paths = policy.intersection(&target.paths, &ceiling).await?;
+        if for_dispatch && matches!(target.action.as_str(), "capability.invoke" | "skill.invoke") {
+            business_paths.extend(policy.intersection(&target.paths, &ceiling).await?);
         }
     }
     Ok(Revalidated {
@@ -201,6 +192,20 @@ pub(super) async fn revalidate_proof(
         business_paths,
         until,
     })
+}
+
+pub(super) fn step_admission<'a>(admission: &'a Value, step: &Value) -> Result<&'a Value> {
+    let step_key = string(step, "id")?;
+    let mut matches = admission["steps"]
+        .as_array()
+        .ok_or_else(Error::denied)?
+        .iter()
+        .filter(|record| record["step_key"] == step_key);
+    let record = matches.next().ok_or_else(Error::denied)?;
+    if matches.next().is_some() {
+        return Err(Error::denied());
+    }
+    Ok(record)
 }
 
 pub(super) async fn revalidate_schedule(

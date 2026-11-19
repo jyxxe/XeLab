@@ -443,23 +443,20 @@ pub(crate) async fn grant_http_call(
     Ok(())
 }
 
-/// Persist the charged Capability proof supplied by the task's own admission.
+/// Persist the charged invocation paths supplied by the task's own admission.
 pub(crate) async fn grant_task_call(
     c: &tokio_postgres::Transaction<'_>,
     ctx: &Context,
     call: Uuid,
-    authority: &auth::CurrentAuthority<'_, '_>,
+    paths: &[Path],
 ) -> Result<()> {
     let (action, resource) = crate::broker::business_target(c, call).await?;
     if action != "capability.invoke" || resource.kind != "capability" {
         return Err(Error::denied());
     }
-    let paths =
-        charged_business_paths(c, ctx, call, authority.paths(c, ctx, &resource)?.to_vec()).await?;
-    // The task freezes only this invocation. No deployment approval, proxy
-    // paths, resource IDs, or inherited proxy ceilings belong to its Call.
-    persist_call_sources(c, ctx, call, &paths, &[], &BTreeSet::new(), &[]).await?;
-    check_call_sources(c, ctx, call).await
+    // Task Call authority covers only the fixed invocation and its result.
+    persist_call_sources(c, ctx, call, paths, &[], &BTreeSet::new(), &[]).await?;
+    checked_task_call_sources(c, ctx, call).await.map(|_| ())
 }
 
 /// Resolve declared input Blobs with the same authority used at dispatch.
@@ -731,12 +728,29 @@ pub(crate) async fn checked_call_sources(
     ctx: &Context,
     call: Uuid,
 ) -> Result<Vec<Path>> {
+    checked_call_sources_inner(c, ctx, call, false).await
+}
+
+pub(crate) async fn checked_task_call_sources(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    call: Uuid,
+) -> Result<Vec<Path>> {
+    checked_call_sources_inner(c, ctx, call, true).await
+}
+
+async fn checked_call_sources_inner(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    call: Uuid,
+    task: bool,
+) -> Result<Vec<Path>> {
     let row = c.query_opt(
         "SELECT c.owner_id,c.credential_id,c.http_binding,c.skill_id,s.created_by,x.source_paths,x.read_blob_ids FROM calls c LEFT JOIN skills s ON s.id=c.skill_id LEFT JOIN host_rpc_contexts x ON x.call_id=c.id WHERE c.id=$1",
         &[&call],
     ).await?.ok_or_else(Error::denied)?;
     let skill = row.get::<_, Option<Uuid>>("skill_id");
-    if skill.is_none() && row.get::<_, Option<Value>>("http_binding").is_none() {
+    if !task && skill.is_none() && row.get::<_, Option<Value>>("http_binding").is_none() {
         // Legacy pure RPC reads keep their existing semantics. Effectful
         // ordinary RPC calls freeze the same charged proof as Skill calls.
         let effectful: bool = c.query_one("SELECT EXISTS(SELECT 1 FROM calls c JOIN capability_contracts p ON p.name=c.contract->>'name' AND p.version=c.contract->>'version' AND p.schema_digest=c.contract->>'schema_digest' WHERE c.id=$1 AND p.spec->>'side_effect' IN ('idempotent','queryable','non_repeatable'))", &[&call]).await?.get(0);
@@ -753,10 +767,16 @@ pub(crate) async fn checked_call_sources(
         .get::<_, Option<Value>>("source_paths")
         .ok_or_else(Error::denied)?;
     let (action, resource) = crate::broker::business_target(c, call).await?;
-    let paths = Policy::for_context(c, ctx)
+    let saved = saved(frozen)?;
+    let mut paths = Policy::for_context(c, ctx)
         .with_resource_owner(&resource)
-        .revalidate(&saved(frozen)?, ctx.credential)
+        .revalidate(&saved, ctx.credential)
         .await?;
+    if task && skill.is_some() {
+        // The sibling action's previously charged sources cannot fund a
+        // replacement proof for this action in a Skill Task.
+        policy::retain_original_sources(&mut paths, &saved);
+    }
     let rules = policy::rules(&paths);
     let ids: Value = row
         .get::<_, Option<Value>>("read_blob_ids")

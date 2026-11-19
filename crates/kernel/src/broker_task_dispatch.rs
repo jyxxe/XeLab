@@ -276,7 +276,7 @@ async fn execute(
         contract: &admitted.contract,
         wire_contract: wire,
         definition: &admitted.definition,
-        skill: None,
+        skill: admitted.skill.as_ref(),
         terminal_version: unary_failure::VERSION,
     }
     .decode(app, response)
@@ -331,6 +331,11 @@ async fn settle(
     db::call_lock(&tx).await?;
     tx.batch_execute("SAVEPOINT result_evidence; SET CONSTRAINTS ALL IMMEDIATE")
         .await?;
+    let action = if admitted.skill.is_some() {
+        "skill.invoke"
+    } else {
+        "capability.invoke"
+    };
     if let Ok(reply) = &outcome {
         let checked: Result<DateTime<Utc>> = async {
             let limit = admission::validate_task_call(&tx, app, lease, call, true).await?;
@@ -359,7 +364,7 @@ async fn settle(
                     &admitted.ctx,
                     call,
                     &admitted.accounts,
-                    "capability.invoke",
+                    action,
                     confirmed,
                 )
                 .await?;
@@ -394,7 +399,7 @@ async fn settle(
         &admitted.ctx,
         call,
         &admitted.accounts,
-        "capability.invoke",
+        action,
         CallSettlement::Unknown(error),
     )
     .await?;

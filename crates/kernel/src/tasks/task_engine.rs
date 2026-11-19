@@ -59,27 +59,54 @@ const READY_STEP: &str = "
            AND e.expires_at>clock_timestamp()
            AND jsonb_typeof(node.definition->'timeout_ms')='number'
            AND (node.definition->'timeout_ms') BETWEEN '100'::jsonb AND '300000'::jsonb
-           AND NOT (node.definition ? 'skill_id')
-           AND node.definition->'contract'->>'name' <> 'automation.execute'
            AND EXISTS (
                SELECT FROM deployments d JOIN installations n ON n.id=d.installation_id
                  JOIN publishers pub ON pub.id=n.publisher_id
                  JOIN credentials issuer ON issuer.id=e.issuer_credential_id
-                 JOIN capability_contracts c ON c.name=node.definition->'contract'->>'name'
-                    AND c.version=node.definition->'contract'->>'version'
-                    AND c.schema_digest=node.definition->'contract'->>'schema_digest'
+                 JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(t.admission->'steps')='array'
+                     THEN t.admission->'steps' ELSE '[]'::jsonb END) frozen(record)
+                   ON frozen.record->>'step_key'=s.step_key
+                     AND frozen.record->'installation_id'=to_jsonb(n.id)
+                     AND frozen.record->'deployment_id'=to_jsonb(d.id)
+                 JOIN capability_contracts c ON c.name=frozen.record->'binding'->'contract'->>'name'
+                    AND c.version=frozen.record->'binding'->'contract'->>'version'
+                    AND c.schema_digest=frozen.record->'binding'->'contract'->>'schema_digest'
+                 LEFT JOIN skills k ON k.installation_id=n.id AND k.id=CASE
+                   WHEN pg_input_is_valid(node.definition->>'skill_id', 'uuid')
+                   THEN (node.definition->>'skill_id')::uuid END
                WHERE d.id=s.provider_deployment_id AND d.spec->>'enabled'='true'
                  AND d.archived_at IS NULL AND n.state='installed' AND pub.status='trusted'
                  AND issuer.status='active' AND issuer.expires_at>clock_timestamp()
                  AND n.manifest->>'data_schema_version'='none'
-                 AND coalesce(n.manifest->>'business_entry','direct')='direct'
                  AND coalesce(n.manifest->'dependencies','[]'::jsonb)='[]'::jsonb
                  AND NOT EXISTS (
                      SELECT FROM jsonb_array_elements(CASE WHEN jsonb_typeof(n.manifest->'requested_rules')='array'
                          THEN n.manifest->'requested_rules' ELSE '[]'::jsonb END) request
                      WHERE NOT (request @> '{\"required\":false,\"rule\":{\"action\":\"secret.use\",\"resource\":{\"kind\":\"secret\"}}}')
                  )
-                 AND c.spec->'contract'=node.definition->'contract'
+                 AND c.name<>'automation.execute'
+                 AND c.spec->'contract'=frozen.record->'binding'->'contract'
+                 AND (
+                    (NOT (node.definition ? 'skill_id')
+                     AND coalesce(n.manifest->>'business_entry','direct')='direct'
+                     AND frozen.record->'binding'->>'kind'='capability'
+                     AND c.spec->'contract'=node.definition->'contract')
+                    OR (k.id IS NOT NULL AND k.enabled AND k.archived_at IS NULL
+                     AND coalesce(n.manifest->>'business_entry','direct') IN ('direct','skill_required')
+                     AND frozen.record->'binding'->>'kind'='skill_capability'
+                     AND frozen.record->'binding'->'skill_id'=to_jsonb(k.id)
+                     AND frozen.record->'binding'->>'definition_digest'=k.definition_digest
+                     AND k.definition->'target'->>'kind'='capability'
+                     AND k.definition->'target'->'contract'=c.spec->'contract'
+                     AND k.definition->>'mapping'='identity'
+                     AND k.definition->'input_blobs'='false'::jsonb
+                     AND coalesce(k.definition->'stream_item_schema','null'::jsonb)='null'::jsonb
+                     AND EXISTS (
+                         SELECT FROM jsonb_array_elements(CASE WHEN jsonb_typeof(n.manifest->'skills')='array'
+                             THEN n.manifest->'skills' ELSE '[]'::jsonb END) signed_skill(definition)
+                         WHERE signed_skill.definition=k.definition
+                     ))
+                 )
                  AND EXISTS (
                      SELECT FROM jsonb_array_elements(CASE WHEN jsonb_typeof(n.manifest->'capabilities')='array'
                          THEN n.manifest->'capabilities' ELSE '[]'::jsonb END) cap
@@ -91,14 +118,6 @@ const READY_STEP: &str = "
                            =coalesce(c.spec->'stream_item_schema','null'::jsonb)
                        AND cap->'maximum_input_bytes' IS NOT DISTINCT FROM c.spec->'maximum_input_bytes'
                        AND cap->'maximum_output_bytes' IS NOT DISTINCT FROM c.spec->'maximum_output_bytes'
-                 )
-                 AND EXISTS (
-                     SELECT FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.admission->'steps')='array'
-                         THEN t.admission->'steps' ELSE '[]'::jsonb END) frozen
-                     WHERE frozen->>'step_key'=s.step_key AND frozen->'installation_id'=to_jsonb(n.id)
-                       AND frozen->'deployment_id'=to_jsonb(d.id)
-                       AND frozen->'binding'->>'kind'='capability'
-                       AND frozen->'binding'->'contract'=node.definition->'contract'
                  )
                  AND EXISTS (
                      SELECT FROM instances i JOIN provider_records p ON p.instance_id=i.id

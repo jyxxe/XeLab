@@ -759,7 +759,7 @@ async fn admit_task_bounded(
     Ok(TaskAdmission::Dispatch(staged.call))
 }
 
-/// Select and admit one fixed Capability step without publishing a
+/// Select and admit one fixed unary step without publishing a
 /// provisional Attempt separately from the Broker Call it will execute.
 pub(super) async fn admit_next_task(
     app: &App,
@@ -845,6 +845,7 @@ fn skip_automatic_candidate(error: &Error) -> bool {
         "No healthy fixed provider is available"
             | "Admitted task provider or RPC binding is unavailable"
             | "Task dispatch requires an exact signed direct Capability without proxy or dependencies"
+            | "Task dispatch requires an exact signed unary Skill without Blob inputs"
     )
 }
 
@@ -868,7 +869,8 @@ async fn stage_task_call(
     limit: Instant,
 ) -> Result<StagedTaskCall> {
     let prepared = task_engine::broker_input(tx, &proof).await?;
-    let contract = &proof.contract;
+    let binding = &proof.binding;
+    let contract = &binding.contract;
     let name = string(contract, "name")?;
     let version = string(contract, "version")?;
     let digest = string(contract, "schema_digest")?;
@@ -881,8 +883,8 @@ async fn stage_task_call(
         tx,
         name,
         version,
-        Some(proof.deployment),
-        Some(proof.installation),
+        Some(binding.deployment),
+        Some(binding.installation),
         None,
         ProviderUse::FixedTask,
     )
@@ -901,13 +903,14 @@ async fn stage_task_call(
             )
         })
     });
+    let business_entry = manifest.get("business_entry").and_then(Value::as_str);
     if proxy
         || manifest["dependencies"]
             .as_array()
             .is_some_and(|deps| !deps.is_empty())
-        || manifest
-            .get("business_entry")
-            .is_some_and(|entry| entry != "direct")
+        || (manifest.get("business_entry").is_some()
+            && business_entry != Some("direct")
+            && !(binding.skill.is_some() && business_entry == Some("skill_required")))
         || manifest["data_schema_version"] != "none"
         || definition["contract"] != *contract
         || !unary_failure::signed_capability(&manifest, contract, &definition)
@@ -931,6 +934,29 @@ async fn stage_task_call(
         .restrict_to_original_sources(tx, &proof.ctx, &proof.business_paths)
         .await?;
     authority.require(tx, &proof.ctx, "capability.invoke", &capability)?;
+    let skill = if let Some((id, digest)) = &binding.skill {
+        let skill = crate::skills::resolve_with_authority(tx, &proof.ctx, *id, &authority).await?;
+        if skill.installation_id != binding.installation
+            || skill.definition_digest != *digest
+            || skill.definition["target"]["kind"] != "capability"
+            || skill.definition["target"]["contract"] != *contract
+        {
+            return Err(Error::denied());
+        }
+        if skill.definition["input_blobs"] != false
+            || !skill.definition["stream_item_schema"].is_null()
+            || skill.definition["mapping"] != "identity"
+        {
+            return Err(Error::unavailable(
+                "Task dispatch requires an exact signed unary Skill without Blob inputs",
+            ));
+        }
+        // The signed Skill candidate has the exact input and output schemas
+        // of this Capability. The input was validated above.
+        Some(skill)
+    } else {
+        None
+    };
     let timeout = unsigned(&prepared.request["timeout_ms"])? as i64;
     let now: DateTime<Utc> = tx
         .query_one("SELECT clock_timestamp()", &[])
@@ -941,9 +967,9 @@ async fn stage_task_call(
         .min(now + chrono::Duration::milliseconds(timeout));
     let candidate = Candidate {
         ctx: proof.ctx,
-        skill: None,
+        skill,
         instance,
-        deployment: proof.deployment,
+        deployment: binding.deployment,
         manifest,
         contract: contract.clone(),
         definition,
@@ -951,7 +977,7 @@ async fn stage_task_call(
         deadline,
         protected: true,
         terminal: Some(unary_failure::Binding {
-            installation: proof.installation,
+            installation: binding.installation,
             manifest_digest: row.try_get("manifest_digest")?,
             has_proxy: false,
         }),
@@ -968,7 +994,7 @@ async fn stage_task_call(
     .await?;
     tx.execute(
         "INSERT INTO task_attempt_calls(attempt_id,call_id,installation_id) VALUES($1,$2,$3)",
-        &[&lease.attempt_id, &call.id, &proof.installation],
+        &[&lease.attempt_id, &call.id, &binding.installation],
     )
     .await?;
     tx.execute(
@@ -1040,8 +1066,8 @@ async fn checked_task_call(
     if call_row.try_get::<_, &str>("state")? != "running" {
         return Err(Error::conflict("Admitted Call is no longer running"));
     }
-    let name = string(&proof.contract, "name")?;
-    let version = string(&proof.contract, "version")?;
+    let name = string(&proof.binding.contract, "name")?;
+    let version = string(&proof.binding.contract, "version")?;
     let binding = tx.query_opt(
         "SELECT least(r.expires_at,e.expires_at,res.expires_at) AS lease_end,
                 e.id AS derived_delegation,r.id AS rpc_delegation
@@ -1064,7 +1090,7 @@ async fn checked_task_call(
             AND res.expires_at IS NOT NULL AND r.status='active'
             AND r.subject_id=c.owner_id AND r.issuer_credential_id=c.credential_id
           FOR SHARE OF i,p,e,r,res",
-        &[&call, &name, &version, &proof.deployment, &proof.installation],
+        &[&call, &name, &version, &proof.binding.deployment, &proof.binding.installation],
     ).await?.ok_or_else(|| Error::unavailable("Admitted task provider or RPC binding is unavailable"))?;
     let cutoff = charged_task_cutoff(tx, &proof.ctx, call).await?;
     let hard_deadline = proof
@@ -1166,7 +1192,7 @@ async fn charged_task_cutoff(
     ctx: &Context,
     call: Uuid,
 ) -> Result<DateTime<Utc>> {
-    let paths = host_blobs::checked_call_sources(tx, ctx, call).await?;
+    let paths = host_blobs::checked_task_call_sources(tx, ctx, call).await?;
     task_engine::broker_paths_until(tx, ctx, &paths).await
 }
 
@@ -1178,26 +1204,23 @@ async fn task_call(
 ) -> Result<Option<Row>> {
     let row = tx
         .query_opt(
-            "SELECT c.id,c.state,c.deadline_at,
-            b.installation_id=$2 AND c.owner_id=$3 AND c.credential_id=$4 AND c.contract=$5
-              AND c.idempotency_key=$6 AND i.deployment_id=$7
-              AND c.skill_id IS NULL AND c.http_binding IS NULL AS matches
+            "SELECT c.id,c.state,c.deadline_at,b.installation_id,i.deployment_id,
+                    c.contract,c.skill_id,c.skill_definition_digest,c.http_binding,
+                    c.owner_id=$2 AND c.credential_id=$3 AND c.idempotency_key=$4 AS matches
            FROM task_attempt_calls b JOIN calls c ON c.id=b.call_id
            LEFT JOIN instances i ON i.id=c.provider_instance_id
           WHERE b.attempt_id=$1 FOR SHARE OF c",
             &[
                 &lease.attempt_id,
-                &proof.installation,
                 &proof.ctx.subject,
                 &proof.ctx.credential,
-                &proof.contract,
                 &proof.business_key,
-                &proof.deployment,
             ],
         )
         .await?;
     if let Some(row) = &row {
         if row.try_get::<_, Option<bool>>("matches")? != Some(true)
+            || !proof.binding.matches_call(row)?
             || call.is_some_and(|id| row.get::<_, Uuid>("id") != id)
         {
             return Err(Error::denied());
@@ -1258,13 +1281,13 @@ async fn record_call(
             &manifest,
             "capability.invoke",
             &capability,
-            None,
+            skill.as_ref(),
             authority.as_ref(),
         )
         .await?
     };
-    let deadline = if token.is_some() {
-        deadline
+    let (deadline, task_paths) = if token.is_some() {
+        (deadline, Vec::new())
     } else {
         let authority = authority.as_ref().ok_or_else(Error::denied)?;
         let paths = host_blobs::retain_charged_paths(
@@ -1275,7 +1298,10 @@ async fn record_call(
             "capability.invoke",
         )
         .await?;
-        deadline.min(task_engine::broker_paths_until(tx, &ctx, &paths).await?)
+        (
+            deadline.min(task_engine::broker_paths_until(tx, &ctx, &paths).await?),
+            paths,
+        )
     };
     let call = if let Some(token) = token {
         host_calls::new_call(tx, app, token).await?
@@ -1343,13 +1369,7 @@ async fn record_call(
             host_blobs::check_call_sources(tx, &ctx, call).await?;
         }
     } else {
-        host_blobs::grant_task_call(
-            tx,
-            &ctx,
-            call,
-            authority.as_ref().ok_or_else(Error::denied)?,
-        )
-        .await?;
+        host_blobs::grant_task_call(tx, &ctx, call, &task_paths).await?;
     }
     Ok(Call {
         ctx,

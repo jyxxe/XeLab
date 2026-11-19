@@ -1,7 +1,9 @@
 //! Accept a result only while the original claim and its authority are live.
 use super::{
     active::{live, LockedAttempt, Operation},
-    claim_authority, commit_effects, AttemptLease, ENGINE_TIMEOUT,
+    claim_authority, commit_effects,
+    dispatch::TaskCallBinding,
+    AttemptLease, ENGINE_TIMEOUT,
 };
 use crate::{
     auth::Auth,
@@ -173,7 +175,9 @@ async fn linked_result_cutoff(
     let tx = &attempt.tx;
     let result = tx
         .query_opt(
-            "SELECT c.id,c.owner_id=$5 AND c.credential_id=$6 AND c.idempotency_key=$7
+            "SELECT c.id,b.installation_id,i.deployment_id,c.contract,c.skill_id,
+                c.skill_definition_digest,c.http_binding,
+                c.owner_id=$5 AND c.credential_id=$6 AND c.idempotency_key=$7
             AND c.state=$2 AND CASE
                 WHEN $2='succeeded' THEN c.result->'output'=$3 AND c.error IS NULL
                      AND c.completed_at<=c.deadline_at
@@ -182,6 +186,7 @@ async fn linked_result_cutoff(
                 WHEN $2='unknown' THEN c.result IS NULL AND coalesce(c.error,'null'::jsonb)=$4
                 ELSE false END AS matches
            FROM task_attempt_calls b JOIN calls c ON c.id=b.call_id
+           LEFT JOIN instances i ON i.id=c.provider_instance_id
           WHERE b.attempt_id=$1 FOR SHARE OF c",
             &[
                 &input.attempt,
@@ -197,7 +202,14 @@ async fn linked_result_cutoff(
     let Some(result) = result else {
         return Ok(None);
     };
-    if result.try_get::<_, Option<bool>>("matches")? != Some(true) {
+    let admission: Value = row.try_get("admission")?;
+    let deployment = row
+        .try_get::<_, Option<Uuid>>("provider_deployment_id")?
+        .ok_or_else(Error::denied)?;
+    let binding = TaskCallBinding::from_admission(&admission, &attempt.step, deployment)?;
+    if result.try_get::<_, Option<bool>>("matches")? != Some(true)
+        || !binding.matches_call(&result)?
+    {
         return Err(Error::conflict(
             "Attempt result does not match its settled Call",
         ));
@@ -205,12 +217,11 @@ async fn linked_result_cutoff(
     if input.state == "unknown" {
         return Ok(None);
     }
-    let admission: Value = row.try_get("admission")?;
     let ctx =
         claim_authority::resume_original(tx, auth, row, attempt.lease.execution_id, &admission)
             .await?;
     let call = result.try_get("id")?;
-    let paths = crate::host_blobs::checked_call_sources(tx, &ctx, call).await?;
+    let paths = crate::host_blobs::checked_task_call_sources(tx, &ctx, call).await?;
     Ok(Some(
         claim_authority::dispatch_paths_until(tx, &ctx, &paths).await?,
     ))

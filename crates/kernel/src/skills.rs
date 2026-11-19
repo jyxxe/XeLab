@@ -398,7 +398,7 @@ pub(crate) async fn resolve_for_workflow(
         })
 }
 
-pub(crate) async fn resolve_http_for_invoke(
+pub(crate) async fn resolve_with_authority(
     c: &tokio_postgres::Transaction<'_>,
     ctx: &Context,
     skill: Uuid,
@@ -422,7 +422,7 @@ async fn resolve_live(
     let owner = row.get("created_by");
     let resource = Resource::new("skill", skill, Some(owner));
     if let Some(authority) = authority {
-        // The concrete transaction was verified by resolve_http_for_invoke.
+        // The concrete transaction was verified by resolve_with_authority.
         authority.require_context(ctx, action, &resource)?;
     } else {
         auth::authorize(c, ctx, action, &resource).await?;
