@@ -99,8 +99,8 @@ async fn list_attempts_returns_contract_fields_and_pages_through_tied_timestamps
     .await
     .unwrap();
     let oldest = Uuid::from_u128(30);
-    let tied_low = Uuid::from_u128(10);
-    let tied_high = Uuid::from_u128(20);
+    let tied_low = Uuid::from_u128(0x10000000_0000_0000_0000_000000000000);
+    let tied_high = Uuid::from_u128(0x2a000000_0000_0000_0000_000000000000);
     let start = DateTime::from_timestamp(1_700_000_000, 123_456_000).unwrap();
     let later = start + Duration::seconds(1);
     let execution = insert_attempt(&db, step, oldest, 1, start, Some(checkpoint)).await;
@@ -126,7 +126,9 @@ async fn list_attempts_returns_contract_fields_and_pages_through_tied_timestamps
         ("updated_at", start + Duration::seconds(2)),
         ("lease_expires_at", start + Duration::seconds(30)),
     ] {
-        let actual: DateTime<Utc> = row[field].as_str().unwrap().parse().unwrap();
+        let raw = row[field].as_str().unwrap();
+        assert!(raw.ends_with('Z'), "{field}: {raw}");
+        let actual: DateTime<Utc> = raw.parse().unwrap();
         assert_eq!(actual, expected, "{field}");
     }
     assert_eq!(items[1]["id"], json!(tied_low));
