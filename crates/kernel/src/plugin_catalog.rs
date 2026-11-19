@@ -282,6 +282,14 @@ pub(crate) async fn list_attempts(
     list(c, auth, ctx, "listAttempts", query, Some(step)).await
 }
 
+pub(crate) fn attempt_value(row: &tokio_postgres::Row) -> Result<Value> {
+    let mut attempt: Value = row.get("attempt");
+    for field in ["created_at", "updated_at", "lease_expires_at"] {
+        attempt[field] = json!(row.get::<_, DateTime<Utc>>(field));
+    }
+    object_value(&attempt, "Attempt")
+}
+
 pub(crate) async fn read_task(
     c: &(impl GenericClient + Sync),
     task: Uuid,
@@ -468,11 +476,7 @@ async fn list(
             };
             value
         } else if name == "listAttempts" {
-            let mut attempt: Value = row.get("attempt");
-            for field in ["created_at", "updated_at", "lease_expires_at"] {
-                attempt[field] = json!(row.get::<_, DateTime<Utc>>(field));
-            }
-            object_value(&attempt, "Attempt")?
+            attempt_value(&row)?
         } else {
             read_object(c, selected.table, id, selected.model).await?
         };

@@ -620,8 +620,16 @@ pub fn password_hash(password: &str) -> Result<String> {
 }
 
 pub(crate) async fn account_chain(c: &impl GenericClient, subject: Uuid) -> Result<Vec<Uuid>> {
+    Ok(account_chain_validity(c, subject).await?.0)
+}
+
+async fn account_chain_validity(
+    c: &impl GenericClient,
+    subject: Uuid,
+) -> Result<(Vec<Uuid>, DateTime<Utc>)> {
     let mut ids = Vec::new();
     let mut next = Some(subject);
+    let mut expires_at = DateTime::<Utc>::MAX_UTC;
     while let Some(id) = next {
         if ids.len() >= 8 || ids.contains(&id) {
             return Err(Error::credential());
@@ -633,17 +641,18 @@ pub(crate) async fn account_chain(c: &impl GenericClient, subject: Uuid) -> Resu
             )
             .await?
             .ok_or_else(Error::credential)?;
-        if r.get::<_, String>("status") != "active"
-            || r.get::<_, Option<DateTime<Utc>>>("expires_at")
-                .is_some_and(|d| d <= Utc::now())
-        {
+        let expiry = r.get::<_, Option<DateTime<Utc>>>("expires_at");
+        if r.get::<_, String>("status") != "active" || expiry.is_some_and(|at| at <= Utc::now()) {
             return Err(Error::credential());
+        }
+        if let Some(expiry) = expiry {
+            expires_at = expires_at.min(expiry);
         }
         ids.push(id);
         next = r.get("parent_id");
     }
     ids.reverse();
-    Ok(ids)
+    Ok((ids, expires_at))
 }
 
 pub fn conditions_match(v: &Value, peer: IpAddr, now: DateTime<Utc>) -> bool {
@@ -735,7 +744,26 @@ pub(crate) async fn validate_sources(
     account: Option<Uuid>,
     peer: IpAddr,
 ) -> Result<Vec<Uuid>> {
+    Ok(source_validity(c, credential, account, peer)
+        .await?
+        .credentials)
+}
+
+pub(crate) struct SourceValidity {
+    pub(crate) credentials: Vec<Uuid>,
+    /// Earliest cutoff observed during traversal. Lease issuers must compare
+    /// it with the issuance time after any intervening waits.
+    pub(crate) expires_at: DateTime<Utc>,
+}
+
+pub(crate) async fn source_validity(
+    c: &impl GenericClient,
+    credential: Option<Uuid>,
+    account: Option<Uuid>,
+    peer: IpAddr,
+) -> Result<SourceValidity> {
     let mut pending = Vec::new();
+    let mut expires_at = DateTime::<Utc>::MAX_UTC;
     if let Some(id) = credential {
         pending.push((true, id));
     }
@@ -756,15 +784,22 @@ pub(crate) async fn validate_sources(
                 .query_opt("SELECT * FROM credentials WHERE id=$1 FOR SHARE", &[&id])
                 .await?
                 .ok_or_else(Error::credential)?;
+            let conditions: Value = r.get("conditions");
+            let credential_expiry: DateTime<Utc> = r.get("expires_at");
             if r.get::<_, String>("status") != "active"
-                || r.get::<_, DateTime<Utc>>("expires_at") <= Utc::now()
-                || !conditions_match(&r.get::<_, Value>("conditions"), peer, Utc::now())
+                || credential_expiry <= Utc::now()
+                || !conditions_match(&conditions, peer, Utc::now())
             {
                 return Err(Error::credential());
             }
+            expires_at = expires_at.min(credential_expiry);
+            if let Some(expiry) = conditions.get("expires_at") {
+                expires_at = expires_at
+                    .min(crate::policy::timestamp(expiry).map_err(|_| Error::credential())?);
+            }
             let kind: String = r.get("kind");
             if kind == "oauth_access" {
-                crate::oauth::binding(c, id).await?;
+                expires_at = expires_at.min(crate::oauth::binding(c, id).await?.expires_at);
             } else if !matches!(kind.as_str(), "session" | "api_key") {
                 return Err(Error::credential());
             }
@@ -774,7 +809,9 @@ pub(crate) async fn validate_sources(
             }
             credentials.push(id);
         } else {
-            for ancestor in account_chain(c, id).await? {
+            let (ancestors, account_expiry) = account_chain_validity(c, id).await?;
+            expires_at = expires_at.min(account_expiry);
+            for ancestor in ancestors {
                 if let Some(r) = c
                     .query_opt(
                         "SELECT issuer_credential_id FROM inheritance_grants WHERE account_id=$1",
@@ -808,7 +845,10 @@ pub(crate) async fn validate_sources(
         }
     }
     credentials.sort();
-    Ok(credentials)
+    Ok(SourceValidity {
+        credentials,
+        expires_at,
+    })
 }
 
 pub async fn seed_roles(c: &impl GenericClient) -> Result<()> {

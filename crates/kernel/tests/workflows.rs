@@ -7,6 +7,12 @@ mod http_host;
 mod task_admission;
 #[path = "support/task_attempts.rs"]
 mod task_attempts;
+#[path = "support/task_claim.rs"]
+mod task_claim;
+#[path = "support/task_claim_authority.rs"]
+mod task_claim_authority;
+#[path = "support/task_claim_http.rs"]
+mod task_claim_http;
 #[path = "support/workflow_authority_wait.rs"]
 mod workflow_authority_wait;
 
@@ -97,6 +103,7 @@ async fn request(
 
 struct Fixture {
     db: Db,
+    auth: Auth,
     router: Router,
     owner: Uuid,
     token: String,
@@ -176,11 +183,12 @@ impl Fixture {
         )
         .await
         .unwrap();
+        let auth = Auth::new(vec![55; 32]).unwrap();
         let router = router(Arc::new(App {
             runtime: Runtime::new(config.clone()),
             config,
             db: db.clone(),
-            auth: Auth::new(vec![55; 32]).unwrap(),
+            auth: auth.clone(),
             leader: Arc::new(db.leader().await.unwrap()),
             ready: AtomicBool::new(true),
             shutdown: AtomicBool::new(false),
@@ -189,6 +197,7 @@ impl Fixture {
         let token = login(&router, owner).await;
         Some(Self {
             db,
+            auth,
             router,
             owner,
             token,
@@ -563,4 +572,186 @@ async fn workflow_skill_must_be_visible_and_within_its_timeout() {
     f.publish(&f.token, &spec, "skill-timeout")
         .await
         .expect(400);
+}
+
+#[tokio::test]
+async fn lease_expiring_during_commit_is_recorded_once_and_never_returned() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let mut spec = f.spec("slow claim commit");
+    spec["steps"][0]["timeout_ms"] = json!(500);
+    let workflow = f.publish(&f.token, &spec, "publish").await.expect(201);
+    let task = request(
+        &f.router,
+        Method::POST,
+        "/api/platform/v1/tasks",
+        Some(&f.token),
+        Some(&json!({"workflow_id": workflow.body["id"], "input": {}})),
+        &[("idempotency-key", "submit")],
+    )
+    .await
+    .expect(201);
+    let task_id = xelab_kernel::contracts::id(&task.body, "id").unwrap();
+    let db = f.db.connect().await.unwrap();
+    // The deferred trigger runs after the pre-commit lease check, on the same
+    // database clock that issued the lease. COMMIT succeeds after the cutoff.
+    db.batch_execute(
+        "CREATE FUNCTION wait_for_lease_expiry() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             PERFORM pg_sleep_until(NEW.lease_expires_at + interval '10 milliseconds');
+             RETURN NEW;
+         END; $$;
+         CREATE CONSTRAINT TRIGGER wait_for_lease_expiry AFTER INSERT ON attempts
+         DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION wait_for_lease_expiry()",
+    )
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            xelab_kernel::task_engine::claim(&f.db, &f.auth, Uuid::new_v4())
+                .await
+                .unwrap(),
+            None
+        );
+    }
+    let row = db
+        .query_one(
+            "SELECT a.number,a.fence,s.attempt_count,s.fence,
+                    a.lease_expires_at <= clock_timestamp() AS expired
+             FROM attempts a JOIN task_steps s ON s.id=a.step_id WHERE s.task_id=$1",
+            &[&task_id],
+        )
+        .await
+        .expect("exactly one committed attempt");
+    assert_eq!(row.get::<_, i32>(0), 1);
+    assert_eq!(row.get::<_, i64>(1), 1);
+    assert_eq!(row.get::<_, i32>(2), 1);
+    assert_eq!(row.get::<_, i64>(3), 1);
+    assert!(row.get::<_, bool>("expired"));
+}
+
+#[tokio::test]
+async fn claim_locks_predecessors_only_for_the_selected_task() {
+    use std::time::Duration;
+    use xelab_kernel::task_engine::claim;
+
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let mut spec = f.spec("predecessor lock scope");
+    let mut child = spec["steps"][0].clone();
+    child["id"] = json!("child");
+    child["depends_on"] = json!(["echo", "echo"]);
+    spec["steps"].as_array_mut().unwrap().push(child);
+    let workflow = f.publish(&f.token, &spec, "publish").await.expect(201);
+    let mut db = f.db.connect().await.unwrap();
+    let mut tasks = Vec::new();
+    for key in ["older", "selected", "later"] {
+        let task = request(
+            &f.router,
+            Method::POST,
+            "/api/platform/v1/tasks",
+            Some(&f.token),
+            Some(&json!({"workflow_id": workflow.body["id"], "input": {}})),
+            &[("idempotency-key", key)],
+        )
+        .await
+        .expect(201);
+        let task_id = contracts::id(&task.body, "id").unwrap();
+        db.execute(
+            "UPDATE task_steps SET state='succeeded' WHERE task_id=$1 AND step_key='echo'",
+            &[&task_id],
+        )
+        .await
+        .unwrap();
+        let child_id: Uuid = db
+            .query_one(
+                "UPDATE task_steps SET state='ready' WHERE task_id=$1 AND step_key='child' RETURNING id",
+                &[&task_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        tasks.push((task_id, child_id));
+    }
+    let (older_task, older_child) = tasks[0];
+    let (selected_task, selected_child) = tasks[1];
+    let (_, later_child) = tasks[2];
+
+    // Skip the oldest candidate, then hold the selected claim at provider validation.
+    let mut blocker = f.db.connect().await.unwrap();
+    let hold = blocker.transaction().await.unwrap();
+    hold.query_one(
+        "SELECT id FROM tasks WHERE id=$1 FOR UPDATE",
+        &[&older_task],
+    )
+    .await
+    .unwrap();
+    let pid: i32 = hold
+        .query_one(
+            "SELECT pg_backend_pid() FROM installations WHERE id=$1 FOR UPDATE",
+            &[&f.installation],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let worker = f.db.clone();
+    let auth = f.auth.clone();
+    let pending = tokio::spawn(async move { claim(&worker, &auth, Uuid::new_v4()).await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let waiting: bool = db
+                .query_one(
+                    "SELECT EXISTS (SELECT FROM pg_stat_activity WHERE datname=current_database()
+                     AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%FROM installations%')",
+                    &[&pid],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            if waiting {
+                break;
+            }
+            assert!(!pending.is_finished(), "claim ended before the lock probe");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("claim did not reach provider validation");
+
+    let probe = db.transaction().await.unwrap();
+    let unlocked: Vec<Uuid> = probe
+        .query(
+            "SELECT task_id FROM task_steps WHERE task_id IN ($1,$2) AND step_key='echo'
+             FOR NO KEY UPDATE SKIP LOCKED",
+            &[&older_task, &selected_task],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(
+        unlocked,
+        [older_task],
+        "only the selected predecessor should be locked"
+    );
+    hold.rollback().await.unwrap();
+    let attempt = pending.await.unwrap().unwrap().unwrap();
+    assert_eq!(attempt["step_id"], json!(selected_child));
+
+    // The older child passes the prefilter, but its locked predecessor must not stall later work.
+    let attempt = claim(&f.db, &f.auth, Uuid::new_v4())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(attempt["step_id"], json!(later_child));
+    assert_eq!(claim(&f.db, &f.auth, Uuid::new_v4()).await.unwrap(), None);
+    probe.rollback().await.unwrap();
+    let attempt = claim(&f.db, &f.auth, Uuid::new_v4())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(attempt["step_id"], json!(older_child));
 }

@@ -13,11 +13,13 @@ use tokio_postgres::GenericClient;
 use uuid::Uuid;
 
 mod authority;
+mod claim_authority;
 mod reads;
 #[cfg(test)]
 mod restart_tests;
 pub(crate) mod snapshot;
 mod targets;
+pub mod task_engine;
 
 pub(crate) fn handles(name: &str) -> bool {
     matches!(

@@ -9,9 +9,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{hash_map::Entry, BTreeSet, HashMap, HashSet},
     net::IpAddr,
-    sync::{Arc, Mutex},
+    sync::Mutex,
 };
 use tokio_postgres::{GenericClient, Row};
 use uuid::Uuid;
@@ -364,18 +364,18 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        let valid = self.live_grant_issuer_chains(&sources).await?;
+        let valid = self.live_grant_issuer_expiries(&sources).await?;
         Ok(paths
             .into_iter()
             .filter(|p| p.sources.iter().all(|id| valid.contains_key(id)))
             .collect())
     }
 
-    /// Return the validated credential chain for each live original grant issuer.
-    pub(crate) async fn live_grant_issuer_chains(
+    /// Earliest source-graph expiry for each live original grant issuer.
+    pub(crate) async fn live_grant_issuer_expiries(
         &self,
         sources: &[Uuid],
-    ) -> Result<std::collections::HashMap<Uuid, Arc<[Uuid]>>> {
+    ) -> Result<HashMap<Uuid, DateTime<Utc>>> {
         let rows = self
             .c
             .query(
@@ -386,33 +386,32 @@ impl<'a, C: GenericClient + Sync> Policy<'a, C> {
         if rows.len() != sources.len() {
             return Err(Error::denied());
         }
-        let mut valid = std::collections::HashMap::new();
-        let mut issuers: std::collections::HashMap<_, Option<Arc<[Uuid]>>> = Default::default();
+        let mut valid = HashMap::new();
+        let mut issuers = HashMap::new();
         for row in rows {
             let issuer: Option<Uuid> = row.get("issuer_credential_id");
             let owner: Uuid = row.get("issuer_id");
-            let chain = if let Some(chain) = issuers.get(&(issuer, owner)) {
-                chain.clone()
-            } else {
-                let chain =
-                    match crate::auth::validate_sources(self.c, issuer, Some(owner), self.peer)
-                        .await
-                    {
-                        Ok(credentials) => Some(Arc::from(credentials)),
-                        Err(e) if e.code == "INVALID_CREDENTIAL" => None,
-                        Err(e) => return Err(e),
+            let expiry = match issuers.entry((issuer, owner)) {
+                Entry::Occupied(entry) => *entry.get(),
+                Entry::Vacant(entry) => {
+                    let validity =
+                        crate::auth::source_validity(self.c, issuer, Some(owner), self.peer).await;
+                    let expiry = match validity {
+                        Ok(validity) => Some(validity.expires_at),
+                        Err(error) if error.code == "INVALID_CREDENTIAL" => None,
+                        Err(error) => return Err(error),
                     };
-                issuers.insert((issuer, owner), chain.clone());
-                chain
+                    *entry.insert(expiry)
+                }
             };
-            if let Some(chain) = chain {
-                valid.insert(row.get::<_, Uuid>("id"), chain);
+            if let Some(expiry) = expiry {
+                valid.insert(row.get::<_, Uuid>("id"), expiry);
             }
         }
         Ok(valid)
     }
 
-    async fn grant(&mut self, grant: Uuid, depth: usize) -> Result<Vec<Path>> {
+    pub(crate) async fn grant(&mut self, grant: Uuid, depth: usize) -> Result<Vec<Path>> {
         let Some(row) = self
             .c
             .query_opt(
@@ -825,7 +824,7 @@ fn same_rule(a: &Value, b: &Value) -> bool {
         (Some(left), Some(right)) if left == right
     )
 }
-fn bounded(paths: &[Path]) -> Result<()> {
+pub(crate) fn bounded(paths: &[Path]) -> Result<()> {
     if paths.len() > MAX_PATHS {
         Err(Error::invalid("Policy expansion exceeds 4096 paths"))
     } else {
