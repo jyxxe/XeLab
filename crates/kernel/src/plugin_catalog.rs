@@ -39,6 +39,7 @@ fn collection(name: &str) -> Result<Collection> {
         "listInstances" => ("instances", "Instance", "plugin.read", "instance", "SELECT t.id,t.created_at,t.id::text AS resource_id,d.owner_id,NULL::text AS plugin_id,t.deployment_id FROM instances t JOIN deployments d ON d.id=t.deployment_id WHERE d.archived_at IS NULL"),
         "listWorkflows" => ("workflows", "Workflow", "workflow.read", "workflow", "SELECT t.id,t.created_at,t.id::text AS resource_id,t.owner_id,NULL::text AS plugin_id,NULL::uuid AS deployment_id FROM workflows t"),
         "listTasks" => ("tasks", "Task", "task.read", "task", "SELECT t.id,t.created_at,t.id::text AS resource_id,t.owner_id,NULL::text AS plugin_id,NULL::uuid AS deployment_id,t.state FROM tasks t"),
+        "listSchedules" => ("schedules", "Schedule", "schedule.read", "schedule", "SELECT t.id,t.created_at,t.id::text AS resource_id,t.owner_id,NULL::text AS plugin_id,NULL::uuid AS deployment_id FROM schedules t"),
         "listTaskSteps" => ("task_steps", "TaskStep", "task.read", "task", "SELECT s.id,s.created_at,t.id::text AS resource_id,t.owner_id,NULL::text AS plugin_id,NULL::uuid AS deployment_id,s.task_id FROM task_steps s JOIN tasks t ON t.id=s.task_id"),
         "listAttempts" => ("attempts", "Attempt", "task.read", "task", "SELECT a.id,a.created_at,a.updated_at,a.lease_expires_at,t.id::text AS resource_id,t.owner_id,NULL::text AS plugin_id,NULL::uuid AS deployment_id,a.step_id,to_jsonb(a) AS attempt FROM attempts a JOIN task_steps s ON s.id=a.step_id JOIN tasks t ON t.id=s.task_id"),
         _ => return Err(Error::invalid("Unknown plugin catalog operation")),
@@ -55,7 +56,11 @@ fn collection(name: &str) -> Result<Collection> {
 pub(crate) fn handles(name: &str) -> bool {
     matches!(
         name,
-        "listPublishers" | "listInstallations" | "listDeployments" | "listInstances"
+        "listPublishers"
+            | "listInstallations"
+            | "listDeployments"
+            | "listInstances"
+            | "listSchedules"
     )
 }
 
@@ -303,6 +308,36 @@ pub(crate) async fn read_task(
     row.map(|row| object_value(&row.get(0), "Task")).transpose()
 }
 
+pub(crate) async fn read_schedule(
+    c: &(impl GenericClient + Sync),
+    id: Uuid,
+    owner: Option<Uuid>,
+) -> Result<Option<Value>> {
+    let row = c
+        .query_opt(
+            "SELECT id, revision, created_at, updated_at, owner_id, spec, delegation_id, next_fire_at
+             FROM schedules WHERE id=$1 AND ($2::uuid IS NULL OR owner_id=$2)",
+            &[&id, &owner],
+        )
+        .await?;
+    row.map(|row| {
+        object_value(
+            &json!({
+                "id": row.get::<_, Uuid>("id"),
+                "revision": row.get::<_, i64>("revision"),
+                "created_at": row.get::<_, DateTime<Utc>>("created_at"),
+                "updated_at": row.get::<_, DateTime<Utc>>("updated_at"),
+                "owner_id": row.get::<_, Uuid>("owner_id"),
+                "spec": row.get::<_, Value>("spec"),
+                "delegation_id": row.get::<_, Uuid>("delegation_id"),
+                "next_fire_at": row.get::<_, Option<DateTime<Utc>>>("next_fire_at"),
+            }),
+            "Schedule",
+        )
+    })
+    .transpose()
+}
+
 async fn list(
     c: &(impl GenericClient + Sync),
     auth: &Auth,
@@ -477,6 +512,14 @@ async fn list(
             value
         } else if name == "listAttempts" {
             attempt_value(&row)?
+        } else if name == "listSchedules" {
+            let Some(value) = read_schedule(c, id, row.get("owner_id")).await? else {
+                // Never read a payload for a different owner after the scan.
+                cursor.last_time = row.get("created_at");
+                cursor.last_id = Some(id);
+                continue;
+            };
+            value
         } else {
             read_object(c, selected.table, id, selected.model).await?
         };

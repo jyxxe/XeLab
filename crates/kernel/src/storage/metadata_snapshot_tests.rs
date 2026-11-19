@@ -821,8 +821,16 @@ async fn actual_postgres_m5_admission_snapshot_round_trip_resets_execution_autho
         .execute("INSERT INTO attempts(id,step_id,number,execution_id,idempotency_key,fence,lease_expires_at,state,created_at,updated_at) VALUES($1,$2,1,$3,'snapshot-attempt-key',1,now()+interval '30 seconds','running',now(),now())",&[&attempt,&step,&Uuid::new_v4()])
         .await
         .unwrap();
+    let next_fire_at = chrono::DateTime::from_timestamp(1_850_000_000, 123_456_000).unwrap();
+    let schedule_spec = serde_json::json!({
+        "name":"Restored schedule","workflow_id":workflow,"cron":"30 7 * * *","input":{}
+    });
     source
-        .execute("INSERT INTO schedules(id,owner_id,spec,delegation_id,next_fire_at,created_at,updated_at) VALUES($1,$2,'{}',$3,now()+interval '1 day',now(),now())",&[&schedule,&owner,&delegation])
+        .execute(
+            "INSERT INTO schedules(id,owner_id,spec,delegation_id,next_fire_at,created_at,updated_at)
+             VALUES($1,$2,$3,$4,$5,now(),now())",
+            &[&schedule, &owner, &schedule_spec, &delegation, &next_fire_at],
+        )
         .await
         .unwrap();
     source
@@ -938,6 +946,20 @@ async fn actual_postgres_m5_admission_snapshot_round_trip_resets_execution_autho
             .unwrap()
             .get::<_, String>(0),
         "created"
+    );
+    let restored_schedule =
+        crate::plugin_catalog::read_schedule(&destination, schedule, Some(owner))
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(restored_schedule["spec"], schedule_spec);
+    assert_eq!(
+        restored_schedule["delegation_id"],
+        serde_json::json!(delegation)
+    );
+    assert_eq!(
+        restored_schedule["next_fire_at"],
+        serde_json::json!(next_fire_at)
     );
     for table in ["micro_plugins", "extension_plugins", "skill_batches"] {
         assert!(destination

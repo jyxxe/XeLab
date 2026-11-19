@@ -3,6 +3,8 @@
 
 #[path = "support/http_host.rs"]
 mod http_host;
+#[path = "support/schedule_catalog.rs"]
+mod schedule_catalog;
 #[path = "support/task_admission.rs"]
 mod task_admission;
 #[path = "support/task_attempts.rs"]

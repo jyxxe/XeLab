@@ -21,7 +21,8 @@
 | 任务租约过期对账 | 控制器每轮最多处理 16 个由 worker 领取且仍匹配当前步骤 fence 的活动尝试，以数据库时钟复核租约和任务截止中较早的时间。尝试记为 `expired`，步骤记为 `unknown`，同事务写入 outbox。运行中的任务在其他活动尝试收敛后汇总为 `unknown`，保留当前的授权暂停、依赖等待或取消意图 | 使用现有活动尝试索引和元数据字段。Broker 自动核实、插件取消及重试待实现 |
 | 任务取消 | `cancelTask` 使用任务 ETag 和幂等键登记取消，取消尚未开始的步骤，并阻止新领取、续租和派发准备。原 worker 可在原租约、fence 和授权有效期内提交已收到的终态结果。全部步骤均已停止且无未知结果时任务可进入 `canceled` | 活动、过期和未知尝试均可阻止完成取消，并保留旧历史中的不确定性。任务已是 `unknown` 时保留其状态和结果证据。Broker 取消信号和插件停止证明仍待接入 |
 | 未知步骤人工核实 | `resolveUnknownStep` 按任务授权、步骤 ETag 和幂等键记录操作者及外部核实证据。确认成功需提交原绑定允许的业务输出，确认未执行将步骤记为失败。历史尝试、worker 回执和取消意图保留 | 缺少原绑定的旧步骤无法核实。原尝试不自动重试。人工证据保留在元数据中，普通响应和 outbox 事件仅含标识与结论 |
-| 定时计划预览 | `xelabctl preview-schedule` 离线计算五字段 cron 的 UTC 触发时刻。`plan-schedule-recovery` 根据指定停机区间、活动任务和等待触发预览补发与重叠决策 | 定时计划 API、触发持久化和调度任务提交待实现 |
+| 定时计划查询 | `getSchedule` 和 `listSchedules` 按 `schedule.read` 读取已保存或从快照恢复的计划及其持久化触发时间 | 历史 `next_fire_at` 仅供查看与对账。计划写入和触发执行待实现 |
+| 定时计划预览 | `xelabctl preview-schedule` 离线计算五字段 cron 的 UTC 触发时刻。`plan-schedule-recovery` 根据指定停机区间、活动任务和等待触发预览补发与重叠决策 | 触发持久化和调度任务提交待实现 |
 | HTTP | #43 已合并签名原始 OpenAPI、精确操作/动作/Schema、共享 Broker 账本、直接 HTTP SSE、隔离来源静态 GET/HEAD 与物理槽；#47 扩展固定 HTTP Skill 的六方法、成功状态和 SSE | #47 精确 HTTP Skill 六方法/流真实 OCI 门禁已通过；不是任意 URL/路径模板/查询参数代理，未声明协议拒绝 |
 | 独立 WebUI/消息桥 | #45 实现 UID 65532 OCI 桌面、公开管理 API/OAuth 客户端、window/widget、固定 alias 的 skill.call、同部署 window.open、通道撤权/登出/升级失效及独立 UI 参考插件 | 组件与打包探针通过不能替代真实核心 OCI/Owner OAuth/iframe 全链；#45 精确完整/专项门禁均通过，未来 batch 方法明确不可用 |
 | 持久卷 | 独立 XFS 硬配额、预留/扩容/回收、实际计数、单写者 fence、OCI 挂载、新私有卷恢复、同格式克隆/回退、内部格式证明 | 多副本应用行为、公开格式安装/迁移、正式独立宿主恢复验收 |
