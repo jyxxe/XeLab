@@ -172,7 +172,7 @@ async fn list_attempts_authorizes_parent_task_and_binds_cursor_to_step_and_ident
     .body;
     let reader = reader["secret"].as_str().unwrap();
     let db = fixture.db.connect().await.unwrap();
-    let start = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+    let start = DateTime::from_timestamp(-1, 0).unwrap();
     let first_id = Uuid::from_u128(1);
     let last_id = Uuid::from_u128(2);
     insert_attempt(&db, step, first_id, 1, start, None).await;

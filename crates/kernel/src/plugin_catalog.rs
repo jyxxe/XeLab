@@ -396,7 +396,6 @@ async fn list(
         || cursor.expires_at <= now
         || cursor.watermark > now
         || cursor.last_time > cursor.watermark
-        || cursor.last_time < DateTime::<Utc>::UNIX_EPOCH
         || cursor.expires_at != cursor.watermark + chrono::Duration::minutes(15)
     {
         return Err(Error::invalid(
