@@ -780,7 +780,7 @@ async fn submit_signed_skill(f: &Fixture, c: &Client, entry: &str) -> SkillTask 
     let capability_rule = json!({"action":"capability.invoke","resource":capability_scope});
     let group = f
         .post(
-            "/api/platform/v1/groups",
+            "/api/platform/v1/permission-groups",
             "skill-invocation-rules",
             json!({"name":"Fixed Skill and Capability invocation",
                 "rules":[skill_rule,capability_rule]}),
