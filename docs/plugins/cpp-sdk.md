@@ -2,7 +2,7 @@
 
 [插件目录](README.md) · [启动环境](bootstrap.md) · [RPC 语义](../communication/grpc.md)
 
-`sdk/cpp` 从仓库的 Proto 生成 C++ 的 PluginLifecycle、CapabilityService、HostService 和 DataMigration 绑定。插件可链接 CMake 目标 `xelab_plugin_sdk` 并引入 `<xelab/sdk.h>`。参考插件复用 Rust Echo 的一元和流式契约文件。[C++ Echo 源码](../../examples/echo-cpp/main.cc)
+`sdk/cpp` 从仓库的 Proto 生成 C++ 的 PluginLifecycle、CapabilityService、HostService、DataMigration 和 TaskWorker 绑定。插件可链接 CMake 目标 `xelab_plugin_sdk` 并引入 `<xelab/sdk.h>`。参考插件复用 Rust Echo 的一元和流式契约文件。[C++ Echo 源码](../../examples/echo-cpp/main.cc)
 
 ## 构建和实现
 
@@ -23,6 +23,10 @@ cargo build -p xelab-kernel --bin xelab-echo --locked
 为插件实现生成的生命周期和能力服务，使用 `ConfigurePluginServer` 注册固定 mTLS 监听器。SDK 核验工作负载 CA 与内核 SPIFFE URI，限制单条 gRPC 消息大小，并通过证书文件监视器更新新连接的证书。实现方仍需验证业务 Schema 和摘要，并协作处理取消、排空和流终帧。C++ Echo 支持一元及正常流式调用，Rust 专用故障夹具在 C++ 端返回参数错误。
 
 `ConnectHost` 返回固定宿主入口的 HostService stub，核验内核 DNS 名称和 SPIFFE URI。`HostCallContext` 继承当前 gRPC 调用的取消状态，取传输期限、`RpcContext` 期限及方法上限的最小值。调用方使用当前委托填充 Proto 请求，并可从完成后的调用读取 `xelab-error-bin`。HostService 逐调用确认当前实例与委托。[HostService 方法](../rpc/README.md#hostservice)
+
+## TaskWorker 绑定
+
+`<xelab/sdk.h>` 导出生成的 `xelab::v1::TaskWorker`，含服务基类、客户端 stub 和检查点消息。独立 CMake 消费者测试检查服务链接和进度消息序列化。端到端执行仍需内核调度接入、检查点持久化和跨重启去重。[Execute 契约](../rpc/TaskWorker.Execute.md)
 
 ## 离线一致性测试
 

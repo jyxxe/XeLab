@@ -13,6 +13,7 @@
 #include "xelab/v1/capability.grpc.pb.h"
 #include "xelab/v1/host.grpc.pb.h"
 #include "xelab/v1/lifecycle.grpc.pb.h"
+#include "xelab/v1/task.grpc.pb.h"
 
 namespace xelab::sdk {
 

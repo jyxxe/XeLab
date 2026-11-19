@@ -78,6 +78,8 @@ jobs:
             -DCMAKE_DISABLE_FIND_PACKAGE_nlohmann_json=TRUE
           cmake --build "$consumer" --parallel 2
           "$consumer/xelab-sdk-consumer"
+      - name: Verify Rust TaskWorker bindings
+        run: cargo test -p xelab-plugin-sdk --test task_worker_bindings --locked
       - name: Build both reference plugins and the shared RPC client
         run: |
           rust_artifacts="$RUNNER_TEMP/xelab-sdk-rust-echo-artifacts.jsonl"
