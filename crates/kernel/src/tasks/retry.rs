@@ -233,6 +233,19 @@ async fn linked_history(
     previous: i32,
     input_digest: Option<&str>,
 ) -> Result<bool> {
+    // Unbound retries have no Controller proof to read. Keep that path
+    // independent of audit reads until the normal retry audit is written.
+    let has_calls: bool = tx
+        .query_one(
+            "SELECT EXISTS (SELECT FROM attempts a JOIN task_attempt_calls b ON b.attempt_id=a.id
+              WHERE a.step_id=$1 AND a.number BETWEEN 1 AND $2)",
+            &[&step, &previous],
+        )
+        .await?
+        .try_get(0)?;
+    if !has_calls {
+        return Ok(false);
+    }
     let sql = format!("SELECT count(*),coalesce(bool_and(
             ({FENCED_CALL}) IS TRUE
             AND ($3::text IS NULL OR c.input_digest=$3)
@@ -248,9 +261,6 @@ async fn linked_history(
         .query_one(&sql, &[&step, &previous, &input_digest])
         .await?;
     let count: i64 = row.try_get(0)?;
-    if count == 0 {
-        return Ok(false);
-    }
     if count != i64::from(previous) || !row.try_get::<_, bool>(1)? {
         return Err(Error::conflict(
             "A previous Task Call lacks verified physical fencing or matching retry input",
