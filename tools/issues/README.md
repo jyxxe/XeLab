@@ -12,16 +12,15 @@
 ## triage_report.py：只读分流报告
 
 ```bash
-# 文本报告；GITHUB_TOKEN 可选（公开仓库可匿名读，Token 仅用于提高限额/私有仓库）
-python3 tools/issues/triage_report.py --repo OWNER/NAME
-
-# 稳定的机器可读 JSON（键排序、Issue 按编号排序）
-python3 tools/issues/triage_report.py --repo OWNER/NAME --json
+# FORGEJO_URL 是已核对的实例根地址；TOKEN_FILE 是仓库外的私有令牌文件路径，而非令牌值。
+python3 tools/issues/triage_report.py --forgejo-url "$FORGEJO_URL" --repo OWNER/NAME --token-file "$TOKEN_FILE"
+# 追加 --json 输出稳定的机器可读 JSON（键排序、Issue 按编号排序）。
 ```
 
 行为边界：
 
-- 自动分页读取 Open Issue 与每个 Issue 的评论（`comments == 0` 的条目直接跳过评论请求）；排除 PR；只发 GET，拒绝重定向，
+- 实例与仓库必须显式指定；公开仓库可省略 `--token-file`，私有仓库使用限定该仓库的 `read:issue` 令牌（文件权限 `0600`）。只接受 HTTPS 或本机回环 HTTP，不读取 GitHub 凭据，也不回退到历史仓库。
+- 依据 Forgejo 的 `Link` 下一页标志，从同一仓库读取开放 Issue 与评论（`comments == 0` 跳过评论请求）；排除 PR；只发 GET，拒绝重定向，
   任何 API 失败即整体停止（退出码 1），不输出部分结果。
 - `status` 取首个 `status:*` 标签，无则 `no-status`；两者都列入 `needs_triage` 待核对。
 - 认领候选匹配评论中的 `认领申请` / `切片认领` / `/claim` 标记，以及
@@ -31,7 +30,7 @@ python3 tools/issues/triage_report.py --repo OWNER/NAME --json
   在每个 Issue 和顶层编号列表中新增 `repeated_claim_candidates`，提示共享 Bot 账号的并行会话等情况。
   后者也可能只是补充/历史认领，不等于存在多个执行者或当前冲突；`schema: 1` 其余字段含义不变。
 - 重复候选来自相同规范化标题或高重合关键词（`duplicates_are_definitive=false`）；关键词提取保留带连字符/点号的复合标识符（如插件 ID 与契约名），并忽略通用模板前缀词与 `<redacted>` 占位符。
-- 标题中形似凭证的字符串替换为 `<redacted>`；控制/格式字符在报告文本中替换为空格；不读取也不打印 Token 值。
+- 标题中可识别的历史凭证标记替换为 `<redacted>`；控制/格式字符在报告文本中替换为空格；认证凭据只用于请求头。
 
 示例输出（合成数据，非真实仓库状态）：[example-triage-report.txt](example-triage-report.txt)、
 [example-triage-report.json](example-triage-report.json)。
