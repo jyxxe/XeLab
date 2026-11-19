@@ -4,6 +4,7 @@ mod commit;
 mod dispatch;
 mod expiry;
 mod lease;
+mod runner;
 pub use super::dispatch_input::DispatchInput;
 pub use crate::broker::dispatch_task as dispatch;
 pub(super) use active::live;
@@ -14,6 +15,7 @@ pub(crate) use dispatch::{
 };
 pub(crate) use expiry::expire_leases;
 pub use lease::{prepare_dispatch, renew, AttemptLease};
+pub use runner::run;
 
 use super::{claim_authority, commit_effects, retry};
 use crate::{
@@ -32,7 +34,8 @@ use uuid::Uuid;
 const ENGINE_TIMEOUT: Duration = Duration::from_secs(10);
 
 const READY_STEP: &str = "
-    SELECT s.id AS step_id, s.task_id, s.fence, s.attempt_count, s.provider_deployment_id,
+    SELECT s.id AS step_id, s.created_at AS step_created_at, s.task_id,
+           s.fence, s.attempt_count, s.provider_deployment_id,
            t.owner_id, t.workflow_id, t.deadline_at, t.admission, w.owner_id AS workflow_owner_id,
            e.subject_id, e.issuer_credential_id, e.maximum_rules, e.expires_at,
            (e.status='active' AND e.run_as='user' AND e.service_account_id IS NULL
@@ -45,9 +48,69 @@ const READY_STEP: &str = "
       CROSS JOIN LATERAL jsonb_array_elements(w.spec->'steps') node(definition)
      WHERE s.state='ready' AND s.attempt_count BETWEEN 0 AND 4 AND s.fence BETWEEN 0 AND 9007199254740990
        AND NOT (s.id=ANY($1::uuid[]))
+       AND ($3::timestamptz IS NULL OR (s.created_at,s.id)>($3,$4::uuid))
        AND t.state IN ('queued','running') AND t.deadline_at>clock_timestamp()
        AND t.admission IS NOT NULL AND node.definition->>'id'=s.step_key
        AND jsonb_typeof(node.definition->'depends_on')='array'
+       AND (NOT $2::boolean OR (
+           s.attempt_count=0 AND s.provider_deployment_id IS NOT NULL
+           AND e.status='active' AND e.run_as='user' AND e.service_account_id IS NULL
+           AND e.issuer_credential_id IS NOT NULL AND e.subject_id=t.owner_id
+           AND e.expires_at>clock_timestamp()
+           AND jsonb_typeof(node.definition->'timeout_ms')='number'
+           AND (node.definition->'timeout_ms') BETWEEN '100'::jsonb AND '30000'::jsonb
+           AND NOT (node.definition ? 'skill_id')
+           AND node.definition->'contract'->>'name' <> 'automation.execute'
+           AND EXISTS (
+               SELECT FROM deployments d JOIN installations n ON n.id=d.installation_id
+                 JOIN publishers pub ON pub.id=n.publisher_id
+                 JOIN credentials issuer ON issuer.id=e.issuer_credential_id
+                 JOIN capability_contracts c ON c.name=node.definition->'contract'->>'name'
+                    AND c.version=node.definition->'contract'->>'version'
+                    AND c.schema_digest=node.definition->'contract'->>'schema_digest'
+               WHERE d.id=s.provider_deployment_id AND d.spec->>'enabled'='true'
+                 AND d.archived_at IS NULL AND n.state='installed' AND pub.status='trusted'
+                 AND issuer.status='active' AND issuer.expires_at>clock_timestamp()
+                 AND n.manifest->>'data_schema_version'='none'
+                 AND coalesce(n.manifest->>'business_entry','direct')='direct'
+                 AND coalesce(n.manifest->'dependencies','[]'::jsonb)='[]'::jsonb
+                 AND NOT EXISTS (
+                     SELECT FROM jsonb_array_elements(CASE WHEN jsonb_typeof(n.manifest->'requested_rules')='array'
+                         THEN n.manifest->'requested_rules' ELSE '[]'::jsonb END) request
+                     WHERE NOT (request @> '{\"required\":false,\"rule\":{\"action\":\"secret.use\",\"resource\":{\"kind\":\"secret\"}}}')
+                 )
+                 AND c.spec->'contract'=node.definition->'contract'
+                 AND EXISTS (
+                     SELECT FROM jsonb_array_elements(CASE WHEN jsonb_typeof(n.manifest->'capabilities')='array'
+                         THEN n.manifest->'capabilities' ELSE '[]'::jsonb END) cap
+                     WHERE cap->'contract'=c.spec->'contract'
+                       AND cap->'side_effect' IS NOT DISTINCT FROM c.spec->'side_effect'
+                       AND cap->'input_schema' IS NOT DISTINCT FROM c.spec->'input_schema'
+                       AND cap->'output_schema' IS NOT DISTINCT FROM c.spec->'output_schema'
+                       AND coalesce(cap->'stream_item_schema','null'::jsonb)
+                           =coalesce(c.spec->'stream_item_schema','null'::jsonb)
+                       AND cap->'maximum_input_bytes' IS NOT DISTINCT FROM c.spec->'maximum_input_bytes'
+                       AND cap->'maximum_output_bytes' IS NOT DISTINCT FROM c.spec->'maximum_output_bytes'
+                 )
+                 AND EXISTS (
+                     SELECT FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.admission->'steps')='array'
+                         THEN t.admission->'steps' ELSE '[]'::jsonb END) frozen
+                     WHERE frozen->>'step_key'=s.step_key AND frozen->'installation_id'=to_jsonb(n.id)
+                       AND frozen->'deployment_id'=to_jsonb(d.id)
+                       AND frozen->'binding'->>'kind'='capability'
+                       AND frozen->'binding'->'contract'=node.definition->'contract'
+                 )
+                 AND EXISTS (
+                     SELECT FROM instances i JOIN provider_records p ON p.instance_id=i.id
+                     WHERE i.deployment_id=d.id AND i.phase='ready' AND i.health='alive'
+                       AND p.name=c.name AND p.version=c.version AND p.availability='ready'
+                       AND p.observed_generation=i.generation
+                       AND p.observed_at>clock_timestamp()-interval '1 millisecond'*
+                           ((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint
+                           +(n.manifest->'health'->>'timeout_ms')::bigint)
+                 )
+           )
+       ))
        AND NOT EXISTS (SELECT FROM task_steps stopped WHERE stopped.task_id=t.id AND stopped.state IN ('failed','unknown'))
        AND ((s.attempt_count=0 AND NOT EXISTS (SELECT FROM attempts a WHERE a.step_id=s.id))
          OR (s.attempt_count>0 AND EXISTS (
@@ -77,7 +140,18 @@ async fn claim_ready(db: &Db, auth: &Auth, worker_id: Uuid) -> Result<Option<Val
     loop {
         let tx = client.transaction().await?;
         auth_lock(&tx, false).await?;
-        let Some(candidate) = tx.query_opt(READY_STEP, &[&skipped_steps]).await? else {
+        let Some(candidate) = tx
+            .query_opt(
+                READY_STEP,
+                &[
+                    &skipped_steps,
+                    &false,
+                    &None::<DateTime<Utc>>,
+                    &None::<Uuid>,
+                ],
+            )
+            .await?
+        else {
             tx.rollback().await?;
             return Ok(None);
         };
@@ -148,6 +222,65 @@ async fn claim_ready(db: &Db, auth: &Auth, worker_id: Uuid) -> Result<Option<Val
     }
 }
 
+/// Select only candidates the short fixed Capability runner can attempt.
+/// Caller holds the Broker Call ledger; the selection locks remain through
+/// the provisional lease and Call admission in the same transaction.
+pub(crate) async fn next_automatic_candidate(
+    tx: &Transaction<'_>,
+    after: Option<(DateTime<Utc>, Uuid)>,
+) -> Result<Option<Row>> {
+    let (created_at, id) = after.unzip();
+    let skipped: &[Uuid] = &[];
+    Ok(tx
+        .query_opt(READY_STEP, &[&skipped, &true, &created_at, &id])
+        .await?)
+}
+
+/// Start the first lease provisionally, under the candidate's parent lock.
+/// The caller may commit it only together with its new Broker Call.
+pub(crate) async fn lease_automatic_candidate(
+    tx: &Transaction<'_>,
+    auth: &Auth,
+    candidate: &Row,
+    worker_id: Uuid,
+) -> Result<Option<AttemptLease>> {
+    let step: Value = candidate.try_get("step")?;
+    if !still_claimable(tx, candidate.try_get("task_id")?, &step["depends_on"]).await? {
+        return Ok(None);
+    }
+    let previous: i32 = candidate.try_get("attempt_count")?;
+    let timeout_ms = unsigned(&step["timeout_ms"])?;
+    if previous != 0 || !(100..=30_000).contains(&timeout_ms) {
+        return Ok(None);
+    }
+    if !candidate.try_get::<_, bool>("delegation_live")? {
+        return Err(Error::denied());
+    }
+    let authority = claim_authority::revalidate(tx, auth, candidate, &step, worker_id).await?;
+    let expiry = authority
+        .min(candidate.try_get("expires_at")?)
+        .min(candidate.try_get("deadline_at")?);
+    let step_id: Uuid = candidate.try_get("step_id")?;
+    lease(
+        tx,
+        candidate,
+        worker_id,
+        expiry,
+        timeout_ms,
+        &step_id.to_string(),
+    )
+    .await?
+    .map(|attempt| {
+        Ok(AttemptLease {
+            worker_id,
+            attempt_id: attempt.try_get("id")?,
+            execution_id: attempt.try_get("execution_id")?,
+            fence: attempt.try_get("fence")?,
+        })
+    })
+    .transpose()
+}
+
 // READY_STEP uses a pre-lock snapshot. Under the task lock check for a failed
 // sibling again and lock the chosen child's predecessors through commit.
 async fn still_claimable(
@@ -202,7 +335,7 @@ async fn lease(
                                    lease_expires_at,state,created_at,updated_at,worker_id)
          SELECT $1,$2,$3,$4,$5,$6,least($7,at+$8::int*interval '1 millisecond'),'leased',at,at,$9
            FROM issued WHERE at<$7
-         RETURNING to_jsonb(a) AS attempt,created_at,updated_at,lease_expires_at",
+         RETURNING id,execution_id,fence,to_jsonb(a) AS attempt,created_at,updated_at,lease_expires_at",
             &[
                 &Uuid::new_v4(),
                 &step_id,

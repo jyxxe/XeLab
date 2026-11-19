@@ -36,6 +36,24 @@ pub async fn dispatch_task(app: &App, lease: &AttemptLease) -> Result<Value> {
     }
 }
 
+/// Claim and dispatch the next Broker-supported step. Admission failures leave
+/// the step ready when the Claim and Call transaction did not commit.
+pub async fn dispatch_next_task(app: &App, worker_id: Uuid) -> Result<Option<Value>> {
+    dispatch_next_task_after(app, worker_id, &mut None).await
+}
+
+pub(crate) async fn dispatch_next_task_after(
+    app: &App,
+    worker_id: Uuid,
+    after: &mut Option<(DateTime<Utc>, Uuid)>,
+) -> Result<Option<Value>> {
+    ensure_active(app)?;
+    let Some((lease, admitted)) = admission::admit_next_task(app, worker_id, after).await? else {
+        return Ok(None);
+    };
+    dispatch_new(app, &lease, *admitted).await.map(Some)
+}
+
 async fn acknowledge(app: &App, lease: &AttemptLease, call: Uuid) -> Result<Value> {
     // A durable admission has no second transport token. Only a known Call
     // result may advance the Attempt, and the usual fenced commit checks it.
