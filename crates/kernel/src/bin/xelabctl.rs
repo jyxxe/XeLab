@@ -12,6 +12,7 @@ use xelab_kernel::{
     contracts::{openapi, strict_json},
     db::{Db, LEADER_LOCK, SCHEMA_VERSION},
     error::{Error, Result},
+    schedule_cron::{CronSchedule, DEFAULT_TIMEZONE},
 };
 
 #[derive(Parser)]
@@ -41,6 +42,18 @@ enum Cmd {
     ValidateConfig {
         #[arg(long)]
         config: PathBuf,
+    },
+    /// Preview UTC fire times for a five-field cron offline.
+    PreviewSchedule {
+        #[arg(long)]
+        cron: String,
+        #[arg(long, default_value = DEFAULT_TIMEZONE)]
+        timezone: String,
+        /// RFC 3339 instant, excluded from the preview.
+        #[arg(long)]
+        after: String,
+        #[arg(long, default_value_t = 5)]
+        count: usize,
     },
     /// Read-only XFS project quota preflight; does not enable Volume APIs.
     StorageCheck {
@@ -190,6 +203,18 @@ async fn run(args: Args) -> Result<()> {
                 "{}",
                 json!({"configuration":"valid","runtime_checked":false})
             );
+        }
+        Cmd::PreviewSchedule {
+            cron,
+            timezone,
+            after,
+            count,
+        } => {
+            let after = chrono::DateTime::parse_from_rfc3339(&after)
+                .map_err(|_| Error::invalid("Schedule preview cutoff must be an RFC 3339 instant"))?
+                .to_utc();
+            let preview = CronSchedule::parse(&cron, &timezone)?.preview(after, count)?;
+            println!("{}", serde_json::to_string(&preview)?);
         }
         Cmd::StorageCheck { config } => {
             require_host_admin()?;
