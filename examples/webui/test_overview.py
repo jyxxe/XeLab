@@ -543,6 +543,17 @@ class OverviewWindow(unittest.TestCase):
             self.page.set_viewport_size({"width": width, "height": height})
             self.assertEqual(window.locator(".window-toolbar").evaluate("el => getComputedStyle(el).position"), "sticky")
 
+    def test_short_desktop_screen_can_scroll_overview_actions_into_reach(self):
+        self.page.set_viewport_size({"width": 900, "height": 240})
+        self.open()
+        window = self.open_overview()
+        window.locator(".overview-facts").first.wait_for(state="attached")
+        refresh = self.section(window, "node").get_by_role("button", name="刷新节点资源")
+        with self.page.expect_response(CORE + NODE_PATH, timeout=2500):
+            refresh.click(timeout=2000)
+        self.assertEqual(self.count(NODE_PATH), 2)
+        self.assertEqual(self.page.evaluate("scrollY"), 0)
+
     def test_keyboard_tab_focus_and_activation(self):
         self.deployment_pages = [{"items": [deployment_item()]},
                                  {"items": [deployment_item(identifier=DEPLOYMENT_2, name="keyboard page")]}]

@@ -275,18 +275,20 @@ function workspace() {
 function fit(win, area = workspace()) {
   let r = win.rect;
   const availableWidth = area.right - area.left - 12;
+  const availableHeight = Math.max(0, area.height - 12);
   if (win.maximized) {
-    r = {x:area.left+6, y:6, width:Math.max(300, availableWidth), height:Math.max(240, area.height-12)};
+    r = {x:area.left+6, y:6, width:Math.max(300, availableWidth), height:availableHeight};
   } else if (!mediaNarrow.matches) {
     const limits=win.contribution?.spec.window;
     r.width = Math.min(area.width-12, Math.max(limits?.min_width||300, Math.min(r.width,limits?.max_width||4096)));
-    r.height = Math.min(area.height-12, Math.max(limits?.min_height||240, Math.min(r.height,limits?.max_height||2160)));
     r.x = Math.max(6, Math.min(r.x, Math.max(6, area.width-r.width-6)));
-    r.y = Math.max(6, Math.min(r.y, Math.max(6, area.height-r.height-6)));
-    // Side Dock space only changes the displayed bounds. Narrow layout uses CSS.
+    // Preserve the saved vertical bounds through temporary viewport changes.
+    const height = Math.min(availableHeight, Math.max(limits?.min_height||240, Math.min(r.height,limits?.max_height||2160)));
+    const y = Math.max(6, Math.min(r.y, area.height-height-6));
+    // Side Dock space only changes the displayed horizontal bounds.
     const width = Math.min(r.width, availableWidth);
     const x = Math.max(area.left+6, Math.min(r.x, area.right-width-6));
-    r = {...r,width,x};
+    r = {x,y,width,height};
   }
   Object.assign(win.element.style, {left:`${r.x}px`, top:`${r.y}px`, width:`${r.width}px`, height:`${r.height}px`});
   win.bridge?.viewportChanged();
