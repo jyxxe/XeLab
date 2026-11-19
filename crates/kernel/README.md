@@ -1,6 +1,6 @@
 # XeLab Kernel：M1–M4 与 M5 工作流定义和任务提交
 
-这是基于现有 **2.8.0 契约**的 Rust 实现，crate 版本为 0.1.0。已实现 M1 普通插件、身份与管理闭环，以及 M2 卷、Blob、Secret、部署备份/恢复、整体离线恢复和内部格式监督器。M3 源码提供普通 OCI Skill 的七项公开操作、声明式 HTTP、OAuth/Client/UI 控制面及独立 WebUI/消息桥；内部 Schema 为 **20**，历史 SQL 及校验和不变。源码功能范围与实际验收状态分别记录：逐项测试、精确提交、PR 集成和 main CI 以有时间戳的[持续进度](../../docs/implementation/m3-progress.md)及[目标 #38](https://github.com/jyxxe/XeLab/issues/38)最新证据为准，不能仅凭实现代码宣布完整 M3 完成。正式生产、AWS/独立宿主和完整格式迁移验收仍独立待完成；公开版本化制品安装入口仍关闭。
+这是基于现有 **2.8.0 契约**的 Rust 实现，crate 版本为 0.1.0。已实现 M1 普通插件、身份与管理闭环，以及 M2 卷、Blob、Secret、部署备份/恢复、整体离线恢复和内部格式监督器。M3 源码提供普通 OCI Skill 的七项公开操作、声明式 HTTP、OAuth/Client/UI 控制面及独立 WebUI/消息桥；内部 Schema 为 **21**。v21 在 v20 任务准入证明的基础上记录领取尝试的 worker 和结果提交回执，历史迁移及校验和保持原值。源码功能范围与实际验收状态分别记录：逐项测试、精确提交、PR 集成和 main CI 以有时间戳的[持续进度](../../docs/implementation/m3-progress.md)及[目标 #38](https://github.com/jyxxe/XeLab/issues/38)最新证据为准，不能仅凭实现代码宣布完整 M3 完成。正式生产、AWS/独立宿主和完整格式迁移验收仍独立待完成；公开版本化制品安装入口仍关闭。
 
 ## 已实现与边界
 
@@ -17,7 +17,7 @@
 | 事件 | 持久化发布/outbox、24h 去重、独立游标、30s 租约、旧租约 fencing、退避重投/死信、保留和容量上限、SSE/HostService、原生快照及恢复授权重置 | 当前源代码与专项证据见 [M4 事件](../../docs/implementation/m4-events.md)和[#54](https://github.com/jyxxe/XeLab/issues/54)；正式 daemon/独立宿主及 AWS 仍由 #50 跟踪 |
 | 工作流定义 | `createWorkflow/getWorkflow/listWorkflows/archiveWorkflow`；同一所有者和名称下递增不可变版本，校验 DAG、输入映射和签名目标，按当前权限分页，使用 ETag 归档 | 归档阻止同一版本的新任务，历史任务继续可读 |
 | 任务提交与查询 | `createTask/getTask/listTasks/listTaskSteps/listAttempts`；提交时固定 Workflow 版本、deadline、授权来源和提供者；步骤的尝试记录按所属任务的 `task.read` 分页读取，无记录时返回空页 | 服务身份执行需单独审批。HTTP 与真实 PostgreSQL 回归见 `crates/kernel/tests/workflows.rs` |
-| 任务步骤领取 | 内核进程内的 `task_engine::claim` 在同一事务中检查依赖与原委托，为首次就绪步骤建立 Attempt、fence 和最长 30 秒的租约。租约受步骤、任务和授权各自的有效期约束 | Broker 派发、续租、带 fence 的结果提交和过期尝试对账待接入。已有尝试的步骤保留给恢复流程处理 |
+| 任务步骤领取与结果提交 | 进程内 `task_engine::claim` 复核依赖与原委托，为首次就绪步骤绑定 worker、fence 和最长 30 秒的租约，期限受步骤、任务和授权约束。`task_engine::commit` 核对 worker、尝试与执行 ID、fence、租约和原授权，校验成功输出的契约，原子写入结果、回执、后继状态及 outbox。相同结果可在租约和授权有效时幂等确认。失败或未知会阻止后继就绪，迟到提交留有审计 | 全部步骤成功时，单个终点的输出写入 `Task.output`。多个终点各自保留步骤输出，`Task.output` 为 `NULL`。Broker 派发、续租和过期尝试对账待接入 |
 | HTTP | #43 已合并签名原始 OpenAPI、精确操作/动作/Schema、共享 Broker 账本、直接 HTTP SSE、隔离来源静态 GET/HEAD 与物理槽；#47 扩展固定 HTTP Skill 的六方法、成功状态和 SSE | #47 精确 HTTP Skill 六方法/流真实 OCI 门禁已通过；不是任意 URL/路径模板/查询参数代理，未声明协议拒绝 |
 | 独立 WebUI/消息桥 | #45 实现 UID 65532 OCI 桌面、公开管理 API/OAuth 客户端、window/widget、固定 alias 的 skill.call、同部署 window.open、通道撤权/登出/升级失效及独立 UI 参考插件 | 组件与打包探针通过不能替代真实核心 OCI/Owner OAuth/iframe 全链；#45 精确完整/专项门禁均通过，未来 batch 方法明确不可用 |
 | 持久卷 | 独立 XFS 硬配额、预留/扩容/回收、实际计数、单写者 fence、OCI 挂载、新私有卷恢复、同格式克隆/回退、内部格式证明 | 多副本应用行为、公开格式安装/迁移、正式独立宿主恢复验收 |
@@ -67,14 +67,14 @@ cargo fmt --all -- --check
 
 ```bash
 xelabctl validate-config --config /etc/xelab/kernel.toml
-xelabctl migrate --config /etc/xelab/kernel.toml --target 20
+xelabctl migrate --config /etc/xelab/kernel.toml --target 21
 xelabctl bootstrap --config /etc/xelab/kernel.toml --owner-name admin
 xelabd --config /etc/xelab/kernel.toml
 ```
 
-`validate-config` 只验证结构和本地约束；不宣称宿主检查已经通过。当前迁移目标为 20：
-空库先建立原始基线，已有库先检查已应用的版本和校验和，再顺序执行追加迁移；
-重复执行仍核对布局与校验和。v20 新增任务准入证明。v19 库可原地迁移；离线快照导入要求精确 Schema 与迁移校验和，v19 快照须先在对应版本恢复并迁移，再重新导出。bootstrap 只允许空账户库，须在启动守护进程前执行。
+`validate-config` 只验证结构和本地约束；不宣称宿主检查已经通过。本版 `xelabctl migrate` 只接受 `--target 21`。
+空库先建立原始基线，已有库核对历史版本及校验和后顺序追加迁移。重复执行仍核对布局与校验和。
+v20 库可原地升级。历史 attempt 的 `worker_id` 保留为 SQL `NULL`，任何 worker 提交这些尝试的结果都会收到 `STATE_CONFLICT`。旧版离线快照须先用匹配的 Schema 和迁移校验和恢复，再升级并重新导出。bootstrap 只允许空账户库，须在启动守护进程前执行。
 守护进程不会隐式迁移数据库。
 
 ## 管理与插件示例
@@ -176,7 +176,7 @@ CI 另在一次性 Linux 主机运行 `tests/oci.rs`：真实 containerd + Rust/
 - 自授 Grant 证明签发权限时，忽略同账户其他非引导自授绑定，只使用独立来源（外部 Grant、父级继承或初始 Owner）。这些自授绑定仍在最外层保留权限/来源记录；撤销独立来源后不能互相维持权限。此优化针对同账户自授，其他来源图仍受现有深度/路径边界限制。
 - 控制器启用与停用清理分别保存 `(created_at,id)` 游标与上界，每轮各最多 16 项，并在项间检查 250 ms 时间片。Probe 按实例代次复用、分批回收；已清理禁用记录不反复协调。完整行为、回归与单项延迟限制见 [Controller 稳定化](../../docs/implementation/m1-acceptance.md#controller-稳定化pr-4-遗留项)。
 
-升级前备份并停机，确认没有未完成任务，执行上面的 `--target 20` 后再启动。
+升级前备份并停机，确认没有未完成任务，执行上面的 `--target 21` 后再启动。
 旧二进制拒绝不匹配的元数据版本，不能直接回退；原生快照恢复同样要求精确布局。
 v1 已有的凭证/账户派生调用继续计入预算；旧版本未记录的实际 Grant 来源无法事后精确重建，因此已有受此漏洞影响的限次来源 Key 应在升级时撤销后重新签发，不把旧账本当成完整历史计费证据。v7 持久备份任务见 [备份任务记录](../../docs/implementation/m2-backup-jobs.md)，v8 新卷恢复和切换见 [恢复实现](../../docs/implementation/m2-restores.md)，v9 元数据快照、启动门禁与权限重置见 [离线恢复组件](../../docs/implementation/m2-platform-recovery.md)。
 v10–11 部署重建与卷克隆见[部署重建实现](../../docs/implementation/m2-deployment-upgrades.md)，
