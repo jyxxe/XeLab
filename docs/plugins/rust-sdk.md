@@ -2,7 +2,7 @@
 
 [插件目录](README.md) · [启动环境](bootstrap.md) · [RPC 语义](../communication/grpc.md)
 
-`xelab-plugin-sdk` 从仓库的 `xelab.v1` Proto 生成 PluginLifecycle、CapabilityService、HostService 和 DataMigration 类型。内核通过 `xelab_kernel::rpc` 重导出同一组类型。源码检出中可以独立构建和测试 SDK。
+`xelab-plugin-sdk` 从仓库的 `xelab.v1` Proto 生成 PluginLifecycle、CapabilityService、HostService、DataMigration 和 TaskWorker 绑定。内核通过 `xelab_kernel::rpc` 重导出同一组类型。源码检出中可以独立构建和测试 SDK。
 
 ```sh
 cargo build -p xelab-plugin-sdk --locked
@@ -38,6 +38,10 @@ tonic::transport::Server::builder()
 ```
 
 各处理器仍需按固定契约校验业务字段、限制字段大小、实现初始化和排空状态。仓库中的参考 Echo 使用同一套 SDK 监听器。[Echo 源码](../../crates/kernel/src/bin/xelab-echo.rs)
+
+## TaskWorker 绑定
+
+`xelab_plugin_sdk::rpc` 提供 `task_worker_server::TaskWorker`、`TaskWorkerServer` 和 `task_worker_client::TaskWorkerClient`，供插件实现服务、构建客户端或编写协议测试。生成类型包含 Execute 进度流、Cancel 和 Query。端到端执行仍需内核调度接入、检查点持久化和跨重启去重。[Execute 契约](../rpc/TaskWorker.Execute.md)
 
 ## 调用 HostService
 
