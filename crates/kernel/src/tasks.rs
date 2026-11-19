@@ -15,6 +15,7 @@ use uuid::Uuid;
 mod authority;
 mod claim_authority;
 mod commit_effects;
+mod dispatch_input;
 mod reads;
 #[cfg(test)]
 mod restart_tests;

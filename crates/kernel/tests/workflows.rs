@@ -17,6 +17,8 @@ mod task_claim_http;
 mod task_commit;
 #[path = "support/task_commit_races.rs"]
 mod task_commit_races;
+#[path = "support/task_worker_lease.rs"]
+mod task_worker_lease;
 #[path = "support/workflow_authority_wait.rs"]
 mod workflow_authority_wait;
 
@@ -223,6 +225,37 @@ impl Fixture {
                 "timeout_ms": 1000
             }]
         })
+    }
+
+    async fn register_skill(&self) -> Uuid {
+        let skill = request(
+            &self.router,
+            Method::POST,
+            "/api/platform/v1/skills",
+            Some(&self.token),
+            Some(&json!({"installation_id":self.installation,
+                "definition":self.skill_definition,"enabled":true})),
+            &[("idempotency-key", "register-skill")],
+        )
+        .await
+        .expect(201);
+        contracts::id(&skill.body, "id").unwrap()
+    }
+
+    async fn deployment(&self, enabled: bool) -> Uuid {
+        let deployment = Uuid::new_v4();
+        let db = self.db.connect().await.unwrap();
+        db.execute(
+            "INSERT INTO deployments(id,owner_id,installation_id,spec,phase,created_at,updated_at)
+             SELECT $1,$2,id,jsonb_build_object('installation_id',id,'enabled',$4::bool,
+                     'limits',manifest->'minimum_resources'),
+                     CASE WHEN $4 THEN 'ready' ELSE 'disabled' END,now(),now()
+             FROM installations WHERE id=$3",
+            &[&deployment, &self.owner, &self.installation, &enabled],
+        )
+        .await
+        .unwrap();
+        deployment
     }
 
     async fn publish(&self, token: &str, spec: &Value, key: &str) -> Reply {
@@ -505,13 +538,7 @@ async fn fixed_workflow_provider_must_be_visible_without_a_live_instance() {
         return;
     };
     let conn = f.db.connect().await.unwrap();
-    let deployment = Uuid::new_v4();
-    conn.execute(
-        "INSERT INTO deployments(id,owner_id,installation_id,spec,phase,created_at,updated_at)
-         SELECT $1,$2,id,jsonb_build_object('installation_id',id,'enabled',false,'limits',manifest->'minimum_resources'),'disabled',now(),now()
-         FROM installations WHERE id=$3",
-        &[&deployment, &f.owner, &f.installation],
-    ).await.unwrap();
+    let deployment = f.deployment(false).await;
 
     let mut spec = f.spec("fixed provider");
     spec["steps"][0]["provider_deployment_id"] = json!(deployment);
@@ -542,25 +569,11 @@ async fn workflow_skill_must_be_visible_and_within_its_timeout() {
     let Some(f) = Fixture::new().await else {
         return;
     };
-    let skill = request(
-        &f.router,
-        Method::POST,
-        "/api/platform/v1/skills",
-        Some(&f.token),
-        Some(&json!({
-            "installation_id":f.installation,
-            "definition":f.skill_definition,
-            "enabled":true
-        })),
-        &[("idempotency-key", "register-skill")],
-    )
-    .await
-    .expect(201)
-    .body;
+    let skill = f.register_skill().await;
     let mut spec = f.spec("signed Skill");
     let step = spec["steps"][0].as_object_mut().unwrap();
     step.remove("contract");
-    step.insert("skill_id".to_owned(), skill["id"].clone());
+    step.insert("skill_id".to_owned(), json!(skill));
 
     let publisher = f.workflow_key(f.owner, &f.token, "workflow.create").await;
     f.publish(&publisher, &spec, "invisible-skill")

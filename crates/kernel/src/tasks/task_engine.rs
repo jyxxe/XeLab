@@ -1,6 +1,10 @@
 //! Trusted, in-process TaskEngine operations.
+mod active;
 mod commit;
+mod lease;
+pub use super::dispatch_input::DispatchInput;
 pub use commit::commit;
+pub use lease::{prepare_dispatch, renew, AttemptLease};
 
 use super::{claim_authority, commit_effects};
 use crate::{
@@ -16,7 +20,7 @@ use std::time::{Duration, Instant};
 use tokio_postgres::{Row, Transaction};
 use uuid::Uuid;
 
-const CLAIM_TIMEOUT: Duration = Duration::from_secs(10);
+const ENGINE_TIMEOUT: Duration = Duration::from_secs(10);
 
 const READY_STEP: &str = "
     SELECT s.id AS step_id, s.task_id, s.fence, s.provider_deployment_id,
@@ -50,13 +54,13 @@ const READY_STEP: &str = "
 /// the original authority, the step timeout, the task deadline and 30 seconds.
 /// The worker must revalidate authority and the lease before dispatch.
 pub async fn claim(db: &Db, auth: &Auth, worker_id: Uuid) -> Result<Option<Value>> {
-    tokio::time::timeout(CLAIM_TIMEOUT, claim_ready(db, auth, worker_id))
+    tokio::time::timeout(ENGINE_TIMEOUT, claim_ready(db, auth, worker_id))
         .await
         .map_err(|_| Error::unavailable("Task claim timed out"))?
 }
 
 async fn claim_ready(db: &Db, auth: &Auth, worker_id: Uuid) -> Result<Option<Value>> {
-    let mut client = db.connect_scoped(CLAIM_TIMEOUT).await?;
+    let mut client = db.connect_scoped(ENGINE_TIMEOUT).await?;
     let mut skipped_steps: Vec<Uuid> = Vec::new();
     loop {
         let tx = client.transaction().await?;
