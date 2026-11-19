@@ -7,6 +7,8 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "crates/plugin-sdk/**"
+      - "crates/kernel/Cargo.toml"
+      - "crates/kernel/migrations/**"
       - "crates/kernel/src/artifact.rs"
       - "crates/kernel/src/controller.rs"
       - "crates/kernel/src/runtime.rs"
@@ -17,10 +19,15 @@ on:
       - "crates/kernel/tests/support/http_host.rs"
       - "crates/kernel/tests/support/oci.rs"
       - "docs/contracts/examples/kernel.toml"
+      - "docs/contracts/kernel-config.schema.json"
+      - "docs/contracts/metadata.sql"
+      - "docs/contracts/openapi.json"
+      - "docs/contracts/permissions.json"
       - "docs/contracts/proto/**"
       - "examples/echo/**"
       - "examples/echo-cpp/**"
       - "sdk/cpp/**"
+      - "tools/acceptance/cargo_executable.py"
       - "tools/acceptance/sdk-conformance.py"
   push:
     branches: ["main"]
@@ -29,6 +36,8 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "crates/plugin-sdk/**"
+      - "crates/kernel/Cargo.toml"
+      - "crates/kernel/migrations/**"
       - "crates/kernel/src/artifact.rs"
       - "crates/kernel/src/controller.rs"
       - "crates/kernel/src/runtime.rs"
@@ -39,10 +48,15 @@ on:
       - "crates/kernel/tests/support/http_host.rs"
       - "crates/kernel/tests/support/oci.rs"
       - "docs/contracts/examples/kernel.toml"
+      - "docs/contracts/kernel-config.schema.json"
+      - "docs/contracts/metadata.sql"
+      - "docs/contracts/openapi.json"
+      - "docs/contracts/permissions.json"
       - "docs/contracts/proto/**"
       - "examples/echo/**"
       - "examples/echo-cpp/**"
       - "sdk/cpp/**"
+      - "tools/acceptance/cargo_executable.py"
       - "tools/acceptance/sdk-conformance.py"
 
 permissions:
@@ -65,16 +79,24 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y cmake libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc \
             libssl-dev nlohmann-json3-dev
+      - name: Configure the SDK as a library dependency
+        run: |
+          cmake -S sdk/cpp/tests/consumer -B "$RUNNER_TEMP/xelab-cpp-consumer" \
+            -DCMAKE_DISABLE_FIND_PACKAGE_nlohmann_json=TRUE
       - name: Build both reference plugins and the shared RPC client
         run: |
-          cargo build -p xelab-kernel --bin xelab-echo --locked
+          rust_artifacts="$RUNNER_TEMP/xelab-sdk-rust-echo-artifacts.jsonl"
+          cargo build -p xelab-kernel --bin xelab-echo --locked \
+            --message-format=json-render-diagnostics > "$rust_artifacts"
           cmake -S sdk/cpp -B "$RUNNER_TEMP/xelab-cpp" -DCMAKE_BUILD_TYPE=Release
           cmake --build "$RUNNER_TEMP/xelab-cpp" --parallel 2
       - name: Compare the contracts and run shared loopback mTLS conformance
         run: |
+          rust_echo=$(python3 tools/acceptance/cargo_executable.py \
+            "$RUNNER_TEMP/xelab-sdk-rust-echo-artifacts.jsonl" bin crates/kernel/src/bin/xelab-echo.rs)
           cargo test -p xelab-kernel --lib --locked artifact::tests::generated_reference_profiles_match_manifest_and_raw_contracts -- --exact
           docker build --target runtime -f examples/echo-cpp/Dockerfile -t xelab-sdk-test:local .
-          python3 tools/acceptance/sdk-conformance.py --rust target/debug/xelab-echo \
+          python3 tools/acceptance/sdk-conformance.py --rust "$rust_echo" \
             --cpp "$RUNNER_TEMP/xelab-cpp/xelab-echo-cpp" --client "$RUNNER_TEMP/xelab-cpp/xelab-sdk-conformance" \
             --container-image xelab-sdk-test:local
 
@@ -129,8 +151,9 @@ jobs:
         env:
           XELAB_CPP_OCI_TEST: "1"
         run: |
-          cargo test -p xelab-kernel --test sdk_oci --no-run --locked
-          mapfile -t tests < <(find target/debug/deps -maxdepth 1 -type f -name 'sdk_oci-*' -executable)
-          [[ ${#tests[@]} == 1 ]]
+          artifacts="$RUNNER_TEMP/xelab-sdk-test-artifacts.jsonl"
+          cargo test -p xelab-kernel --test sdk_oci --no-run --locked \
+            --message-format=json-render-diagnostics > "$artifacts"
+          test_binary=$(python3 tools/acceptance/cargo_executable.py "$artifacts" test crates/kernel/tests/sdk_oci.rs)
           sudo --preserve-env=XELAB_TEST_DATABASE_URL,XELAB_TEST_CPP_IMAGE,XELAB_CPP_OCI_TEST \
-            "${tests[0]}" --ignored --nocapture
+            "$test_binary" --ignored --nocapture

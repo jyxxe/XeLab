@@ -69,9 +69,12 @@ docker.io/xelab-aws/source@sha256:实际摘要 和 docker.io/xelab-aws/target@sh
 ## 执行与检查
 
 ```bash
-cargo test -p xelab-kernel --test volumes --no-run --locked
-sudo -E bash tools/test-aws-format.sh --isolated-test-host \
-  /absolute/path/to/target/debug/deps/volumes-<actual-hash>
+test_artifacts=$(mktemp)
+trap 'rm -f -- "$test_artifacts"' EXIT
+cargo test -p xelab-kernel --test volumes --no-run --locked \
+  --message-format=json-render-diagnostics > "$test_artifacts"
+volumes_test=$(python3 tools/acceptance/cargo_executable.py "$test_artifacts" test crates/kernel/tests/volumes.rs)
+sudo -E bash tools/test-aws-format.sh --isolated-test-host "$volumes_test"
 ```
 
 脚本确认测试二进制确实包含目标用例，只创建新的 512 MiB loopback XFS 镜像，不接受

@@ -2,6 +2,8 @@
 """Run the same mTLS gRPC client against the Rust and C++ Echo executables."""
 
 import argparse
+import csv
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -94,7 +96,10 @@ def docker(image, mounts, environment, command):
                   "--user", f"{os.getuid()}:{os.getgid()}", "--cap-drop", "ALL",
                   "--security-opt", "no-new-privileges", "--tmpfs", "/tmp:rw,nosuid,nodev,mode=1777"]
     for source, target in mounts:
-        invocation.extend(("--mount", f"type=bind,source={source},target={target},readonly"))
+        # Docker parses each --mount argument as a CSV row.
+        options = StringIO()
+        csv.writer(options).writerow(("type=bind", f"source={source}", f"target={target}", "readonly"))
+        invocation.extend(("--mount", options.getvalue().removesuffix("\r\n")))
     for key, value in environment.items():
         invocation.extend(("--env", f"{key}={value}"))
     return [*invocation, "--entrypoint", "/usr/bin/timeout", image,

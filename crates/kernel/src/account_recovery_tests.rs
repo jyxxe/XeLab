@@ -454,6 +454,20 @@ async fn actual_postgres_reactivation_requires_original_live_issuer_and_explicit
 async fn actual_host_cli_reactivates_only_with_maintenance_and_current_owner_credential() {
     use std::os::unix::fs::PermissionsExt;
     crate::config::require_host_admin().unwrap();
+    let binary = std::env::var_os("XELAB_TEST_XELABCTL")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("xelabctl")
+        })
+        .canonicalize()
+        .expect("build the actual xelabctl binary and set XELAB_TEST_XELABCTL to its path");
+    assert!(binary.is_file(), "XELAB_TEST_XELABCTL must name a file");
     let f = Recovered::new()
         .await
         .expect("host CLI acceptance requires PostgreSQL");
@@ -518,14 +532,6 @@ async fn actual_host_cli_reactivates_only_with_maintenance_and_current_owner_cre
     let config_file = directory.join("kernel.toml");
     let text = toml::to_string(&config).unwrap();
     crate::tls::atomic_file(&config_file, text.as_bytes(), 0o600).unwrap();
-    let binary = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("xelabctl");
-    assert!(binary.is_file(), "build the actual xelabctl binary first");
     let request = f.request(&c, f.independent).await;
     let args = vec![
         "recover-account".into(),

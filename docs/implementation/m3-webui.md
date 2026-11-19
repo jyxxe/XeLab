@@ -165,12 +165,14 @@ api getNode
 set -euo pipefail
 : "${XELAB_TEST_DATABASE_URL:?Set the isolated PostgreSQL test DSN}"
 export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
-cargo test --workspace --all-targets --no-run --locked
-cargo build --workspace --bins --locked
-sudo systemctl start containerd
+m3_artifacts=$(mktemp)
 m3_env=$(mktemp)
 m3_browser=$(mktemp -d)
-trap 'rm -f -- "$m3_env"; rm -rf -- "$m3_browser"' EXIT
+trap 'rm -f -- "$m3_artifacts" "$m3_env"; rm -rf -- "$m3_browser"' EXIT
+cargo test --workspace --all-targets --no-run --locked \
+  --message-format=json-render-diagnostics > "$m3_artifacts"
+cargo build --workspace --bins --locked
+sudo systemctl start containerd
 python3 -m venv "$m3_browser"
 "$m3_browser/bin/pip" install 'playwright==1.62.0' 'jsonschema==4.26.0'
 "$m3_browser/bin/python" -m playwright install --with-deps chromium
@@ -186,16 +188,10 @@ bash tools/prepare-m3-ui-images.sh --isolated-test-host --env-file "$m3_env"
 set -a
 . "$m3_env"
 set +a
-python3 - <<'PYTEST'
-import glob, os, subprocess
-binaries=[p for p in glob.glob("target/debug/deps/m3_ui-*") if os.path.isfile(p) and os.access(p,os.X_OK)]
-assert len(binaries)==1,binaries
-variables="XELAB_M3_UI_TEST,XELAB_M3_UI_NAMESPACE,XELAB_TEST_WEBUI_IMAGE,XELAB_TEST_UI_REFERENCE_IMAGE,XELAB_TEST_DATABASE_URL,XELAB_OAUTH_BROWSER_CHROMIUM,XELAB_OAUTH_BROWSER_PYTHON"
-subprocess.run(["sudo", "--preserve-env="+variables, binaries[0], "--ignored", "--nocapture"],check=True)
-PYTEST
+bash tools/test-m3-ui.sh "$m3_artifacts"
 ```
 
-准备脚本以实际平台 manifest 摘要固定两镜像，生成一次性测试签名安装请求；已成功导入的自身 tar 才删除。 其中固定发布者/签名种子仅用于可销毁测试，不是生产密钥。测试生成唯一数据库、私有根目录和证书；浏览器只固定测试证书 SPKI，CLI 使用真实 CA/SAN/Host 校验，hosts 行由 guard 精确撤回。 未用非默认 `CARGO_TARGET_DIR`，以保持与工作流的 binary glob 一致；若有多份旧可执行目标，先核对来源，不任意选择一份。
+准备脚本以实际平台 manifest 摘要固定两镜像，生成一次性测试签名安装请求；已成功导入的自身 tar 才删除。 其中固定发布者/签名种子仅用于可销毁测试，不是生产密钥。测试生成唯一数据库、私有根目录和证书；浏览器只固定测试证书 SPKI，CLI 使用真实 CA/SAN/Host 校验，hosts 行由 guard 精确撤回。运行脚本从本次 Cargo 构建的 JSON 输出中查找唯一的 `m3_ui` 测试可执行文件。
 
 整体测试要求实际安装/审批/启用、注册固定 Skill、真实 Owner/子账户可信登录和 PKCE、桌面读取/调用/偏好、第三方窗口/组件与同部署窗口打开； 错误 nonce/协议/序列/来源后要求仅合法调用产生一次 POST、Call 和日额度，无并发泄漏；真实撤权后拒绝新调用且不计费。 停用 WebUI 后运行真正 `xelabctl`，随后在同一测试进程重新建立 App/Controller/HostService/HTTPS listener，复用持久数据库与密钥，检查账本、撤权、OCI Skill 和 cgroup。 这是**核心组件重启**，不是 daemon SIGKILL/reexec、OS 重启、断电或独立宿主恢复证据。
 

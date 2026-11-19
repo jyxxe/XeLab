@@ -16,6 +16,10 @@ cmake --build target/cpp-sdk --parallel
 cargo build -p xelab-kernel --bin xelab-echo --locked
 ```
 
+在插件项目中，可用 `add_subdirectory()` 引入 `sdk/cpp` 并链接 `xelab_plugin_sdk`。
+作为子目录引入时默认只构建库。独立配置 `sdk/cpp` 时默认启用 Echo 和一致性客户端，它们需要 nlohmann-json。
+用 `XELAB_SDK_BUILD_TOOLS` 控制参考程序是否构建。启用后，`BUILD_TESTING` 控制一致性客户端是否构建。
+
 为插件实现生成的生命周期和能力服务，使用 `ConfigurePluginServer` 注册固定 mTLS 监听器。SDK 核验工作负载 CA 与内核 SPIFFE URI，限制单条 gRPC 消息大小，并通过证书文件监视器更新新连接的证书。实现方仍需验证业务 Schema 和摘要，并协作处理取消、排空和流终帧。C++ Echo 支持一元及正常流式调用，Rust 专用故障夹具在 C++ 端返回参数错误。
 
 `ConnectHost` 返回固定宿主入口的 HostService stub，核验内核 DNS 名称和 SPIFFE URI。`HostCallContext` 继承当前 gRPC 调用的取消状态，取传输期限、`RpcContext` 期限及方法上限的最小值。调用方使用当前委托填充 Proto 请求，并可从完成后的调用读取 `xelab-error-bin`。HostService 逐调用确认当前实例与委托。[HostService 方法](../rpc/README.md#hostservice)

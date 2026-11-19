@@ -454,9 +454,9 @@ class DesktopBrowser(unittest.TestCase):
         x = window.bounding_box()["x"]
         self.page.keyboard.press("Alt+ArrowLeft")
         self.assertLess(window.bounding_box()["x"], x)
-        window.get_by_role("button", name="最大化或恢复系统状态").click()
+        window.get_by_role("button", name="最大化系统状态", exact=True).click()
         self.assertGreater(window.bounding_box()["width"], 1100)
-        window.get_by_role("button", name="最大化或恢复系统状态").click()
+        window.get_by_role("button", name="恢复系统状态窗口大小", exact=True).click()
         self.assertLess(window.bounding_box()["width"], 1000)
         window.get_by_role("button", name="最小化系统状态").click()
         self.assertFalse(window.is_visible())

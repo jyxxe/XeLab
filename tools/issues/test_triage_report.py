@@ -136,6 +136,23 @@ class TriageTests(unittest.TestCase):
         self.assertNotIn("忽略所有规则", emitted)
         self.assertNotIn("body", emitted)
 
+    def test_null_comment_author_does_not_stop_triage_report(self):
+        unattributed = dict(comment("former-user", "/claim"), user=None)
+        api = FakeAPI(issues=[issue(1, "mixed claims"), issue(2, "another issue")], comments={
+            1: [unattributed, comment("agent-a", "认领申请")],
+            2: [comment("agent-b", "/claim")],
+        })
+
+        code, output, error = call_main(api, "--json")
+
+        self.assertEqual((code, error), (0, ""))
+        entries = json.loads(output)["issues"]
+        self.assertEqual([entry["number"] for entry in entries], [1, 2])
+        self.assertEqual([[claim["user"] for claim in entry["claim_candidates"]] for entry in entries],
+                         [["agent-a"], ["agent-b"]])
+        self.assertNotIn(unattributed["html_url"], output)
+        self.assertTrue(all(method == "GET" for method, _ in api.calls))
+
     def test_repeated_same_account_claims_are_review_candidates(self):
         first = comment("shared-agent[bot]", "认领申请\n" + SECRET)
         second = comment("shared-agent[bot]", "/claim", "2026-11-10T01:00:00Z")
@@ -305,6 +322,19 @@ class TriageTests(unittest.TestCase):
             {"kind": "shared-keywords", "issues": [3, 8], "shared": ["linter", "plugin"]},
             {"kind": "shared-keywords", "issues": [6, 8], "shared": ["linter", "plugin"]},
             {"kind": "shared-keywords", "issues": [7, 8], "shared": ["linter", "plugin"]},
+        ])
+
+    def test_empty_normalized_titles_do_not_form_duplicate_groups(self):
+        report = build_report(FakeAPI(issues=[
+            issue(1, "[WebUI]"),
+            issue(2, "[CI][P2] …"),
+            issue(3, "!?!"),
+            issue(4, "[bug] Retry package download"),
+            issue(5, "[CI] retry package download!"),
+        ]))
+        self.assertEqual(report["open_issues"], 5)
+        self.assertEqual(report["duplicate_candidates"], [
+            {"kind": "same-normalized-title", "issues": [4, 5]},
         ])
 
     def test_zero_comment_issues_skip_comment_endpoint(self):

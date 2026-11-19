@@ -46,6 +46,7 @@ label{font-size:12px;font-weight:600;color:var(--muted-text)}
 button.danger{border-color:color-mix(in srgb,var(--danger) 40%,var(--border));color:var(--danger)}
 button.danger:hover{background:color-mix(in srgb,var(--danger) 8%,var(--surface));border-color:color-mix(in srgb,var(--danger) 55%,var(--border));filter:none}
 button:disabled{box-shadow:none}
+.list-page-more[aria-disabled=true]{cursor:wait;color:var(--muted-text)}
 
 .card{
   border:1px solid var(--shell-border);
@@ -147,6 +148,7 @@ button:disabled{box-shadow:none}
 .overview-source{font-family:ui-monospace,monospace;font-size:11px;color:var(--muted-text)}
 .overview-read-at{margin-left:auto;font-size:11px;color:var(--muted-text);font-variant-numeric:tabular-nums}
 .overview-refresh{min-height:28px;padding:4px 10px;font-size:12px}
+.overview-section button[aria-disabled=true]{cursor:wait;color:var(--muted-text)}
 .overview-facts{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:0;font-size:12.5px}
 .overview-facts dt{color:var(--muted-text)}
 .overview-facts dd{margin:0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}

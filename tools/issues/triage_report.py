@@ -82,7 +82,7 @@ def claim_candidates(api, number):
         body = comment.get("body") or ""
         url = comment["html_url"]
         matched = any(marker in body for marker in CLAIM_MARKERS) or BRANCH_CLAIM.search(body)
-        if matched and url not in seen:
+        if matched and url not in seen and comment["user"] is not None:
             seen.add(url)
             claims.append({"user": comment["user"]["login"], "created_at": comment["created_at"], "url": url})
     claims.sort(key=lambda c: (c["created_at"], c["user"], c["url"]))
@@ -97,7 +97,8 @@ def duplicate_candidates(issues):
         number = issue["number"]
         title = normalize_title(issue["title"])
         normalized_titles[number] = title
-        by_title.setdefault(title, []).append(number)
+        if title:
+            by_title.setdefault(title, []).append(number)
     for numbers in by_title.values():
         if len(numbers) > 1:
             candidates.append({"kind": "same-normalized-title", "issues": sorted(numbers)})

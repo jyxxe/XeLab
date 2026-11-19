@@ -23,6 +23,15 @@ sys.dont_write_bytecode=True
 DOCS=Path(__file__).resolve().parents[1]
 ROOT=DOCS.parent
 ERRORS=[]
+MARKDOWN_INLINE_TOKEN = re.compile(
+    # Code spans use matching runs of backticks and stop at paragraph or heading boundaries.
+    r'(?<![\\`])(?:\\\\)*(?P<ticks>`+)(?!`)'
+    r'(?:(?!\n(?:[ \t]*(?:\n|$)| {0,3}#{1,6}(?:[ \t\n]|$)))[\s\S])*?(?<!`)(?P=ticks)(?!`)'
+    # A real link can contain inline code in its label.
+    r'|(?<!!)\[(?P<label>[^\]]*)\]\([ \t]*(?P<target><[^>\n]+>|(?:[^\s()]|\([^()\n]*\))+)'
+    r'''(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?[ \t]*\)'''
+)
+
 def check(ok,message):
     if not ok: ERRORS.append(message)
 def no_duplicate_pairs(pairs):
@@ -44,11 +53,29 @@ def pointer(data,fragment):
         data=data[part.replace('~1','/').replace('~0','~')]
     return data
 def without_code(value):
-    lines=[]; fenced=False
+    """Skip fenced examples when scanning Markdown links and anchors."""
+    lines = []
+    fence = None
+    pattern = re.compile(r'^(`{3,}|~{3,})(.*)$')
     for line in value.splitlines():
-        if line.strip().startswith(('```','~~~')): fenced=not fenced; continue
-        if not fenced: lines.append(line)
+        marker = pattern.match(line.lstrip())
+        if fence is not None:
+            if marker and marker[1].startswith(fence) and not marker[2].strip(' \t'):
+                fence = None
+        elif marker and (marker[1][0] == '~' or '`' not in marker[2]):
+            fence = marker[1]
+            if lines and lines[-1].strip():
+                lines.append('')
+        else:
+            lines.append(line)
     return '\n'.join(lines)
+
+
+def markdown_link_targets(content):
+    for token in MARKDOWN_INLINE_TOKEN.finditer(without_code(content)):
+        if token['target'] is not None:
+            yield token['target']
+
 
 @lru_cache(maxsize=None)
 def markdown_anchors(path):
@@ -60,7 +87,8 @@ def markdown_anchors(path):
         heading = re.match(r'^ {0,3}#{1,6}[ \t]+(.*)$', line)
         if heading:
             title = re.sub(r'(?:^|[ \t]+)#+[ \t]*$', '', heading[1]).strip()
-            title = re.sub(r'\[([^\]\n]+)\]\([^\n)]+\)', r'\1', title)
+            title = MARKDOWN_INLINE_TOKEN.sub(
+                lambda token: token['label'] if token['target'] is not None else token[0], title)
             slug = ''.join(
                 char for char in unescape(title).lower()
                 if char in ' -_' or category(char)[0] in 'LMN'
@@ -155,17 +183,13 @@ def baseline():
         check((DOCS/'internal'/f'{m["module"]}.md').is_file(),'missing internal module page '+m['module'])
     # Markdown links, page size and reachability.
     md=list(DOCS.rglob('*.md'))+[ROOT/'README.md',ROOT/'plan/v0.md']
-    link_pattern=(
-        r'(?<!!)\[[^\]]*\]\([ \t]*(<[^>\n]+>|(?:[^\s()]|\([^()\n]*\))+)'
-        r'''(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?[ \t]*\)'''
-    )
     graph={}
     for file in md:
         content=file.read_text()
         if 'archive' not in file.parts:
             check(len(content.splitlines())<=220,'human page exceeds 220 lines: '+str(file.relative_to(ROOT)))
         edges=[]
-        for value in re.findall(link_pattern,without_code(content)):
+        for value in markdown_link_targets(content):
             target=value.strip('<>');parsed=urlparse(target)
             if parsed.scheme or parsed.netloc:continue
             destination=(file.parent/unquote(parsed.path)).resolve() if parsed.path else file.resolve()

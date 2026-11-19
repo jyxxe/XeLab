@@ -641,6 +641,21 @@ def wait_for_widget_window(page, widget, frame, deployment_id, contribution_id="
             audit.end()
 
 
+def wait_for_plugin_catalog(plugins, report):
+    report["step"] = "desktop_wait_actual_plugin_catalog"
+    deployments = plugins.get_by_role("region", name="部署", exact=True)
+    for title in ("M3 official WebUI", "M3 independent UI reference"):
+        deployments.get_by_role("heading", name=title, exact=True).wait_for()
+
+    # The catalog loads installation cards independently of the deployment rows.
+    check = "desktop_reads_actual_installed_plugins"
+    report["step"] = check
+    installations = plugins.get_by_role("region", name="安装制品", exact=True)
+    for plugin_id in ("org.xelab.webui", "org.xelab.ui-reference"):
+        installations.get_by_role("heading", name=plugin_id, exact=True).first.wait_for()
+    report["checks"][check] = True
+
+
 def close_windows(page, report, observed=None, bodies=None):
     report["step"] = "desktop_close_actual_windows"
     for _ in range(16):
@@ -994,10 +1009,7 @@ def run(config, report):
         require('"kernel_cpu_millis": 4000' in resources.inner_text() and '"kernel_memory_bytes": 17179869184' in resources.inner_text(), "desktop_reads_actual_node_reservations")
         close_windows(page, report, observed, bodies)
         plugins = open_app(page, "plugins", "插件中心")
-        report["step"] = "desktop_wait_actual_plugin_catalog"
-        plugins.get_by_role("heading", name="M3 official WebUI", exact=True).wait_for()
-        plugins.get_by_role("heading", name="M3 independent UI reference", exact=True).wait_for()
-        require("org.xelab.webui" in plugins.inner_text() and "org.xelab.ui-reference" in plugins.inner_text(), "desktop_reads_actual_installed_plugins")
+        wait_for_plugin_catalog(plugins, report)
         close_windows(page, report, observed, bodies)
         accounts = open_app(page, "accounts", "账户与权限")
         accounts.locator("pre.result").wait_for()

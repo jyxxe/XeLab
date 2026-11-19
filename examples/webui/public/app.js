@@ -17,8 +17,8 @@ const node = (tag, props = {}, ...children) => {
 };
 const button = (text, action, props = {}) => node('button', {type: 'button', onclick: action, ...props}, text);
 
-// One stroke-based 24x24 icon set shared by the Dock, launcher and pinned
-// entries. Icons are built as SVG DOM nodes (no innerHTML) so the strict
+// One stroke-based 24x24 icon set shared by the desktop shell.
+// Icons are built as SVG DOM nodes (no innerHTML) so the strict
 // script-src 'self' CSP keeps protecting the shell.
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const ICONS = {
@@ -28,10 +28,15 @@ const ICONS = {
   accounts: [{tag:'circle',cx:12,cy:8.4,r:3.2},{tag:'path',d:'M5.2 20c.6-3.4 3.4-5.4 6.8-5.4s6.2 2 6.8 5.4'}],
   resources: [{tag:'path',d:'M12 3.4 20 7.8 12 12.2 4 7.8 12 3.4Z'},{tag:'path',d:'M4 12l8 4.4 8-4.4'},{tag:'path',d:'M4 16.2l8 4.4 8-4.4'}],
   clients: [{tag:'rect',x:3.5,y:5,width:17,height:10.5,rx:1.8},{tag:'path',d:'M9 19.5h6M12 15.5v4'}],
-  contributions: [{tag:'rect',x:3.5,y:4.5,width:17,height:15,rx:1.8},{tag:'path',d:'M9.5 4.5v15'}],
+  contributions: [{tag:'rect',x:3.5,y:4.5,width:17,height:15,rx:1.8},{tag:'path',d:'M10 9l-3 3 3 3m4-6 3 3-3 3'}],
   tasks: [{tag:'path',d:'M4 7h9M4 12h9M4 17h5.5'},{tag:'path',d:'M17.4 16.4l1.7 1.7 3-3.6'}],
   settings: [{tag:'path',d:'M4 7h4M12 7h8'},{tag:'circle',cx:10,cy:7,r:2},{tag:'path',d:'M4 12h9M17 12h3'},{tag:'circle',cx:15,cy:12,r:2},{tag:'path',d:'M4 17h2M10 17h10'},{tag:'circle',cx:8,cy:17,r:2}],
   restore: [{tag:'path',d:'M12 19V6M6.6 11.4 12 6l5.4 5.4'}],
+  'window-close': [{tag:'path',d:'M6 6l12 12M18 6 6 18'}],
+  'window-minimize': [{tag:'path',d:'M6 12h12'}],
+  'window-maximize': [{tag:'rect',x:5,y:5,width:14,height:14,rx:1.8}],
+  'window-restore': [{tag:'rect',x:5,y:9,width:10,height:10,rx:1.5},{tag:'path',d:'M9 9V6.5A1.5 1.5 0 0 1 10.5 5h7A1.5 1.5 0 0 1 19 6.5v7a1.5 1.5 0 0 1-1.5 1.5H15'}],
+  'dock-unpin': [{tag:'path',d:'M11 5h6l-2 5 3 3v2h-3M9 9l-.5 2.5L6 14v1h5v5M4 4l16 16'}],
   launcher: [{tag:'path',d:'M6 6h.01M12 6h.01M18 6h.01M6 12h.01M12 12h.01M18 12h.01M6 18h.01M12 18h.01M18 18h.01'}],
 };
 function icon(name) {
@@ -321,6 +326,13 @@ function dockButton(attribute, datasetKey, value) {
   }
   return null;
 }
+function dockControlInView(control, dock) {
+  const {left, top} = dock.getBoundingClientRect();
+  const clipLeft = left + dock.clientLeft, clipTop = top + dock.clientTop;
+  const bounds = control.getBoundingClientRect();
+  return bounds.left >= clipLeft && bounds.right <= clipLeft + dock.clientWidth
+    && bounds.top >= clipTop && bounds.bottom <= clipTop + dock.clientHeight;
+}
 function hideMinimizedWindow(win) {
   win.minimized = true;
   win.element.hidden = true;
@@ -341,7 +353,12 @@ function focus(win, persist = true) {
   win.minimized = false;
   win.bridge?.setVisible(document.visibilityState==='visible');
   win.element.hidden = false;
-  if (++layer > 1000) { layer = 10; for (const other of windows.values()) other.element.style.zIndex = String(layer++); }
+  if (++layer > 1000) {
+    const stack = [...windows.values()].sort(
+      (left, right) => Number(left.element.style.zIndex) - Number(right.element.style.zIndex));
+    layer = 10;
+    for (const other of stack) other.element.style.zIndex = String(layer++);
+  }
   for (const other of windows.values()) other.element.dataset.focused = String(other === win);
   win.element.style.zIndex = String(layer);
   $('#active-app').textContent = win.app.title;
@@ -391,6 +408,17 @@ function closeWindow(win, persist = true) {
 function canAdjustWindow(win) {
   return !win.maximized && !mediaNarrow.matches;
 }
+function syncWindowGeometryControls(win) {
+  const canMove = canAdjustWindow(win);
+  const canResize = canMove && win.contribution?.spec.window.resizable !== false;
+  let label = `${win.app.title}窗口。`;
+  if (canMove) label += 'Alt加方向键移动。';
+  if (canResize) label += 'Alt加Shift加方向键调整大小。';
+  win.element.querySelector('.window-title').setAttribute('aria-label', label);
+  const resize = win.element.querySelector('.window-resize');
+  resize.hidden = !canResize;
+  resize.setAttribute('aria-label', `调整${win.app.title}大小`);
+}
 function pointerMove(win, handle, resize) {
   handle.addEventListener('pointerdown', event => {
     if (event.button !== 0 || (!resize && event.target.closest('button'))) return;
@@ -419,16 +447,33 @@ function pointerMove(win, handle, resize) {
     handle.addEventListener('pointercancel',done);
   });
 }
+function syncWindowControls(win) {
+  const [close,minimize,maximize] = win.element.querySelectorAll('.window-controls button');
+  const {title} = win.app;
+  close.setAttribute('aria-label',`关闭${title}`);
+  minimize.setAttribute('aria-label',`最小化${title}`);
+  maximize.setAttribute('aria-label',win.maximized ? `恢复${title}窗口大小` : `最大化${title}`);
+  maximize.replaceChildren(icon(win.maximized ? 'window-restore' : 'window-maximize'));
+  syncWindowGeometryControls(win);
+}
 function openWindow(app, options = {}) {
   if (windows.size >= (runtimeConfig.max_open_windows || 16)) { toast('已达打开窗口上限，请先关闭一个窗口。'); return null; }
   const id = crypto.randomUUID();
   const heading = node('h2', {id:`title-${id}`}, app.title);
-  const titlebar = node('header', {class:'window-title', tabindex:0, 'aria-label':`${app.title}窗口。Alt加方向键移动，Alt加Shift加方向键调整大小。`});
+  const titlebar = node('header', {class:'window-title', tabindex:0});
   const content = node('div', {class:'window-content'});
   const element = node('section', {class:'window', role:'dialog', 'aria-labelledby':`title-${id}`, 'data-view-id':id, 'data-app':app.id}, titlebar, content);
   const win = {id, app, content, element, rect:options.rect || {x:40+windows.size*24,y:24+windows.size*20,width:680,height:520}, minimized:false,maximized:Boolean(options.maximized),ephemeral:Boolean(options.ephemeral),restoreRef:options.restoreRef,controller:null};
-  const maximize = () => { win.maximized = !win.maximized; fit(win); saveLayout(); };
-  titlebar.append(node('div', {class:'window-controls'}, button('×',()=>closeWindow(win),{'aria-label':`关闭${app.title}`}),button('−',()=>minimizeWindow(win),{'aria-label':`最小化${app.title}`}),button('□',maximize,{'aria-label':`最大化或恢复${app.title}`})),heading);
+  const maximize = () => {
+    win.maximized = !win.maximized;
+    syncWindowControls(win);
+    fit(win);
+    saveLayout();
+  };
+  titlebar.append(node('div',{class:'window-controls'},
+    button(icon('window-close'),()=>closeWindow(win)),
+    button(icon('window-minimize'),()=>minimizeWindow(win)),
+    button('',maximize)),heading);
   titlebar.addEventListener('dblclick', event => { if (!event.target.closest('button')) maximize(); });
   titlebar.addEventListener('keydown', event => {
     if (!event.altKey || !['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)) return;
@@ -440,7 +485,7 @@ function openWindow(app, options = {}) {
     adjustWindow(win, {[key]:displayedWindowRect(win)[key]+delta});
     saveLayout();
   });
-  const resize = button('', ()=>{}, {class:'window-resize', 'aria-label':`调整${app.title}大小`});
+  const resize = button('', ()=>{}, {class:'window-resize'});
   resize.addEventListener('keydown', event => {
     if (!event.key.startsWith('Arrow')) return;
     if(win.contribution?.spec.window.resizable===false)return;
@@ -452,6 +497,7 @@ function openWindow(app, options = {}) {
     saveLayout();
   });
   element.append(resize);
+  syncWindowControls(win);
   element.addEventListener('pointerdown',()=>focus(win));
   element.addEventListener('focusin',()=> { if (element.dataset.focused !== 'true') focus(win); });
   windows.set(id,win);
@@ -470,6 +516,9 @@ function openWindow(app, options = {}) {
   loadApp(win);
   return win;
 }
+mediaNarrow.addEventListener('change', () => {
+  for (const win of windows.values()) syncWindowGeometryControls(win);
+});
 window.addEventListener('resize',()=> {
   const narrow=mediaNarrow.matches;
   const area = workspace();
@@ -497,14 +546,31 @@ function toolbar(win, title, ...actions) {
     node('h2',{class:'window-toolbar-title',title},title),
     node('div',{class:'window-toolbar-actions',role:'group','aria-label':`${title}操作`},
       ...actions,
-      button('刷新',()=>loadApp(win),{'aria-label':`刷新${title}`})));
+      button('刷新',()=>loadApp(win),{'aria-label':`刷新${title}`,'data-window-refresh':''})));
 }
 async function loadApp(win) {
   win.controller?.abort();
-  win.controller = new AbortController();
-  if (!['settings','tasks'].includes(win.app.id) && !permittedContent(win)) return;
-  win.content.replaceChildren(state('loading','正在读取核心…'));
-  try { await win.app.render(win); } catch (error) { if (windows.has(win.id)) win.content.replaceChildren(toolbar(win,win.app.title),failure(error)); }
+  const controller = new AbortController();
+  win.controller = controller;
+  const focusedRefresh = win.content.querySelector('button[data-window-refresh]:focus');
+  const title = focusedRefresh ? win.element.querySelector('.window-title') : null;
+  let restoreRefresh = Boolean(title);
+  const cancelRestore = () => { restoreRefresh = false; };
+  title?.focus({preventScroll:true});
+  // A later Tab away cancels the handoff, even if focus returns to the title.
+  title?.addEventListener('blur', cancelRestore, {once:true});
+  try {
+    if (!['settings','tasks'].includes(win.app.id) && !permittedContent(win)) return;
+    win.content.replaceChildren(state('loading','正在读取核心…'));
+    await win.app.render(win);
+  } catch (error) {
+    if (windows.has(win.id)) win.content.replaceChildren(toolbar(win,win.app.title),failure(error));
+  } finally {
+    title?.removeEventListener('blur', cancelRestore);
+    if (restoreRefresh && win.controller === controller && !controller.signal.aborted && document.activeElement === title) {
+      win.content.querySelector('button[data-window-refresh]')?.focus({preventScroll:true});
+    }
+  }
 }
 // The editor sends timeout_ms to core as the business deadline. Core may
 // finish authorization reads and settle the Call just after that deadline
@@ -554,34 +620,47 @@ function editor(title, operation, {params={}, initial={}, etag, body=true, note=
   }},{ephemeral:true});
 }
 function details(title, data) { return openWindow({id:'details',title,render:async win=>win.content.replaceChildren(raw(data))},{ephemeral:true}); }
+function appendListPage(list, data, renderItem, emptyMessage = '当前账户授权范围内没有记录。') {
+  for (const item of rows(data)) list.append(renderItem(item));
+  if (!list.childElementCount && !data.next_cursor) {
+    list.append(state('empty','暂无可见项目',emptyMessage));
+  }
+}
 function paginatedList(win, {title,operation,params={},query,renderItem,moreText='加载下一页'}, firstPage) {
   const list = node('div',{class:'list'});
-  const append = data => {
-    for (const item of rows(data)) list.append(renderItem(item));
-    if (!list.childElementCount && !data.next_cursor) {
-      list.append(state('empty','暂无可见项目','当前账户授权范围内没有记录。'));
-    }
-  };
-  append(firstPage);
+  appendListPage(list,firstPage,renderItem);
   const pageError = node('div', {class:'list-page-error'});
+  const pageEnd = node('p', {class:'muted', hidden:true}, '已加载全部可见项目。');
   const more = button(moreText,async()=> {
-    more.disabled = true;
+    if (more.getAttribute('aria-disabled') === 'true') return;
+    more.setAttribute('aria-disabled', 'true');
     try {
       const next = await request(operation,{params,query:{...query,cursor:more.dataset.cursor},signal:win.controller.signal});
       if (!more.isConnected) return;
-      append(next.data);
+      const pageStart = list.childElementCount;
+      appendListPage(list,next.data,renderItem);
       pageError.replaceChildren();
-      more.dataset.cursor = next.data.next_cursor || '';
-      more.hidden = !next.data.next_cursor;
+      const cursor = next.data.next_cursor || '';
+      more.dataset.cursor = cursor;
+      pageEnd.hidden = Boolean(cursor);
+      if (document.activeElement === more) {
+        // The new cards are before the paging button in tab order.
+        const target = list.children[pageStart]?.querySelector('h3') || (!cursor ? pageEnd : null);
+        if (target) {
+          target.tabIndex = -1;
+          target.focus({preventScroll:!more.matches(':focus-visible')});
+        }
+      }
+      more.hidden = !cursor;
     } catch(error) {
       if (!more.isConnected) return;
       pageError.replaceChildren(failure(error));
     } finally {
-      if (more.isConnected) more.disabled = false;
+      more.removeAttribute('aria-disabled');
     }
-  }, {'aria-label':`加载下一页${title}`, hidden:!firstPage.next_cursor});
+  }, {class:'list-page-more', 'aria-label':`加载下一页${title}`, hidden:!firstPage.next_cursor});
   more.dataset.cursor = firstPage.next_cursor || '';
-  return [list,pageError,more];
+  return [list,pageError,more,pageEnd];
 }
 async function listSection(win, {title,operation,params={},query={},actions=[],renderItem}) {
   const pageQuery = {limit:50,...query};
@@ -591,11 +670,8 @@ async function listSection(win, {title,operation,params={},query={},actions=[],r
 }
 
 async function plugins(win) {
+  const {signal} = win.controller;
   const query = {limit:200};
-  const [installations,deployments] = await Promise.all([
-    request('listInstallations',{query,signal:win.controller.signal}),
-    request('listDeployments',{query,signal:win.controller.signal}),
-  ]);
   const install = button('安装签名镜像',()=>editor('安装插件','installPlugin',{initial:{image:'',publisher_id:'',signature:''}}));
   const deploy = button('创建部署',()=>editor('创建部署','createDeployment',{initial:{installation_id:'',display_name:'',enabled:false,replicas:1,limits:{cpu_millis:500,memory_bytes:536870912,ephemeral_bytes:268435456,pids:128},config:{},volume_ids:[]}}));
   const renderDeployment = item => {
@@ -608,11 +684,26 @@ async function plugins(win) {
     return node('article',{class:'card'},node('h3',{},spec.display_name),node('p',{},node('span',{class:'badge'},item.phase),` · ${spec.enabled?'已启用':'已停用'}`),node('p',{class:'code'},item.id),node('p',{},(item.conditions||[]).join(' · ')),actions);
   };
   const renderInstallation = item => node('article',{class:'card'},node('h3',{},item.plugin_id),node('p',{},`版本 ${item.version} · ${item.state}`),node('p',{class:'code'},item.image_digest),node('div',{class:'toolbar'},button('安装详情',()=>details('固定安装制品',item))));
-  const section = (title, operation, firstPage, renderItem) => node('section', {'aria-label':title}, node('h3',{},title),
-    ...paginatedList(win,{title,operation,query,renderItem,moreText:`加载下一页${title}`},firstPage));
-  win.content.replaceChildren(toolbar(win,'插件中心',install,deploy),node('div',{class:'list'},
-    section('部署','listDeployments',deployments.data,renderDeployment),
-    section('安装制品','listInstallations',installations.data,renderInstallation)));
+  const catalog = node('div',{class:'list'});
+  const loadSection = async (title, operation, renderItem) => {
+    const heading = node('h3',{},title);
+    const section = node('section',{'aria-label':title},heading,state('loading','正在读取核心…'));
+    catalog.append(section);
+    const isCurrent = () => !signal.aborted && section.isConnected;
+    try {
+      const {data} = await request(operation,{query,signal},isCurrent);
+      if (!isCurrent()) return;
+      const list = paginatedList(win,{title,operation,query,renderItem,moreText:`加载下一页${title}`},data);
+      section.replaceChildren(heading,...list);
+    } catch(error) {
+      if (isCurrent()) section.replaceChildren(heading,failure(error));
+    }
+  };
+  win.content.replaceChildren(toolbar(win,'插件中心',install,deploy),catalog);
+  await Promise.all([
+    loadSection('部署','listDeployments',renderDeployment),
+    loadSection('安装制品','listInstallations',renderInstallation),
+  ]);
 }
 async function skills(win) {
   await listSection(win,{title:'Skill 浏览器',operation:'listSkills',actions:[button('注册固定 Skill',()=>editor('注册 Skill','registerSkill',{initial:{installation_id:'',definition:{},enabled:false}}))],renderItem:item=>node('article',{class:'card'},node('h3',{},item.definition.name),node('p',{},`${item.definition.version} · ${item.availability}`),node('p',{class:'code'},`UUID ${item.id}`),node('p',{class:'code'},item.definition_digest),node('p',{},(item.reason_codes||[]).join(' · ')),node('div',{class:'toolbar'},button('定义与输入 Schema',()=>details('不可变 Skill 定义',item)),button('调用测试',()=>editor('调用固定 Skill','invokeSkill',{params:{skill_id:item.id},initial:{input:{},idempotency_key:crypto.randomUUID()},note:`固定UUID ${item.id}；定义摘要 ${item.definition_digest}。输入须符合此版本Schema，权限仍由核心逐次校验。`})),button(item.enabled?'禁用':'启用',()=>editor('改变 Skill 状态','setSkillEnabled',{params:{skill_id:item.id},initial:{enabled:!item.enabled},etag:revision(item)})),button('归档',()=>editor('归档 Skill','archiveSkill',{params:{skill_id:item.id},etag:revision(item),body:false,note:'归档是不可逆的逻辑停用；历史调用仍保留。'}))))});
@@ -670,7 +761,12 @@ async function apiKeys(win,account) {
 }
 async function resources(win) {
   const result = await request('getNode',{signal:win.controller.signal});
-  win.content.replaceChildren(toolbar(win,'资源与系统状态'),node('p',{class:'muted'},'以下为核心实际返回的宿主状态与资源账本。内核4C16G预留不借给界面。'),raw(result.data));
+  const {kernel_cpu_millis:cpu, kernel_memory_bytes:memory} = result.data?.config ?? {};
+  const reserve = Number.isSafeInteger(cpu) && cpu > 0 && Number.isSafeInteger(memory) && memory > 0
+    ? `内核预留 ${cpu} 毫核 CPU、${memory} 字节内存。`
+    : '';
+  const summary = `以下为核心实际返回的宿主状态与资源账本。${reserve}插件资源池按扣除内核和系统预留后的容量计算。`;
+  win.content.replaceChildren(toolbar(win,'资源与系统状态'),node('p',{class:'muted'},summary),raw(result.data));
 }
 async function clients(win) {
   const signal = win.controller.signal;
@@ -708,10 +804,10 @@ async function displayContribution(win,fixed,reference,keepRect){
   win.dispose?.();win.restoreRef=reference;win.contribution=fixed;
   win.app.id=`plugin:${fixed.deployment_id}:${fixed.spec.id}`;win.app.title=`${fixed.spec.title} · ${fixed.plugin_id}`;
   win.element.dataset.app=win.app.id;win.element.querySelector('.window-title h2').textContent=win.app.title;
-  for(const[index,control]of [...win.element.querySelectorAll('.window-controls button')].entries())control.setAttribute('aria-label',`${['关闭','最小化','最大化或恢复'][index]}${win.app.title}`);
-  const resize=win.element.querySelector('.window-resize');resize.hidden=!fixed.spec.window.resizable;resize.setAttribute('aria-label',`调整${win.app.title}大小`);
+  syncWindowControls(win);
   if(!keepRect){win.rect.width=fixed.spec.window.width;win.rect.height=fixed.spec.window.height;}
   fit(win);renderDock();saveLayout();
+  if (win.element.dataset.focused === 'true') $('#active-app').textContent = win.app.title;
   await mountContribution(win.content,fixed,win);
 }
 function restoreContribution(item){
@@ -791,30 +887,42 @@ async function widgetMutation(intentId,mutate,sourceCurrent){return preferenceMu
 const contributionKey=value=>({deployment_id:value.deployment_id,contribution_id:value.spec.id});
 const pinId=key=>`${key.deployment_id}:${key.contribution_id}`;
 const isPinned=value=>preview.dock.pinned.some(key=>pinId(key)===pinId(contributionKey(value)));
-async function togglePin(value) {
-  const key=contributionKey(value),identity=pinId(key),remove=isPinned(value);
-  if(!remove){
+async function setPinned(value, pinned) {
+  const key=contributionKey(value),identity=pinId(key);
+  const pinIntent = `pin:${identity}`;
+  const unpinIntent = `unpin:${identity}`;
+  if (isPinned(value) === pinned && !widgetIntents.has(pinIntent) && !widgetIntents.has(unpinIntent)) return;
+  if(pinned){
     if(!accountId||!oauth.loggedIn)throw new Error('固定贡献需要当前账户和核心偏好。');
     const current=await request('getUiContribution',{params:key});
     const fixed=validateContribution(current.data,{parentOrigin:location.origin,coreOrigin:runtimeConfig.core_origin});
     if(fixed.spec.kind!=='window'||!sameContribution(value,fixed))throw new Error('固定贡献已改变，请重新发现后明确选择。');
     dockPinned.set(identity,{fixed});
   }
-  await preferenceMutation(`${remove?'unpin':'pin'}:${identity}`,body=>{
-    if(remove)body.dock.pinned=body.dock.pinned.filter(item=>pinId(item)!==identity);
+  await preferenceMutation(pinned ? pinIntent : unpinIntent,body=>{
+    if(!pinned)body.dock.pinned=body.dock.pinned.filter(item=>pinId(item)!==identity);
     else if(!body.dock.pinned.some(item=>pinId(item)===identity)){
       if(body.dock.pinned.length>=64)throw new Error('Dock 最多固定64个贡献。');
       body.dock.pinned.push(key);
     }
   });
-  if(remove)dockPinned.delete(identity);
+  if(!pinned)dockPinned.delete(identity);
 }
 function pinControl(value) {
-  const control=button(isPinned(value)?'取消固定到 Dock':'固定到 Dock',async()=>{
+  let pinned = isPinned(value);
+  const control=button(pinned?'取消固定到 Dock':'固定到 Dock',async()=>{
     control.disabled=true;
-    try{await togglePin(value);control.textContent=isPinned(value)?'取消固定到 Dock':'固定到 Dock';control.setAttribute('aria-label',`${isPinned(value)?'取消固定':'固定'} ${value.spec.title}`);}
-    catch(error){toastError(error);}finally{control.disabled=false;}
-  },{disabled:value.availability!=='ready'&&!isPinned(value),'aria-label':`${isPinned(value)?'取消固定':'固定'} ${value.spec.title}`});
+    try {
+      await setPinned(value,!pinned);
+      pinned = isPinned(value);
+      control.textContent=pinned?'取消固定到 Dock':'固定到 Dock';
+      control.setAttribute('aria-label',`${pinned?'取消固定':'固定'} ${value.spec.title}`);
+    } catch(error) {
+      toastError(error);
+    } finally {
+      control.disabled=value.availability!=='ready'&&!pinned;
+    }
+  },{disabled:value.availability!=='ready'&&!pinned,'aria-label':`${pinned?'取消固定':'固定'} ${value.spec.title}`});
   return control;
 }
 async function resolveDockPins() {
@@ -1176,25 +1284,27 @@ function overviewInstance(item) {
 async function overviewPage(win, {operation, title, renderItem, emptyMessage}) {
   const result = await request(operation, {query:{limit:50}, signal:win.controller.signal});
   const list = node('div', {class:'list'});
-  for (const item of rows(result.data)) list.append(renderItem(item));
-  if (!list.childElementCount) list.append(state('empty', '暂无可见项目', emptyMessage));
+  appendListPage(list,result.data,renderItem,emptyMessage);
   const pageError = node('div', {class:'overview-page-error'});
-  const hint = node('p', {class:'overview-page-hint muted'}, result.data.next_cursor ? '仅显示当前已取到的项目；还有更多可加载。' : '');
+  const hint = node('p', {class:'overview-page-hint muted', tabindex:-1}, result.data.next_cursor ? '仅显示当前已取到的项目；还有更多可加载。' : '');
   const more = button('加载下一页', async () => {
-    more.disabled = true;
+    if (more.getAttribute('aria-disabled') === 'true') return;
+    more.setAttribute('aria-disabled', 'true');
     try {
       const next = await request(operation, {query:{limit:50, cursor:more.dataset.cursor}, signal:win.controller.signal});
       if (!more.isConnected) return;
-      for (const item of rows(next.data)) list.append(renderItem(item));
+      appendListPage(list,next.data,renderItem,emptyMessage);
       pageError.replaceChildren();
-      more.dataset.cursor = next.data.next_cursor || '';
-      more.hidden = !next.data.next_cursor;
-      hint.textContent = next.data.next_cursor ? '仅显示当前已取到的项目；还有更多可加载。' : '已加载全部可见项目。';
+      const cursor = next.data.next_cursor || '';
+      more.dataset.cursor = cursor;
+      hint.textContent = cursor ? '仅显示当前已取到的项目；还有更多可加载。' : '已加载全部可见项目。';
+      if (!cursor && document.activeElement === more) hint.focus();
+      more.hidden = !cursor;
     } catch (error) {
       if (!more.isConnected) return;
       pageError.replaceChildren(overviewFailure(error));
       hint.textContent = '下一页读取失败；已加载内容保持不变。';
-    } finally { if (more.isConnected) more.disabled = false; }
+    } finally { more.removeAttribute('aria-disabled'); }
   }, {'aria-label':`加载下一页${title}`, hidden:!result.data.next_cursor});
   more.dataset.cursor = result.data.next_cursor || '';
   return node('div', {}, list, pageError, more, hint);
@@ -1211,22 +1321,21 @@ function overviewSection(win, {key, title, source, load}) {
       button('刷新', () => { run(); }, {'aria-label':`刷新${title}`, class:'overview-refresh'})),
     body);
   const refresh = section.querySelector('.overview-refresh');
-  let sequence = 0;
   async function run() {
-    const current = ++sequence;
-    refresh.disabled = true;
+    if (refresh.getAttribute('aria-disabled') === 'true') return;
+    refresh.setAttribute('aria-disabled', 'true');
     body.replaceChildren(state('loading', '正在读取核心…'));
     try {
       const rendered = await load();
-      if (current !== sequence || !section.isConnected) return;
+      if (!section.isConnected) return;
       readAt.textContent = `读取于 ${new Intl.DateTimeFormat('zh-CN', {hour:'2-digit', minute:'2-digit', second:'2-digit'}).format(new Date())}`;
       body.replaceChildren(rendered);
     } catch (error) {
-      if (current !== sequence || !section.isConnected) return;
+      if (!section.isConnected) return;
       readAt.textContent = '读取失败';
       body.replaceChildren(overviewFailure(error));
     } finally {
-      if (current === sequence && section.isConnected) refresh.disabled = false;
+      refresh.removeAttribute('aria-disabled');
     }
   }
   return {section, run};
@@ -1258,46 +1367,92 @@ const apps = [
   {id:'settings',title:'设置',icon:'settings',render:settings},
 ];
 function renderDock() {
-  const dock=$('#dock');dock.replaceChildren();
+  const dock = $('#dock');
+  const focused = dock.querySelector('button[data-dock-key]:focus');
+  // Keep keyboard controls in view without undoing a deliberate Dock scroll.
+  const revealFocus = focused?.matches(':focus-visible') && dockControlInView(focused, dock);
+  let followingKeys;
+  if (focused?.classList.contains('dock-unpin')) {
+    const buttons = [...dock.querySelectorAll('button[data-dock-key]')];
+    followingKeys = new Set(buttons.slice(buttons.indexOf(focused) + 1).map(button => button.dataset.dockKey));
+  }
+  dock.replaceChildren();
   for (const app of apps.filter(value=>!['clients','contributions','tasks'].includes(value.id))) {
     const active=[...windows.values()].filter(win=>win.app.id===app.id);
-    dock.append(button('',()=> { const minimized=active.find(win=>win.minimized||win.element.hidden);if(minimized)focusWindow(minimized);else openWindow(app); },{'aria-label':`打开${app.title}`,'data-app-id':app.id,'data-active':String(active.length>0)}));
+    dock.append(button('',()=> { const minimized=active.find(win=>win.minimized||win.element.hidden);if(minimized)focusWindow(minimized);else openWindow(app); },{
+      'aria-label':`打开${app.title}`, 'data-app-id':app.id, 'data-dock-key':`app:${app.id}`, 'data-active':String(active.length>0),
+    }));
     dock.lastChild.append(appIcon(app.icon),node('span',{},app.title));
   }
   for(const key of preview.dock.pinned){
-    const entry=dockPinned.get(pinId(key)),fixed=entry?.fixed,title=fixed?.spec.title||key.contribution_id;
+    const identity = pinId(key);
+    const entry=dockPinned.get(identity),fixed=entry?.fixed,title=fixed?.spec.title||key.contribution_id;
     const group=node('div',{class:'dock-pin'});
     const active=[...windows.values()].some(win=>win.app.id===`plugin:${key.deployment_id}:${key.contribution_id}`);
     const pinned=button('',async()=>{
-      try{await openContribution(fixed);}catch(error){dockPinned.set(pinId(key),{fixed,error});renderDock();toastError(error);}
-    },{'aria-label':`打开固定贡献 ${title}`,disabled:!fixed||Boolean(entry.error),'data-active':String(active),title:entry?.error?'贡献不可用；取消固定后重新发现。':`固定部署 ${key.deployment_id}`});
+      try{await openContribution(fixed);}catch(error){dockPinned.set(identity,{fixed,error});renderDock();toastError(error);}
+    },{
+      'aria-label':`打开固定贡献 ${title}`, 'data-dock-key':`pin:${identity}`,
+      disabled:!fixed||Boolean(entry.error), 'data-active':String(active),
+      title:entry?.error?'贡献不可用；取消固定后重新发现。':`固定部署 ${key.deployment_id}`,
+    });
     pinned.append(icon('contributions'),node('span',{},title));
     group.append(pinned);
-    group.append(button('×',async()=>{try{await togglePin({deployment_id:key.deployment_id,spec:{id:key.contribution_id,title}});}catch(error){toastError(error);}},{'aria-label':`取消固定 ${title}`,class:'dock-unpin'}));
+    group.append(button(icon('dock-unpin'),async()=>{try{await setPinned({deployment_id:key.deployment_id,spec:{id:key.contribution_id,title}},false);}catch(error){toastError(error);}},{
+      'aria-label':`取消固定 ${title}`, 'data-dock-key':`unpin:${identity}`, class:'dock-unpin',
+    }));
     dock.append(group);
   }
   for (const win of windows.values()) if(win.minimized) {
-    const restore=button('',()=>focusWindow(win),{'aria-label':`恢复${win.app.title}`,class:'dock-restore','data-restore-id':win.id});
-    restore.append(icon('restore'),node('span',{},win.app.title));
+    const restore=button('',()=>focusWindow(win),{
+      'aria-label':`恢复${win.app.title}`, class:'dock-restore', 'data-restore-id':win.id, 'data-dock-key':`restore:${win.id}`,
+    });
+    restore.append(icon(win.app.icon || 'restore'),node('span',{},win.app.title));
     dock.append(restore);
   }
-  const launcher=button('',openLauncher,{'aria-label':'打开应用启动器'});
+  const launcher=button('',openLauncher,{'aria-label':'打开应用启动器','data-dock-key':'launcher'});
   launcher.append(appIcon('launcher'),node('span',{},'应用'));
   dock.append(launcher);
+  if (!focused) return;
+  const target = dockButton('data-dock-key', 'dockKey', focused.dataset.dockKey);
+  if (target) {
+    target.focus({preventScroll:true});
+    if (revealFocus && target === document.activeElement) target.scrollIntoView({block:'nearest', inline:'nearest'});
+  } else if (followingKeys) {
+    // Continue in Dock tab order when the focused unpin button was removed.
+    const next = [...dock.querySelectorAll('button[data-dock-key]:enabled')]
+      .find(button => followingKeys.has(button.dataset.dockKey));
+    next?.focus();
+  }
 }
 function renderLauncher() {
   const search=$('#app-search').value.trim().toLowerCase();
   const grid = $('#app-grid');
-  const focusedApp = launcher.open ? grid.querySelector('[data-app-id]:focus')?.dataset.appId : null;
+  const focused = launcher.open ? grid.querySelector('button:focus') : null;
+  const focusedId = focused?.dataset.appId ?? focused?.dataset.windowId;
+  const moreFocused = focused?.id === 'launcher-load-more';
   const shortcuts = apps.filter(app => app.title.toLowerCase().includes(search) || app.id.includes(search)).map(app => {
     const entry = button('', () => { launcher.close(); openWindow(app); }, {'aria-label':`启动${app.title}`, 'data-app-id':app.id});
     entry.append(appIcon(app.icon),node('span',{},app.title));
     return entry;
   });
   grid.replaceChildren(...shortcuts);
-  for(const[ index,win]of[...windows.values()].entries())if(win.app.title.toLowerCase().includes(search))grid.append(button(`↥ ${win.app.title}`,()=>{launcher.close();focusWindow(win);},{'aria-label':`聚焦窗口${index+1} ${win.app.title}`}));
+  for(const [index,win] of [...windows.values()].entries()){
+    if(!win.app.title.toLowerCase().includes(search))continue;
+    const entry = button('',()=>{launcher.close();focusWindow(win);},{
+      class:'launcher-window', 'aria-label':`聚焦窗口${index+1} ${win.app.title}`, 'data-window-id':win.id,
+    });
+    const action = win.minimized ? '恢复' : '切换';
+    entry.append(appIcon(win.app.icon || 'restore'),node('span',{},`${action} ${win.app.title}`));
+    grid.append(entry);
+  }
+  if (focusedId) {
+    const target = [...grid.children].find(entry => (entry.dataset.appId ?? entry.dataset.windowId) === focusedId);
+    target?.focus({preventScroll:true});
+  }
   if(!oauth.loggedIn)return;
   const found=launcherItems.filter(item=>`${item.spec.title} ${item.spec.id} ${item.plugin_id}`.toLowerCase().includes(search));
+  let lastLaunch;
   for(const item of found){
     const launch=button(item.spec.kind==='widget'?'添加桌面组件':'打开隔离窗口',async()=>{
       const opening=launcherOpening,epoch=sessionEpoch;
@@ -1316,14 +1471,18 @@ function renderLauncher() {
       finally{launch.disabled=item.availability!=='ready';}
     },{disabled:item.availability!=='ready','aria-label':`启动贡献 ${item.spec.title}`});
     grid.append(node('article',{class:'launcher-contribution card'},node('h3',{},item.spec.title),node('p',{},`${item.spec.kind} · ${item.availability}`),node('p',{class:'code'},`${item.plugin_id} · ${item.deployment_id}`),node('p',{},item.reason_codes.join(' · ')),launch,item.spec.kind==='window'?pinControl(item):null));
+    if (!launch.disabled) lastLaunch = launch;
   }
   const status=node('div',{class:'launcher-status'});
   if(launcherLoading)status.append(state('loading','正在发现获准贡献…'));
   else if(launcherError)status.append(failure(launcherError),button('重新发现贡献',()=>loadLauncher(true)));
   else if(!found.length)status.append(state('empty','已加载贡献中没有匹配项','搜索只包含当前授权可见的贡献；可继续分页或重新发现。'));
-  if(launcherCursor&&!launcherLoading)status.append(button('加载更多贡献',()=>loadLauncher(false)));
+  const more = launcherCursor ? button('加载更多贡献', () => loadLauncher(false), {
+    id:'launcher-load-more', 'aria-disabled':launcherLoading ? 'true' : undefined,
+  }) : null;
+  if (more) status.append(more);
   grid.append(status);
-  if (focusedApp) shortcuts.find(entry => entry.dataset.appId === focusedApp)?.focus({preventScroll:true});
+  if (moreFocused) (more || lastLaunch || $('#app-search')).focus();
 }
 async function loadLauncher(reset) {
   if(!oauth.loggedIn)return;
@@ -1356,12 +1515,16 @@ launcher.addEventListener('close',()=>{
     const active=document.activeElement;
     if(active&&active!==document.body&&!launcher.contains(active))return;
     const previous=opening?.returnFocus;
-    const target=previous&&document.contains(previous)?previous:$('#launcher-toggle');
+    // The Dock can replace the trigger while the launcher is open.
+    const target = previous && document.contains(previous) ? previous
+      : dockButton('data-dock-key', 'dockKey', previous?.dataset.dockKey) || $('#launcher-toggle');
     target.focus();
   },0);
 });
 $('#launcher-toggle').addEventListener('click',openLauncher);
-$('#launcher-close').addEventListener('click',()=>launcher.close());
+const launcherClose = $('#launcher-close');
+launcherClose.append(icon('window-close'));
+launcherClose.addEventListener('click',()=>launcher.close());
 $('#app-search').addEventListener('input',renderLauncher);
 $('#theme-toggle').addEventListener('click',()=>openWindow(apps.find(app=>app.id==='settings')));
 $('#welcome-login').addEventListener('click',login);

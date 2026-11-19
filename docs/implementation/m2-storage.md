@@ -56,10 +56,13 @@ Linux 5.14+ 的 `quotactl_fd`、XFS/quota 内核支持、loop mount、xfsprogs�
 或挂载路径。结束时先卸载再删除镜像；卸载失败则保留现场并返回失败。
 
 ```sh
-cargo test -p xelab-kernel --test xfs --no-run --locked
-# 从上一命令的 Executable 输出复制测试二进制的完整路径：
+test_artifacts=$(mktemp)
+trap 'rm -f -- "$test_artifacts"' EXIT
+cargo test -p xelab-kernel --test xfs --no-run --locked \
+  --message-format=json-render-diagnostics > "$test_artifacts"
+xfs_test=$(python3 tools/acceptance/cargo_executable.py "$test_artifacts" test crates/kernel/tests/xfs.rs)
 sudo env XELAB_XFS_TEST=1 bash tools/test-xfs.sh \
-  --isolated-test-host target/debug/deps/xfs-<hash>
+  --isolated-test-host "$xfs_test"
 ```
 
 脚本分别挂载 `prjquota` 与 `pqnoenforce`，显式运行 ignored 特权用例；

@@ -13,8 +13,17 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def unique_label_fields(pairs):
+    fields = {}
+    for name, value in pairs:
+        if name in fields:
+            raise ValueError(f"duplicate JSON field in label manifest: {name!r}")
+        fields[name] = value
+    return fields
+
+
 def load_labels(path):
-    labels = json.loads(path.read_text(encoding="utf-8"))
+    labels = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_label_fields)
     if not isinstance(labels, list) or not labels:
         raise ValueError("label manifest must be a non-empty list")
     seen = set()

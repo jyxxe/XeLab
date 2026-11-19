@@ -227,6 +227,30 @@ class PreflightTests(unittest.TestCase):
         })
         self.assertEqual(report["acceptance"], "not-assessed")
 
+    def test_missing_uname_and_effective_uid_still_generate_report(self):
+        platform_os = SimpleNamespace(access=lambda _path, _mode: False, W_OK=2)
+        platform_sys = SimpleNamespace(
+            platform="win32", version_info=preflight.sys.version_info, stderr=preflight.sys.stderr,
+        )
+        with mock.patch.object(preflight, "os", platform_os), \
+                mock.patch.object(preflight, "sys", platform_sys), \
+                mock.patch.object(preflight.Probe, "read", side_effect=FileNotFoundError), \
+                mock.patch.object(preflight.Probe, "kind", return_value="missing"):
+            probe = preflight.Probe()
+            code, out, err = call_main(probe, "--json")
+            text_code, text, text_err = call_main(probe)
+
+        self.assertEqual((code, err, text_code, text_err), (0, "", 0, ""))
+        report = json.loads(out)
+        checks = report["checks"]
+        self.assertEqual(checks["kernel"], {"state": "unavailable", "release": None})
+        self.assertEqual(checks["host_administration"], {
+            "state": "unavailable", "note": "effective UID unavailable",
+        })
+        self.assertIn("  kernel: unavailable", text.splitlines())
+        self.assertEqual(checks["resources"]["state"], "unavailable")
+        self.assertEqual(report["acceptance"], "not-assessed")
+
     def test_output_redacts_personal_paths_and_cgroup_names(self):
         probe = healthy()
         for extra in ([], ["--json"]):

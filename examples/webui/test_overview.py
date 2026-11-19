@@ -8,6 +8,7 @@ Run from the repository root:
 
     XELAB_OAUTH_BROWSER_CHROMIUM=<chromium-151> python3 examples/webui/test_overview.py
 """
+from contextlib import contextmanager
 import json
 import unittest
 from urllib.parse import parse_qs, urlparse
@@ -145,6 +146,28 @@ class OverviewWindow(unittest.TestCase):
     def section(self, window, key):
         return window.locator(f".overview-section[data-section={key}]")
 
+    @contextmanager
+    def hold_overview_reads(self, path):
+        pending = []
+        endpoint = CORE + path
+
+        def match(url):
+            return url == endpoint or url.startswith(endpoint + "?")
+
+        def hold(route):
+            if route.request.method != "GET":
+                return route.fallback()
+            pending.append(route)
+            self.page.evaluate("() => { globalThis.__heldOverviewReads = (globalThis.__heldOverviewReads ?? 0) + 1; }")
+
+        self.page.route(match, hold)
+        try:
+            yield pending
+        finally:
+            self.page.unroute(match, hold)
+            for route in pending:
+                route.abort()
+
     def test_success_sources_read_time_and_whitelist(self):
         self.open()
         window = self.open_overview()
@@ -172,6 +195,47 @@ class OverviewWindow(unittest.TestCase):
         self.assertEqual(self.count(NODE_PATH), 1)
         self.assertEqual(self.count(DEPLOYMENTS_PATH), 1)
         self.assertEqual(self.count(INSTANCES_PATH), 1)
+
+    def test_system_status_uses_configured_kernel_reserves(self):
+        mib = 1024 * 1024
+        base = node_status()
+        del base["token"], base["internal_path"]
+        compact = {**base,
+                   "config": {**base["config"], "profile": "compact", "kernel_cpu_millis": 500,
+                              "kernel_memory_bytes": 192 * mib, "system_cpu_millis": 250,
+                              "system_memory_bytes": 256 * mib},
+                   "host_cpu_millis": 2000, "host_memory_bytes": 2048 * mib,
+                   "plugin_cpu_pool_millis": 1250, "plugin_memory_pool_bytes": 1600 * mib,
+                   "reserved_cpu_millis": 0, "reserved_memory_bytes": 0}
+        standard = {**base,
+                    "config": {**base["config"], "profile": "standard", "kernel_cpu_millis": 6000,
+                               "kernel_memory_bytes": 24576 * mib},
+                    "plugin_cpu_pool_millis": 9000, "plugin_memory_pool_bytes": 38912 * mib}
+        missing = {key: value for key, value in compact.items() if key != "config"}
+        invalid = {**compact, "config": {**compact["config"], "kernel_memory_bytes": 0}}
+        snapshots = ((compact, "500 毫核 CPU、201326592 字节内存"),
+                     (standard, "6000 毫核 CPU、25769803776 字节内存"),
+                     (missing, None), (invalid, None))
+
+        self.node_fixture = compact
+        self.open()
+        window = self.app("系统状态")
+        refresh = window.get_by_role("button", name="刷新资源与系统状态", exact=True)
+        ledger = window.locator("pre.result")
+        for read_count, (snapshot, reserve) in enumerate(snapshots, start=1):
+            with self.subTest(read_count=read_count):
+                self.node_fixture = snapshot
+                if read_count > 1:
+                    refresh.click()
+                ledger.wait_for()
+                self.assertEqual(json.loads(ledger.inner_text()), snapshot)
+                summary = window.locator(".window-content > p").inner_text()
+                if reserve:
+                    self.assertIn(reserve, summary)
+                else:
+                    self.assertNotRegex(summary, r"[0-9]")
+                self.assertEqual(self.count(NODE_PATH), read_count)
+        self.assertEqual(self.count(DEPLOYMENTS_PATH) + self.count(INSTANCES_PATH), 0)
 
     def test_hostile_names_render_as_text(self):
         self.deployment_pages = [{"items": [deployment_item(name='<img src=x onerror="alert(1)">')]}]
@@ -253,6 +317,39 @@ class OverviewWindow(unittest.TestCase):
             self.assertEqual(section.get_by_role("button", name=f"加载下一页{'部署' if key == 'deployments' else '实例'}").count(), 0)
         expect(self.section(window, "node").locator(".overview-facts").first).to_be_visible()
 
+    def test_empty_cursor_pages_show_empty_only_after_exhaustion(self):
+        self.deployment_pages = [{"items": []}, {"items": []}, {"items": [deployment_item()]}]
+        self.instance_pages = [{"items": []}, {"items": []}]
+        self.open()
+        window = self.app("总览")
+        deployments = self.section(window, "deployments")
+        instances = self.section(window, "instances")
+        next_deployments = deployments.get_by_role("button", name="加载下一页部署", exact=True)
+        next_instances = instances.get_by_role("button", name="加载下一页实例", exact=True)
+        empty_deployments = deployments.locator(".state[data-kind=empty]")
+        empty_instances = instances.locator(".state[data-kind=empty]")
+        expect(next_deployments).to_be_visible()
+        expect(next_instances).to_be_visible()
+        empty_on_first_page = (empty_deployments.is_visible(), empty_instances.is_visible())
+
+        next_deployments.click()
+        expect(next_deployments).to_be_enabled()
+        self.assertEqual(self.count(DEPLOYMENTS_PATH), 2)
+        empty_on_second_page = empty_deployments.is_visible()
+        next_deployments.click()
+        expect(deployments.get_by_role("heading", name="fixture deployment", exact=True)).to_be_visible()
+        expect(next_deployments).to_be_hidden()
+        next_instances.click()
+        expect(next_instances).to_be_hidden()
+
+        self.assertEqual(empty_on_first_page, (False, False))
+        self.assertFalse(empty_on_second_page)
+        expect(empty_deployments).to_have_count(0)
+        expect(empty_instances).to_have_count(1)
+        expect(empty_instances).to_be_visible()
+        self.assertEqual(self.count(DEPLOYMENTS_PATH), 3)
+        self.assertEqual(self.count(INSTANCES_PATH), 2)
+
     def test_pagination_appends_and_exhausts(self):
         self.deployment_pages = [{"items": [deployment_item(), deployment_item(identifier=DEPLOYMENT_2, name="second deployment", phase="disabled", enabled=False)]},
                                  {"items": [deployment_item(identifier=INSTANCE, name="third deployment")]}]
@@ -279,6 +376,40 @@ class OverviewWindow(unittest.TestCase):
         self.assertIn("pending", instances.inner_text())
         self.assertEqual(self.count(INSTANCES_PATH), 2)
         self.assertEqual(self.count(NODE_PATH), 1)
+
+    def test_pagination_keeps_focus_until_the_last_page(self):
+        self.deployment_pages = [{"items": [deployment_item()]},
+                                 {"items": [deployment_item(identifier=DEPLOYMENT_2, name="second page")]},
+                                 {"items": [deployment_item(identifier=INSTANCE, name="last page")]}]
+        self.open()
+        deployments = self.section(self.open_overview(), "deployments")
+        more = deployments.get_by_role("button", name="加载下一页部署", exact=True)
+        deployments.get_by_role("button", name="刷新部署", exact=True).focus()
+        self.page.keyboard.press("Tab")
+        expect(more).to_be_focused()
+        with self.hold_overview_reads(DEPLOYMENTS_PATH) as pending:
+            self.page.keyboard.press("Enter")
+            self.page.wait_for_function("() => globalThis.__heldOverviewReads === 1")
+            expect(more).to_be_focused(timeout=2000)
+            expect(more).to_be_disabled()
+            self.assertTrue(more.evaluate("element => element.matches(':focus-visible')"))
+            self.page.keyboard.press("Space")
+            pending.pop(0).fallback()
+            expect(deployments.get_by_role("heading", name="second page", exact=True)).to_be_visible()
+            expect(more).to_be_enabled()
+            expect(more).to_be_focused()
+
+            self.page.keyboard.press("Enter")
+            self.page.wait_for_function("() => globalThis.__heldOverviewReads === 2")
+            self.assertIn("cursor=page-2", pending[0].request.url)
+            pending.pop(0).fallback()
+            hint = deployments.locator(".overview-page-hint")
+            expect(hint).to_have_text("已加载全部可见项目。")
+            expect(hint).to_be_focused()
+            self.assertTrue(hint.evaluate("element => element.matches(':focus-visible')"))
+            expect(more).to_be_hidden()
+            self.assertFalse(pending)
+        self.assertEqual(self.count(DEPLOYMENTS_PATH), 3)
 
     def test_pagination_retry_preserves_items_and_clears_the_page_error(self):
         self.deployment_pages = [{"items": [deployment_item()]},
@@ -323,6 +454,27 @@ class OverviewWindow(unittest.TestCase):
         window.locator(".window-toolbar").get_by_role("button", name="刷新总览", exact=True).click()
         self.page.wait_for_function("document.querySelectorAll('.overview-section[data-section=instances] .card').length > 0")
         self.assertEqual((self.count(NODE_PATH), self.count(DEPLOYMENTS_PATH), self.count(INSTANCES_PATH)), (3, 3, 2))
+
+    def test_section_refresh_keeps_keyboard_focus_while_pending(self):
+        self.open()
+        window = self.open_overview()
+        node = self.section(window, "node")
+        refresh = node.get_by_role("button", name="刷新节点资源", exact=True)
+        refresh.focus()
+        with self.hold_overview_reads(NODE_PATH) as pending:
+            self.page.keyboard.press("Enter")
+            self.page.wait_for_function("() => globalThis.__heldOverviewReads === 1")
+            expect(refresh).to_be_focused(timeout=2000)
+            expect(refresh).to_be_disabled()
+            self.assertTrue(refresh.evaluate("element => element.matches(':focus-visible')"))
+            self.page.keyboard.press("Space")
+            pending.pop(0).fallback()
+
+            expect(node.locator(".overview-facts").first).to_be_visible()
+            expect(refresh).to_be_enabled()
+            expect(refresh).to_be_focused()
+            self.assertFalse(pending)
+        self.assertEqual((self.count(NODE_PATH), self.count(DEPLOYMENTS_PATH), self.count(INSTANCES_PATH)), (2, 1, 1))
 
     def test_theme_and_viewport_changes_do_not_reissue_calls(self):
         self.open()

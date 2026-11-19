@@ -44,10 +44,14 @@ class Probe:
         return len(get_affinity(0))
 
     def euid(self):
-        return os.geteuid()
+        get_euid = getattr(os, "geteuid", None)
+        return get_euid() if get_euid is not None else None
 
     def uname(self):
-        info = os.uname()
+        uname = getattr(os, "uname", None)
+        if uname is None:
+            return sys.platform, None
+        info = uname()
         return info.sysname, info.release
 
     def writable(self, path):
@@ -146,11 +150,14 @@ def container_environment(probe):
 
 def build_report(probe, socket_path=DEFAULT_SOCKET):
     sysname, release = probe.uname()
+    euid = probe.euid()
+    admin_note = "root" if euid == 0 else "non-root; diagnostic still runs"
+    if euid is None:
+        admin_note = "effective UID unavailable"
     checks = {
         "python": {"state": "ok" if sys.version_info >= (3, 11) else "unavailable", "version": platform_version()},
         "kernel": {"state": "ok" if sysname == "Linux" else "unavailable", "release": release},
-        "host_administration": {"state": "ok" if probe.euid() == 0 else "unavailable",
-                                "note": "non-root; diagnostic still runs" if probe.euid() != 0 else "root"},
+        "host_administration": {"state": "ok" if euid == 0 else "unavailable", "note": admin_note},
         "cgroup_controllers": cgroup_controllers(probe),
         "cgroup_writable": {"state": "ok" if probe.writable(CGROUP_ROOT) else "unavailable"},
         "container_environment": container_environment(probe),
@@ -176,7 +183,7 @@ def render_text(report):
         extra = ""
         if name == "resources":
             extra = f" (effective cpu={check['effective_cpu_millis']} memory={check['effective_memory_bytes']})"
-        elif name == "kernel":
+        elif name == "kernel" and check["release"] is not None:
             extra = f" ({check['release']})"
         elif name == "containerd_socket" and check["state"] == "detected":
             extra = " (capability not proven)"

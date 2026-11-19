@@ -6,6 +6,8 @@ import json
 import unittest
 from urllib.parse import parse_qs, urlparse
 
+from playwright.sync_api import expect
+
 import test_browser as desktop
 from test_bridge import contribution, framing_query
 
@@ -147,6 +149,22 @@ class ShellBrowser(unittest.TestCase):
 
     def open_launcher(self):
         self.page.get_by_role("button", name="打开应用启动器", exact=True).click()
+
+    def open_launcher_with_discovery_held(self):
+        endpoint = desktop.CORE + "/api/platform/v1/ui/contributions?"
+        pending = []
+
+        def hold_discovery(route):
+            if route.request.method != "GET":
+                route.fallback()
+                return
+            pending.append(route)
+            self.page.evaluate("() => { globalThis.__launcherDiscoveryHeld = true; }")
+
+        self.page.route(lambda url: url.startswith(endpoint), hold_discovery)
+        self.open_launcher()
+        self.page.wait_for_function("() => globalThis.__launcherDiscoveryHeld === true")
+        return pending.pop()
 
     def pin_from_launcher(self, value):
         self.open_launcher()
@@ -291,26 +309,14 @@ class ShellBrowser(unittest.TestCase):
     def test_launcher_discovery_keeps_focused_builtin_app(self):
         value = self.window_contribution()
         self.fixture.open()
-        endpoint = desktop.CORE + "/api/platform/v1/ui/contributions?"
-        pending = []
-
-        def hold_discovery(route):
-            if route.request.method != "GET":
-                route.fallback()
-                return
-            pending.append(route)
-            self.page.evaluate("() => { globalThis.__launcherDiscoveryHeld = true; }")
-
-        self.page.route(lambda url: url.startswith(endpoint), hold_discovery)
-        self.open_launcher()
+        discovery = self.open_launcher_with_discovery_held()
         launcher = self.page.locator("#launcher")
-        self.page.wait_for_function("() => globalThis.__launcherDiscoveryHeld === true")
         self.assertTrue(self.page.locator("#app-search").evaluate("el => el === document.activeElement"))
         settings = launcher.get_by_role("button", name="启动设置", exact=True)
         settings.focus()
         self.assertTrue(settings.evaluate("el => el === document.activeElement"))
 
-        pending.pop().fallback()
+        discovery.fallback()
         launcher.get_by_role("button", name="启动贡献 " + value["spec"]["title"], exact=True).wait_for()
         self.assertTrue(settings.evaluate("el => el === document.activeElement"))
 
@@ -318,6 +324,245 @@ class ShellBrowser(unittest.TestCase):
         launcher.wait_for(state="hidden")
         title = self.page.locator('.window[data-app="settings"] .window-title')
         self.assertTrue(title.evaluate("el => el === document.activeElement"))
+
+    def test_fixed_contribution_window_keeps_only_available_shortcuts(self):
+        value = self.window_contribution("fixed")
+        value["spec"]["window"]["resizable"] = False
+        raw_spec = json.dumps(value["spec"], sort_keys=True, separators=(",", ":")).encode()
+        value["contribution_digest"] = "sha256:" + hashlib.sha256(raw_spec).hexdigest()
+        self.fixture.open()
+        self.open_launcher()
+        self.page.get_by_role("button", name=f"启动贡献 {value['spec']['title']}", exact=True).click()
+
+        window = self.page.locator('.window[data-app$=":fixed"]')
+        window.locator("iframe").wait_for()
+        title = window.locator(".window-title")
+        name = f"{value['spec']['title']} · {value['plugin_id']}"
+        expect(title).to_have_attribute("aria-label", f"{name}窗口。Alt加方向键移动。", timeout=2000)
+        expect(window.locator(".window-resize")).to_be_hidden()
+        window.get_by_role("button", name=f"最大化{name}", exact=True).press("Enter")
+        expect(title).to_have_attribute("aria-label", f"{name}窗口。")
+        window.get_by_role("button", name=f"恢复{name}窗口大小", exact=True).press("Enter")
+        expect(title).to_have_attribute("aria-label", f"{name}窗口。Alt加方向键移动。")
+        expect(window.locator(".window-resize")).to_be_hidden()
+
+    def test_launcher_discovery_keeps_focused_minimized_window_switcher(self):
+        value = self.window_contribution()
+        self.fixture.open()
+        self.fixture.app("系统状态")
+        window = self.fixture.app("系统状态")
+        window.get_by_role("button", name="最小化系统状态", exact=True).click()
+        window.wait_for(state="hidden")
+
+        discovery = self.open_launcher_with_discovery_held()
+        launcher = self.page.locator("#launcher")
+        switcher = launcher.get_by_role("button", name="聚焦窗口2 系统状态", exact=True)
+        launcher.get_by_role("button", name="启动设置", exact=True).focus()
+        self.page.keyboard.press("Tab")
+        self.page.keyboard.press("Tab")
+        self.assertTrue(switcher.evaluate("el => el === document.activeElement"))
+
+        discovery.fallback()
+        launcher.get_by_role("button", name="启动贡献 " + value["spec"]["title"], exact=True).wait_for()
+        self.assertTrue(switcher.evaluate("el => el === document.activeElement && el.matches(':focus-visible')"))
+
+        self.page.keyboard.press("Enter")
+        launcher.wait_for(state="hidden")
+        window.wait_for()
+        self.assertTrue(window.locator(".window-title").evaluate("el => el === document.activeElement"))
+
+    def test_delayed_preferences_keep_dock_launcher_focus(self):
+        self.fixture.hold_preferences = True
+        self.fixture.saved["spec"]["theme"]["mode"] = "dark"
+        self.fixture.open()
+        dock = self.page.locator("#dock")
+        launcher = dock.get_by_role("button", name="打开应用启动器", exact=True)
+        dock.get_by_role("button", name="打开设置", exact=True).focus()
+        self.page.keyboard.press("Tab")
+        self.assertTrue(launcher.evaluate("el => el === document.activeElement"))
+
+        self.assertEqual(len(self.fixture.pending_preferences), 1)
+        self.fixture.hold_preferences = False
+        self.fixture.route(self.fixture.pending_preferences.pop())
+        self.page.wait_for_function("() => document.documentElement.dataset.theme === 'dark'")
+        self.assertTrue(launcher.evaluate("el => el === document.activeElement && el.matches(':focus-visible')"))
+
+        self.page.keyboard.press("Enter")
+        self.page.locator("#launcher").wait_for()
+        self.assertTrue(self.page.locator("#app-search").evaluate("el => el === document.activeElement"))
+
+    def test_narrow_dock_keeps_focused_launcher_visible_when_pins_load(self):
+        self.page.set_viewport_size({"width": 390, "height": 760})
+        value = self.window_contribution()
+        self.fixture.saved["spec"]["dock"]["pinned"] = [
+            {"deployment_id": value["deployment_id"], "contribution_id": value["spec"]["id"]},
+        ]
+        self.fixture.hold_preferences = True
+        self.fixture.open()
+        dock = self.page.locator("#dock")
+        launcher = dock.get_by_role("button", name="打开应用启动器", exact=True)
+        dock.get_by_role("button", name="打开设置", exact=True).focus()
+        self.page.keyboard.press("Tab")
+        expect(launcher).to_be_focused()
+        expect(launcher).to_be_in_viewport(ratio=1)
+
+        self.assertEqual(len(self.fixture.pending_preferences), 1)
+        self.fixture.hold_preferences = False
+        self.fixture.route(self.fixture.pending_preferences.pop())
+        dock.get_by_role("button", name=f"打开固定贡献 {value['spec']['title']}", exact=True).wait_for()
+        expect(launcher).to_be_focused()
+        expect(launcher).to_be_in_viewport(ratio=1)
+        self.assertTrue(launcher.evaluate("""el => {
+            const style = getComputedStyle(el);
+            const outline = Number.parseFloat(style.outlineWidth) + Number.parseFloat(style.outlineOffset);
+            const button = el.getBoundingClientRect(), dock = el.parentElement.getBoundingClientRect();
+            return el.matches(':focus-visible') && style.outlineStyle !== 'none'
+                && button.left - outline >= dock.left && button.right + outline <= dock.right
+                && button.top - outline >= dock.top && button.bottom + outline <= dock.bottom;
+        }"""))
+        self.page.keyboard.press("Enter")
+        expect(self.page.locator("#app-search")).to_be_focused()
+
+    def test_resolving_a_pin_keeps_dock_unpin_focus_when_its_label_changes(self):
+        identifier = "delayed-pin"
+        value = self.window_contribution(identifier)
+        key = {"deployment_id": value["deployment_id"], "contribution_id": identifier}
+        self.fixture.saved["spec"]["dock"]["pinned"] = [key]
+        pending = []
+
+        def hold_pin(route):
+            if route.request.method != "GET":
+                route.fallback()
+                return
+            pending.append(route)
+            self.page.evaluate("() => { globalThis.__dockPinHeld = true; }")
+
+        self.page.route(desktop.CORE + f"/api/platform/v1/ui/contributions/{key['deployment_id']}/{identifier}", hold_pin)
+        self.fixture.open()
+        self.page.wait_for_function("() => globalThis.__dockPinHeld === true")
+        dock = self.page.locator("#dock")
+        unpin = dock.get_by_role("button", name=f"取消固定 {identifier}", exact=True)
+        dock.get_by_role("button", name="打开设置", exact=True).focus()
+        self.page.keyboard.press("Tab")
+        self.assertTrue(unpin.evaluate("el => el === document.activeElement"))
+
+        pending.pop().fallback()
+        resolved_unpin = dock.get_by_role("button", name=f"取消固定 {value['spec']['title']}", exact=True)
+        resolved_unpin.wait_for()
+        self.assertTrue(resolved_unpin.evaluate("el => el === document.activeElement && el.matches(':focus-visible')"))
+
+    def test_unpin_moves_focus_to_the_next_enabled_dock_control(self):
+        first, second = (self.window_contribution(identifier) for identifier in ("first", "second"))
+        self.fixture.contributions["unavailable"] = contribution("unavailable", kind="widget")
+        deployment_id = first["deployment_id"]
+        self.fixture.saved["spec"]["dock"]["pinned"] = [
+            {"deployment_id": deployment_id, "contribution_id": identifier}
+            for identifier in ("first", "second", "unavailable")
+        ]
+        self.fixture.open()
+        dock = self.page.locator("#dock")
+        first_open = dock.get_by_role("button", name=f"打开固定贡献 {first['spec']['title']}", exact=True)
+        first_unpin = dock.get_by_role("button", name=f"取消固定 {first['spec']['title']}", exact=True)
+        second_open = dock.get_by_role("button", name=f"打开固定贡献 {second['spec']['title']}", exact=True)
+        second_unpin = dock.get_by_role("button", name=f"取消固定 {second['spec']['title']}", exact=True)
+        unavailable_open = dock.get_by_role("button", name="打开固定贡献 unavailable", exact=True)
+        unavailable_unpin = dock.get_by_role("button", name="取消固定 unavailable", exact=True)
+        second_open.wait_for()
+        self.assertTrue(unavailable_open.is_disabled())
+
+        first_open.focus()
+        self.page.keyboard.press("Tab")
+        self.assertTrue(first_unpin.evaluate("el => el === document.activeElement"))
+        self.page.keyboard.press("Enter")
+        first_unpin.wait_for(state="detached")
+        self.assertTrue(second_open.evaluate("el => el === document.activeElement && el.matches(':focus-visible')"))
+
+        self.page.keyboard.press("Tab")
+        self.assertTrue(second_unpin.evaluate("el => el === document.activeElement"))
+        self.page.keyboard.press("Enter")
+        second_unpin.wait_for(state="detached")
+        self.assertTrue(unavailable_unpin.evaluate("el => el === document.activeElement && el.matches(':focus-visible')"))
+        self.assertEqual(self.fixture.saved["spec"]["dock"]["pinned"], [
+            {"deployment_id": deployment_id, "contribution_id": "unavailable"},
+        ])
+
+    def test_unpin_leaves_focus_moved_to_a_window_while_saving(self):
+        value = self.window_contribution()
+        self.fixture.saved["spec"]["dock"]["pinned"] = [
+            {"deployment_id": value["deployment_id"], "contribution_id": value["spec"]["id"]},
+        ]
+        pending = []
+
+        def hold_save(route):
+            if route.request.method != "PUT":
+                route.fallback()
+                return
+            pending.append(route)
+            self.page.evaluate("() => { globalThis.__unpinSaveHeld = true; }")
+
+        self.page.route(desktop.CORE + "/api/platform/v1/me/ui-preferences", hold_save)
+        self.fixture.open()
+        window = self.fixture.app("系统状态")
+        unpin = self.page.locator("#dock").get_by_role("button", name=f"取消固定 {value['spec']['title']}", exact=True)
+        unpin.press("Enter")
+        self.page.wait_for_function("() => globalThis.__unpinSaveHeld === true")
+
+        window.locator(".window-title").focus()
+        self.page.keyboard.press("Tab")
+        close = window.get_by_role("button", name="关闭系统状态", exact=True)
+        self.assertTrue(close.evaluate("el => el === document.activeElement"))
+        pending.pop().fallback()
+        unpin.wait_for(state="detached")
+        self.assertTrue(close.evaluate("el => el === document.activeElement && el.matches(':focus-visible')"))
+
+    def test_launcher_pagination_keeps_focus_through_loading_and_the_last_page(self):
+        first, second, last = (self.window_contribution(identifier) for identifier in ("first", "second", "last"))
+        self.launcher_pages = {None: {"items": [first], "next_cursor": "second"}}
+        pending = {}
+        reads = []
+
+        def hold_page(route):
+            cursor = parse_qs(urlparse(route.request.url).query).get("cursor", [None])[0]
+            if route.request.method != "GET" or cursor is None:
+                return route.fallback()
+            reads.append(cursor)
+            pending[cursor] = route
+            self.page.evaluate("cursor => { globalThis.__launcherCursorHeld = cursor; }", cursor)
+
+        endpoint = desktop.CORE + "/api/platform/v1/ui/contributions?"
+        self.page.route(lambda url: url.startswith(endpoint), hold_page)
+        self.fixture.open()
+        self.open_launcher()
+        self.page.locator("#app-search").fill("Pinned echo")
+        launcher = self.page.locator("#launcher")
+        more = launcher.get_by_role("button", name="加载更多贡献", exact=True)
+        launcher.get_by_role("button", name=f"固定 {first['spec']['title']}", exact=True).focus()
+        self.page.keyboard.press("Tab")
+        expect(more).to_be_focused()
+
+        try:
+            self.page.keyboard.press("Enter")
+            self.page.wait_for_function("() => globalThis.__launcherCursorHeld === 'second'")
+            expect(more).to_be_focused(timeout=2000)
+            expect(more).to_be_disabled()
+            self.assertTrue(more.evaluate("el => el.matches(':focus-visible')"))
+            self.page.keyboard.press("Space")
+            self.reply(pending.pop("second"), {"items": [second], "next_cursor": "last"})
+            launcher.get_by_role("heading", name=second["spec"]["title"], exact=True).wait_for()
+            expect(more).to_be_focused()
+            expect(more).to_be_enabled()
+
+            self.page.keyboard.press("Enter")
+            self.page.wait_for_function("() => globalThis.__launcherCursorHeld === 'last'")
+            self.reply(pending.pop("last"), {"items": [last], "next_cursor": None})
+            launch = launcher.get_by_role("button", name=f"启动贡献 {last['spec']['title']}", exact=True)
+            expect(launch).to_be_focused()
+            self.assertTrue(launch.evaluate("el => el.matches(':focus-visible')"))
+            expect(more).to_have_count(0)
+            self.assertEqual(reads, ["second", "last"])
+        finally:
+            for route in pending.values():
+                route.abort()
 
     def test_launcher_search_pages_and_pin_open_unpin_fixed_contribution(self):
         first, second = self.window_contribution(), self.window_contribution("second")
@@ -348,6 +593,39 @@ class ShellBrowser(unittest.TestCase):
         self.assertEqual(self.custom_calls[0]["headers"]["if-match"], '"rev-1"')
         self.assertEqual(self.custom_calls[1]["headers"]["if-match"], '"rev-2"')
         self.assertNotEqual(self.custom_calls[0]["headers"]["idempotency-key"], self.custom_calls[1]["headers"]["idempotency-key"])
+
+    def test_stale_pin_control_does_not_remove_a_pin_added_in_another_view(self):
+        value = self.window_contribution("stale-pin")
+        title = value["spec"]["title"]
+        key = {"deployment_id": value["deployment_id"], "contribution_id": value["spec"]["id"]}
+        self.fixture.open()
+        self.open_launcher()
+        self.page.get_by_role("button", name="启动插件页面", exact=True).click()
+        window = self.page.locator('.window[data-app="contributions"]')
+        control = window.locator("article .toolbar button:last-child")
+        control.wait_for()
+        self.assertEqual(control.get_attribute("aria-label"), f"固定 {title}")
+
+        self.open_launcher()
+        launcher = self.page.locator("#launcher")
+        launcher.get_by_role("button", name=f"固定 {title}", exact=True).click()
+        launcher.get_by_role("button", name=f"取消固定 {title}", exact=True).wait_for()
+        self.page.locator("#launcher-close").click()
+        self.page.locator("#dock .dock-pin").wait_for()
+        self.assertEqual(control.get_attribute("aria-label"), f"固定 {title}")
+
+        control.click()
+        window.locator("article .toolbar button:last-child:enabled").wait_for()
+        self.assertEqual(self.fixture.saved["spec"]["dock"]["pinned"], [key])
+        self.assertEqual(control.get_attribute("aria-label"), f"取消固定 {title}")
+
+        control.click()
+        window.locator("article .toolbar button:last-child:enabled").wait_for()
+        self.assertEqual(self.fixture.saved["spec"]["dock"]["pinned"], [])
+        self.assertEqual(control.get_attribute("aria-label"), f"固定 {title}")
+        writes = [json.loads(call["body"])["dock"]["pinned"] for call in self.custom_calls
+                  if call["path"].endswith("/me/ui-preferences")]
+        self.assertEqual(writes, [[key], []])
 
     def test_launcher_pin_retry_after_etag_mismatch_reads_current_preferences(self):
         value = self.window_contribution()
@@ -669,8 +947,48 @@ class ShellBrowser(unittest.TestCase):
         self.assertNotEqual(restored.locator("iframe").get_attribute("src"), before_source)
         self.assertEqual(restored.evaluate("el => [el.style.left, el.style.top, el.style.width, el.style.height]"),
                          [f'{record["rect"][field]}px' for field in ("x", "y", "width", "height")])
+        title = f'{value["spec"]["title"]} · {value["plugin_id"]}'
+        expect(restored.locator(".window-title h2")).to_have_text(title)
+        expect(self.page.locator("#active-app")).to_have_text(title, timeout=2000)
+        maximize = restored.get_by_role("button", name=f"最大化{title}", exact=True)
+        maximize.press("Enter")
+        restored.get_by_role("button", name=f"恢复{title}窗口大小", exact=True).press("Enter")
+        maximize.wait_for()
         self.assertEqual(len([call for call in self.fixture.calls if call["method"] == "POST"]), 1)
         self.assertNotIn("BUSINESS-RESULT-NOT-LAYOUT", self.page.locator("body").inner_text())
+
+    def test_background_contribution_restore_preserves_active_window_title(self):
+        value = self.window_contribution()
+        self.seed_restore(value)
+        endpoint = f'{desktop.CORE}/api/platform/v1/ui/contributions/{value["deployment_id"]}/main'
+        pending = []
+        captured = False
+
+        def hold_restore(route):
+            nonlocal captured
+            if route.request.method != "GET" or captured:
+                return route.fallback()
+            captured = True
+            pending.append(route)
+            self.page.evaluate("() => { globalThis.__contributionRestoreHeld = true; }")
+
+        self.page.route(endpoint, hold_restore)
+        try:
+            self.fixture.open()
+            self.page.wait_for_function("() => globalThis.__contributionRestoreHeld === true")
+            expect(self.page.locator("#active-app")).to_have_text("插件窗口 · main")
+            active = self.fixture.app("系统状态")
+            expect(active.locator(".window-title")).to_be_focused()
+
+            pending.pop().fallback()
+            restored = self.page.locator('.window[data-app^="plugin:"]')
+            title = f'{value["spec"]["title"]} · {value["plugin_id"]}'
+            expect(restored.locator(".window-title h2")).to_have_text(title)
+            expect(self.page.locator("#active-app")).to_have_text("系统状态")
+            expect(active.locator(".window-title")).to_be_focused()
+        finally:
+            for route in pending:
+                route.abort()
 
     def test_changed_restore_is_inert_until_explicit_current_version_discovery(self):
         value = self.window_contribution()
@@ -872,7 +1190,8 @@ class ShellBrowser(unittest.TestCase):
                       "inheritance": {"mode": "all_snapshot"}}
         self.key_pages = {
             None: {"items": [key_first], "next_cursor": "cursor-2"},
-            "cursor-2": {"items": [key_second], "next_cursor": None},
+            "cursor-2": {"items": [key_second], "next_cursor": "cursor-end"},
+            "cursor-end": {"items": [], "next_cursor": None},
         }
         self.fixture.open()
         self.fixture.app("账户与权限").get_by_role("button", name="API Key 元数据", exact=True).click()
@@ -883,25 +1202,84 @@ class ShellBrowser(unittest.TestCase):
 
         # 1. Trigger failure on pagination
         self.key_error = (503, "UNAVAILABLE", "key database unavailable")
-        more.click()
+        more.press("Enter")
         keys_window.locator('.state[data-kind="unavailable"]').wait_for()
         self.assertEqual(keys_window.locator(".card").count(), 1)
-        self.assertTrue(more.is_enabled())
+        expect(more).to_be_enabled()
+        expect(more).to_be_focused(timeout=2000)
 
         # 2. Trigger another failure on retry: error state should be replaced, not accumulated
         self.key_error = (500, "INTERNAL_ERROR", "internal failure")
-        more.click()
+        self.page.keyboard.press("Enter")
         keys_window.locator('.state[data-kind="error"]').wait_for()
         self.assertEqual(keys_window.locator(".state[data-kind='error']").count(), 1)
         self.assertEqual(keys_window.locator(".card").count(), 1)
+        expect(more).to_be_enabled()
+        expect(more).to_be_focused()
 
-        # 3. Successful retry: loads second page, clears error state, hides more button
+        # 3. Successful retry: loads the second page and moves focus to its first item.
         self.key_error = None
-        more.click()
-        keys_window.get_by_role("heading", name="Second monitor", exact=True).wait_for()
+        self.page.keyboard.press("Enter")
+        expect(keys_window.get_by_role("heading", name="Second monitor", exact=True)).to_be_focused()
         self.assertEqual(keys_window.locator(".card").count(), 2)
         self.assertEqual(keys_window.locator(".state").count(), 0)
-        self.assertTrue(more.is_hidden())
+
+        # 4. The empty final page still has a focus destination after the button is hidden.
+        more.press("Enter")
+        expect(keys_window.get_by_text("已加载全部可见项目。", exact=True)).to_be_focused()
+        expect(more).to_be_hidden()
+
+    def test_m3_catalog_waits_for_independently_loaded_installations(self):
+        titles = ("M3 official WebUI", "M3 independent UI reference")
+        plugin_ids = ("org.xelab.webui", "org.xelab.ui-reference")
+        deployments = [
+            {"id": f"00000000-0000-4000-8000-{index:012d}", "revision": 1, "phase": "ready", "conditions": [],
+             "spec": {"display_name": title, "enabled": True}}
+            for index, title in enumerate(titles, 1)
+        ]
+        installations = [
+            {"id": f"00000000-0000-4001-8000-{index:012d}", "plugin_id": plugin_id,
+             "version": "1.0.0", "state": "installed", "image_digest": "sha256:" + "b" * 64}
+            for index, plugin_id in enumerate(plugin_ids, 1)
+        ]
+        held = []
+
+        def deployment_list(route):
+            if route.request.method != "GET":
+                return route.fallback()
+            self.reply(route, {"items": deployments, "next_cursor": None})
+
+        def hold_installations(route):
+            if route.request.method != "GET":
+                return route.fallback()
+            held.append(route)
+            self.page.evaluate("() => { globalThis.__catalogInstallationsHeld = true; }")
+
+        def release_installations(message):
+            if message.text == "release-catalog-installations-fixture":
+                self.reply(held.pop(), {"items": installations, "next_cursor": None})
+
+        self.page.route(desktop.CORE + "/api/platform/v1/deployments?*", deployment_list)
+        self.page.route(desktop.CORE + "/api/platform/v1/installations?*", hold_installations)
+        self.fixture.open()
+        catalog = self.fixture.app("插件中心")
+        for title in titles:
+            catalog.get_by_role("heading", name=title, exact=True).wait_for()
+        self.page.wait_for_function("() => globalThis.__catalogInstallationsHeld === true")
+        for plugin_id in plugin_ids:
+            self.assertEqual(catalog.get_by_role("heading", name=plugin_id, exact=True).count(), 0)
+
+        report = {"checks": {}}
+        self.page.on("console", release_installations)
+        try:
+            self.page.evaluate("() => { setTimeout(() => console.debug('release-catalog-installations-fixture'), 250); }")
+            desktop.DRIVER.wait_for_plugin_catalog(catalog, report)
+            self.assertEqual(report["checks"], {"desktop_reads_actual_installed_plugins": True})
+            self.assertEqual(held, [])
+        finally:
+            self.page.remove_listener("console", release_installations)
+            if held:
+                held.pop().abort()
 
     def test_plugin_catalog_pages_both_collections_and_allows_later_deployment_actions(self):
         deployments = [
@@ -922,6 +1300,7 @@ class ShellBrowser(unittest.TestCase):
         collections = {"deployments": deployments, "installations": installations}
         endpoint = desktop.CORE + "/api/platform/v1"
         reads = []
+        held_deployments = []
 
         def catalog_page(route):
             if route.request.method != "GET":
@@ -936,6 +1315,9 @@ class ShellBrowser(unittest.TestCase):
             next_cursor = f"{collection}-next"
             if cursor is None:
                 self.reply(route, {"items": items[:200], "next_cursor": next_cursor})
+            elif collection == "deployments" and cursor == next_cursor:
+                held_deployments.append(route)
+                self.page.evaluate("() => { globalThis.__deploymentPageHeld = true; }")
             elif cursor == next_cursor:
                 self.reply(route, {"items": items[200:], "next_cursor": None})
             else:
@@ -955,14 +1337,29 @@ class ShellBrowser(unittest.TestCase):
         catalog.get_by_role("heading", name="Deployment 200", exact=True).wait_for()
         more_deployments = catalog.get_by_role("button", name="加载下一页部署", exact=True)
         more_installations = catalog.get_by_role("button", name="加载下一页安装制品", exact=True)
+        more_deployments.wait_for()
+        more_installations.wait_for()
         initial_reads = [("deployments", None, ["200"]), ("installations", None, ["200"])]
         self.assertCountEqual(reads, initial_reads)
-        self.assertTrue(more_deployments.is_visible())
-        self.assertTrue(more_installations.is_visible())
 
-        more_deployments.click()
-        target_card = catalog.locator("article").filter(has_text=target["spec"]["display_name"])
-        target_card.get_by_role("button", name="启用", exact=True).click()
+        try:
+            more_deployments.press("Enter")
+            self.page.wait_for_function("() => globalThis.__deploymentPageHeld === true")
+            expect(more_deployments).to_be_focused(timeout=2000)
+            expect(more_deployments).to_be_disabled()
+            self.page.keyboard.press("Space")
+            self.reply(held_deployments.pop(0), {"items": deployments[200:], "next_cursor": None})
+
+            target_card = catalog.locator("article").filter(has_text=target["spec"]["display_name"])
+            expect(target_card.get_by_role("heading", name="Deployment 201", exact=True)).to_be_focused()
+            self.page.keyboard.press("Tab")
+            expect(target_card.get_by_role("button", name="详情", exact=True)).to_be_focused()
+            self.page.keyboard.press("Tab")
+            expect(target_card.get_by_role("button", name="启用", exact=True)).to_be_focused()
+            self.page.keyboard.press("Enter")
+        finally:
+            for route in held_deployments:
+                route.abort()
         editor = self.page.locator('.window[data-app="editor-setDeploymentEnabled"]')
         with self.page.expect_request(lambda request: request.url == enable_url and request.method == "PUT") as enabled:
             editor.get_by_role("button", name="提交", exact=True).click()
@@ -978,6 +1375,42 @@ class ShellBrowser(unittest.TestCase):
         self.assertTrue(more_installations.is_hidden())
         self.assertEqual(reads[2:], [("deployments", "deployments-next", ["200"]),
                                      ("installations", "installations-next", ["200"])])
+
+    def test_plugin_catalog_keeps_deployment_actions_during_an_installation_error(self):
+        unavailable = True
+        installation = {"id": desktop.ACCOUNT, "plugin_id": "org.xelab.comp-test", "version": "1.0.0",
+                        "state": "installed", "image_digest": "sha256:" + "a" * 64}
+        statuses = []
+
+        def installations(route):
+            if route.request.method != "GET":
+                return route.fallback()
+            status = 503 if unavailable else 200
+            statuses.append(status)
+            data = ({"error": {"code": "UNAVAILABLE", "message": "installation dependency unavailable"}}
+                    if unavailable else {"items": [installation], "next_cursor": None})
+            self.reply(route, data, status)
+
+        self.page.route(desktop.CORE + "/api/platform/v1/installations?*", installations)
+        self.fixture.open()
+        catalog = self.fixture.app("插件中心")
+        catalog.get_by_role("heading", name="当前不可用", exact=True).wait_for()
+        installs = catalog.get_by_role("region", name="安装制品", exact=True)
+        self.assertTrue(installs.get_by_role("heading", name="当前不可用", exact=True).is_visible())
+        deployments = catalog.get_by_role("region", name="部署", exact=True)
+        deployment = deployments.locator("article").filter(has_text="fixture deployment")
+        deployment.get_by_role("button", name="配置", exact=True).click()
+        editor = self.page.locator('.window[data-app="editor-updateDeployment"]')
+        self.assertEqual(json.loads(editor.get_by_label("请求 JSON", exact=True).input_value())["spec"]["display_name"],
+                         "fixture deployment")
+        editor.get_by_role("button", name="关闭修改部署", exact=True).click()
+
+        unavailable = False
+        catalog.get_by_role("button", name="刷新插件中心", exact=True).click()
+        installs.get_by_role("heading", name=installation["plugin_id"], exact=True).wait_for()
+        deployment.get_by_role("button", name="配置", exact=True).wait_for()
+        self.assertEqual(installs.get_by_role("heading", name="当前不可用", exact=True).count(), 0)
+        self.assertEqual(statuses, [503, 200])
 
     def test_skill_pagination_reports_empty_only_after_exhausting_all_pages(self):
         self.fixture.open()

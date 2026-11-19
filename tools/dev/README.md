@@ -28,6 +28,7 @@ cgroup 可写性、容器环境标记、containerd socket、资源信息（MemTo
 cpu.max/memory.max 推导的有效值，任一项不可读则有效值为 `unknown`）、
 必需命令（ctr/runc/ip/nft）、构建工具（cargo/rustc）、可选 PostgreSQL 工具（psql）。
 命令存在性依据 [RUN-03 宿主手册](../../docs/implementation/run03-host.md)；存在不等于可执行该验收。
+缺少内核版本或有效 UID 探测接口时仍会生成报告，对应检查标记为 `unavailable`。
 
 资源检查先确认当前 cgroup 及可见祖先的 `cgroup.controllers` 可读，再汇总该挂载视图中的 CPU 与内存限额。
 无法确认有效容量时，JSON 的 `effective_cpu_millis` 和 `effective_memory_bytes` 为 `null`。

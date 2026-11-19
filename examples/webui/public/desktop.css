@@ -121,6 +121,7 @@ button:active{transform:translateY(1px)}
 .dock{
   gap:6px;
   padding:8px 10px;
+  scroll-padding:6px;
   border:1px solid var(--shell-border);
   border-radius:20px;
   background:var(--surface);
@@ -233,6 +234,8 @@ button:active{transform:translateY(1px)}
 .window-controls{gap:6px;align-items:center}
 .window-controls button{
   position:relative;
+  display:grid;
+  place-items:center;
   width:24px;
   height:24px;
   min-height:24px;
@@ -254,27 +257,21 @@ button:active{transform:translateY(1px)}
   box-shadow:inset 0 1px 0 #ffffff80,0 1px 1px #0002;
   transition:filter .15s var(--ease-shell);
 }
-.window-controls button::after{
-  content:"";
-  position:absolute;
-  inset:0;
-  display:grid;
-  place-items:center;
-  font-size:9px;
-  font-weight:800;
-  line-height:1;
-  opacity:0;
-  transition:opacity .12s var(--ease-shell);
+.window-controls button > svg{
+  position:relative;
+  display:block;
+  width:14px;
+  height:14px;
+  pointer-events:none;
 }
 .window-controls button:nth-child(1)::before{background:#ff5f57;border-color:#e14840}
 .window-controls button:nth-child(2)::before{background:#febc2e;border-color:#d89e1f}
 .window-controls button:nth-child(3)::before{background:#28c840;border-color:#1f9e31}
-.window-controls button:nth-child(1)::after{content:"×";color:#6d0b06}
-.window-controls button:nth-child(2)::after{content:"−";color:#5a3a00}
-.window-controls button:nth-child(3)::after{content:"□";color:#06400f}
+.window-controls button:nth-child(1){color:#6d0b06}
+.window-controls button:nth-child(2){color:#5a3a00}
+.window-controls button:nth-child(3){color:#06400f}
 .window-controls button:hover{background:transparent;transform:none}
 .window-controls button:hover::before{filter:brightness(1.06)}
-.window-controls button:hover::after,.window-controls button:focus-visible::after{opacity:1}
 .window-controls button:active{transform:scale(.92)}
 .window-content{padding:22px 22px 24px}
 .window-resize{width:26px;height:26px;color:var(--muted-text);opacity:.55}
@@ -321,6 +318,9 @@ dialog{
 }
 dialog::backdrop{background:light-dark(#10182833,#00000066);backdrop-filter:blur(6px)}
 dialog>header h2{font-size:18px;letter-spacing:-.25px}
+#launcher-close{display:grid;place-items:center}
+#launcher-close>svg{display:block;width:1em;height:1lh;pointer-events:none}
+#launcher-load-more[aria-disabled=true]{cursor:wait;color:var(--muted-text)}
 .search-label input{margin-top:7px;border-radius:9px;background:color-mix(in srgb,var(--surface) 92%,var(--desktop))}
 .app-grid button{
   min-height:96px;
@@ -335,6 +335,14 @@ dialog>header h2{font-size:18px;letter-spacing:-.25px}
   background:color-mix(in srgb,var(--text) 6%,transparent);
   transform:translateY(-1px);
   filter:none;
+}
+.app-grid .launcher-window{min-width:0}
+.app-grid .launcher-window > span:last-child{
+  max-width:100%;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  font-size:12px;
 }
 .app-grid .app-icon svg{
   width:22px;
@@ -387,6 +395,12 @@ dialog[open]{animation:shell-dialog-in .18s var(--ease-shell)}
   height:13px;
   flex:none;
 }
+.dock-pin .dock-unpin > svg{
+  display:block;
+  width:14px;
+  height:14px;
+  pointer-events:none;
+}
 .dock button.dock-restore{
   display:flex;
   align-items:center;
@@ -428,8 +442,4 @@ dialog[open]{animation:shell-dialog-in .18s var(--ease-shell)}
 
 @media(prefers-reduced-motion:reduce){
   dialog[open]{animation:none}
-}
-
-@media(hover:none){
-  .window-controls button::after{opacity:1}
 }

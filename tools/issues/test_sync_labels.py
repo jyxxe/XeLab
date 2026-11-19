@@ -96,6 +96,16 @@ class LabelSyncTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     load_labels(path)
 
+    def test_manifest_rejects_duplicate_json_fields(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "labels.json"
+            path.write_text(
+                '[{"name": "type:bug", "color": "d73a4a", "color": "ffffff", "description": "Bug reports"}]',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate JSON field in label manifest: 'color'"):
+                load_labels(path)
+
     def test_yaml_on_and_duplicate_keys(self):
         self.assertEqual(yaml.load("on: {push: null}\nenabled: false", Loader=Loader), {"on": {"push": None}, "enabled": False})
         with self.assertRaises(ValueError):
