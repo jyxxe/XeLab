@@ -773,23 +773,61 @@ async fn submit_signed_skill(f: &Fixture, c: &Client, entry: &str) -> SkillTask 
         "skill-workflow-read",
     )
     .await;
+    let skill_scope = json!({"kind":"skill","match":"ids","ids":[skill]});
+    let capability_scope = json!({"kind":"capability","match":"ids",
+        "ids":[capability_identifier(&f.contract)]});
+    let skill_rule = json!({"action":"skill.invoke","resource":skill_scope});
+    let capability_rule = json!({"action":"capability.invoke","resource":capability_scope});
+    let group = f
+        .post(
+            "/api/platform/v1/groups",
+            "skill-invocation-rules",
+            json!({"name":"Fixed Skill and Capability invocation",
+                "rules":[skill_rule,capability_rule]}),
+        )
+        .await;
+    // Direct grants from a password session track the issuer account. A real
+    // API key records a shared issuer credential on both invocation paths.
+    let key = f
+        .post(
+            &format!("/api/platform/v1/accounts/{}/api-keys", f.owner),
+            "skill-grant-issuer",
+            json!({"name":"Fixed invocation grant issuer","inheritance":{"mode":"selected",
+                "rules":[skill_rule,capability_rule,{"action":"grant.create",
+                    "resource":{"kind":"account","match":"ids","ids":[subject]}}]},
+                "conditions":{"expires_at":Utc::now()+chrono::Duration::hours(1)}}),
+        )
+        .await;
+    let from_key = |scope| {
+        json!({"source":"group","group_version":{"group_id":group["id"],"version":1},
+            "scope":scope,"expires_at":key["credential"]["conditions"]["expires_at"]})
+    };
+    let issuer_bearer = key["secret"].as_str().unwrap();
+    let uri = format!("/api/platform/v1/accounts/{subject}/grants");
     let skill_grant = f
-        .grant(
-            subject,
-            "Owner",
-            json!({"kind":"skill","match":"ids","ids":[skill]}),
+        .post_as(
+            issuer_bearer,
+            &uri,
             "skill-invoke-only",
+            from_key(skill_scope),
+            None,
+            201,
         )
         .await;
     let capability_grant = f
-        .grant(
-            subject,
-            "Guest",
-            json!({"kind":"capability","match":"ids","ids":[capability_identifier(&f.contract)]}),
+        .post_as(
+            issuer_bearer,
+            &uri,
             "capability-invoke-only",
+            from_key(capability_scope),
+            None,
+            201,
         )
         .await;
-    let common_issuer = c
+    let skill_grant = id(&skill_grant, "id").unwrap();
+    let capability_grant = id(&capability_grant, "id").unwrap();
+    let common_issuer = id(&key["credential"], "id").unwrap();
+    let grants = c
         .query_one(
             "SELECT s.issuer_credential_id,c.issuer_credential_id
            FROM grants s,grants c WHERE s.id=$1 AND c.id=$2",
@@ -797,8 +835,8 @@ async fn submit_signed_skill(f: &Fixture, c: &Client, entry: &str) -> SkillTask 
         )
         .await
         .unwrap();
-    let issuer: Uuid = common_issuer.get(0);
-    assert_eq!(issuer, common_issuer.get::<_, Uuid>(1));
+    assert_eq!(common_issuer, grants.get::<_, Uuid>(0));
+    assert_eq!(common_issuer, grants.get::<_, Uuid>(1));
     let peer = "127.0.0.1".parse().unwrap();
     let token = f
         .app
@@ -820,7 +858,7 @@ async fn submit_signed_skill(f: &Fixture, c: &Client, entry: &str) -> SkillTask 
         task,
         skill,
         submitter: context,
-        common_issuer: issuer,
+        common_issuer,
         skill_grant,
         capability_grant,
     }
@@ -834,17 +872,24 @@ fn capability_identifier(contract: &Value) -> String {
     )
 }
 
-async fn revoke_skill_only(c: &mut Client, f: &Fixture, signed: &SkillTask) {
-    let tx = c.transaction().await.unwrap();
-    crate::db::auth_lock(&tx, true).await.unwrap();
-    tx.execute(
-        "UPDATE grants SET status='revoked',revision=revision+1,updated_at=clock_timestamp()
-         WHERE id=$1",
-        &[&signed.skill_grant],
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+async fn revoke_skill_only(c: &Client, f: &Fixture, signed: &SkillTask) {
+    let mut request = Request::delete(format!("/api/platform/v1/grants/{}", signed.skill_grant))
+        .header(
+            "host",
+            crate::plugin_http_gateway::core_authority(&f.app.config).unwrap(),
+        )
+        .header("authorization", format!("Bearer {}", f.token))
+        .header("idempotency-key", "revoke-skill-invocation")
+        .header("if-match", "\"rev-1\"")
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:50000".parse::<SocketAddr>().unwrap(),
+    ));
+    let response = f.router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    assert_eq!(status.as_u16(), 204, "{}", String::from_utf8_lossy(&bytes));
     auth::authorize(
         c,
         &signed.submitter,
@@ -1501,7 +1546,7 @@ async fn automatic_fixed_signed_skill_records_exact_dual_provenance_and_invokes_
     let Some(f) = Fixture::new().await else {
         return;
     };
-    let mut c = f.app.db.connect().await.unwrap();
+    let c = f.app.db.connect().await.unwrap();
     let signed = submit_signed_skill(&f, &c, "skill_required").await;
     let gate = Arc::new(Semaphore::new(0));
     let provider = Provider {
@@ -1605,7 +1650,7 @@ async fn automatic_fixed_signed_skill_records_exact_dual_provenance_and_invokes_
         .await
         .unwrap();
     assert_eq!(replay["state"], "succeeded");
-    revoke_skill_only(&mut c, &f, &signed).await;
+    revoke_skill_only(&c, &f, &signed).await;
     task_engine::dispatch(&f.app, &linked.attempt)
         .await
         .expect_err("old result replay still requires the original Skill right");
@@ -1625,7 +1670,7 @@ async fn withdrawing_skill_only_during_automatic_dispatch_bars_settlement_and_re
     let Some(f) = Fixture::new().await else {
         return;
     };
-    let mut c = f.app.db.connect().await.unwrap();
+    let c = f.app.db.connect().await.unwrap();
     let signed = submit_signed_skill(&f, &c, "direct").await;
     let gate = Arc::new(Semaphore::new(0));
     let provider = Provider {
@@ -1639,7 +1684,7 @@ async fn withdrawing_skill_only_during_automatic_dispatch_bars_settlement_and_re
         .expect("the exact Skill must already be in-flight before removing its grant");
     let wire = provider.requests.lock().await[0].clone();
     let linked = linked_lease(&c, &wire).await;
-    revoke_skill_only(&mut c, &f, &signed).await;
+    revoke_skill_only(&c, &f, &signed).await;
     gate.add_permits(1);
 
     tokio::time::timeout(Duration::from_secs(5), async {
