@@ -23,7 +23,7 @@
 - `public/styles.css`：原始布局与交互规则；`desktop.css`：菜单栏、Dock、窗口边框/标题栏、启动器、壁纸；`components.css`：表单控件、卡片、状态/结果块、总览区、窗口工具栏；`motion.css`：窗口与提示条的两处有限淡入。`index.html` 按此顺序链接，层叠顺序与拆分前一致。
 - 令牌来源：`applyTheme()` 从当前账户偏好写入 `--accent`、`--surface`、`--desktop`、`--text`、`--muted-text`、`--border`、`--danger`、`--radius`、`--blur`、`--opacity`、`--font`；外壳层只派生 `--menubar-h`、`--shell-radius`、`--shell-border`、`--ease-shell`，不引入第二套色板。`system`/`light`/`dark`/自定义主题共用同一套派生规则；自定义主题的 `color-scheme` 由 `desktop` 令牌的相对亮度决定，使 `light-dark()` 阴影与边框跟随主题。
 - 模糊只作用于菜单栏、Dock 与启动器对话框，窗口正文保持不透明；`reduced-transparency` 关闭这些模糊并恢复不透明表面，`prefers-reduced-motion` 与「减少动画」偏好移除全部过渡与两处淡入。
-- 图标为 `app.js` 内联的 24×24 描边 SVG（`createElementNS` 构建，无 `innerHTML`、无图标库）；窗口控制点保留 24×24 命中区域，默认显示色点，hover/focus/触屏时显示符号。
+- Dock、启动器和窗口操作共用 `app.js` 中的 24×24 描边 SVG 图标集，通过 `createElementNS` 构建。内置应用在 Dock、启动器快捷方式以及窗口切换和恢复入口中使用相同图标。窗口操作图标始终可见，按钮的命中区域为 24×24 像素。最大化和恢复窗口大小各有独立图标及可访问名称。启动器关闭与窗口关闭使用相同图标，Dock 取消固定使用独立图标。
 - 壁纸 `wallpaper.svg` 为仓库内原创矢量图，叠加在主题渐变之上并以 `cover` 缩放；不引用外部资源。
 - 键盘焦点在启动器打开/关闭、窗口关闭、最小化与恢复时显式交接，不落回 `document.body`。
 - 上述约束由 `examples/webui/test_shell_visual.py` 的契约断言覆盖（令牌、模糊/动效偏好、图标、控制点、布局、壁纸、焦点与资源加载）；`test_overview.py` 覆盖只读总览窗口。
