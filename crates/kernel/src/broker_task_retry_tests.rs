@@ -130,19 +130,30 @@ async fn confirm(f: &Fixture, c: &Client, task: Uuid) {
 }
 
 async fn requeue(f: &Fixture, c: &Client, task: Uuid, key: &str, status: u16) -> Value {
-    let revision = c
+    let revision: i64 = c
         .query_one("SELECT revision FROM tasks WHERE id=$1", &[&task])
         .await
         .unwrap()
         .get(0);
-    f.post_with_revision(
-        &format!("/api/platform/v1/tasks/{task}/retry"),
-        key,
-        json!({}),
-        Some(revision),
-        status,
-    )
-    .await
+    let mut request = Request::post(format!("/api/platform/v1/tasks/{task}/retry"))
+        .header(
+            "host",
+            crate::plugin_http_gateway::core_authority(&f.app.config).unwrap(),
+        )
+        .header("authorization", format!("Bearer {}", f.token))
+        .header("idempotency-key", key)
+        .header("if-match", format!("\"rev-{revision}\""))
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:50000".parse::<SocketAddr>().unwrap(),
+    ));
+    let response = f.router.clone().oneshot(request).await.unwrap();
+    let actual = response.status().as_u16();
+    let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(actual, status, "retryTask: {value}");
+    value
 }
 
 async fn get(app: &App, token: &str, call: Uuid) -> Value {
