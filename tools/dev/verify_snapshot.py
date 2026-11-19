@@ -49,16 +49,21 @@ def verify(repo, archive, commit, expected_sha256):
         raise ValueError("input must identify a commit object directly")
     tree = git(repo, "rev-parse", "--verify", commit + "^{tree}").decode().strip()
     expected = {}
-    for record in git(repo, "ls-tree", "--full-tree", "-rlz", commit).split(b"\0"):
+    directories = {""}
+    for record in git(repo, "ls-tree", "--full-tree", "-rtlz", commit).split(b"\0"):
         if not record:
             continue
         metadata, raw_path = record.split(b"\t", 1)
         mode, kind, oid, size = metadata.split()
+        if kind == b"tree":
+            directories.add(raw_path.decode("utf-8"))
+            continue
         if kind != b"blob" or mode not in {b"100644", b"100755", b"120000"}:
             raise ValueError(f"unsupported Git tree entry: {raw_path!r}")
         expected[raw_path.decode("utf-8")] = (mode, oid.decode("ascii"), int(size))
 
     count, root = len(expected), None
+    explicit_dirs, observed_dirs = set(), {""}
     with archive.open("rb") as source:
         if update_digest(hashlib.sha256(), source) != expected_sha256:
             raise ValueError("archive SHA-256 mismatch")
@@ -72,9 +77,15 @@ def verify(repo, archive, commit, expected_sha256):
                 root = parts[0] if root is None else root
                 if parts[0] != root:
                     raise ValueError("expected exactly one archive root")
-                if entry.is_dir():
-                    continue
                 path = "/".join(parts[1:])
+                observed_dirs.update("/".join(parts[1:depth]) for depth in range(2, len(parts)))
+                if entry.is_dir():
+                    kind = stat.S_IFMT(entry.external_attr >> 16) if entry.create_system == 3 else 0
+                    if path not in directories or path in explicit_dirs or entry.file_size or kind not in {0, stat.S_IFDIR}:
+                        raise ValueError(f"unexpected ZIP directory entry: {name!r}")
+                    explicit_dirs.add(path)
+                    observed_dirs.add(path)
+                    continue
                 if not path or path not in expected:
                     raise ValueError(f"extra or duplicate ZIP file: {name!r}")
                 mode, oid, size = expected.pop(path)
@@ -92,6 +103,8 @@ def verify(repo, archive, commit, expected_sha256):
                 raise ValueError("archive comment does not contain a full source commit ID")
     if expected:
         raise ValueError(f"missing {len(expected)} Git file(s) in ZIP; first: {min(expected)!r}")
+    if observed_dirs != directories:
+        raise ValueError("missing Git directory in ZIP")
     return {"archive_sha256": expected_sha256, "archive_comment_commit": original, "checked_commit": commit,
             "same_commit_id": original == commit, "verified_tree": tree, "verified_files": count}
 

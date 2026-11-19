@@ -61,6 +61,17 @@ class SnapshotTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(main([*args, '--require-original']), 1)
 
+    def test_explicit_directories_match_git_and_have_no_payload(self):
+        root = ('export/', b'', 3, 0o40755)
+        self.assertEqual(verify(self.repo, self.archive, self.commit, self.pack([root, *self.entries]))['verified_files'], 3)
+        for entry in [('export/regular/', b'', 3, 0o40755), ('export/extra/', b'', 3, 0o40755),
+                      ('export/', b'data', 3, 0o40755), ('export/', b'', 3, 0o120777)]:
+            for entries in ([entry, *self.entries], [*self.entries, entry]):
+                with self.subTest(entry=entry), self.assertRaisesRegex(ValueError, 'ZIP directory'):
+                    verify(self.repo, self.archive, self.commit, self.pack(entries))
+        with self.assertRaisesRegex(ValueError, 'ZIP directory'):
+            verify(self.repo, self.archive, self.commit, self.pack([root, *self.entries, root]))
+
     def test_mismatches_and_invalid_archive_paths(self):
         cases = [([], 'empty ZIP'), (self.entries[:-1], 'missing'), (self.entries + self.entries[:1], 'duplicate'),
                  (self.entries + [('outside/extra', b'', 3, 0o100644)], 'one archive root'),
