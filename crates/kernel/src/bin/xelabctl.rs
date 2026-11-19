@@ -12,7 +12,7 @@ use xelab_kernel::{
     contracts::{openapi, strict_json},
     db::{Db, LEADER_LOCK, SCHEMA_VERSION},
     error::{Error, Result},
-    schedule_cron::{CronSchedule, DEFAULT_TIMEZONE},
+    schedule_cron::{CronSchedule, MisfirePolicy, OverlapPolicy, RecoveryInputs, DEFAULT_TIMEZONE},
 };
 
 #[derive(Parser)]
@@ -54,6 +54,31 @@ enum Cmd {
         after: String,
         #[arg(long, default_value_t = 5)]
         count: usize,
+    },
+    /// Plan one offline recovery decision for a missed cron interval.
+    PlanScheduleRecovery {
+        #[arg(long)]
+        cron: String,
+        #[arg(long, default_value = DEFAULT_TIMEZONE)]
+        timezone: String,
+        /// Last RFC 3339 instant already considered (exclusive).
+        #[arg(long)]
+        after: String,
+        /// Recovery cutoff in RFC 3339 (inclusive).
+        #[arg(long)]
+        through: String,
+        /// Missed-fire policy: skip or run_once.
+        #[arg(long, default_value = "skip")]
+        misfire: MisfirePolicy,
+        /// Policy while a task is active: skip or queue_one.
+        #[arg(long, default_value = "skip")]
+        overlap: OverlapPolicy,
+        /// The schedule still has a nonterminal task.
+        #[arg(long)]
+        has_active_task: bool,
+        /// Prior RFC 3339 pending occurrence for queue_one.
+        #[arg(long)]
+        pending_at: Option<String>,
     },
     /// Read-only XFS project quota preflight; does not enable Volume APIs.
     StorageCheck {
@@ -169,6 +194,12 @@ fn http_transport_error(error: reqwest::Error, message: &'static str) -> Error {
     }
 }
 
+fn parse_schedule_instant(value: &str) -> Result<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|time| time.to_utc())
+        .map_err(|_| Error::invalid("Schedule timestamp must be an RFC 3339 instant"))
+}
+
 async fn run(args: Args) -> Result<()> {
     match args.command {
         Cmd::RecoverAccount {
@@ -210,11 +241,32 @@ async fn run(args: Args) -> Result<()> {
             after,
             count,
         } => {
-            let after = chrono::DateTime::parse_from_rfc3339(&after)
-                .map_err(|_| Error::invalid("Schedule preview cutoff must be an RFC 3339 instant"))?
-                .to_utc();
+            let after = parse_schedule_instant(&after)?;
             let preview = CronSchedule::parse(&cron, &timezone)?.preview(after, count)?;
             println!("{}", serde_json::to_string(&preview)?);
+        }
+        Cmd::PlanScheduleRecovery {
+            cron,
+            timezone,
+            after,
+            through,
+            misfire,
+            overlap,
+            has_active_task,
+            pending_at,
+        } => {
+            let plan = CronSchedule::parse(&cron, &timezone)?.plan_recovery(RecoveryInputs {
+                after: parse_schedule_instant(&after)?,
+                through: parse_schedule_instant(&through)?,
+                misfire,
+                overlap,
+                has_active_task,
+                pending_at: pending_at
+                    .as_deref()
+                    .map(parse_schedule_instant)
+                    .transpose()?,
+            })?;
+            println!("{}", serde_json::to_string(&plan)?);
         }
         Cmd::StorageCheck { config } => {
             require_host_admin()?;

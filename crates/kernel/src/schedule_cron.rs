@@ -9,9 +9,14 @@ use jiff::{
 use serde::Serialize;
 use std::collections::BTreeSet;
 
+mod recovery;
+pub use recovery::{
+    MisfirePolicy, OverlapPolicy, RecoveryDecision, RecoveryInputs, RecoveryPlan, SkipReason,
+};
+
 pub const DEFAULT_TIMEZONE: &str = "Asia/Shanghai";
 const MAX_PREVIEW_COUNT: usize = 100;
-const PREVIEW_YEARS: i64 = 500;
+const SEARCH_YEARS: i64 = 500;
 
 pub struct CronSchedule {
     timezone: TimeZone,
@@ -90,13 +95,11 @@ impl CronSchedule {
         }
         // All matched instants have whole-second precision, including
         // historical zones whose offsets are not a whole minute.
-        let cutoff = Timestamp::from_second(after.timestamp()).map_err(|_| {
-            Error::invalid("Schedule preview cutoff is outside the supported range")
-        })?;
+        let cutoff = schedule_timestamp(after)?;
         // Use the earliest possible local date at the cutoff. A large UTC
         // offset change can make the next occurrence's local date go backward.
         let start = Offset::MIN.to_datetime(cutoff).date();
-        let end = start.saturating_add(PREVIEW_YEARS.years());
+        let end = start.saturating_add(SEARCH_YEARS.years());
         let mut instants = BTreeSet::new();
         for date in start.series(1.day()).take_while(|date| *date <= end) {
             // Until this lower bound passes the last retained instant, a
@@ -111,18 +114,10 @@ impl CronSchedule {
             if !self.matches_date(date) {
                 continue;
             }
-            for &time in &self.times {
-                let mapping = self.timezone.to_ambiguous_timestamp(date.to_datetime(time));
-                if matches!(mapping.offset(), AmbiguousOffset::Gap { .. }) {
-                    continue;
-                }
-                // Compare the first physical occurrence to the cutoff even
-                // when the cutoff lies inside the repeated local interval.
-                if let Some(instant) = mapping.earlier().ok().filter(|instant| *instant > cutoff) {
-                    instants.insert(instant);
-                    if instants.len() > count {
-                        instants.pop_last();
-                    }
+            for instant in self.instants_on(date).filter(|instant| *instant > cutoff) {
+                instants.insert(instant);
+                if instants.len() > count {
+                    instants.pop_last();
                 }
             }
         }
@@ -134,15 +129,27 @@ impl CronSchedule {
         if instants.len() < count {
             warnings.push(PreviewWarning::SearchLimitReached);
         }
-        let fire_at = instants
-            .into_iter()
-            .map(|instant| DateTime::from_timestamp(instant.as_second(), 0).unwrap())
-            .collect();
+        let fire_at = instants.into_iter().map(fire_datetime).collect();
         Ok(SchedulePreview {
             timezone: self.timezone.iana_name().unwrap().to_owned(),
             fire_at,
             warnings,
         })
+    }
+
+    fn instants_on(&self, date: Date) -> impl Iterator<Item = Timestamp> + '_ {
+        self.times
+            .iter()
+            .filter_map(move |&time| self.first_instant(date, time))
+    }
+
+    fn first_instant(&self, date: Date, time: Time) -> Option<Timestamp> {
+        let mapping = self.timezone.to_ambiguous_timestamp(date.to_datetime(time));
+        if matches!(mapping.offset(), AmbiguousOffset::Gap { .. }) {
+            return None;
+        }
+        // Select the first physical occurrence before applying UTC cutoffs.
+        mapping.earlier().ok()
     }
 
     fn matches_date(&self, date: Date) -> bool {
@@ -157,6 +164,15 @@ impl CronSchedule {
         };
         self.months.contains(date.month()) && day_matches
     }
+}
+
+fn schedule_timestamp(time: DateTime<Utc>) -> Result<Timestamp> {
+    Timestamp::from_second(time.timestamp())
+        .map_err(|_| Error::invalid("Schedule instant is outside the supported range"))
+}
+
+fn fire_datetime(instant: Timestamp) -> DateTime<Utc> {
+    DateTime::from_timestamp(instant.as_second(), 0).unwrap()
 }
 
 struct Field(u64);
