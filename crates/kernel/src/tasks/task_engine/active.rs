@@ -129,11 +129,15 @@ impl<'a> LockedAttempt<'a> {
     }
 
     pub fn active(&self) -> bool {
+        let task_state: &str = self.row.get("task_state");
         matches!(
             self.row.get::<_, &str>("attempt_state"),
             "leased" | "running"
         ) && self.row.get::<_, &str>("step_state") == "running"
-            && self.row.get::<_, &str>("task_state") == "running"
+            && (task_state == "running"
+                // Keep results already in flight without allowing work to
+                // start or extending the lease after cancellation.
+                || (task_state == "cancel_requested" && matches!(self.operation, Operation::Commit)))
     }
 
     pub async fn finish(self) -> Result<Row> {

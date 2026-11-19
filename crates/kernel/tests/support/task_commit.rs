@@ -10,7 +10,7 @@ use xelab_kernel::{
     task_engine::{claim, commit},
 };
 
-async fn publish(f: &Fixture, nodes: &[(&str, &[&str])]) -> Uuid {
+pub(super) async fn publish(f: &Fixture, nodes: &[(&str, &[&str])]) -> Uuid {
     let mut spec = f.spec("commit");
     let template = &spec["steps"][0];
     spec["steps"] = nodes
@@ -30,7 +30,7 @@ async fn publish(f: &Fixture, nodes: &[(&str, &[&str])]) -> Uuid {
     contracts::id(&workflow.body, "id").unwrap()
 }
 
-async fn submit(f: &Fixture, workflow: Uuid, key: &str) -> Uuid {
+pub(super) async fn submit(f: &Fixture, workflow: Uuid, key: &str) -> Uuid {
     let task = request(
         &f.router,
         Method::POST,
@@ -44,14 +44,14 @@ async fn submit(f: &Fixture, workflow: Uuid, key: &str) -> Uuid {
     contracts::id(&task.body, "id").unwrap()
 }
 
-async fn leased(f: &Fixture, worker: Uuid) -> Value {
+pub(super) async fn leased(f: &Fixture, worker: Uuid) -> Value {
     claim(&f.db, &f.auth, worker)
         .await
         .unwrap()
         .expect("ready step")
 }
 
-fn success(attempt: &Value, message: &str) -> Value {
+pub(super) fn success(attempt: &Value, message: &str) -> Value {
     json!({"attempt_id":attempt["id"],"execution_id":attempt["execution_id"],"fence":attempt["fence"],
            "state":"succeeded","output":{"message":message},"error":null})
 }
@@ -64,7 +64,7 @@ async fn audit_count(db: &Client) -> i64 {
 }
 
 // Check committed state on an independent connection, including timestamps and revisions.
-async fn snapshot(db: &Client, task: Uuid) -> Value {
+pub(super) async fn snapshot(db: &Client, task: Uuid) -> Value {
     db.query_one(
         "SELECT jsonb_build_object(
             'task', to_jsonb(t) - 'admission',

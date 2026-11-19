@@ -7,6 +7,8 @@ mod http_host;
 mod task_admission;
 #[path = "support/task_attempts.rs"]
 mod task_attempts;
+#[path = "support/task_cancel.rs"]
+mod task_cancel;
 #[path = "support/task_claim.rs"]
 mod task_claim;
 #[path = "support/task_claim_authority.rs"]

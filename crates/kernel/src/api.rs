@@ -681,7 +681,7 @@ fn dispatch<'a>(
     } else if crate::workflows::handles(name) {
         crate::workflows::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
     } else if crate::tasks::handles(name) {
-        crate::tasks::execute(&tx,&app.auth,&ctx,name,&params,&body,uri.query().unwrap_or("")).await?
+        crate::tasks::execute(&tx,&app.auth,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("")).await?
     } else if crate::volumes::handles(name) {
         crate::volumes::execute(&tx,app,&ctx,name,&params,&body,&headers,uri.query().unwrap_or("" )).await?
     } else if crate::backups::handles(name) {

@@ -209,11 +209,18 @@ async fn aggregate(
                 bool_or(s.id<>$2 AND s.state='failed') AS prior_failed,
                 bool_and(s.state='succeeded') AS all_succeeded,
                 EXISTS (SELECT FROM attempts a JOIN task_steps other ON a.step_id=other.id
-                         WHERE other.task_id=$1 AND a.state IN ('leased','running')) AS live
+                         WHERE other.task_id=$1 AND a.state IN ('leased','running')) AS live,
+                (SELECT state FROM tasks WHERE id=$1) AS task_state
          FROM task_steps s WHERE s.task_id=$1",
             &[&task_id, &step_id],
         )
         .await?;
+    if facts.try_get::<_, &str>("task_state")? == "cancel_requested" {
+        if super::cancel::settled(tx, task_id).await? {
+            super::cancel::update_state(tx, task_id, "canceled").await?;
+        }
+        return Ok(false);
+    }
     let prior_unknown: bool = facts.try_get("prior_unknown")?;
     let prior_failed: bool = facts.try_get("prior_failed")?;
     let unknown = prior_unknown || state == "unknown";
