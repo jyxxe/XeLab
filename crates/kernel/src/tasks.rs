@@ -22,7 +22,7 @@ mod targets;
 pub(crate) fn handles(name: &str) -> bool {
     matches!(
         name,
-        "createTask" | "getTask" | "listTasks" | "listTaskSteps"
+        "createTask" | "getTask" | "listTasks" | "listTaskSteps" | "listAttempts"
     )
 }
 

@@ -40,6 +40,7 @@ fn collection(name: &str) -> Result<Collection> {
         "listWorkflows" => ("workflows", "Workflow", "workflow.read", "workflow", "SELECT t.id,t.created_at,t.id::text AS resource_id,t.owner_id,NULL::text AS plugin_id,NULL::uuid AS deployment_id FROM workflows t"),
         "listTasks" => ("tasks", "Task", "task.read", "task", "SELECT t.id,t.created_at,t.id::text AS resource_id,t.owner_id,NULL::text AS plugin_id,NULL::uuid AS deployment_id,t.state FROM tasks t"),
         "listTaskSteps" => ("task_steps", "TaskStep", "task.read", "task", "SELECT s.id,s.created_at,t.id::text AS resource_id,t.owner_id,NULL::text AS plugin_id,NULL::uuid AS deployment_id,s.task_id FROM task_steps s JOIN tasks t ON t.id=s.task_id"),
+        "listAttempts" => ("attempts", "Attempt", "task.read", "task", "SELECT a.id,a.created_at,t.id::text AS resource_id,t.owner_id,NULL::text AS plugin_id,NULL::uuid AS deployment_id,a.step_id,to_jsonb(a) AS attempt FROM attempts a JOIN task_steps s ON s.id=a.step_id JOIN tasks t ON t.id=s.task_id"),
         _ => return Err(Error::invalid("Unknown plugin catalog operation")),
     };
     Ok(Collection {
@@ -271,6 +272,16 @@ pub(crate) async fn list_task_steps(
     list(c, auth, ctx, "listTaskSteps", query, Some(task)).await
 }
 
+pub(crate) async fn list_attempts(
+    c: &(impl GenericClient + Sync),
+    auth: &Auth,
+    ctx: &Context,
+    step: Uuid,
+    query: &str,
+) -> Result<(Value, u16)> {
+    list(c, auth, ctx, "listAttempts", query, Some(step)).await
+}
+
 pub(crate) async fn read_task(
     c: &(impl GenericClient + Sync),
     task: Uuid,
@@ -290,7 +301,7 @@ async fn list(
     ctx: &Context,
     name: &str,
     query: &str,
-    task: Option<Uuid>,
+    parent: Option<Uuid>,
 ) -> Result<(Value, u16)> {
     let selected = collection(name)?;
     if !policy::registered(c, selected.action, selected.kind).await? {
@@ -361,8 +372,13 @@ async fn list(
     if name == "listTasks" {
         binding["state"] = json!(state);
     }
-    if let Some(task) = task {
-        binding["task_id"] = json!(task);
+    if let Some(parent) = parent {
+        let key = if name == "listAttempts" {
+            "step_id"
+        } else {
+            "task_id"
+        };
+        binding[key] = json!(parent);
     }
     let now = Utc::now();
     let mut cursor = if let Some(value) = supplied_cursor {
@@ -408,12 +424,16 @@ async fn list(
             params.push(&state);
             "AND ($9::text IS NULL OR state COLLATE \"C\"=$9)"
         }
-        "listTaskSteps" => {
-            if task.is_none() {
+        "listTaskSteps" | "listAttempts" => {
+            if parent.is_none() {
                 return Err(Error::not_found());
             }
-            params.push(&task);
-            "AND task_id=$9"
+            params.push(&parent);
+            if name == "listAttempts" {
+                "AND step_id=$9"
+            } else {
+                "AND task_id=$9"
+            }
         }
         _ => "",
     };
@@ -448,6 +468,8 @@ async fn list(
                 continue;
             };
             value
+        } else if name == "listAttempts" {
+            object_value(&row.get("attempt"), "Attempt")?
         } else {
             read_object(c, selected.table, id, selected.model).await?
         };
