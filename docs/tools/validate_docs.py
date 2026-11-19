@@ -221,6 +221,7 @@ def strict(spec,operations):
         from google.protobuf import descriptor_pb2
         from pglast import parse_sql
         from render_rpc import render_pages
+        from validate_micro_artifact import read_micro_artifact
     except ImportError as e:
         ERRORS.append('strict dependencies missing; install docs/tools/requirements.txt: '+str(e));return
     try:validate_spec(spec)
@@ -399,29 +400,33 @@ def strict(spec,operations):
     check(kb['embedding_routing']['text_index_preference'][0]=='org.xelab.embedding-gemma.text-8','index embedding must default to text-8')
     check(kb['embedding_routing']['allow_fallback'] is True,'knowledge embedding fallback must default enabled')
     # Micro artifacts have an independent core provenance, not a runtime OCI signature.
+    def micro_artifact(folder, artifact_file, manifest_file):
+        try:
+            if not folder.resolve().is_relative_to(DOCS/'preset-plugins'):
+                raise ValueError('artifact fixture must remain in the preset directory')
+            return read_micro_artifact(folder, artifact_file, manifest_file, read)
+        except (OSError, ValueError, RuntimeError) as e:
+            label = folder.relative_to(DOCS) if folder.is_relative_to(DOCS) else folder.name
+            ERRORS.append('micro artifact '+str(label)+': '+str(e))
+            return None
+
     micro=DOCS/'preset-plugins/micro-plugin-runtime'
     for item in read(micro/'examples/validation.json'):
         schema={'$ref':base+'#/components/schemas/'+item['schema']}
         accepted=Draft202012Validator(schema,registry=registry,format_checker=checker).is_valid(item['value'])
         check(accepted==item['valid'],'micro boundary fixture mismatch: '+item['name'])
-    artifact=read(micro/'examples/artifact.json');source=(micro/'examples'/artifact['source_file']).read_bytes()
-    manifest=read(micro/'examples'/artifact['manifest_file'])
-    source_digest='sha256:'+hashlib.sha256(source).hexdigest()
-    check(source_digest==artifact['source_digest'],'micro source digest mismatch')
-    # This fixture has only integer numbers and ASCII keys; canonical form equals JCS.
-    package={'manifest':manifest,'source_digest':source_digest}
-    digest='sha256:'+hashlib.sha256(json.dumps(package,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
-    check(digest==artifact['package_digest'],'micro package digest mismatch')
-    publication=read(micro/'examples/publish-version.json');definition=read(micro/'examples/echo.skill.json')
-    check(publication['manifest']==manifest and publication['source_digest']==source_digest,'micro publish fixture drift')
-    validate_case({'$ref':base+'#/components/schemas/SkillDefinition'},definition,'generated micro Skill')
-    check(definition['target']['package_digest']==digest,'micro target package mismatch')
-    check(definition['input_schema']==manifest['input_schema'] and definition['output_schema']==manifest['output_schema'],'micro business schema drift')
-    request=read(micro/'examples/invoke.json')
-    validate_case(manifest['input_schema'],request['input'],'micro sample input')
-    validate_case(manifest['output_schema'],read(micro/'examples/output.json'),'micro sample output')
-    check(0<len(source)<=262144 and not source.startswith(b'\xef\xbb\xbf') and b'\x00' not in source,'invalid micro source fixture encoding/size')
-    source.decode('utf-8',errors='strict')
+    artifact=micro_artifact(micro/'examples','artifact.json','micro-manifest.json')
+    if artifact is not None:
+        manifest,source_digest,digest=artifact
+        validate_case({'$ref':base+'#/components/schemas/MicroManifest'},manifest,'micro echo manifest')
+        publication=read(micro/'examples/publish-version.json');definition=read(micro/'examples/echo.skill.json')
+        check(publication['manifest']==manifest and publication['source_digest']==source_digest,'micro publish fixture drift')
+        validate_case({'$ref':base+'#/components/schemas/SkillDefinition'},definition,'generated micro Skill')
+        check(definition['target']['package_digest']==digest,'micro target package mismatch')
+        check(definition['input_schema']==manifest['input_schema'] and definition['output_schema']==manifest['output_schema'],'micro business schema drift')
+        request=read(micro/'examples/invoke.json')
+        validate_case(manifest['input_schema'],request['input'],'micro sample input')
+        validate_case(manifest['output_schema'],read(micro/'examples/output.json'),'micro sample output')
     runtime=read(micro/'manifest.json');cfg=read(micro/'defaults.json');deployment=read(micro/'deployment.template.json')
     check(runtime.get('micro_runtime',{}).get('api_major')==1,'MPR descriptor missing')
     check(not runtime['skills'] and not runtime['capabilities'],'MPR must not expose a generic execute Skill/capability bypass')
@@ -451,15 +456,14 @@ def strict(spec,operations):
         validate_case({'$ref':base+'#/components/schemas/MicroDeploymentSettings'},read(file),str(file.relative_to(DOCS)))
     # Micro presets are separate source artifacts, not OCI install/volume templates.
     for preset in read(DOCS/'preset-plugins/catalog.json').get('micro_presets',[]):
-        folder=DOCS/'preset-plugins'/preset['directory'];manifest=read(folder/preset['manifest'])
+        folder=DOCS/'preset-plugins'/preset['directory']
+        artifact=micro_artifact(folder,preset['artifact'],preset['manifest'])
+        if artifact is None:
+            continue
+        manifest,_,digest=artifact
         validate_case({'$ref':base+'#/components/schemas/MicroManifest'},manifest,preset['directory']+' MicroManifest')
         validate_case({'$ref':base+'#/components/schemas/CreateMicroDeployment'},read(folder/preset['deployment_template']),preset['directory']+' micro deployment')
         validate_case(read(folder/preset['defaults_schema']),read(folder/preset['defaults']),preset['directory']+' defaults')
-        artifact=read(folder/preset['artifact']);source=(folder/artifact['source_file']).read_bytes()
-        sha='sha256:'+hashlib.sha256(source).hexdigest()
-        check(sha==artifact['source_digest'],'micro preset source digest mismatch '+preset['directory'])
-        digest='sha256:'+hashlib.sha256(json.dumps({'manifest':manifest,'source_digest':sha},sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
-        check(digest==artifact['package_digest'],'micro preset package digest mismatch '+preset['directory'])
         definition=read(folder/'search.skill.example.json')
         validate_case({'$ref':base+'#/components/schemas/SkillDefinition'},definition,preset['directory']+' generated candidate')
         check(definition['target']['package_digest']==digest and definition['input_schema']==manifest['input_schema'] and definition['output_schema']==manifest['output_schema'],'micro preset candidate/source mismatch '+preset['directory'])
