@@ -75,6 +75,7 @@ pub fn audit_resource(
         "registerSkill" => Some(("skill", &response["id"])),
         "createWorkflow" => Some(("workflow", &response["id"])),
         "createTask" => Some(("task", &response["id"])),
+        "resolveUnknownStep" => Some(("task", &response["task_id"])),
         "createClient" => Some(("client", &response["id"])),
         "bindSecret" => Some(("secret", &response["spec"]["secret_id"])),
         _ => None,

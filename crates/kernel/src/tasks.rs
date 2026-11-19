@@ -10,7 +10,7 @@ use axum::http::HeaderMap;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use tokio_postgres::GenericClient;
+use tokio_postgres::{GenericClient, Transaction};
 use uuid::Uuid;
 
 mod authority;
@@ -19,6 +19,7 @@ mod claim_authority;
 mod commit_effects;
 mod dispatch_input;
 mod reads;
+mod resolve;
 #[cfg(test)]
 mod restart_tests;
 pub(crate) mod snapshot;
@@ -28,12 +29,22 @@ pub mod task_engine;
 pub(crate) fn handles(name: &str) -> bool {
     matches!(
         name,
-        "createTask" | "cancelTask" | "getTask" | "listTasks" | "listTaskSteps" | "listAttempts"
+        "createTask"
+            | "cancelTask"
+            | "resolveUnknownStep"
+            | "getTask"
+            | "listTasks"
+            | "listTaskSteps"
+            | "listAttempts"
     )
 }
 
 pub(crate) fn validate_query(name: &str, query: &str) -> Result<()> {
-    if matches!(name, "createTask" | "cancelTask" | "getTask") && !query.is_empty() {
+    if matches!(
+        name,
+        "createTask" | "cancelTask" | "resolveUnknownStep" | "getTask"
+    ) && !query.is_empty()
+    {
         return Err(Error::invalid("Unexpected task query parameter"));
     }
     Ok(())
@@ -48,6 +59,9 @@ pub(crate) async fn authorize(
 ) -> Result<()> {
     if name == "cancelTask" {
         return cancel::authorize(c, ctx, crate::api::path_id(params, "task_id")?).await;
+    }
+    if name == "resolveUnknownStep" {
+        return resolve::authorize(c, ctx, crate::api::path_id(params, "step_id")?).await;
     }
     if name != "createTask" {
         return reads::authorize(c, ctx, name, params).await;
@@ -77,7 +91,7 @@ async fn authorize_create(c: &(impl GenericClient + Sync), ctx: &Context) -> Res
 
 #[allow(clippy::too_many_arguments)] // Shared HTTP dispatch inputs.
 pub(crate) async fn execute(
-    c: &(impl GenericClient + Sync),
+    c: &Transaction<'_>,
     auth: &Auth,
     ctx: &Context,
     name: &str,
@@ -90,6 +104,17 @@ pub(crate) async fn execute(
         "createTask" => Ok((create(c, ctx, body).await?, 201)),
         "cancelTask" => Ok((
             cancel::request(c, ctx, crate::api::path_id(params, "task_id")?, headers).await?,
+            200,
+        )),
+        "resolveUnknownStep" => Ok((
+            resolve::apply(
+                c,
+                ctx,
+                crate::api::path_id(params, "step_id")?,
+                headers,
+                body,
+            )
+            .await?,
             200,
         )),
         _ => reads::execute(c, auth, ctx, name, params, query).await,

@@ -30,7 +30,8 @@ const HOST_CALLS: &str = include_str!("../migrations/0018_host_calls.sql");
 const EVENT_STORE: &str = include_str!("../migrations/0019_events.sql");
 const TASK_ADMISSION: &str = include_str!("../migrations/0020_task_admission.sql");
 const ATTEMPT_COMMIT: &str = include_str!("../migrations/0021_attempt_commit.sql");
-const MIGRATIONS: [&str; 21] = [
+const TASK_STEP_RESOLUTIONS: &str = include_str!("../migrations/0022_task_step_resolutions.sql");
+const MIGRATIONS: [&str; 22] = [
     BASELINE,
     CALL_CHARGES,
     SECRET_AUTHORITY,
@@ -52,6 +53,7 @@ const MIGRATIONS: [&str; 21] = [
     EVENT_STORE,
     TASK_ADMISSION,
     ATTEMPT_COMMIT,
+    TASK_STEP_RESOLUTIONS,
 ];
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 pub const LEADER_LOCK: i64 = 0x58454c41424d3101;
@@ -737,4 +739,118 @@ pub async fn call_lock(c: &impl GenericClient) -> Result<()> {
     )
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod task_resolution_migration_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn actual_postgres_v21_task_resolution_migration_is_append_only() {
+        let Ok(base) = std::env::var("XELAB_TEST_DATABASE_URL") else {
+            eprintln!("SKIPPED: Task resolution migration requires PostgreSQL");
+            return;
+        };
+        let admin = Db::new(base.clone()).unwrap().connect().await.unwrap();
+        let name = format!("task_resolution_v21_{}", Uuid::new_v4().simple());
+        admin
+            .batch_execute(&format!("CREATE DATABASE {name}"))
+            .await
+            .unwrap();
+        let database = Db::new(format!("{base} dbname={name}")).unwrap();
+        let c = database.connect().await.unwrap();
+        for (offset, sql) in MIGRATIONS.iter().take(21).enumerate() {
+            c.batch_execute(sql).await.unwrap();
+            c.execute(
+                "INSERT INTO schema_migrations(version,checksum,applied_at) VALUES($1,$2,now())",
+                &[&(offset as i64 + 1), &digest(sql.as_bytes())],
+            )
+            .await
+            .unwrap();
+        }
+        let recorded =
+            "SELECT array_agg(checksum ORDER BY version) FROM schema_migrations WHERE version<=21";
+        let before: Vec<String> = c.query_one(recorded, &[]).await.unwrap().get(0);
+
+        let (owner, delegation, workflow, task, step, attempt) = (
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        );
+        c.execute(
+            "INSERT INTO accounts(id,kind,status,display_name,created_at,updated_at)
+                   VALUES($1,'user','active','v21 fixture',now(),now())",
+            &[&owner],
+        )
+        .await
+        .unwrap();
+        c.execute("INSERT INTO execution_delegations(id,subject_id,maximum_rules,run_as,expires_at,status,created_at)
+                   VALUES($1,$2,'[]','user',now(),'expired',now())", &[&delegation,&owner]).await.unwrap();
+        c.execute(
+            "INSERT INTO workflows(id,owner_id,name,version,spec,status,created_at,updated_at)
+                   VALUES($1,$2,'v21 workflow',1,'{}','active',now(),now())",
+            &[&workflow, &owner],
+        )
+        .await
+        .unwrap();
+        c.execute("INSERT INTO tasks(id,owner_id,workflow_id,delegation_id,input,deadline_at,state,created_at,updated_at)
+                   VALUES($1,$2,$3,$4,'{}',now(),'unknown',now(),now())", &[&task,&owner,&workflow,&delegation]).await.unwrap();
+        c.execute("INSERT INTO task_steps(id,task_id,step_key,attempt_count,state,fence,created_at,updated_at)
+                   VALUES($1,$2,'a',1,'unknown',1,now(),now())", &[&step,&task]).await.unwrap();
+        c.execute("INSERT INTO attempts(id,step_id,number,execution_id,idempotency_key,fence,lease_expires_at,state,created_at,updated_at,worker_id)
+                   VALUES($1,$2,1,$3,'key',1,now(),'unknown',now(),now(),$4)", &[&attempt,&step,&Uuid::new_v4(),&Uuid::new_v4()]).await.unwrap();
+        c.execute("INSERT INTO attempt_commit_receipts(attempt_id,state,output,error) VALUES($1,'unknown','null','null')", &[&attempt]).await.unwrap();
+        let history = "SELECT to_jsonb(a),to_jsonb(r) FROM attempts a JOIN attempt_commit_receipts r ON r.attempt_id=a.id";
+        let row = c.query_one(history, &[]).await.unwrap();
+        let before_history = (row.get::<_, Value>(0), row.get::<_, Value>(1));
+        assert!(!c
+            .query_one(
+                "SELECT to_regclass('task_step_resolutions') IS NOT NULL",
+                &[]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0));
+        assert!(database.check().await.is_err());
+        database.migrate().await.unwrap();
+        database.migrate().await.unwrap();
+        database.check().await.unwrap();
+        let row = c.query_one(history, &[]).await.unwrap();
+        assert_eq!(
+            (row.get::<_, Value>(0), row.get::<_, Value>(1)),
+            before_history
+        );
+        assert_eq!(
+            c.query_one(recorded, &[])
+                .await
+                .unwrap()
+                .get::<_, Vec<String>>(0),
+            before
+        );
+        assert!(c
+            .query_one(
+                "SELECT to_regclass('task_step_resolutions') IS NOT NULL",
+                &[]
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0));
+        assert_eq!(
+            c.query_one("SELECT count(*) FROM task_step_resolutions", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            0
+        );
+        assert_eq!(
+            c.query_one("SELECT max(version) FROM schema_migrations", &[])
+                .await
+                .unwrap()
+                .get::<_, i64>(0),
+            22
+        );
+    }
 }

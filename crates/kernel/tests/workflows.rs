@@ -19,6 +19,8 @@ mod task_claim_http;
 mod task_commit;
 #[path = "support/task_commit_races.rs"]
 mod task_commit_races;
+#[path = "support/task_resolution.rs"]
+mod task_resolution;
 #[path = "support/task_worker_lease.rs"]
 mod task_worker_lease;
 #[path = "support/workflow_authority_wait.rs"]

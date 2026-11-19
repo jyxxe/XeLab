@@ -958,3 +958,128 @@ async fn actual_postgres_m5_admission_snapshot_round_trip_resets_execution_autho
         1
     );
 }
+
+#[tokio::test]
+async fn actual_postgres_task_resolution_copy_keeps_actor_evidence_and_fenced_history() {
+    use serde_json::{json, Value};
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let mut source = f.app.db.connect().await.unwrap();
+    let ctx = f
+        .app
+        .auth
+        .authenticate(
+            &source,
+            &f.token,
+            "127.0.0.1".parse().unwrap(),
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    let (workflow, delegation, task, step, attempt) = (
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    );
+    let resolution_evidence = "Provider receipt REF-123 confirms no execution";
+    let tx = source.transaction().await.unwrap();
+    tx.execute(
+        "INSERT INTO workflows(id,owner_id,name,version,spec,status,created_at,updated_at)
+                VALUES($1,$2,'snapshot-task',1,'{}','active',now(),now())",
+        &[&workflow, &ctx.subject],
+    )
+    .await
+    .unwrap();
+    tx.execute("INSERT INTO execution_delegations(id,subject_id,issuer_credential_id,maximum_rules,run_as,expires_at,status,created_at)
+                VALUES($1,$2,$3,'[]','user',now()+interval '1 hour','active',now())", &[&delegation,&ctx.subject,&ctx.credential]).await.unwrap();
+    tx.execute("INSERT INTO tasks(id,owner_id,workflow_id,delegation_id,input,deadline_at,state,created_at,updated_at)
+                VALUES($1,$2,$3,$4,'{}',now()+interval '1 hour','failed',now(),now())", &[&task,&ctx.subject,&workflow,&delegation]).await.unwrap();
+    tx.execute("INSERT INTO task_steps(id,task_id,step_key,attempt_count,state,fence,created_at,updated_at)
+                VALUES($1,$2,'a',1,'failed',1,now(),now())", &[&step,&task]).await.unwrap();
+    tx.execute("INSERT INTO attempts(id,step_id,number,execution_id,idempotency_key,fence,lease_expires_at,state,created_at,updated_at,worker_id)
+                VALUES($1,$2,1,$3,'key',1,now(),'expired',now(),now(),$4)", &[&attempt,&step,&Uuid::new_v4(),&Uuid::new_v4()]).await.unwrap();
+    tx.execute("INSERT INTO task_step_resolutions(attempt_id,resolution,evidence,subject_id,credential_id,credential_chain,request_id,created_at)
+                VALUES($1,'confirmed_not_executed',$2,$3,$4,$5,$6,now())",
+        &[&attempt,&resolution_evidence,&ctx.subject,&ctx.credential,&ctx.chain,&ctx.request]).await.unwrap();
+    let selector = json!({"kind":"task","match":"ids","ids":[task]});
+    tx.commit().await.unwrap();
+    assert!(
+        export_inner(&mut source, &mut Vec::new()).await.is_err(),
+        "orphan resolution audit"
+    );
+    db::audit(
+        &source,
+        ctx.subject,
+        Some(ctx.credential),
+        ctx.request,
+        "resolveUnknownStep",
+        &selector,
+        "succeeded",
+        "COMMITTED",
+    )
+    .await
+    .unwrap();
+
+    source
+        .execute(
+            "UPDATE task_steps SET state='succeeded',output='{}' WHERE id=$1",
+            &[&step],
+        )
+        .await
+        .unwrap();
+    assert!(
+        export_inner(&mut source, &mut Vec::new()).await.is_err(),
+        "contradictory current decision"
+    );
+    source
+        .execute(
+            "UPDATE task_steps SET state='failed',output=NULL WHERE id=$1",
+            &[&step],
+        )
+        .await
+        .unwrap();
+    const PROJECTION: &str = "SELECT to_jsonb(r),to_jsonb(a) FROM task_step_resolutions r JOIN attempts a ON a.id=r.attempt_id";
+    let row = source.query_one(PROJECTION, &[]).await.unwrap();
+    let expected = (row.get::<_, Value>(0), row.get::<_, Value>(1));
+    assert_eq!(expected.0["evidence"], resolution_evidence);
+    let mut bytes = Vec::new();
+    let summary = export_inner(&mut source, &mut bytes).await.unwrap();
+    assert_eq!(summary.schema_version, SCHEMA_VERSION);
+    let (_, mut destination, recovery) = target(f.backup).await;
+    let restored = import_inner(
+        &mut destination,
+        &mut bytes.as_slice(),
+        &summary,
+        recovery,
+        ctx.subject,
+        PASSWORD,
+    )
+    .await
+    .unwrap();
+    assert_eq!(restored, summary);
+    let row = destination.query_one(PROJECTION, &[]).await.unwrap();
+    assert_eq!((row.get::<_, Value>(0), row.get::<_, Value>(1)), expected);
+    assert_eq!(
+        destination
+            .query_one(
+                "SELECT status FROM execution_delegations WHERE id=$1",
+                &[&delegation]
+            )
+            .await
+            .unwrap()
+            .get::<_, &str>(0),
+        "revoked"
+    );
+    assert_eq!(
+        destination
+            .query_one("SELECT count(*) FROM attempt_commit_receipts", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        0,
+        "no forged receipt"
+    );
+}

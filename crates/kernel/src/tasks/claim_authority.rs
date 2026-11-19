@@ -246,7 +246,11 @@ fn stored_uuid(record: &Value, field: &str) -> Result<Option<Uuid>> {
         .map_err(|_| Error::denied())
 }
 
-fn check_deployment(step: &Value, record: &Value, deployment: Option<Uuid>) -> Result<()> {
+pub(super) fn check_deployment(
+    step: &Value,
+    record: &Value,
+    deployment: Option<Uuid>,
+) -> Result<()> {
     let explicit = step
         .get("provider_deployment_id")
         .map(|_| id(step, "provider_deployment_id"))
@@ -275,7 +279,7 @@ fn stored_digest<'a>(binding: &'a Value, field: &str) -> Result<&'a str> {
 
 // Older rows have only a version check in PostgreSQL. Check the persisted proof
 // before a missing provider could mask malformed fields as a dependency wait.
-fn validate_binding(
+pub(super) fn validate_binding(
     binding: &Value,
     step: &Value,
     skill: Option<Uuid>,
