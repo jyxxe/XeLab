@@ -22,6 +22,7 @@ mod reads;
 mod resolve;
 #[cfg(test)]
 mod restart_tests;
+pub(crate) mod retry;
 pub(crate) mod snapshot;
 mod targets;
 pub mod task_engine;
@@ -32,6 +33,7 @@ pub(crate) fn handles(name: &str) -> bool {
         "createTask"
             | "cancelTask"
             | "resolveUnknownStep"
+            | "retryTask"
             | "getTask"
             | "listTasks"
             | "listTaskSteps"
@@ -42,7 +44,7 @@ pub(crate) fn handles(name: &str) -> bool {
 pub(crate) fn validate_query(name: &str, query: &str) -> Result<()> {
     if matches!(
         name,
-        "createTask" | "cancelTask" | "resolveUnknownStep" | "getTask"
+        "createTask" | "cancelTask" | "resolveUnknownStep" | "retryTask" | "getTask"
     ) && !query.is_empty()
     {
         return Err(Error::invalid("Unexpected task query parameter"));
@@ -63,6 +65,9 @@ pub(crate) async fn authorize(
     if name == "resolveUnknownStep" {
         return resolve::authorize(c, ctx, crate::api::path_id(params, "step_id")?).await;
     }
+    if name == "retryTask" {
+        return retry::authorize(c, ctx, crate::api::path_id(params, "task_id")?).await;
+    }
     if name != "createTask" {
         return reads::authorize(c, ctx, name, params).await;
     }
@@ -77,6 +82,25 @@ pub(crate) async fn authorize(
         return Err(Error::not_found());
     }
     Ok(())
+}
+
+async fn authorize_task_action(
+    c: &(impl GenericClient + Sync),
+    ctx: &Context,
+    action: &str,
+    task: Uuid,
+    owner: Uuid,
+) -> Result<()> {
+    let resource = Resource::new("task", task, Some(owner));
+    let result = auth::authorize(c, ctx, action, &resource).await;
+    if result
+        .as_ref()
+        .is_err_and(|error| error.code == "PERMISSION_DENIED")
+        && !crate::policy::allows(c, ctx, "task.read", &resource).await?
+    {
+        return Err(Error::not_found());
+    }
+    result
 }
 
 async fn authorize_create(c: &(impl GenericClient + Sync), ctx: &Context) -> Result<()> {

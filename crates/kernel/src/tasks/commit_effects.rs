@@ -282,7 +282,7 @@ pub(super) async fn wake_dependents(
         "UPDATE task_steps s SET state='ready',revision=s.revision+1,updated_at=clock_timestamp()
          FROM tasks t JOIN workflows w ON w.id=t.workflow_id,
               jsonb_array_elements(w.spec->'steps') node
-         WHERE t.id=$1 AND t.state='running' AND s.task_id=t.id AND s.step_key=node->>'id'
+         WHERE t.id=$1 AND t.state IN ('queued','running') AND s.task_id=t.id AND s.step_key=node->>'id'
            AND s.state='pending' AND s.attempt_count=0 AND ($2::text IS NULL OR (node->'depends_on') ? $2)
            AND NOT EXISTS (SELECT FROM attempts a WHERE a.step_id=s.id)
            AND NOT EXISTS (SELECT FROM jsonb_array_elements_text(node->'depends_on') dep(key)

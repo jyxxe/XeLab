@@ -2,10 +2,10 @@
 mod binding;
 mod summary;
 
-use super::{cancel, commit_effects};
+use super::{authorize_task_action, cancel, commit_effects};
 use crate::{
     api::etag,
-    auth::{self, Context, Resource},
+    auth::Context,
     contracts::{reject_jsonb_nul, string},
     db::outbox,
     error::{Error, Result},
@@ -27,25 +27,14 @@ pub(super) async fn authorize(
         )
         .await?
         .ok_or_else(Error::not_found)?;
-    authorize_task(c, ctx, row.try_get("id")?, row.try_get("owner_id")?).await
-}
-
-async fn authorize_task(
-    c: &(impl GenericClient + Sync),
-    ctx: &Context,
-    task: Uuid,
-    owner: Uuid,
-) -> Result<()> {
-    let resource = Resource::new("task", task, Some(owner));
-    let result = auth::authorize(c, ctx, "task.resolve", &resource).await;
-    if result
-        .as_ref()
-        .is_err_and(|error| error.code == "PERMISSION_DENIED")
-        && !crate::policy::allows(c, ctx, "task.read", &resource).await?
-    {
-        return Err(Error::not_found());
-    }
-    result
+    authorize_task_action(
+        c,
+        ctx,
+        "task.resolve",
+        row.try_get("id")?,
+        row.try_get("owner_id")?,
+    )
+    .await
 }
 
 pub(super) async fn apply(
@@ -85,7 +74,7 @@ pub(super) async fn apply(
         .ok_or_else(Error::not_found)?;
     let task: Uuid = parent.try_get("id")?;
     let owner: Uuid = parent.try_get("owner_id")?;
-    authorize_task(tx, ctx, task, owner).await?;
+    authorize_task_action(tx, ctx, "task.resolve", task, owner).await?;
     let selected = tx
         .query_opt(
             "SELECT revision,state,step_key,provider_deployment_id,attempt_count,fence
@@ -163,6 +152,6 @@ pub(super) async fn apply(
     summary::update(tx, task, parent.try_get("state")?).await?;
     let result = commit_effects::read_step(tx, step).await?;
     // Timed task.resolve rights may expire while waiting on row locks or outbox.
-    authorize_task(tx, ctx, task, owner).await?;
+    authorize_task_action(tx, ctx, "task.resolve", task, owner).await?;
     Ok(result)
 }

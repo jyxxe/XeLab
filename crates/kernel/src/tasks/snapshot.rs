@@ -25,7 +25,8 @@ pub(crate) async fn validate_snapshot(c: &(impl GenericClient + Sync)) -> Result
                   WHERE a.state NOT IN ('expired','unknown')
                      OR (a.number=s.attempt_count AND a.fence=s.fence AND (
                          (resolution.resolution='confirmed_succeeded' AND (s.state<>'succeeded' OR s.output IS NULL))
-                         OR (resolution.resolution='confirmed_not_executed' AND (s.state<>'failed' OR s.output IS NOT NULL))
+                         OR (resolution.resolution='confirmed_not_executed'
+                             AND (s.state NOT IN ('failed','ready','canceled') OR s.output IS NOT NULL))
                      ))
                      OR NOT EXISTS (
                     SELECT FROM audit_events audit WHERE audit.request_id=resolution.request_id
@@ -38,7 +39,7 @@ pub(crate) async fn validate_snapshot(c: &(impl GenericClient + Sync)) -> Result
         )
         .await?
         .get(0);
-    if inconsistent {
+    if inconsistent || retry::inconsistent_snapshot(c).await? {
         return Err(Error::conflict(
             "Snapshot contains inconsistent task or batch execution history",
         ));

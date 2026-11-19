@@ -205,7 +205,7 @@ impl<'a> LockedAttempt<'a> {
     }
 }
 
-pub(super) async fn live(tx: &Transaction<'_>, until: DateTime<Utc>) -> Result<bool> {
+pub(in crate::tasks) async fn live(tx: &Transaction<'_>, until: DateTime<Utc>) -> Result<bool> {
     Ok(tx
         .query_one(
             "SELECT clock_timestamp()<$1 AND NOT EXISTS (

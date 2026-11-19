@@ -1067,6 +1067,89 @@ async fn actual_postgres_task_resolution_copy_keeps_actor_evidence_and_fenced_hi
     let row = source.query_one(PROJECTION, &[]).await.unwrap();
     let expected = (row.get::<_, Value>(0), row.get::<_, Value>(1));
     assert_eq!(expected.0["evidence"], resolution_evidence);
+    source
+        .execute("UPDATE tasks SET state='queued' WHERE id=$1", &[&task])
+        .await
+        .unwrap();
+    source
+        .execute("UPDATE task_steps SET state='ready' WHERE id=$1", &[&step])
+        .await
+        .unwrap();
+    assert!(
+        export_inner(&mut source, &mut Vec::new()).await.is_err(),
+        "ready retry missing authorization"
+    );
+    let retry_request = Uuid::new_v4();
+    let wrong_step = Uuid::new_v4();
+    let queued = json!({"task_id":task,"step_id":step,"attempt_id":attempt,"fence":1,
+        "request_id":retry_request,"subject_id":ctx.subject,"credential_id":ctx.credential});
+    let mut wrong_event = queued.clone();
+    wrong_event["step_id"] = json!(wrong_step);
+    let tx = source.transaction().await.unwrap();
+    tx.execute(
+        "INSERT INTO outbox(id,topic,aggregate_id,payload,created_at)
+        VALUES($1,'task.step.retry_requested',$1,$2,now())",
+        &[&attempt, &wrong_event],
+    )
+    .await
+    .unwrap();
+    db::audit(
+        &tx,
+        ctx.subject,
+        Some(ctx.credential),
+        retry_request,
+        "retryTask",
+        &selector,
+        "succeeded",
+        "COMMITTED",
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert!(
+        export_inner(&mut source, &mut Vec::new()).await.is_err(),
+        "authorization belongs to another step"
+    );
+    source
+        .execute(
+            "UPDATE outbox SET payload=$2 WHERE id=$1",
+            &[&attempt, &queued],
+        )
+        .await
+        .unwrap();
+    export_inner(&mut source, &mut Vec::new()).await.unwrap();
+
+    let successor = Uuid::new_v4();
+    let tx = source.transaction().await.unwrap();
+    tx.execute("INSERT INTO attempts(id,step_id,number,execution_id,idempotency_key,fence,lease_expires_at,state,created_at,updated_at,worker_id)
+                VALUES($1,$2,2,$3,'key',2,now(),'expired',now(),now(),$4)", &[&successor,&step,&Uuid::new_v4(),&Uuid::new_v4()]).await.unwrap();
+    tx.execute(
+        "UPDATE task_steps SET state='unknown',attempt_count=2,fence=2 WHERE id=$1",
+        &[&step],
+    )
+    .await
+    .unwrap();
+    tx.execute("UPDATE tasks SET state='unknown' WHERE id=$1", &[&task])
+        .await
+        .unwrap();
+    tx.execute(
+        "UPDATE outbox SET payload=$2 WHERE id=$1",
+        &[&attempt, &wrong_event],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert!(
+        export_inner(&mut source, &mut Vec::new()).await.is_err(),
+        "consumed retry missing exact predecessor authorization"
+    );
+    source
+        .execute(
+            "UPDATE outbox SET payload=$2 WHERE id=$1",
+            &[&attempt, &queued],
+        )
+        .await
+        .unwrap();
     let mut bytes = Vec::new();
     let summary = export_inner(&mut source, &mut bytes).await.unwrap();
     assert_eq!(summary.schema_version, SCHEMA_VERSION);
@@ -1084,6 +1167,19 @@ async fn actual_postgres_task_resolution_copy_keeps_actor_evidence_and_fenced_hi
     assert_eq!(restored, summary);
     let row = destination.query_one(PROJECTION, &[]).await.unwrap();
     assert_eq!((row.get::<_, Value>(0), row.get::<_, Value>(1)), expected);
+    let restored_event: Value = destination
+        .query_one("SELECT payload FROM outbox WHERE id=$1", &[&attempt])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(restored_event, queued);
+    destination
+        .execute("DELETE FROM outbox WHERE id=$1", &[&attempt])
+        .await
+        .unwrap();
+    assert!(crate::tasks::snapshot::validate_snapshot(&destination)
+        .await
+        .is_err());
     assert_eq!(
         destination
             .query_one(

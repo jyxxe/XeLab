@@ -13,9 +13,14 @@ use xelab_kernel::{
     task_engine::{claim, commit},
 };
 
-async fn unknown(f: &Fixture, worker: Uuid) -> (Value, Value) {
+pub(super) async fn unknown(f: &Fixture, worker: Uuid) -> (Value, Value) {
     let attempt = leased(f, worker).await;
-    let mut input = success(&attempt, "");
+    let step = mark_unknown(f, worker, &attempt).await;
+    (attempt, step)
+}
+
+pub(super) async fn mark_unknown(f: &Fixture, worker: Uuid, attempt: &Value) -> Value {
+    let mut input = success(attempt, "");
     input["state"] = json!("unknown");
     input["output"] = Value::Null;
     input["error"] = Error::new(
@@ -24,11 +29,10 @@ async fn unknown(f: &Fixture, worker: Uuid) -> (Value, Value) {
         StatusCode::CONFLICT,
     )
     .detail();
-    let step = commit(&f.db, &f.auth, worker, &input).await.unwrap();
-    (attempt, step)
+    commit(&f.db, &f.auth, worker, &input).await.unwrap()
 }
 
-async fn resolve(
+pub(super) async fn resolve(
     f: &Fixture,
     token: &str,
     step: &Value,
@@ -219,7 +223,10 @@ async fn resolution_retains_cancellation_intent_on_unknown_parent() {
     let cancel = request(
         &f.router,
         Method::POST,
-        &format!("{task_path}/cancel"),
+        &format!(
+            "/api/platform/v1/tasks/{}/cancel",
+            task.to_string().to_uppercase()
+        ),
         Some(&f.token),
         Some(&json!({})),
         &[
@@ -230,6 +237,17 @@ async fn resolution_retains_cancellation_intent_on_unknown_parent() {
     .await
     .expect(200);
     assert_eq!(cancel.body["state"], "unknown");
+    let canonical: Value = db
+        .query_one(
+            "SELECT resource FROM audit_events WHERE action='cancelTask'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(canonical["ids"], json!([task]));
+    db.execute("UPDATE audit_events SET resource=jsonb_set(resource,'{ids,0}',to_jsonb($1::text)) WHERE action='cancelTask'",
+        &[&task.to_string().to_uppercase()]).await.unwrap();
 
     let before = snapshot(&db, task).await;
     let result = resolve(
