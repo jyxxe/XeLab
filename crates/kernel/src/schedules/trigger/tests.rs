@@ -2,6 +2,10 @@ use super::Db;
 use crate::{auth, contracts};
 use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio_postgres::Client;
 use uuid::Uuid;
 
@@ -138,6 +142,26 @@ impl Fixture {
         .unwrap();
         tx.commit().await.unwrap();
         id
+    }
+
+    async fn app(&self, ready: bool) -> Arc<crate::api::App> {
+        let source: toml::Value = toml::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/contracts/examples/kernel.toml",
+        )))
+        .unwrap();
+        let config =
+            crate::config::Config::from_value(serde_json::to_value(source).unwrap()).unwrap();
+        Arc::new(crate::api::App {
+            db: self.db.clone(),
+            auth: self.auth.clone(),
+            leader: Arc::new(self.db.leader().await.unwrap()),
+            runtime: crate::runtime::Runtime::new(config.clone()),
+            config,
+            ready: AtomicBool::new(ready),
+            shutdown: AtomicBool::new(false),
+            blob_uploads: tokio::sync::Semaphore::new(4),
+        })
     }
 }
 
@@ -740,10 +764,6 @@ async fn explicit_retry_waits_for_new_scheduled_task_and_checks_unknown_siblings
 
 #[tokio::test]
 async fn runner_waits_for_readiness_then_processes_startup_and_stops() {
-    use std::sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    };
     let Some(f) = Fixture::new().await else {
         return;
     };
@@ -752,22 +772,7 @@ async fn runner_waits_for_readiness_then_processes_startup_and_stops() {
     let schedule = f
         .schedule(&mut c, missed, "* * * * *", "UTC", "run_once", "skip")
         .await;
-    let source: toml::Value = toml::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/contracts/examples/kernel.toml",
-    )))
-    .unwrap();
-    let config = crate::config::Config::from_value(serde_json::to_value(source).unwrap()).unwrap();
-    let app = Arc::new(crate::api::App {
-        db: f.db.clone(),
-        auth: f.auth.clone(),
-        leader: Arc::new(f.db.leader().await.unwrap()),
-        runtime: crate::runtime::Runtime::new(config.clone()),
-        config,
-        ready: AtomicBool::new(false),
-        shutdown: AtomicBool::new(false),
-        blob_uploads: tokio::sync::Semaphore::new(4),
-    });
+    let app = f.app(false).await;
     let runner = tokio::spawn(crate::run_schedules(app.clone()));
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert!(fires(&c, schedule).await.is_empty());
@@ -786,6 +791,91 @@ async fn runner_waits_for_readiness_then_processes_startup_and_stops() {
     })
     .await
     .expect("the ready runner must process the recorded missed fire");
+    app.shutdown.store(true, Ordering::SeqCst);
+    tokio::time::timeout(std::time::Duration::from_secs(2), runner)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn runner_fires_younger_schedule_while_older_workflow_is_locked() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let mut c = f.db.connect().await.unwrap();
+    let older_workflow = f.workflow;
+    let older_due = time("2025-03-01T09:00:00Z");
+    let older = f
+        .schedule(&mut c, older_due, "* * * * *", "UTC", "run_once", "skip")
+        .await;
+    let younger_workflow = Uuid::new_v4();
+    c.execute(
+        "INSERT INTO workflows(id,owner_id,name,version,spec,status,created_at,updated_at)
+         SELECT $2,owner_id,name,version+1,spec,status,now(),now() FROM workflows WHERE id=$1",
+        &[&older_workflow, &younger_workflow],
+    )
+    .await
+    .unwrap();
+    let f = Fixture {
+        workflow: younger_workflow,
+        ..f
+    };
+    let younger = f
+        .schedule(
+            &mut c,
+            older_due + Duration::minutes(1),
+            "* * * * *",
+            "UTC",
+            "run_once",
+            "skip",
+        )
+        .await;
+
+    let mut locker = f.db.connect().await.unwrap();
+    let hold = locker.transaction().await.unwrap();
+    hold.query_one(
+        "SELECT id FROM workflows WHERE id=$1 FOR UPDATE",
+        &[&older_workflow],
+    )
+    .await
+    .unwrap();
+    let app = f.app(true).await;
+    let runner = tokio::spawn(crate::run_schedules(app.clone()));
+    let task = tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        loop {
+            if let Some((_, outcome, task)) = fires(&c, younger).await.into_iter().next() {
+                assert_eq!(outcome, "created");
+                break task.unwrap();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        }
+    })
+    .await
+    .expect("the younger schedule must fire without waiting for the older workflow lock");
+    assert_eq!(
+        c.query_one("SELECT workflow_id FROM tasks WHERE id=$1", &[&task])
+            .await
+            .unwrap()
+            .get::<_, Uuid>(0),
+        younger_workflow
+    );
+    assert!(fires(&c, older).await.is_empty());
+    assert_eq!(cursor(&c, older).await, older_due);
+
+    hold.rollback().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        loop {
+            if let Some((_, outcome, task)) = fires(&c, older).await.into_iter().next() {
+                assert_eq!(outcome, "created");
+                assert!(task.is_some());
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        }
+    })
+    .await
+    .expect("the older schedule must remain eligible after the workflow lock is released");
     app.shutdown.store(true, Ordering::SeqCst);
     tokio::time::timeout(std::time::Duration::from_secs(2), runner)
         .await

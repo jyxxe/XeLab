@@ -117,6 +117,9 @@ async fn tick(
     blocked: &(impl Fn() -> bool + Sync),
 ) -> Result<()> {
     let mut client = db.connect_scoped(BATCH_TIMEOUT).await?;
+    // A busy workflow or grant row should defer its own fire without using
+    // the batch's entire budget and blocking an unrelated eligible schedule.
+    client.batch_execute("SET lock_timeout='250ms'").await?;
     let through = client
         .query_one("SELECT clock_timestamp()", &[])
         .await?
