@@ -2,7 +2,7 @@ use super::{request, schedule_catalog::scoped_key, Fixture, Reply};
 use axum::http::Method;
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tokio_postgres::Client;
 use uuid::Uuid;
 use xelab_kernel::{contracts, schedule_cron::CronSchedule};
@@ -410,6 +410,109 @@ async fn update_rechecks_etag_after_waiting_for_the_trigger_lock() {
         .expect(200);
     assert_eq!(persisted.body["spec"]["name"], "Original plan");
     assert_eq!(persisted.body["revision"], 2);
+}
+
+#[tokio::test]
+async fn concurrent_workflow_replacements_reject_the_stale_etag_after_delegation_changes() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let f = Arc::new(f);
+    let c = f.db.connect().await.unwrap();
+    let mut locker = f.db.connect().await.unwrap();
+    let original = publish(&f, "first workflow", "publish-original-delegation").await;
+    let first = publish(&f, "first change", "publish-first-replacement").await;
+    let second = publish(&f, "second change", "publish-second-replacement").await;
+    let record = create(&f, &spec(original)).await;
+    let schedule = contracts::id(&record, "id").unwrap();
+    let hold = locker.transaction().await.unwrap();
+    hold.batch_execute("LOCK TABLE audit_events IN SHARE MODE")
+        .await
+        .unwrap();
+    let winner = {
+        let f = f.clone();
+        tokio::spawn(async move {
+            update(
+                &f,
+                &f.token,
+                schedule,
+                &spec(first),
+                Some("\"rev-1\""),
+                "first-delegation-update",
+            )
+            .await
+        })
+    };
+    // The first request has updated the Schedule and its delegation but
+    // cannot commit before the success audit.
+    let winner_pid: i32 = tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            if let Some(row) = c
+                .query_opt(
+                    "SELECT pid FROM pg_locks
+                  WHERE relation='audit_events'::regclass
+                    AND database=(SELECT oid FROM pg_database WHERE datname=current_database())
+                    AND mode='RowExclusiveLock' AND NOT granted LIMIT 1",
+                    &[],
+                )
+                .await
+                .unwrap()
+            {
+                break row.get(0);
+            }
+            assert!(!winner.is_finished());
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("the first replacement must reach its success audit");
+    let waiter = {
+        let f = f.clone();
+        tokio::spawn(async move {
+            update(
+                &f,
+                &f.token,
+                schedule,
+                &spec(second),
+                Some("\"rev-1\""),
+                "second-delegation-update",
+            )
+            .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            let blocked: bool = c.query_one(
+                "SELECT EXISTS(SELECT FROM pg_stat_activity a WHERE a.datname=current_database()
+                   AND $1=ANY(pg_blocking_pids(a.pid)))",
+                &[&winner_pid],
+            ).await.unwrap().get(0);
+            if blocked {
+                break;
+            }
+            assert!(!waiter.is_finished());
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("the second replacement must wait for the first to release the Schedule row");
+    hold.rollback().await.unwrap();
+    let updated = winner.await.unwrap().expect(200).body;
+    assert_eq!(updated["spec"]["workflow_id"], json!(first));
+    assert_ne!(updated["delegation_id"], record["delegation_id"]);
+    waiter.await.unwrap().expect(412);
+    let persisted = f
+        .read(&f.token, &format!("{SCHEDULES}/{schedule}"))
+        .await
+        .expect(200);
+    assert_eq!(persisted.body, updated);
+    assert_eq!(
+        c.query_one("SELECT count(*) FROM execution_delegations", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0),
+        2,
+    );
 }
 
 #[tokio::test]

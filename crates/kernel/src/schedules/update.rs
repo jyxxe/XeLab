@@ -35,9 +35,21 @@ pub(crate) async fn apply(
     headers: &HeaderMap,
 ) -> Result<(Value, Option<DateTime<Utc>>)> {
     // The scheduler, stop and edits lock the same row before touching a fire.
-    let row = tx
+    let locked = tx
         .query_opt(
-            "SELECT s.owner_id,s.revision,s.spec,s.admission,s.delegation_id,s.next_fire_at,
+            "SELECT owner_id,revision FROM schedules WHERE id=$1 FOR UPDATE",
+            &[&schedule],
+        )
+        .await?
+        .ok_or_else(Error::not_found)?;
+    let owner: Uuid = locked.try_get("owner_id")?;
+    authorize_owner(tx, ctx, ACTION, schedule, owner).await?;
+    etag(headers, locked.try_get("revision")?)?;
+    // Use a new snapshot for the delegation join. A writer that held the
+    // Schedule lock may have changed its delegation while we were waiting.
+    let row = tx
+        .query_one(
+            "SELECT s.owner_id,s.spec,s.admission,s.delegation_id,s.next_fire_at,
                     e.subject_id,e.issuer_credential_id,e.maximum_rules,e.expires_at,
                     (e.status='active' AND e.run_as='user' AND e.service_account_id IS NULL
                      AND e.subject_id=s.owner_id AND e.issuer_credential_id IS NOT NULL
@@ -45,14 +57,10 @@ pub(crate) async fn apply(
                      AND NOT EXISTS (SELECT FROM calls q WHERE q.delegation_id=e.id)
                      AND NOT EXISTS (SELECT FROM tasks t WHERE t.delegation_id=e.id)) AS delegation_live
                FROM schedules s JOIN execution_delegations e ON e.id=s.delegation_id
-              WHERE s.id=$1 FOR UPDATE OF s FOR SHARE OF e",
+              WHERE s.id=$1 FOR SHARE OF e",
             &[&schedule],
         )
-        .await?
-        .ok_or_else(Error::not_found)?;
-    let owner: Uuid = row.try_get("owner_id")?;
-    authorize_owner(tx, ctx, ACTION, schedule, owner).await?;
-    etag(headers, row.try_get("revision")?)?;
+        .await?;
     reject_jsonb_nul(body)?;
     let spec = normalize_spec(body);
     let workflow = id(&spec, "workflow_id")?;
