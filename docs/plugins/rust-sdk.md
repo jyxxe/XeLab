@@ -43,6 +43,10 @@ tonic::transport::Server::builder()
 
 `xelab_plugin_sdk::rpc` 提供 `task_worker_server::TaskWorker`、`TaskWorkerServer` 和 `task_worker_client::TaskWorkerClient`，供插件实现服务、构建客户端或编写协议测试。生成类型包含 Execute 进度流、Cancel 和 Query。端到端执行仍需内核调度接入、检查点持久化和跨重启去重。[Execute 契约](../rpc/TaskWorker.Execute.md)
 
+`task_worker::TaskProgressReader` 用于读取在受信连接上已发起的单次 Execute 流。构造时传入原请求的执行 ID、fence 和既定的绝对截止时间。`next_event()` 核对身份和从 1 开始的连续序号，分别返回心跳、检查点和终态。终态在 gRPC 流以 OK 状态结束后才返回。
+
+提前结束、终态后的额外帧、非 OK 状态、超时或 `Unknown` 均表示无法确认实际结果。读取器只消费当前流，调用方可用原执行身份按既有权限核实结果。成功终态的字节受 16 MiB 和 UTF-8 限制，调用方仍需按原契约校验 JSON、输出 Schema 和失败终态的错误码。检查点只有经过版本、Blob 和持久化校验后才可恢复。客户端应按前述 `MAX_RPC_MESSAGE_BYTES` 配置接收上限。
+
 ## 调用 HostService
 
 `identity.connect_host().await?` 返回生成的 HostService 客户端。连接目标取自运行时注入的 `XELAB_HOST_RPC_ENDPOINT`，握手验证工作负载 CA、`kernel.xelab.local` 与内核 SPIFFE URI。建立新连接时读取当前工作负载证书。

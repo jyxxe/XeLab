@@ -5,4 +5,5 @@ pub mod rpc {
     tonic::include_proto!("xelab.v1");
 }
 
+pub mod task_worker;
 pub mod transport;
