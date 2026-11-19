@@ -55,6 +55,7 @@ const MIGRATIONS: [&str; 21] = [
 ];
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 pub const LEADER_LOCK: i64 = 0x58454c41424d3101;
+const AUTH_LOCK: i64 = 0x58454c4142415554;
 
 #[cfg(test)]
 #[path = "db_oauth_tests.rs"]
@@ -713,8 +714,17 @@ pub async fn auth_lock(c: &impl GenericClient, write: bool) -> Result<()> {
     } else {
         "SELECT pg_advisory_xact_lock_shared($1)"
     };
-    c.query_one(sql, &[&0x58454c4142415554_i64]).await?;
+    c.query_one(sql, &[&AUTH_LOCK]).await?;
     Ok(())
+}
+
+/// Skip background maintenance if an authorization mutation owns the fence.
+pub(crate) async fn try_auth_lock_shared(c: &impl GenericClient) -> Result<bool> {
+    Ok(
+        c.query_one("SELECT pg_try_advisory_xact_lock_shared($1)", &[&AUTH_LOCK])
+            .await?
+            .get(0),
+    )
 }
 
 /// Order: authorization fence, call ledger, provider, root-to-leaf quota rows.

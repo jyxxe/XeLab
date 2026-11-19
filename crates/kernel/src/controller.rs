@@ -263,6 +263,7 @@ async fn tick(app: &App, first: bool, state: &mut ControllerState) -> Result<()>
     // Maintenance is revisited every bounded batch, rather than once per full
     // deployment sweep. Recovery precedes potentially slow image installation.
     recover_expired_calls(app).await?;
+    crate::task_engine::expire_leases(&app.db).await?;
     process_installations(app).await?;
     {
         let mut events_connection = app.db.connect().await?;
