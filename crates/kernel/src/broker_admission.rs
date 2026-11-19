@@ -251,7 +251,7 @@ impl Request<'_> {
             fixed,
             Some(row.get("installation_id")),
             None,
-            false,
+            ProviderUse::Ordinary { lock: false },
         )
         .await?;
         let instance = Instance {
@@ -444,7 +444,7 @@ impl Request<'_> {
                 Some(waiter.deployment),
                 installation,
                 Some(waiter.ticket.instance),
-                front,
+                ProviderUse::Ordinary { lock: front },
             )
             .await?;
             crate::dependencies::check_ready(tx, app, row.get("deployment_id")).await?;
@@ -542,7 +542,16 @@ impl Request<'_> {
         let row = if let Some(row) = pinned {
             row
         } else {
-            let row = provider(tx, name, version, fixed, installation, None, can_admit).await?;
+            let row = provider(
+                tx,
+                name,
+                version,
+                fixed,
+                installation,
+                None,
+                ProviderUse::Ordinary { lock: can_admit },
+            )
+            .await?;
             crate::dependencies::check_ready(tx, app, row.get("deployment_id")).await?;
             row
         };
@@ -754,20 +763,13 @@ async fn admit_task_bounded(
         Some(proof.deployment),
         Some(proof.installation),
         None,
-        true,
+        ProviderUse::FixedTask,
     )
     .await?;
     let instance = Instance {
         id: row.try_get("id")?,
         generation: row.try_get("generation")?,
     };
-    if row.try_get::<_, i64>("observed_generation")? != instance.generation
-        || row.try_get::<_, &str>("health")? != "alive"
-    {
-        return Err(Error::unavailable(
-            "Fixed task provider observation is stale",
-        ));
-    }
     let manifest: Value = row.try_get("manifest")?;
     crate::artifact::validate_runtime_profile(&manifest)?;
     let proxy = manifest["requested_rules"].as_array().is_some_and(|rules| {
@@ -1112,6 +1114,11 @@ fn skill_resource(skill: &ResolvedSkill) -> Resource {
     Resource::new("skill", skill.id, Some(skill.owner))
 }
 
+enum ProviderUse {
+    Ordinary { lock: bool },
+    FixedTask,
+}
+
 async fn provider(
     c: &(impl GenericClient + Sync),
     name: &str,
@@ -1119,17 +1126,17 @@ async fn provider(
     fixed: Option<Uuid>,
     installation: Option<Uuid>,
     pinned: Option<Instance>,
-    lock_instance: bool,
+    selection: ProviderUse,
 ) -> Result<Row> {
     let instance = pinned.map(|instance| instance.id);
     let generation = pinned.map(|instance| instance.generation);
-    let lock = if lock_instance {
-        " FOR UPDATE OF i"
-    } else {
-        ""
+    let fixed_task = matches!(selection, ProviderUse::FixedTask);
+    let lock = match selection {
+        ProviderUse::Ordinary { lock: false } => "",
+        _ => " FOR UPDATE OF i",
     };
     let statement = format!(
-        "SELECT i.id,i.generation,i.health,p.observed_generation,d.id AS deployment_id,n.manifest,n.id AS installation_id,n.manifest_digest
+        "SELECT i.id,i.generation,d.id AS deployment_id,n.manifest,n.id AS installation_id,n.manifest_digest
            FROM provider_records p JOIN instances i ON i.id=p.instance_id
            JOIN deployments d ON d.id=i.deployment_id JOIN installations n ON n.id=d.installation_id
           WHERE p.name=$1 AND p.version=$2 AND p.availability='ready'
@@ -1139,6 +1146,7 @@ async fn provider(
             AND i.phase='ready' AND d.spec->>'enabled'='true' AND d.archived_at IS NULL
             AND ($3::uuid IS NULL OR d.id=$3) AND ($4::uuid IS NULL OR n.id=$4)
             AND ($5::uuid IS NULL OR (i.id=$5 AND i.generation=$6 AND p.observed_generation=$6))
+            AND (NOT $7 OR (i.health='alive' AND p.observed_generation=i.generation))
           ORDER BY i.id LIMIT 1{lock}",
     );
     c.query_opt(
@@ -1150,6 +1158,7 @@ async fn provider(
             &installation,
             &instance,
             &generation,
+            &fixed_task,
         ],
     )
     .await?

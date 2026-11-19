@@ -1094,3 +1094,42 @@ async fn signed_terminal_rejection_commits_and_replays_without_resending() {
     );
     assert_eq!(provider.requests.lock().await.len(), 1);
 }
+
+#[tokio::test]
+async fn task_admission_selects_live_replica_inside_the_fixed_deployment() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let task = f.start_task(false).await;
+    let lease = claim(&f).await;
+    let c = f.app.db.connect().await.unwrap();
+    for (id, ordinal, health, observation) in [
+        (Uuid::nil(), 1_i32, "unhealthy", GENERATION),
+        (Uuid::from_u128(1), 2_i32, "alive", GENERATION - 1),
+    ] {
+        assert!(id < f.instance);
+        c.execute(
+            "INSERT INTO instances(id,deployment_id,generation,ordinal,phase,health,limits,runtime_id,
+                                   last_heartbeat_at,created_at,updated_at)
+             SELECT $2,deployment_id,generation,$3,'ready',$4,limits,$5,now(),now(),now()
+               FROM instances WHERE id=$1",
+            &[&f.instance, &id, &ordinal, &health, &id.to_string()],
+        )
+        .await
+        .unwrap();
+        c.execute(
+            "INSERT INTO provider_records(instance_id,name,version,availability,features,observed_generation,observed_at)
+             SELECT $2,name,version,'ready',features,$3,clock_timestamp() FROM provider_records WHERE instance_id=$1",
+            &[&f.instance, &id, &observation],
+        )
+        .await
+        .unwrap();
+    }
+    let healthy = Provider::default();
+    let _server = f.serve(f.instance, GENERATION, healthy.clone()).await;
+    let step = task_engine::dispatch(&f.app, &lease).await.unwrap();
+    assert_eq!(step["state"], "succeeded");
+    let requests = healthy.requests.lock().await;
+    assert_eq!(requests.len(), 1);
+    check_settlement(&c, task, &requests[0], f.instance, "succeeded").await;
+}
