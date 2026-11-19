@@ -56,6 +56,8 @@ Use a dedicated `ui_gateway.base_domain` with wildcard DNS/TLS pointing to the c
 
 Include `session.read` for the current account so the host can establish a unique subject without a new identity endpoint. Fixed Skill bridge results also require `capability.call.read` for that subject's original Call, as well as `plugin.ui.open`, `skill.invoke` and the actual capability/HTTP target action. Preference persistence needs `ui.preferences.read/update`. These are ceilings: the core still intersects them with each user's actual current authority. An omitted permission produces an unavailable/denied state rather than a service-account fallback. Access-token rotation closes old iframe channels/results; a rejected or unknown mutation is never automatically refreshed and replayed under a new credential.
 
+The read-only task console requires `task.read` in both the Client ceiling and the user's effective rules for the tasks, their steps and execution attempts.
+
 After Client registration, use the existing `updateDeployment` operation while this deployment remains disabled/stopped to replace its complete config with these public values and the actual Client ID. Then approve, explicitly enable, check readiness, and choose it as default UI. This order avoids a dependency cycle: install → disabled deployment with null Client → allocated origin → register Client → update config with real Client → approve/enable/default UI. No fake external Client or ready state is used.
 
 ```json

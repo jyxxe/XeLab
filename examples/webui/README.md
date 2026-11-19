@@ -22,6 +22,8 @@ The read-only overview window (总览) adds a daily summary on the same public A
 
 The browser performs authorization code + PKCE S256 through the exact configured trusted core origin. It never accepts platform passwords or reads the core login Cookie. Tokens and pending PKCE material are confined to this public client's tab session storage; refresh is single-flight, rotated credentials are not blindly retried, and logout clears private windows/state. The API module accepts only its closed operation map, exact parameters and the configured core origin. It is not an iframe HTTP bridge.
 
+The 任务与知识库 window keeps Operation lookup and adds a read-only task list with manual paging. Task details and execution attempts open on demand using the current account and Client's `task.read` authority. The view displays task, step and attempt metadata and redacts server error messages. Batch, micro-plugin and knowledge-base features continue to show their availability state.
+
 Approved UI contributions open as cross-origin sandboxed windows or desktop widgets when the core discovery APIs are available. `xelab.ui/1` checks the exact source/origin, random view/nonce, protocol, sequence, closed parameters and byte/depth limits. Each view permits four in-flight requests and 120 requests per minute, keeps at most 256/15min deduplication records, and bounds retained result payloads to 32MiB. Evicted results never become new business executions. `skill.call` uses only the fixed alias/UUID/digest and host-injected deployment constraint; `window.open` permits only approved windows in that same fixed deployment. Batch methods return an explicit unsupported error.
 
 HTTP and RPC idempotency keys derive from the current subject, installation, deployment, contribution id/digest, method and caller key. They survive view reload without crossing deployments. Every call/result revalidates the fixed contribution; result delivery also reads the original Call as a current authorization proof without repeating a business POST. Credential rotation, logout, deployment/permission changes and frame reload invalidate the old channel. The official Client therefore needs current-account `session.read` and original-call `capability.call.read`, in addition to the actual Skill/target/UI permissions. Missing authority fails closed.
@@ -43,6 +45,7 @@ python3 -m unittest discover -s examples/webui -p 'test_shell.py' -v
 python3 -m unittest discover -s examples/webui -p 'test_bridge.py' -v
 python3 -m unittest discover -s examples/webui -p 'test_overview.py' -v
 python3 -m unittest discover -s examples/webui -p 'test_shell_visual.py' -v
+python3 -m unittest discover -s examples/webui -p 'test_task_console.py' -v
 ```
 
 `examples/webui/package.json` groups the browser suites as `npm --prefix examples/webui run test:browser`.

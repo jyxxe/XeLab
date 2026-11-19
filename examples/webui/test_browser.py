@@ -195,6 +195,8 @@ class DesktopBrowser(unittest.TestCase):
                               "version": "1.0.0", "state": "installed", "image_digest": "sha256:" + "b" * 64}], "next_cursor": None}
         elif url.path.endswith("/node"):
             data = {"fixture": "component-only", "state": "ready"}
+        elif url.path == "/api/platform/v1/tasks":
+            data = {"items": [], "next_cursor": None}
         else:
             status, data = 503, {"error": {"code": "NOT_READY", "message": "component fixture has no implementation", "retryable": False}}
         if hold:
@@ -707,7 +709,7 @@ class DesktopBrowser(unittest.TestCase):
         self.assertEqual(self.page.locator('#connection').text_content(), '当前请求无权限')
         self.page.get_by_role("button", name="打开应用启动器", exact=True).click()
         self.page.get_by_role("button", name="启动任务与知识库", exact=True).click()
-        self.page.get_by_text("Batch / Workflow / 微插件 / 知识库尚不可用", exact=True).wait_for()
+        self.page.get_by_text("Batch / 微插件 / 知识库尚不可用", exact=True).wait_for()
         self.assertTrue(DRIVER.future_features_unavailable(self.page.locator(".window").last))
         self.page.set_viewport_size({"width": 390, "height": 760})
         self.page.get_by_role("button", name="打开设置", exact=True).click()

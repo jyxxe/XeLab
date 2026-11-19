@@ -623,22 +623,26 @@ function editor(title, operation, {params={}, initial={}, etag, body=true, note=
 }
 function details(title, data) { return openWindow({id:'details',title,render:async win=>win.content.replaceChildren(raw(data))},{ephemeral:true}); }
 function appendListPage(list, data, renderItem, emptyMessage = '当前账户授权范围内没有记录。') {
-  for (const item of rows(data)) list.append(renderItem(item));
+  for (const item of rows(data)) {
+    const card = renderItem(item);
+    if (card) list.append(card);
+  }
   if (!list.childElementCount && !data.next_cursor) {
     list.append(state('empty','暂无可见项目',emptyMessage));
   }
 }
-function paginatedList(win, {title,operation,params={},query,renderItem,moreText='加载下一页'}, firstPage) {
+function paginatedList(win, {title,operation,params={},query,renderItem,moreText='加载下一页',renderFailure=failure}, firstPage) {
+  const {signal} = win.controller;
   const list = node('div',{class:'list'});
   appendListPage(list,firstPage,renderItem);
   const pageError = node('div', {class:'list-page-error'});
   const pageEnd = node('p', {class:'muted', hidden:true}, '已加载全部可见项目。');
   const more = button(moreText,async()=> {
-    if (more.getAttribute('aria-disabled') === 'true') return;
+    if (!isCurrent() || more.getAttribute('aria-disabled') === 'true') return;
     more.setAttribute('aria-disabled', 'true');
     try {
-      const next = await request(operation,{params,query:{...query,cursor:more.dataset.cursor},signal:win.controller.signal});
-      if (!more.isConnected) return;
+      const next = await request(operation,{params,query:{...query,cursor:more.dataset.cursor},signal},isCurrent);
+      if (!isCurrent()) return;
       const pageStart = list.childElementCount;
       appendListPage(list,next.data,renderItem);
       pageError.replaceChildren();
@@ -655,12 +659,12 @@ function paginatedList(win, {title,operation,params={},query,renderItem,moreText
       }
       more.hidden = !cursor;
     } catch(error) {
-      if (!more.isConnected) return;
-      pageError.replaceChildren(failure(error));
+      if (isCurrent()) pageError.replaceChildren(renderFailure(error));
     } finally {
       more.removeAttribute('aria-disabled');
     }
   }, {class:'list-page-more', 'aria-label':`加载下一页${title}`, hidden:!firstPage.next_cursor});
+  const isCurrent = () => !signal.aborted && more.isConnected;
   more.dataset.cursor = firstPage.next_cursor || '';
   return [list,pageError,more,pageEnd];
 }
@@ -1174,13 +1178,85 @@ async function settings(win) {
   win.content.replaceChildren(toolbar(win,'桌面设置'),form);
 }
 async function unavailable(win) {win.content.replaceChildren(toolbar(win,win.app.title),state('unavailable','当前版本尚不可用','Batch、Workflow、微插件与知识库属于后续执行系统。此桌面未伪造任务、数据或成功响应。'));}
+async function taskPage(win, section, {title, operation, params = {}, renderItem}) {
+  const {signal} = win.controller;
+  const current = () => !signal.aborted && section.isConnected;
+  if (!current()) return;
+  section.replaceChildren(state('loading','正在读取核心…'));
+  const query = {limit:20};
+  try {
+    const {data} = await request(operation,{params,query,signal},current);
+    if (current()) section.replaceChildren(...paginatedList(win, {
+      title,operation,params,query,renderItem,renderFailure:readFailure,
+    },data));
+  } catch (error) {
+    if (current()) section.replaceChildren(readFailure(error));
+  }
+}
+function taskMetadata(task) {
+  return overviewFacts(overviewScalars(task, [
+    ['state','状态'],['workflow_id','工作流 UUID'],['deadline_at','截止时间'],['updated_at','核心更新时间'],
+  ]));
+}
+function taskCard(task) {
+  const id = task?.id;
+  if (typeof id !== 'string') return null;
+  return node('article',{class:'card'},node('h3',{class:'code'},id),taskMetadata(task),
+    button('查看任务',()=>openTask(id),{'aria-label':`查看任务 ${id}`}));
+}
+function openAttempts(stepId, stepKey) {
+  const title = `步骤尝试 · ${stepKey}`;
+  openWindow({id:'task-attempts',title,render:async win => {
+    const section = node('section',{'aria-label':'执行尝试','aria-live':'polite'});
+    win.content.replaceChildren(toolbar(win,title),section);
+    await taskPage(win,section,{
+      title:'尝试',operation:'listAttempts',params:{step_id:stepId},
+      renderItem:attempt => attempt?.step_id === stepId && node('article',{class:'card'},
+        node('h3',{},`尝试 ${overviewText(attempt.number)}`),
+        overviewFacts(overviewScalars(attempt, [
+          ['state','状态'],['execution_id','执行 UUID'],['fence','Fence'],['lease_expires_at','租约到期'],
+        ]))),
+    });
+  }},{ephemeral:true});
+}
+function openTask(taskId) {
+  const title = '任务详情';
+  openWindow({id:'task-detail',title,render:async win => {
+    const {signal} = win.controller;
+    const summary = node('section',{'aria-label':'任务状态','aria-live':'polite'},state('loading','正在读取任务…'));
+    const current = () => !signal.aborted && summary.isConnected;
+    win.content.replaceChildren(toolbar(win,title),summary);
+    const params = {task_id:taskId};
+    try {
+      const {data} = await request('getTask',{params,signal},current);
+      if (!current()) return;
+      if (data?.id !== taskId) throw new ApiError('INVALID_RESPONSE','任务与请求不匹配。');
+      summary.replaceChildren(node('p',{class:'code'},data.id),taskMetadata(data));
+    } catch(error) {
+      if (current()) summary.replaceChildren(readFailure(error));
+      return;
+    }
+    const steps = node('section',{'aria-label':'任务步骤','aria-live':'polite'});
+    win.content.append(node('h3',{},'任务步骤'),steps);
+    await taskPage(win,steps,{
+      title:'步骤',operation:'listTaskSteps',params,
+      renderItem:step => {
+        if (step?.task_id !== taskId || typeof step.id !== 'string' || typeof step.step_key !== 'string') return null;
+        const {id,step_key:key} = step;
+        return node('article',{class:'card'},node('h3',{},key),
+          overviewFacts(overviewScalars(step, [['state','状态'],['attempt_count','尝试数量']])),
+          button('查看尝试',()=>openAttempts(id,key),{'aria-label':`查看步骤 ${key} 的尝试`}));
+      },
+    });
+  }},{ephemeral:true});
+}
 async function tasks(win) {
+  const {signal} = win.controller;
   const input=node('input',{'aria-label':'Operation UUID',placeholder:'已接受操作的 UUID',value:win.operationId});
   const result=node('div');
   let sequence=0;
   const inspect=async id=>{
     const current=++sequence;
-    const {signal}=win.controller;
     const isCurrent=()=>current===sequence&&!signal.aborted&&result.isConnected;
     result.replaceChildren(state('loading','查询中…'));
     try{
@@ -1198,8 +1274,16 @@ async function tasks(win) {
     win.operationId=input.value.trim();
     inspect(win.operationId);
   });
-  win.content.replaceChildren(toolbar(win,'任务与能力'),node('p',{},'查询核心已经接受的 Operation；结果以其持久终态为准。'),form,result,state('unavailable','Batch / Workflow / 微插件 / 知识库尚不可用','未安装或实现的后续执行系统没有可展示的运行结果。'));
-  if(win.operationId)await inspect(win.operationId);
+  const list = node('section',{'aria-label':'任务列表','aria-live':'polite'});
+  const future = state('unavailable','Batch / 微插件 / 知识库尚不可用','未安装或实现的后续执行系统没有可展示的运行结果。');
+  future.dataset.futureTaskFeatures = '';
+  win.content.replaceChildren(toolbar(win,'任务与能力'),node('p',{},'查询核心已经接受的 Operation；结果以其持久终态为准。'),form,result,
+    node('h3',{},'任务列表'),list,future);
+  if (!oauth.loggedIn) list.append(state('denied','登录后查看任务'),button('前往可信登录',login,{class:'primary'}));
+  await Promise.all([
+    win.operationId ? inspect(win.operationId) : undefined,
+    oauth.loggedIn ? taskPage(win,list,{title:'任务',operation:'listTasks',renderItem:taskCard}) : undefined,
+  ]);
 }
 // Read-only overview (issue #14). Each section calls exactly one existing
 // public API and renders only whitelisted non-sensitive scalars: plugin
@@ -1250,19 +1334,19 @@ function overviewNode(data) {
     ...(config.length ? [node('h4', {}, '内核与系统预留'), overviewFacts(config)] : []));
 }
 function overviewBadge(value, fallback) { return node('span', {class:'badge'}, typeof value === 'string' && value ? value : fallback); }
-function overviewFailure(error) {
+function readFailure(error) {
   // Core error bodies may contain request data or upstream diagnostics. The
-  // overview keeps only a stable machine code and a fixed explanation instead
+  // read-only views keep only a stable machine code and a fixed explanation instead
   // of echoing the server-provided message into the DOM.
   const status = error?.status ?? error?.http_status;
   const code = typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code) ? error.code : null;
   if (error?.name === 'AbortError' || error?.code === 'CANCELED') {
-    return state('unavailable', '等待已停止', '刷新或关闭视图不会回滚已经接受的操作。');
+    return state('unavailable', '读取已停止', '请刷新视图重新读取。');
   }
   if (status === 401) return state('denied', '登录已失效', '请重新进入内核可信登录页面。');
   if (status === 403) return state('denied', '无权限', `${code || 'PERMISSION_DENIED'} · 当前授权来源不允许此操作。`);
   if ([404, 501, 503].includes(status)) return state('unavailable', '当前不可用', `${code || 'UNAVAILABLE'} · 接口、资源或依赖尚不可用。`);
-  return state('error', '请求失败', `${code || 'NETWORK_ERROR'} · 连接中断；副作用结果可能未知，请保留原请求键。`);
+  return state('error', '请求失败', `${code || 'NETWORK_ERROR'} · 未能读取核心数据，可刷新重试。`);
 }
 function overviewDeployment(item) {
   const spec = item?.spec ?? {};
@@ -1304,7 +1388,7 @@ async function overviewPage(win, {operation, title, renderItem, emptyMessage}) {
       more.hidden = !cursor;
     } catch (error) {
       if (!more.isConnected) return;
-      pageError.replaceChildren(overviewFailure(error));
+      pageError.replaceChildren(readFailure(error));
       hint.textContent = '下一页读取失败；已加载内容保持不变。';
     } finally { more.removeAttribute('aria-disabled'); }
   }, {'aria-label':`加载下一页${title}`, hidden:!result.data.next_cursor});
@@ -1335,7 +1419,7 @@ function overviewSection(win, {key, title, source, load}) {
     } catch (error) {
       if (!section.isConnected) return;
       readAt.textContent = '读取失败';
-      body.replaceChildren(overviewFailure(error));
+      body.replaceChildren(readFailure(error));
     } finally {
       refresh.removeAttribute('aria-disabled');
     }

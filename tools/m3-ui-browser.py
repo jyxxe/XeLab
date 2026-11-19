@@ -28,9 +28,9 @@ class CheckFailed(Exception):
 
 
 def future_features_unavailable(window):
-    state = window.locator('[data-kind="unavailable"]')
+    state = window.locator('[data-future-task-features][data-kind="unavailable"]')
     return (state.count() == 1
-            and state.get_by_role("heading", name="Batch / Workflow / 微插件 / 知识库尚不可用", exact=True).count() == 1
+            and state.get_by_role("heading", name="Batch / 微插件 / 知识库尚不可用", exact=True).count() == 1
             and state.get_by_text("未安装或实现的后续执行系统没有可展示的运行结果。", exact=True).count() == 1)
 
 
