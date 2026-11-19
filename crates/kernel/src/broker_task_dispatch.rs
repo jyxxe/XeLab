@@ -23,6 +23,14 @@ use uuid::Uuid;
 
 const METADATA_TIMEOUT: Duration = Duration::from_secs(10);
 const MONITOR_INTERVAL: Duration = Duration::from_millis(100);
+const RENEWAL_INTERVAL: Duration = Duration::from_secs(10);
+
+struct LiveWindow {
+    hard_deadline: DateTime<Utc>,
+    hard_end: Instant,
+    lease_end: Instant,
+    renewable: bool,
+}
 
 /// Run one already-claimed fixed signed unary Capability attempt. A successful
 /// return is the fenced TaskStep, including a confirmed business failure if any.
@@ -86,23 +94,31 @@ async fn dispatch_new(app: &App, lease: &AttemptLease, mut admitted: Call) -> Re
             .to_std()
             .unwrap_or_default();
     let wire = rpc_contract(&admitted.contract)?;
-    let monitor = async {
-        loop {
-            tokio::time::sleep(MONITOR_INTERVAL).await;
-            // A cancel request forbids a new send. Once sent, retain any
-            // known result that can still be committed with the current fence.
-            check_live(app, lease, call, end, true).await?;
-        }
-    };
-    let bytes = std::mem::take(&mut admitted.bytes);
-    let delegation = std::mem::take(&mut admitted.delegation);
-    let execution = execute(app, lease, &admitted, &wire, end, bytes, delegation);
-    let outcome = timeout_at(
-        end,
-        race_live_call(execution, monitor, std::future::pending()),
+    let admitted_check = timeout_at(
+        end.min(Instant::now() + METADATA_TIMEOUT),
+        check_live(app, lease, call, end, false),
     )
     .await
     .unwrap_or_else(|_| Err(expired(call)));
+    let outcome = match admitted_check {
+        Ok(window) => {
+            let bytes = std::mem::take(&mut admitted.bytes);
+            let delegation = std::mem::take(&mut admitted.delegation);
+            let hard_end = window.hard_end;
+            let execution = execute(app, lease, &admitted, &wire, hard_end, bytes, delegation);
+            timeout_at(
+                hard_end,
+                race_live_call(
+                    execution,
+                    watch_lease(app, lease, call, window),
+                    std::future::pending(),
+                ),
+            )
+            .await
+            .unwrap_or_else(|_| Err(expired(call)))
+        }
+        Err(error) => Err(error),
+    };
     let outcome = timeout(
         METADATA_TIMEOUT,
         settle(app, lease, &admitted, &wire, outcome),
@@ -139,6 +155,70 @@ async fn dispatch_new(app: &App, lease: &AttemptLease, mut admitted: Call) -> Re
     }
 }
 
+async fn watch_lease(
+    app: &App,
+    lease: &AttemptLease,
+    call: Uuid,
+    mut window: LiveWindow,
+) -> Result<CallReply> {
+    let mut renew_at = Instant::now() + RENEWAL_INTERVAL;
+    loop {
+        tokio::time::sleep_until((Instant::now() + MONITOR_INTERVAL).min(window.lease_end)).await;
+        if Instant::now() >= window.lease_end {
+            return Err(expired(call));
+        }
+        window = observe_before(app, lease, call, window.hard_end, window.lease_end).await?;
+        let now = Instant::now();
+        let renew_soon = window.lease_end.saturating_duration_since(now) <= RENEWAL_INTERVAL;
+        if !window.renewable
+            || window.lease_end == window.hard_end
+            || (now < renew_at && !renew_soon)
+        {
+            continue;
+        }
+        let renew = timeout_at(
+            window.lease_end,
+            admission::renew_task_call(app, lease, call),
+        )
+        .await
+        .unwrap_or_else(|_| Err(expired(call)));
+        match renew {
+            Ok(_) => {
+                window = observe_before(
+                    app,
+                    lease,
+                    call,
+                    window.hard_end,
+                    window.hard_end.min(Instant::now() + METADATA_TIMEOUT),
+                )
+                .await?;
+            }
+            Err(error) => {
+                // Cancellation can win the race for the Task lock. Keep the
+                // existing result window in that case, without renewing it.
+                window =
+                    observe_before(app, lease, call, window.hard_end, window.lease_end).await?;
+                if window.renewable {
+                    return Err(error);
+                }
+            }
+        }
+        renew_at = Instant::now() + RENEWAL_INTERVAL;
+    }
+}
+
+async fn observe_before(
+    app: &App,
+    lease: &AttemptLease,
+    call: Uuid,
+    hard_end: Instant,
+    deadline: Instant,
+) -> Result<LiveWindow> {
+    timeout_at(deadline, check_live(app, lease, call, hard_end, true))
+        .await
+        .unwrap_or_else(|_| Err(expired(call)))
+}
+
 async fn execute(
     app: &App,
     lease: &AttemptLease,
@@ -162,15 +242,14 @@ async fn execute(
     .await?;
     let mut client = CapabilityServiceClient::new(channel)
         .max_decoding_message_size(app.config.rpc_limit(16_778_240));
-    let (deadline, guarded_end) = check_live(app, lease, call, end, false).await?;
-    let bound = guarded_end.saturating_duration_since(Instant::now());
-    if bound.is_zero() {
-        return Err(expired(call));
-    }
+    let window = check_live(app, lease, call, end, false).await?;
     let mut context = controller::context(Some(admitted.ctx.subject));
     context.request_id = admitted.ctx.request.to_string();
     context.delegation_token = delegation;
-    context.deadline_unix_ms = deadline.min(admitted.deadline).timestamp_millis();
+    context.deadline_unix_ms = window
+        .hard_deadline
+        .min(admitted.deadline)
+        .timestamp_millis();
     context.idempotency_key = admitted.business_key.clone();
     let mut request = tonic::Request::new(rpc::InvokeRequest {
         context: Some(context),
@@ -181,7 +260,11 @@ async fn execute(
         binding_id: String::new(),
         terminal_failure_version: unary_failure::VERSION,
     });
-    request.set_timeout(bound);
+    let now = Instant::now();
+    if now >= window.lease_end {
+        return Err(expired(call));
+    }
+    request.set_timeout(window.hard_end.saturating_duration_since(now));
     let response = client
         .invoke(request)
         .await
@@ -205,7 +288,7 @@ async fn check_live(
     call: Uuid,
     end: Instant,
     allow_cancel: bool,
-) -> Result<(DateTime<Utc>, Instant)> {
+) -> Result<LiveWindow> {
     ensure_active(app)?;
     let mut c = app
         .db
@@ -213,19 +296,25 @@ async fn check_live(
         .await?;
     let tx = c.transaction().await?;
     db::auth_lock(&tx, false).await?;
-    let deadline = admission::validate_task_call(&tx, app, lease, call, allow_cancel).await?;
+    let limits = admission::validate_task_call(&tx, app, lease, call, allow_cancel).await?;
     let sampled = Instant::now();
     let now: DateTime<Utc> = tx
         .query_one("SELECT clock_timestamp()", &[])
         .await?
         .try_get(0)?;
-    let end = end.min(sampled + (deadline - now).to_std().unwrap_or_default());
+    let hard_end = end.min(sampled + (limits.hard_deadline - now).to_std().unwrap_or_default());
+    let lease_end = hard_end.min(sampled + (limits.lease_end - now).to_std().unwrap_or_default());
     tx.commit().await?;
     ensure_active(app)?;
-    if Instant::now() >= end {
+    if Instant::now() >= lease_end {
         return Err(expired(call));
     }
-    Ok((deadline, end))
+    Ok(LiveWindow {
+        hard_deadline: limits.hard_deadline,
+        hard_end,
+        lease_end,
+        renewable: limits.renewable,
+    })
 }
 
 async fn settle(
@@ -256,7 +345,7 @@ async fn settle(
                     &admitted.definition,
                 )
                 .await?;
-            Ok(limit.min(admitted.deadline))
+            Ok(limit.lease_end.min(admitted.deadline))
         }
         .await;
         match checked {

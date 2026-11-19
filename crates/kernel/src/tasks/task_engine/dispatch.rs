@@ -23,13 +23,15 @@ pub(crate) enum BrokerLeaseUse {
 pub(crate) struct BrokerDispatchProof {
     pub ctx: Context,
     pub business_paths: Vec<Path>,
-    pub deadline: DateTime<Utc>,
+    pub hard_deadline: DateTime<Utc>,
+    pub lease_end: DateTime<Utc>,
     pub step_id: Uuid,
     pub deployment: Uuid,
     pub installation: Uuid,
     pub contract: Value,
     pub business_key: String,
     pub active: bool,
+    pub renewable: bool,
 }
 
 /// The caller holds the shared authorization fence and owns the transaction.
@@ -82,20 +84,23 @@ pub(crate) async fn broker_dispatch_proof(
         .and_then(|records| records.iter().find(|record| record["step_key"] == step_key))
         .ok_or_else(Error::denied)?;
     let installation = id(target, "installation_id").map_err(|_| Error::denied())?;
-    let deadline = lease_end
+    let hard_deadline = row
+        .try_get::<_, DateTime<Utc>>("deadline_at")?
         .min(row.try_get("expires_at")?)
         .min(step_deadline(&row, &step)?)
         .min(proof.until);
     Ok(BrokerDispatchProof {
         ctx: proof.ctx,
         business_paths: proof.business_paths,
-        deadline,
+        hard_deadline,
+        lease_end,
         step_id: row.try_get("step_id")?,
         deployment,
         installation,
         contract: contract.clone(),
         business_key: row.try_get("idempotency_key")?,
         active,
+        renewable: active::active(&row, false),
     })
 }
 
@@ -103,7 +108,7 @@ pub(crate) async fn broker_input(
     tx: &Transaction<'_>,
     proof: &BrokerDispatchProof,
 ) -> Result<DispatchInput> {
-    dispatch_input::build(tx, proof.step_id, proof.deadline).await
+    dispatch_input::build(tx, proof.step_id, proof.hard_deadline).await
 }
 
 pub(crate) async fn broker_paths_until(

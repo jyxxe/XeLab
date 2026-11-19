@@ -17,6 +17,7 @@ use axum::{
     http::Request,
     Router,
 };
+use chrono::{DateTime, Utc};
 use ed25519_dalek::{pkcs8::EncodePublicKey, SigningKey};
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
@@ -212,14 +213,29 @@ impl Fixture {
     }
 
     async fn post(&self, uri: &str, key: &str, body: Value) -> Value {
-        let mut request = Request::post(uri)
+        self.post_with_revision(uri, key, body, None, 201).await
+    }
+
+    async fn post_with_revision(
+        &self,
+        uri: &str,
+        key: &str,
+        body: Value,
+        revision: Option<i64>,
+        expected_status: u16,
+    ) -> Value {
+        let mut builder = Request::post(uri)
             .header(
                 "host",
                 crate::plugin_http_gateway::core_authority(&self.app.config).unwrap(),
             )
             .header("authorization", format!("Bearer {}", self.token))
             .header("content-type", "application/json")
-            .header("idempotency-key", key)
+            .header("idempotency-key", key);
+        if let Some(revision) = revision {
+            builder = builder.header("if-match", format!("\"rev-{revision}\""));
+        }
+        let mut request = builder
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
         request.extensions_mut().insert(ConnectInfo(
@@ -229,7 +245,7 @@ impl Fixture {
         let status = response.status();
         let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
         let value: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(status.as_u16(), 201, "{uri}: {value}");
+        assert_eq!(status.as_u16(), expected_status, "{uri}: {value}");
         value
     }
 
@@ -577,6 +593,84 @@ async fn wait_invocations(provider: &Provider, count: usize) {
     }
 }
 
+struct LinkedLease {
+    attempt: AttemptLease,
+    call: Uuid,
+    rpc: Uuid,
+    issued: DateTime<Utc>,
+    until: DateTime<Utc>,
+    hard: DateTime<Utc>,
+}
+
+async fn linked_lease(c: &Client, request: &rpc::InvokeRequest) -> LinkedLease {
+    let call = Uuid::parse_str(&request.call_id).unwrap();
+    let row = c
+        .query_one(
+            "SELECT a.id AS attempt_id,a.execution_id,a.worker_id,a.fence,
+           a.created_at,a.lease_expires_at,c.deadline_at,r.id AS rpc_id,
+           a.lease_expires_at=slot.expires_at AND slot.expires_at=e.expires_at
+               AND e.expires_at=r.expires_at AS consistent
+      FROM calls c JOIN task_attempt_calls b ON b.call_id=c.id
+      JOIN attempts a ON a.id=b.attempt_id JOIN reservations slot ON slot.id=c.id
+      JOIN execution_delegations e ON e.id=c.delegation_id
+      JOIN rpc_delegations r ON r.call_id=c.id AND r.execution_delegation_id=e.id
+      WHERE c.id=$1",
+            &[&call],
+        )
+        .await
+        .unwrap();
+    assert!(
+        row.get::<_, bool>("consistent"),
+        "linked lease expiries must move together"
+    );
+    let until: DateTime<Utc> = row.get("lease_expires_at");
+    let hard: DateTime<Utc> = row.get("deadline_at");
+    assert!(
+        until <= hard,
+        "the rolling lease exceeded the hard Call deadline"
+    );
+    LinkedLease {
+        attempt: AttemptLease {
+            worker_id: row.get("worker_id"),
+            attempt_id: row.get("attempt_id"),
+            execution_id: row.get("execution_id"),
+            fence: row.get("fence"),
+        },
+        call,
+        rpc: row.get("rpc_id"),
+        issued: row.get("created_at"),
+        until,
+        hard,
+    }
+}
+
+// The mTLS provider is a live component fixture. Maintain its simulated
+// controller observations through the 30-second test without changing health,
+// identity, generation or readiness.
+async fn observe_fixture_health(f: &Fixture) -> ServerGuard {
+    let c = f.app.db.connect().await.unwrap();
+    let instance = f.instance;
+    ServerGuard(tokio::spawn(async move {
+        loop {
+            c.execute(
+                "UPDATE instances SET last_heartbeat_at=clock_timestamp()
+                         WHERE id=$1 AND phase='ready' AND generation=$2",
+                &[&instance, &GENERATION],
+            )
+            .await
+            .unwrap();
+            c.execute(
+                "UPDATE provider_records SET observed_at=clock_timestamp()
+                         WHERE instance_id=$1 AND availability='ready' AND observed_generation=$2",
+                &[&instance, &GENERATION],
+            )
+            .await
+            .unwrap();
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }))
+}
+
 async fn stop_runner(f: &Fixture, handle: JoinHandle<()>) {
     f.app.ready.store(false, Ordering::SeqCst);
     f.app.shutdown.store(true, Ordering::SeqCst);
@@ -598,13 +692,14 @@ async fn check_settlement(
         .query_one(
             "SELECT c.state,c.provider_instance_id,r.status,e.status,t.status,
                 d.status,d.generation,c.owner_id=c2.owner_id AS same_owner,
-                c.deadline_at=r.expires_at AND c.deadline_at=e.expires_at
-                  AND c.deadline_at=d.expires_at AS uniform_deadline,
+                a.lease_expires_at=r.expires_at AND r.expires_at=e.expires_at
+                  AND e.expires_at=d.expires_at AND d.expires_at<=c.deadline_at AS uniform_lease,
                 h.proxy_source_paths='[]' AND h.proxy_ceilings='[]' AND h.read_blob_ids='[]'
                   AS no_proxy_authority, e.maximum_rules AS call_maximum_rules
            FROM calls c JOIN reservations r ON r.id=c.id JOIN rpc_delegations d ON d.call_id=c.id
            JOIN execution_delegations e ON e.id=c.delegation_id
            JOIN host_rpc_contexts h ON h.call_id=c.id
+           JOIN task_attempt_calls b ON b.call_id=c.id JOIN attempts a ON a.id=b.attempt_id
            JOIN tasks c2 ON c2.id=$1 JOIN execution_delegations t ON t.id=c2.delegation_id
           WHERE c.id=$2",
             &[&task, &call],
@@ -636,7 +731,7 @@ async fn check_settlement(
     );
     assert_eq!(row.get::<_, i64>(6), GENERATION);
     assert!(row.get::<_, bool>(7));
-    assert!(row.get::<_, bool>("uniform_deadline"));
+    assert!(row.get::<_, bool>("uniform_lease"));
     assert!(row.get::<_, bool>("no_proxy_authority"));
     let contract = request.contract.as_ref().unwrap();
     assert_eq!(
@@ -1235,7 +1330,7 @@ async fn automatic_worker_waits_for_readiness_and_skips_older_unsupported_target
     let old_long = f
         .submit_workflow(
             "runner-older-long",
-            vec![f.direct_step(f.deployment, 60_000)],
+            vec![f.direct_step(f.deployment, 300_001)],
         )
         .await;
     let supported = f
@@ -1522,6 +1617,405 @@ async fn automatic_worker_does_not_reissue_an_unconfirmed_call_after_restart() {
         .await
         .unwrap();
     assert_eq!(tried.get::<_, i64>(0), 1);
+}
+
+#[tokio::test]
+async fn long_unary_worker_renews_one_linked_call_beyond_its_initial_lease() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let task = f
+        .submit_workflow(
+            "runner-long-renewal",
+            vec![f.direct_step(f.deployment, 55_000)],
+        )
+        .await;
+    let gate = Arc::new(Semaphore::new(0));
+    let provider = Provider {
+        gate: Some(gate.clone()),
+        ..Provider::default()
+    };
+    let _server = f.serve(f.instance, GENERATION, provider.clone()).await;
+    let _health = observe_fixture_health(&f).await;
+    let worker = tokio::spawn(task_engine::run(f.app.clone()));
+    tokio::time::timeout(Duration::from_secs(6), wait_invocations(&provider, 1))
+        .await
+        .expect("the automatic worker must enter the long mTLS invocation");
+    let request = provider.requests.lock().await[0].clone();
+    let c = f.app.db.connect().await.unwrap();
+    let first = linked_lease(&c, &request).await;
+    let context = request.context.as_ref().unwrap();
+    assert!(first.until <= first.issued + chrono::Duration::seconds(30));
+    assert!(first.issued + chrono::Duration::seconds(30) < first.hard);
+    assert_eq!(context.deadline_unix_ms, first.hard.timestamp_millis());
+
+    // Use the database clock and an actual provider wait. Releasing the result
+    // before this point would let the test pass without any live renewal.
+    tokio::time::timeout(Duration::from_secs(38), async {
+        let mut previous_until = first.until;
+        loop {
+            let now: DateTime<Utc> = c
+                .query_one("SELECT clock_timestamp()", &[])
+                .await
+                .unwrap()
+                .get(0);
+            let advanced = linked_lease(&c, &request).await;
+            assert!(advanced.until > now && advanced.until >= previous_until);
+            assert_eq!(advanced.attempt, first.attempt);
+            assert_eq!(advanced.rpc, first.rpc);
+            assert_eq!(advanced.hard, first.hard);
+            assert_eq!(advanced.call, first.call);
+            if now >= first.issued + chrono::Duration::milliseconds(30_100) {
+                assert!(advanced.until > first.until);
+                break;
+            }
+            previous_until = advanced.until;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .expect("the one-call provider must remain live past its initial lease");
+    assert_eq!(provider.requests.lock().await.len(), 1);
+    gate.add_permits(1);
+    wait_task(&c, task, "succeeded").await;
+    check_settlement(&c, task, &request, f.instance, "succeeded").await;
+    assert_eq!(
+        task_state(&c, task).await.1,
+        json!({"message":"echo from workflow"})
+    );
+    assert_eq!(provider.requests.lock().await.len(), 1);
+    stop_runner(&f, worker).await;
+}
+
+#[tokio::test]
+async fn long_unary_result_loses_authority_after_frozen_task_delegation_revocation() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let task = f
+        .submit_workflow(
+            "runner-long-revoked",
+            vec![f.direct_step(f.deployment, 60_000)],
+        )
+        .await;
+    let lease = claim(&f).await;
+    let gate = Arc::new(Semaphore::new(0));
+    let provider = Provider {
+        gate: Some(gate.clone()),
+        ..Provider::default()
+    };
+    let _server = f.serve(f.instance, GENERATION, provider.clone()).await;
+    let app = f.app.clone();
+    let in_flight = tokio::spawn(async move { task_engine::dispatch(&app, &lease).await });
+    tokio::time::timeout(Duration::from_secs(5), wait_invocations(&provider, 1))
+        .await
+        .expect("the capability must already be running before revocation");
+    let wire = provider.requests.lock().await[0].clone();
+    let mut c = f.app.db.connect().await.unwrap();
+    let admitted = linked_lease(&c, &wire).await;
+    assert!(admitted.until < admitted.hard);
+    let tx = c.transaction().await.unwrap();
+    crate::db::auth_lock(&tx, true).await.unwrap();
+    tx.execute(
+        "UPDATE execution_delegations SET status='revoked'
+                  WHERE id=(SELECT delegation_id FROM tasks WHERE id=$1)",
+        &[&task],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    gate.add_permits(1);
+    let failure = tokio::time::timeout(Duration::from_secs(5), in_flight)
+        .await
+        .expect("late output must be fenced promptly")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(failure.resource_id.as_deref(), Some(wire.call_id.as_str()));
+    let row = c
+        .query_one(
+            "SELECT c.state,c.result IS NULL,slot.status,r.status,
+                                 c.deadline_at= $2 AND clock_timestamp()<c.deadline_at
+      FROM calls c JOIN reservations slot ON slot.id=c.id JOIN rpc_delegations r ON r.call_id=c.id
+      WHERE c.id=$1",
+            &[&admitted.call, &admitted.hard],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, &str>(0), "unknown");
+    assert!(row.get::<_, bool>(1));
+    assert_eq!(row.get::<_, &str>(2), "active");
+    assert_eq!(row.get::<_, &str>(3), "revoked");
+    assert!(row.get::<_, bool>(4));
+    let (state, output) = task_state(&c, task).await;
+    assert_ne!(state, "succeeded");
+    assert_eq!(output, Value::Null);
+    task_engine::dispatch(&f.app, &lease)
+        .await
+        .expect_err("revocation bars any replay");
+    assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn canceling_long_unary_task_stops_renewal_but_retains_a_live_terminal() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let mut child = f.direct_step(f.deployment, 20_000);
+    child["id"] = json!("child");
+    child["depends_on"] = json!(["echo"]);
+    let task = f
+        .submit_workflow(
+            "runner-long-canceled",
+            vec![f.direct_step(f.deployment, 60_000), child],
+        )
+        .await;
+    let lease = claim(&f).await;
+    let gate = Arc::new(Semaphore::new(0));
+    let provider = Provider {
+        gate: Some(gate.clone()),
+        ..Provider::default()
+    };
+    let _server = f.serve(f.instance, GENERATION, provider.clone()).await;
+    let app = f.app.clone();
+    let in_flight = tokio::spawn(async move { task_engine::dispatch(&app, &lease).await });
+    tokio::time::timeout(Duration::from_secs(5), wait_invocations(&provider, 1))
+        .await
+        .expect("the long mTLS invocation must be running before HTTP cancellation");
+    let wire = provider.requests.lock().await[0].clone();
+    let c = f.app.db.connect().await.unwrap();
+    let previous = linked_lease(&c, &wire).await;
+    assert!(previous.until < previous.hard);
+    let revision: i64 = c
+        .query_one("SELECT revision FROM tasks WHERE id=$1", &[&task])
+        .await
+        .unwrap()
+        .get(0);
+    let canceled = f
+        .post_with_revision(
+            &format!("/api/platform/v1/tasks/{task}/cancel"),
+            "cancel-held-long-task",
+            json!({}),
+            Some(revision),
+            200,
+        )
+        .await;
+    assert_eq!(canceled["state"], "cancel_requested");
+    super::admission::renew_task_call(&f.app, &lease, previous.call)
+        .await
+        .expect_err("cancel intent forbids extending any linked fence");
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let current = linked_lease(&c, &wire).await;
+    assert_eq!(current.attempt, previous.attempt);
+    assert_eq!(current.rpc, previous.rpc);
+    assert_eq!(current.until, previous.until);
+    assert_eq!(current.hard, previous.hard);
+    let now: DateTime<Utc> = c
+        .query_one("SELECT clock_timestamp()", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert!(
+        now < previous.until,
+        "the provider's terminal must fall inside the original lease"
+    );
+    gate.add_permits(1);
+    let finished = tokio::time::timeout(Duration::from_secs(5), in_flight)
+        .await
+        .expect("the live signed terminal must settle")
+        .unwrap()
+        .unwrap();
+    assert_eq!(finished["state"], "succeeded");
+    assert_eq!(task_state(&c, task).await, ("canceled".into(), Value::Null));
+    check_settlement(&c, task, &wire, f.instance, "succeeded").await;
+    let child = c
+        .query_one(
+            "SELECT state,attempt_count FROM task_steps
+        WHERE task_id=$1 AND step_key='child'",
+            &[&task],
+        )
+        .await
+        .unwrap();
+    assert_eq!(child.get::<_, &str>(0), "canceled");
+    assert_eq!(child.get::<_, i32>(1), 0);
+    assert!(task_engine::claim(&f.app.db, &f.app.auth, Uuid::new_v4())
+        .await
+        .unwrap()
+        .is_none());
+    assert!(crate::broker::dispatch_next_task(&f.app, Uuid::new_v4())
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+async fn set_fixture_rolling_lease(c: &mut Client, lease: &LinkedLease, seconds: i32) {
+    let tx = c.transaction().await.unwrap();
+    crate::db::call_lock(&tx).await.unwrap();
+    let until: DateTime<Utc> = tx
+        .query_one(
+            "SELECT clock_timestamp()+$1::integer * interval '1 second'",
+            &[&seconds],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        tx.execute(
+            "UPDATE attempts SET lease_expires_at=$2 WHERE id=$1",
+            &[&lease.attempt.attempt_id, &until]
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    for sql in [
+        "UPDATE reservations SET expires_at=$2 WHERE id=$1",
+        "UPDATE execution_delegations SET expires_at=$2 WHERE id=(SELECT delegation_id FROM calls WHERE id=$1)",
+        "UPDATE rpc_delegations SET expires_at=$2 WHERE call_id=$1",
+    ] {
+        assert_eq!(tx.execute(sql, &[&lease.call, &until]).await.unwrap(), 1);
+    }
+    tx.commit().await.unwrap();
+}
+
+#[tokio::test]
+async fn long_unary_response_after_the_short_lease_is_never_published() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let task = f
+        .submit_workflow(
+            "runner-long-late",
+            vec![f.direct_step(f.deployment, 60_000)],
+        )
+        .await;
+    let lease = claim(&f).await;
+    let gate = Arc::new(Semaphore::new(0));
+    let provider = Provider {
+        gate: Some(gate.clone()),
+        ..Provider::default()
+    };
+    let _server = f.serve(f.instance, GENERATION, provider.clone()).await;
+    let app = f.app.clone();
+    let in_flight = tokio::spawn(async move { task_engine::dispatch(&app, &lease).await });
+    tokio::time::timeout(Duration::from_secs(5), wait_invocations(&provider, 1))
+        .await
+        .expect("the capability must already be running before the short lease is lost");
+    let wire = provider.requests.lock().await[0].clone();
+    let mut c = f.app.db.connect().await.unwrap();
+    let admitted = linked_lease(&c, &wire).await;
+    assert!(admitted.until < admitted.hard);
+    set_fixture_rolling_lease(&mut c, &admitted, -3).await;
+    gate.add_permits(1);
+    let failure = tokio::time::timeout(Duration::from_secs(5), in_flight)
+        .await
+        .expect("lost short fence must stop confirmation promptly")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(failure.resource_id.as_deref(), Some(wire.call_id.as_str()));
+    check_settlement(&c, task, &wire, f.instance, "unknown").await;
+    task_engine::expire_leases(&f.app.db).await.unwrap();
+    assert_eq!(task_state(&c, task).await, ("unknown".into(), Value::Null));
+    assert!(linked_lease(&c, &wire).await.hard > Utc::now());
+    assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn expired_rolling_lease_targets_recovery_before_the_hard_call_deadline() {
+    let Some(f) = Fixture::new().await else {
+        return;
+    };
+    let task = f
+        .submit_workflow(
+            "runner-long-abandoned",
+            vec![f.direct_step(f.deployment, 90_000)],
+        )
+        .await;
+    let lease = claim(&f).await;
+    let provider = Provider {
+        gate: Some(Arc::new(Semaphore::new(0))),
+        ..Provider::default()
+    };
+    let _server = f.serve(f.instance, GENERATION, provider.clone()).await;
+    let app = f.app.clone();
+    let in_flight = tokio::spawn(async move { task_engine::dispatch(&app, &lease).await });
+    tokio::time::timeout(Duration::from_secs(5), wait_invocations(&provider, 1))
+        .await
+        .expect("the capability must receive its only admitted invocation");
+    let wire = provider.requests.lock().await[0].clone();
+    // Leave the actual admitted Call in flight in the ledger, as on a lost
+    // worker. A preexisting UNKNOWN would mask the expiry-selection behavior.
+    in_flight.abort();
+    assert!(in_flight.await.unwrap_err().is_cancelled());
+    let mut c = f.app.db.connect().await.unwrap();
+    let admitted = linked_lease(&c, &wire).await;
+    assert_eq!(admitted.attempt, lease);
+    assert!(admitted.until < admitted.hard);
+
+    set_fixture_rolling_lease(&mut c, &admitted, 10).await;
+    let shortened = linked_lease(&c, &wire).await;
+    assert!(shortened.until < admitted.until);
+    task_engine::renew(&f.app.db, &f.app.auth, &lease)
+        .await
+        .expect_err("the generic Attempt renewer must not extend only one row");
+    let wrong = AttemptLease {
+        fence: lease.fence + 1,
+        ..lease
+    };
+    super::admission::renew_task_call(&f.app, &wrong, admitted.call)
+        .await
+        .expect_err("renewal with the wrong fence must fail");
+    assert_eq!(linked_lease(&c, &wire).await.until, shortened.until);
+    super::admission::renew_task_call(&f.app, &lease, admitted.call)
+        .await
+        .unwrap();
+    let renewed = linked_lease(&c, &wire).await;
+    assert_eq!(renewed.hard, admitted.hard);
+    assert_eq!(renewed.attempt, lease);
+    assert!(renewed.until > shortened.until);
+    assert!(crate::controller::expired_call_providers(&c)
+        .await
+        .unwrap()
+        .is_empty());
+
+    set_fixture_rolling_lease(&mut c, &admitted, -3).await;
+    let row = c
+        .query_one(
+            "SELECT state,deadline_at>clock_timestamp() FROM calls WHERE id=$1",
+            &[&admitted.call],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, &str>(0), "running");
+    assert!(row.get::<_, bool>(1));
+    super::admission::renew_task_call(&f.app, &lease, admitted.call)
+        .await
+        .expect_err("a missed renewal cannot revive the expired physical lease");
+    assert_eq!(
+        crate::controller::expired_call_providers(&c).await.unwrap(),
+        vec![f.instance]
+    );
+    task_engine::expire_leases(&f.app.db).await.unwrap();
+    assert_eq!(task_state(&c, task).await, ("unknown".into(), Value::Null));
+    let projection = c
+        .query_one(
+            "SELECT a.state,slot.status FROM attempts a
+        JOIN task_attempt_calls b ON b.attempt_id=a.id JOIN reservations slot ON slot.id=b.call_id
+        WHERE a.id=$1",
+            &[&lease.attempt_id],
+        )
+        .await
+        .unwrap();
+    assert_eq!(projection.get::<_, &str>(0), "expired");
+    assert_eq!(
+        projection.get::<_, &str>(1),
+        "active",
+        "physical recovery must still fence the provider"
+    );
+    task_engine::dispatch(&f.app, &lease)
+        .await
+        .expect_err("expired worker cannot send again");
+    assert_eq!(provider.requests.lock().await.len(), 1);
 }
 
 #[tokio::test]

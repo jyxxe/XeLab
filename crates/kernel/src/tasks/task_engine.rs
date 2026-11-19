@@ -58,7 +58,7 @@ const READY_STEP: &str = "
            AND e.issuer_credential_id IS NOT NULL AND e.subject_id=t.owner_id
            AND e.expires_at>clock_timestamp()
            AND jsonb_typeof(node.definition->'timeout_ms')='number'
-           AND (node.definition->'timeout_ms') BETWEEN '100'::jsonb AND '30000'::jsonb
+           AND (node.definition->'timeout_ms') BETWEEN '100'::jsonb AND '300000'::jsonb
            AND NOT (node.definition ? 'skill_id')
            AND node.definition->'contract'->>'name' <> 'automation.execute'
            AND EXISTS (
@@ -222,7 +222,7 @@ async fn claim_ready(db: &Db, auth: &Auth, worker_id: Uuid) -> Result<Option<Val
     }
 }
 
-/// Select only candidates the short fixed Capability runner can attempt.
+/// Select only candidates the fixed unary Capability runner can attempt.
 /// Caller holds the Broker Call ledger; the selection locks remain through
 /// the provisional lease and Call admission in the same transaction.
 pub(crate) async fn next_automatic_candidate(
@@ -250,7 +250,7 @@ pub(crate) async fn lease_automatic_candidate(
     }
     let previous: i32 = candidate.try_get("attempt_count")?;
     let timeout_ms = unsigned(&step["timeout_ms"])?;
-    if previous != 0 || !(100..=30_000).contains(&timeout_ms) {
+    if previous != 0 || !(100..=300_000).contains(&timeout_ms) {
         return Ok(None);
     }
     if !candidate.try_get::<_, bool>("delegation_live")? {

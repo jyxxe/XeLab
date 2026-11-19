@@ -26,8 +26,8 @@ pub struct AttemptLease {
     pub fence: i64,
 }
 
-/// Renew an active lease within the original step timeout, task deadline and
-/// revalidated delegation and authority limits. Returns the public Attempt.
+/// Renew an active lease that has no Broker Call. The Broker's heartbeat
+/// renews bound Attempts and their Call reservations and tokens together.
 pub async fn renew(db: &Db, auth: &Auth, lease: &AttemptLease) -> Result<Value> {
     tokio::time::timeout(
         ENGINE_TIMEOUT,
@@ -70,6 +70,19 @@ async fn extend(
     attempt: &LockedAttempt<'_>,
     limit: DateTime<Utc>,
 ) -> Result<(Value, DateTime<Utc>)> {
+    let bound: bool = attempt
+        .tx
+        .query_one(
+            "SELECT EXISTS (SELECT FROM task_attempt_calls WHERE attempt_id=$1)",
+            &[&attempt.lease.attempt_id],
+        )
+        .await?
+        .try_get(0)?;
+    if bound {
+        return Err(Error::conflict(
+            "A bound Attempt requires the Broker heartbeat",
+        ));
+    }
     // Run deferred attempt triggers during UPDATE so they are included in
     // the final check against the previous lease expiry.
     attempt

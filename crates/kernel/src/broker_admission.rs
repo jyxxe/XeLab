@@ -276,7 +276,7 @@ impl Request<'_> {
             candidate,
             &self.input["input"],
             business_key,
-            Some(self.token),
+            CallOrigin::Request(self.token),
         )
         .await?;
         let ctx = &staged.ctx;
@@ -738,7 +738,8 @@ async fn admit_task_bounded(
     if let Some(row) = task_call(&tx, lease, &proof, None).await? {
         let call = row.try_get("id")?;
         let cutoff = charged_task_cutoff(&tx, &proof.ctx, call).await?;
-        task_engine::broker_remaining(&tx, proof.deadline.min(cutoff)).await?;
+        task_engine::broker_remaining(&tx, proof.hard_deadline.min(proof.lease_end).min(cutoff))
+            .await?;
         crate::skill_streams::ensure_active(app)?;
         tx.commit().await?;
         return Ok(TaskAdmission::Existing(call));
@@ -758,7 +759,7 @@ async fn admit_task_bounded(
     Ok(TaskAdmission::Dispatch(staged.call))
 }
 
-/// Select and admit one short fixed Capability step without publishing a
+/// Select and admit one fixed Capability step without publishing a
 /// provisional Attempt separately from the Broker Call it will execute.
 pub(super) async fn admit_next_task(
     app: &App,
@@ -936,7 +937,7 @@ async fn stage_task_call(
         .await?
         .try_get(0)?;
     let deadline = proof
-        .deadline
+        .hard_deadline
         .min(now + chrono::Duration::milliseconds(timeout));
     let candidate = Candidate {
         ctx: proof.ctx,
@@ -956,21 +957,29 @@ async fn stage_task_call(
         }),
         authority: Some(authority),
     };
-    let call = record_call(tx, app, candidate, input, &proof.business_key, None).await?;
+    let call = record_call(
+        tx,
+        app,
+        candidate,
+        input,
+        &proof.business_key,
+        CallOrigin::Task(proof.lease_end),
+    )
+    .await?;
     tx.execute(
         "INSERT INTO task_attempt_calls(attempt_id,call_id,installation_id) VALUES($1,$2,$3)",
         &[&lease.attempt_id, &call.id, &proof.installation],
     )
     .await?;
     tx.execute(
-        "UPDATE attempts SET state='running',revision=revision+1,updated_at=clock_timestamp() WHERE id=$1",
-        &[&lease.attempt_id],
+        "UPDATE attempts SET state='running',lease_expires_at=$2,revision=revision+1,updated_at=clock_timestamp() WHERE id=$1",
+        &[&lease.attempt_id, &proof.lease_end.min(call.deadline)],
     ).await?;
     // Include waiting on the retained link, triggers and every ledger write.
     tx.batch_execute("SET CONSTRAINTS ALL IMMEDIATE").await?;
-    let cutoff = validate_task_call(tx, app, lease, call.id, false).await?;
+    let window = validate_task_call(tx, app, lease, call.id, false).await?;
     let sampled = Instant::now();
-    let remaining = task_engine::broker_remaining(tx, cutoff).await?;
+    let remaining = task_engine::broker_remaining(tx, window.lease_end).await?;
     crate::skill_streams::ensure_active(app)?;
     if sampled.elapsed() >= remaining || Instant::now() >= limit {
         return Err(call_expired());
@@ -982,6 +991,19 @@ async fn stage_task_call(
     })
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct TaskCallWindow {
+    pub hard_deadline: DateTime<Utc>,
+    pub lease_end: DateTime<Utc>,
+    pub renewable: bool,
+}
+
+struct CheckedTaskCall {
+    window: TaskCallWindow,
+    derived_delegation: Uuid,
+    rpc_delegation: Uuid,
+}
+
 /// A monitor holds the shared authorization fence. Settlement also owns the
 /// Call ledger. Validation never commits, rolls back, or changes any state.
 pub(super) async fn validate_task_call(
@@ -990,7 +1012,21 @@ pub(super) async fn validate_task_call(
     lease: &AttemptLease,
     call: Uuid,
     allow_cancel_requested: bool,
-) -> Result<DateTime<Utc>> {
+) -> Result<TaskCallWindow> {
+    Ok(
+        checked_task_call(tx, app, lease, call, allow_cancel_requested)
+            .await?
+            .window,
+    )
+}
+
+async fn checked_task_call(
+    tx: &Transaction<'_>,
+    app: &App,
+    lease: &AttemptLease,
+    call: Uuid,
+    allow_cancel_requested: bool,
+) -> Result<CheckedTaskCall> {
     crate::skill_streams::ensure_active(app)?;
     let purpose = if allow_cancel_requested {
         BrokerLeaseUse::Observe
@@ -1006,13 +1042,17 @@ pub(super) async fn validate_task_call(
     }
     let name = string(&proof.contract, "name")?;
     let version = string(&proof.contract, "version")?;
-    let rpc_until: DateTime<Utc> = tx.query_opt(
-        "SELECT r.expires_at FROM calls c
+    let binding = tx.query_opt(
+        "SELECT least(r.expires_at,e.expires_at,res.expires_at) AS lease_end,
+                e.id AS derived_delegation,r.id AS rpc_delegation
+           FROM calls c
            JOIN instances i ON i.id=c.provider_instance_id
            JOIN deployments d ON d.id=i.deployment_id
            JOIN installations n ON n.id=d.installation_id
            JOIN provider_records p ON p.instance_id=i.id AND p.name=$2 AND p.version=$3
            JOIN execution_delegations e ON e.id=c.delegation_id
+           JOIN reservations res ON res.id=c.id AND res.kind='call'
+              AND res.account_id=c.owner_id AND res.status='active'
            JOIN rpc_delegations r ON r.call_id=c.id AND r.execution_delegation_id=e.id
               AND r.instance_id=i.id AND r.generation=i.generation
           WHERE c.id=$1 AND d.id=$4 AND n.id=$5 AND i.phase='ready' AND i.health='alive'
@@ -1021,20 +1061,104 @@ pub(super) async fn validate_task_call(
                 ((n.manifest->'health'->>'interval_ms')::bigint*(n.manifest->'health'->>'failure_threshold')::bigint
                 +(n.manifest->'health'->>'timeout_ms')::bigint)
             AND e.status='active' AND e.subject_id=c.owner_id AND e.issuer_credential_id=c.credential_id
-            AND e.expires_at>=r.expires_at AND r.status='active'
+            AND res.expires_at IS NOT NULL AND r.status='active'
             AND r.subject_id=c.owner_id AND r.issuer_credential_id=c.credential_id
-          FOR SHARE OF i,p,e,r",
+          FOR SHARE OF i,p,e,r,res",
         &[&call, &name, &version, &proof.deployment, &proof.installation],
-    ).await?.ok_or_else(|| Error::unavailable("Admitted task provider or RPC binding is unavailable"))?.try_get(0)?;
+    ).await?.ok_or_else(|| Error::unavailable("Admitted task provider or RPC binding is unavailable"))?;
     let cutoff = charged_task_cutoff(tx, &proof.ctx, call).await?;
-    let deadline = proof
-        .deadline
+    let hard_deadline = proof
+        .hard_deadline
         .min(call_row.try_get("deadline_at")?)
-        .min(rpc_until)
         .min(cutoff);
-    task_engine::broker_remaining(tx, deadline).await?;
+    let lease_end = proof
+        .lease_end
+        .min(hard_deadline)
+        .min(binding.try_get("lease_end")?);
+    task_engine::broker_remaining(tx, lease_end).await?;
     crate::skill_streams::ensure_active(app)?;
-    Ok(deadline)
+    Ok(CheckedTaskCall {
+        window: TaskCallWindow {
+            hard_deadline,
+            lease_end,
+            renewable: proof.renewable,
+        },
+        derived_delegation: binding.try_get("derived_delegation")?,
+        rpc_delegation: binding.try_get("rpc_delegation")?,
+    })
+}
+
+/// Advance the physical Call and Task fences together. No hard deadline or
+/// original Task authority is modified.
+pub(super) async fn renew_task_call(
+    app: &App,
+    lease: &AttemptLease,
+    call: Uuid,
+) -> Result<DateTime<Utc>> {
+    tokio::time::timeout(
+        TASK_ADMISSION_TIMEOUT,
+        renew_task_call_bounded(app, lease, call),
+    )
+    .await
+    .map_err(|_| Error::unavailable("Task Call heartbeat timed out"))?
+}
+
+async fn renew_task_call_bounded(
+    app: &App,
+    lease: &AttemptLease,
+    call: Uuid,
+) -> Result<DateTime<Utc>> {
+    crate::skill_streams::ensure_active(app)?;
+    let mut connection = app.db.connect_scoped(TASK_ADMISSION_TIMEOUT).await?;
+    let tx = connection.transaction().await?;
+    db::call_lock(&tx).await?;
+    let checked = checked_task_call(&tx, app, lease, call, false).await?;
+    if !checked.window.renewable {
+        return Err(Error::conflict("Task Call is no longer renewable"));
+    }
+    // Any deferred trigger wait belongs inside the final old-fence check.
+    tx.batch_execute("SET CONSTRAINTS ALL IMMEDIATE").await?;
+    let row = tx.query_opt(
+        "WITH renewed AS MATERIALIZED (
+             SELECT at,least($6,at+interval '30 seconds') AS expires_at
+               FROM (SELECT clock_timestamp() AS at) sample WHERE at<$5
+         ), attempt AS (
+             UPDATE attempts a SET lease_expires_at=n.expires_at,revision=a.revision+1,updated_at=n.at
+               FROM renewed n WHERE a.id=$1 AND a.state='running' AND a.lease_expires_at>n.at
+             RETURNING a.id
+         ), reservation AS (
+             UPDATE reservations r SET expires_at=n.expires_at FROM renewed n
+              WHERE r.id=$2 AND r.kind='call' AND r.status='active' AND r.expires_at>n.at
+            RETURNING r.id
+         ), derived AS (
+             UPDATE execution_delegations e SET expires_at=n.expires_at FROM renewed n
+              WHERE e.id=$3 AND e.status='active' AND e.expires_at>n.at
+            RETURNING e.id
+         ), rpc AS (
+             UPDATE rpc_delegations r SET expires_at=n.expires_at FROM renewed n
+              WHERE r.id=$4 AND r.call_id=$2 AND r.status='active' AND r.expires_at>n.at
+            RETURNING r.id
+         )
+         SELECT n.expires_at FROM renewed n,attempt,reservation,derived,rpc",
+        &[&lease.attempt_id,&call,&checked.derived_delegation,&checked.rpc_delegation,
+          &checked.window.lease_end,&checked.window.hard_deadline],
+    ).await?.ok_or_else(|| Error::conflict("Task Call lease expired during renewal"))?;
+    let renewed: DateTime<Utc> = row.try_get(0)?;
+    let sampled = Instant::now();
+    let remaining =
+        task_engine::broker_remaining(&tx, checked.window.lease_end.min(renewed)).await?;
+    crate::skill_streams::ensure_active(app)?;
+    if sampled.elapsed() >= remaining {
+        return Err(Error::conflict("Task Call lease expired during renewal"));
+    }
+    tx.commit().await?;
+    if sampled.elapsed() >= remaining {
+        return Err(Error::conflict(
+            "Task Call heartbeat did not confirm its live lease",
+        ));
+    }
+    crate::skill_streams::ensure_active(app)?;
+    Ok(renewed)
 }
 
 async fn charged_task_cutoff(
@@ -1082,6 +1206,11 @@ async fn task_call(
     Ok(row)
 }
 
+enum CallOrigin<'a> {
+    Request(&'a str),
+    Task(DateTime<Utc>),
+}
+
 /// Both callers reach this point with the live provider and the Call ledger
 /// locked. Worker dispatch uses an independent per-Attempt association and an
 /// exact task proof. Ordinary requests retain their existing HTTP replay gate.
@@ -1091,8 +1220,12 @@ async fn record_call(
     candidate: Candidate<'_, '_>,
     input: &Value,
     business_key: &str,
-    token: Option<&str>,
+    origin: CallOrigin<'_>,
 ) -> Result<Call> {
+    let (token, task_lease_end) = match origin {
+        CallOrigin::Request(token) => (Some(token), None),
+        CallOrigin::Task(lease_end) => (None, Some(lease_end)),
+    };
     let Candidate {
         ctx,
         skill,
@@ -1152,6 +1285,7 @@ async fn record_call(
     if deadline <= Utc::now() {
         return Err(call_expired());
     }
+    let reservation_deadline = task_lease_end.map_or(deadline, |lease_end| lease_end.min(deadline));
     let bytes = serde_json::to_vec(input)?;
     tx.execute("INSERT INTO calls(id,owner_id,credential_id,provider_instance_id,contract,input_digest,idempotency_key,state,deadline_at,created_at)
         VALUES($1,$2,$3,$4,$5,$6,$7,'running',$8,now())",
@@ -1173,7 +1307,7 @@ async fn record_call(
     tx.execute(
         "INSERT INTO reservations(id,account_id,kind,expires_at,status,created_at)
         VALUES($1,$2,'call',$3,'active',now())",
-        &[&call, &ctx.subject, &deadline],
+        &[&call, &ctx.subject, &reservation_deadline],
     )
     .await?;
     if let Some(token) = token {
@@ -1181,7 +1315,14 @@ async fn record_call(
     }
     let delegation = app
         .auth
-        .issue_rpc(tx, &ctx, call, instance.id, instance.generation, deadline)
+        .issue_rpc(
+            tx,
+            &ctx,
+            call,
+            instance.id,
+            instance.generation,
+            reservation_deadline,
+        )
         .await?;
     if token.is_some() {
         host_blobs::grant_skill_call(
