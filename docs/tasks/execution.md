@@ -25,3 +25,9 @@ fence 保护平台元数据提交，不自动阻止外部系统副作用。外�
 Task 先进入 cancel_requested，停止领取新步骤，通知活动插件，处理可取消子调用。全部活动步骤终止后 task=canceled；若外部结果仍不明，保留 unknown 步骤，不能假装全部副作用已撤销。
 
 授权失效进入 paused_authorization，不通过服务身份偷偷续跑；恢复需要当前权限与原固定委托均有效。更换 owner 或服务主体要重新批准，不能直接复制原授权。
+
+## 当前内置一元执行器
+
+内置执行器可自动领取首次尝试的固定签名 Capability 步骤，包括步骤通过 Skill 绑定该 Capability 的情形。Skill 必须使用 identity 映射，且不声明流式输出或 Blob 输入。提供者须使用固定部署及签名安装、无持久化数据版本、无插件依赖及 HostService 代理权限。声明 `skill_required` 的入口须通过该固定 Skill 调用。
+
+Skill 步骤以任务提交时冻结的 `skill.invoke` 和 `capability.invoke` 授权执行。Broker 同时重验两项原授权，将该次调用计为一个 Call，并对两项授权共用的凭证只计费一次。租约或授权失效时，执行器只保留可核实的结果。无法确认的结果记为未知，原调用不会自动重发。

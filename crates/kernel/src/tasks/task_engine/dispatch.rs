@@ -10,7 +10,7 @@ use crate::{
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::time::Duration;
-use tokio_postgres::Transaction;
+use tokio_postgres::{Row, Transaction};
 use uuid::Uuid;
 
 #[derive(Clone, Copy)]
@@ -26,12 +26,62 @@ pub(crate) struct BrokerDispatchProof {
     pub hard_deadline: DateTime<Utc>,
     pub lease_end: DateTime<Utc>,
     pub step_id: Uuid,
-    pub deployment: Uuid,
-    pub installation: Uuid,
-    pub contract: Value,
+    pub binding: TaskCallBinding,
     pub business_key: String,
     pub active: bool,
     pub renewable: bool,
+}
+
+pub(crate) struct TaskCallBinding {
+    pub deployment: Uuid,
+    pub installation: Uuid,
+    pub contract: Value,
+    pub skill: Option<(Uuid, String)>,
+}
+
+impl TaskCallBinding {
+    pub(super) fn from_admission(
+        admission: &Value,
+        step: &Value,
+        deployment: Uuid,
+    ) -> Result<Self> {
+        let record = claim_authority::step_admission(admission, step)?;
+        let binding = &record["binding"];
+        let skill = match binding["kind"].as_str() {
+            Some("capability") => None,
+            Some("skill_capability") => Some((
+                id(binding, "skill_id").map_err(|_| Error::denied())?,
+                string(binding, "definition_digest")
+                    .map_err(|_| Error::denied())?
+                    .to_owned(),
+            )),
+            _ => {
+                return Err(Error::unavailable(
+                    "Task dispatch requires a fixed unary Capability target",
+                ))
+            }
+        };
+        Ok(Self {
+            deployment,
+            installation: id(record, "installation_id").map_err(|_| Error::denied())?,
+            contract: binding["contract"].clone(),
+            skill,
+        })
+    }
+
+    // Both the send/settle path and result receipts use the exact linked Call.
+    pub(crate) fn matches_call(&self, row: &Row) -> Result<bool> {
+        let skill = self.skill.as_ref();
+        Ok(
+            row.try_get::<_, Uuid>("installation_id")? == self.installation
+                && row.try_get::<_, Option<Uuid>>("deployment_id")? == Some(self.deployment)
+                && row.try_get::<_, Value>("contract")? == self.contract
+                && row.try_get::<_, Option<Uuid>>("skill_id")? == skill.map(|(id, _)| *id)
+                && row.try_get::<_, Option<&str>>("skill_definition_digest")?
+                    == skill.map(|(_, digest)| digest.as_str())
+                && row.try_get::<_, Option<Value>>("http_binding")?.is_none(),
+        )
+    }
 }
 
 /// The caller holds the shared authorization fence and owns the transaction.
@@ -68,22 +118,16 @@ pub(crate) async fn broker_dispatch_proof(
     let deployment = row
         .try_get::<_, Option<Uuid>>("provider_deployment_id")?
         .ok_or_else(unsupported)?;
-    if row.try_get::<_, i32>("number")? != 1 || step.get("skill_id").is_some() {
-        return Err(unsupported());
-    }
-    let contract = &step["contract"];
-    if string(contract, "name")? == "automation.execute" {
+    if row.try_get::<_, i32>("number")? != 1 {
         return Err(unsupported());
     }
     let proof =
         claim_authority::revalidate_proof(tx, auth, &row, &step, lease.execution_id, true).await?;
     let admission: Value = row.try_get("admission")?;
-    let step_key = string(&step, "id")?;
-    let target = admission["steps"]
-        .as_array()
-        .and_then(|records| records.iter().find(|record| record["step_key"] == step_key))
-        .ok_or_else(Error::denied)?;
-    let installation = id(target, "installation_id").map_err(|_| Error::denied())?;
+    let binding = TaskCallBinding::from_admission(&admission, &step, deployment)?;
+    if string(&binding.contract, "name")? == "automation.execute" {
+        return Err(unsupported());
+    }
     let hard_deadline = row
         .try_get::<_, DateTime<Utc>>("deadline_at")?
         .min(row.try_get("expires_at")?)
@@ -95,9 +139,7 @@ pub(crate) async fn broker_dispatch_proof(
         hard_deadline,
         lease_end,
         step_id: row.try_get("step_id")?,
-        deployment,
-        installation,
-        contract: contract.clone(),
+        binding,
         business_key: row.try_get("idempotency_key")?,
         active,
         renewable: active::active(&row, false),

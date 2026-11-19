@@ -224,7 +224,7 @@ async fn execute(
     let minimum: Option<i64> = if let Some(skill) = input.skill {
         // Budget-only metadata must neither select another route nor expose a
         // private installation's integrity/availability before authorization.
-        // Authoritative errors are produced by resolve_http_for_invoke below.
+        // Authoritative errors are produced by resolve_with_authority below.
         let exact_budget = async {
             let row = c
                 .query_opt(
@@ -296,7 +296,7 @@ async fn execute_inner(
     ctx.browser_origin = input.browser_origin.clone();
     let mut authority = crate::auth::CurrentAuthority::new(&tx, &ctx).await?;
     let skill = if let Some(skill) = input.skill {
-        match crate::skills::resolve_http_for_invoke(&tx, &ctx, skill, &authority).await {
+        match crate::skills::resolve_with_authority(&tx, &ctx, skill, &authority).await {
             Ok(skill) => Some(skill),
             Err(error) => {
                 db::audit(

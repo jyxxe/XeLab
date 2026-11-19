@@ -831,6 +831,16 @@ pub(crate) fn bounded(paths: &[Path]) -> Result<()> {
         Ok(())
     }
 }
+pub(crate) fn retain_original_sources(paths: &mut Vec<Path>, original: &[Path]) {
+    paths.retain(|path| {
+        original.iter().any(|saved| {
+            path.sources == saved.sources
+                && path.rule["action"] == saved.rule["action"]
+                && path.rule["resource"] == saved.rule["resource"]
+        })
+    });
+}
+
 pub fn rules(paths: &[Path]) -> Value {
     let mut out = Vec::new();
     for p in paths {
