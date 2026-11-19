@@ -1,6 +1,6 @@
 # XeLab Kernel：M1–M4 与 M5 工作流定义和任务提交
 
-这是基于现有 **2.8.0 契约**的 Rust 实现，crate 版本为 0.1.0。已实现 M1 普通插件、身份与管理闭环，以及 M2 卷、Blob、Secret、部署备份/恢复、整体离线恢复和内部格式监督器。M3 源码提供普通 OCI Skill 的七项公开操作、声明式 HTTP、OAuth/Client/UI 控制面及独立 WebUI/消息桥；内部 Schema 为 **21**。v21 在 v20 任务准入证明的基础上记录领取尝试的 worker 和结果提交回执，历史迁移及校验和保持原值。源码功能范围与实际验收状态分别记录：逐项测试、精确提交、PR 集成和 main CI 以有时间戳的[持续进度](../../docs/implementation/m3-progress.md)及[目标 #38](https://github.com/jyxxe/XeLab/issues/38)最新证据为准，不能仅凭实现代码宣布完整 M3 完成。正式生产、AWS/独立宿主和完整格式迁移验收仍独立待完成；公开版本化制品安装入口仍关闭。
+这是基于现有 **2.8.0 契约**的 Rust 实现，crate 版本为 0.1.0。已实现 M1 普通插件、身份与管理闭环，以及 M2 卷、Blob、Secret、部署备份/恢复、整体离线恢复和内部格式监督器。M3 源码提供普通 OCI Skill 的七项公开操作、声明式 HTTP、OAuth/Client/UI 控制面及独立 WebUI/消息桥；内部 Schema 为 **22**。v22 记录人工核实的证据、操作者和对应尝试，v21 的领取身份和结果回执保持原值。源码功能范围与实际验收状态分别记录：逐项测试、精确提交、PR 集成和 main CI 以有时间戳的[持续进度](../../docs/implementation/m3-progress.md)及[目标 #38](https://github.com/jyxxe/XeLab/issues/38)最新证据为准，不能仅凭实现代码宣布完整 M3 完成。正式生产、AWS/独立宿主和完整格式迁移验收仍独立待完成；公开版本化制品安装入口仍关闭。
 
 ## 已实现与边界
 
@@ -18,8 +18,9 @@
 | 工作流定义 | `createWorkflow/getWorkflow/listWorkflows/archiveWorkflow`；同一所有者和名称下递增不可变版本，校验 DAG、输入映射和签名目标，按当前权限分页，使用 ETag 归档 | 归档阻止同一版本的新任务，历史任务继续可读 |
 | 任务提交与查询 | `createTask/getTask/listTasks/listTaskSteps/listAttempts`；提交时固定 Workflow 版本、deadline、授权来源和提供者；步骤的尝试记录按所属任务的 `task.read` 分页读取，无记录时返回空页 | 服务身份执行需单独审批。HTTP 与真实 PostgreSQL 回归见 `crates/kernel/tests/workflows.rs` |
 | 任务步骤领取、续租、输入准备与结果提交 | 进程内 `task_engine::claim` 复核依赖与原委托，为首次就绪步骤绑定 worker、fence 和最长 30 秒的租约。`renew` 核对同一 worker、尝试与执行 ID、fence、有效租约及原授权，每次最多续至当前时间后 30 秒，且受首次领取起算的步骤超时、任务 deadline 和授权期限约束。`prepare_dispatch` 复核有效租约和原授权，按固定工作流的映射从字面值、任务输入和已成功的上游步骤输出生成请求，保留步骤业务幂等键和已固定的部署。`commit` 复核租约身份及原授权，校验成功输出的契约，原子写入结果、回执、后继状态及 outbox。相同结果可在租约和授权有效时幂等确认。失败或未知会阻止后继就绪，迟到提交留有审计 | 全部步骤成功时，单个终点的输出写入 `Task.output`。多个终点各自保留步骤输出，`Task.output` 为 `NULL`。同步 worker 的定时续租循环和经 Broker 向插件实际派发待接入 |
-| 任务租约过期对账 | 控制器每轮最多处理 16 个由 worker 领取且仍匹配当前步骤 fence 的活动尝试，以数据库时钟复核租约和任务截止中较早的时间。尝试记为 `expired`，步骤记为 `unknown`，同事务写入 outbox。运行中的任务在其他活动尝试收敛后汇总为 `unknown`，保留当前的授权暂停、依赖等待或取消意图 | 使用现有活动尝试索引和元数据字段。Broker 结果核实、插件取消、人工核实及重试待实现 |
+| 任务租约过期对账 | 控制器每轮最多处理 16 个由 worker 领取且仍匹配当前步骤 fence 的活动尝试，以数据库时钟复核租约和任务截止中较早的时间。尝试记为 `expired`，步骤记为 `unknown`，同事务写入 outbox。运行中的任务在其他活动尝试收敛后汇总为 `unknown`，保留当前的授权暂停、依赖等待或取消意图 | 使用现有活动尝试索引和元数据字段。Broker 自动核实、插件取消及重试待实现 |
 | 任务取消 | `cancelTask` 使用任务 ETag 和幂等键登记取消，取消尚未开始的步骤，并阻止新领取、续租和派发准备。原 worker 可在原租约、fence 和授权有效期内提交已收到的终态结果。全部步骤均已停止且无未知结果时任务可进入 `canceled` | 活动、过期和未知尝试均可阻止完成取消，并保留旧历史中的不确定性。任务已是 `unknown` 时保留其状态和结果证据。Broker 取消信号和插件停止证明仍待接入 |
+| 未知步骤人工核实 | `resolveUnknownStep` 按任务授权、步骤 ETag 和幂等键记录操作者及外部核实证据。确认成功需提交原绑定允许的业务输出，确认未执行将步骤记为失败。历史尝试、worker 回执和取消意图保留 | 缺少原绑定的旧步骤无法核实。原尝试不自动重试。人工证据保留在元数据中，普通响应和 outbox 事件仅含标识与结论 |
 | 定时计划预览 | `xelabctl preview-schedule` 离线计算五字段 cron 的 UTC 触发时刻。`plan-schedule-recovery` 根据指定停机区间、活动任务和等待触发预览补发与重叠决策 | 定时计划 API、触发持久化和调度任务提交待实现 |
 | HTTP | #43 已合并签名原始 OpenAPI、精确操作/动作/Schema、共享 Broker 账本、直接 HTTP SSE、隔离来源静态 GET/HEAD 与物理槽；#47 扩展固定 HTTP Skill 的六方法、成功状态和 SSE | #47 精确 HTTP Skill 六方法/流真实 OCI 门禁已通过；不是任意 URL/路径模板/查询参数代理，未声明协议拒绝 |
 | 独立 WebUI/消息桥 | #45 实现 UID 65532 OCI 桌面、公开管理 API/OAuth 客户端、window/widget、固定 alias 的 skill.call、同部署 window.open、通道撤权/登出/升级失效及独立 UI 参考插件 | 组件与打包探针通过不能替代真实核心 OCI/Owner OAuth/iframe 全链；#45 精确完整/专项门禁均通过，未来 batch 方法明确不可用 |
@@ -70,14 +71,14 @@ cargo fmt --all -- --check
 
 ```bash
 xelabctl validate-config --config /etc/xelab/kernel.toml
-xelabctl migrate --config /etc/xelab/kernel.toml --target 21
+xelabctl migrate --config /etc/xelab/kernel.toml --target 22
 xelabctl bootstrap --config /etc/xelab/kernel.toml --owner-name admin
 xelabd --config /etc/xelab/kernel.toml
 ```
 
-`validate-config` 只验证结构和本地约束；不宣称宿主检查已经通过。本版 `xelabctl migrate` 只接受 `--target 21`。
+`validate-config` 只验证结构和本地约束；不宣称宿主检查已经通过。本版 `xelabctl migrate` 只接受 `--target 22`。
 空库先建立原始基线，已有库核对历史版本及校验和后顺序追加迁移。重复执行仍核对布局与校验和。
-v20 库可原地升级。历史 attempt 的 `worker_id` 保留为 SQL `NULL`，任何 worker 提交这些尝试的结果都会收到 `STATE_CONFLICT`。旧版离线快照须先用匹配的 Schema 和迁移校验和恢复，再升级并重新导出。bootstrap 只允许空账户库，须在启动守护进程前执行。
+v20 和 v21 库可原地升级。历史 attempt 的 `worker_id` 保留为 SQL `NULL`，任何 worker 提交这些尝试的结果都会收到 `STATE_CONFLICT`。旧版离线快照须先用匹配的 Schema 和迁移校验和恢复，再升级并重新导出。bootstrap 只允许空账户库，须在启动守护进程前执行。
 守护进程不会隐式迁移数据库。
 
 ## 管理与插件示例
@@ -198,7 +199,7 @@ CI 另在一次性 Linux 主机运行 `tests/oci.rs`：真实 containerd + Rust/
 - 自授 Grant 证明签发权限时，忽略同账户其他非引导自授绑定，只使用独立来源（外部 Grant、父级继承或初始 Owner）。这些自授绑定仍在最外层保留权限/来源记录；撤销独立来源后不能互相维持权限。此优化针对同账户自授，其他来源图仍受现有深度/路径边界限制。
 - 控制器启用与停用清理分别保存 `(created_at,id)` 游标与上界，每轮各最多 16 项，并在项间检查 250 ms 时间片。Probe 按实例代次复用、分批回收；已清理禁用记录不反复协调。完整行为、回归与单项延迟限制见 [Controller 稳定化](../../docs/implementation/m1-acceptance.md#controller-稳定化pr-4-遗留项)。
 
-升级前备份并停机，确认没有未完成任务，执行上面的 `--target 21` 后再启动。
+升级前备份并停机，确认没有未完成任务，执行上面的 `--target 22` 后再启动。
 旧二进制拒绝不匹配的元数据版本，不能直接回退；原生快照恢复同样要求精确布局。
 v1 已有的凭证/账户派生调用继续计入预算；旧版本未记录的实际 Grant 来源无法事后精确重建，因此已有受此漏洞影响的限次来源 Key 应在升级时撤销后重新签发，不把旧账本当成完整历史计费证据。v7 持久备份任务见 [备份任务记录](../../docs/implementation/m2-backup-jobs.md)，v8 新卷恢复和切换见 [恢复实现](../../docs/implementation/m2-restores.md)，v9 元数据快照、启动门禁与权限重置见 [离线恢复组件](../../docs/implementation/m2-platform-recovery.md)。
 v10–11 部署重建与卷克隆见[部署重建实现](../../docs/implementation/m2-deployment-upgrades.md)，

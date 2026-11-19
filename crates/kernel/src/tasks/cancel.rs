@@ -96,7 +96,10 @@ pub(super) async fn settled(c: &(impl GenericClient + Sync), task: Uuid) -> Resu
              SELECT FROM task_steps WHERE task_id=$1 AND state IN ('pending','ready','running','unknown')
          ) AND NOT EXISTS (
              SELECT FROM attempts a JOIN task_steps s ON s.id=a.step_id
-              WHERE s.task_id=$1 AND a.state IN ('leased','running','expired','unknown')
+              WHERE s.task_id=$1 AND (a.state IN ('leased','running')
+                 OR (a.state IN ('expired','unknown') AND NOT EXISTS (
+                     SELECT FROM task_step_resolutions r WHERE r.attempt_id=a.id
+                 )))
          )",
         &[&task],
     ).await?.try_get(0)?)
@@ -108,7 +111,9 @@ pub(super) async fn update_state(
     state: &str,
 ) -> Result<()> {
     c.execute(
-        "UPDATE tasks SET state=$2,revision=revision+1,updated_at=clock_timestamp() WHERE id=$1",
+        "UPDATE tasks SET state=$2,revision=revision+1,updated_at=clock_timestamp(),
+            error=CASE WHEN $2='canceled' AND error->>'code'='OUTCOME_UNKNOWN' THEN NULL ELSE error END
+         WHERE id=$1",
         &[&task, &state],
     )
     .await?;

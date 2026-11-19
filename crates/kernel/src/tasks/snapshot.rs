@@ -19,6 +19,20 @@ pub(crate) async fn validate_snapshot(c: &(impl GenericClient + Sync)) -> Result
                   WHERE (r.attempt_id IS NOT NULL AND (a.worker_id IS NULL OR r.state<>a.state))
                      OR (a.worker_id IS NOT NULL AND a.state IN ('succeeded','failed','unknown')
                          AND r.attempt_id IS NULL)
+             ) OR EXISTS (
+                 SELECT FROM task_step_resolutions resolution
+                   JOIN attempts a ON a.id=resolution.attempt_id JOIN task_steps s ON s.id=a.step_id
+                  WHERE a.state NOT IN ('expired','unknown')
+                     OR (a.number=s.attempt_count AND a.fence=s.fence AND (
+                         (resolution.resolution='confirmed_succeeded' AND (s.state<>'succeeded' OR s.output IS NULL))
+                         OR (resolution.resolution='confirmed_not_executed' AND (s.state<>'failed' OR s.output IS NOT NULL))
+                     ))
+                     OR NOT EXISTS (
+                    SELECT FROM audit_events audit WHERE audit.request_id=resolution.request_id
+                      AND audit.subject_id=resolution.subject_id AND audit.credential_id=resolution.credential_id
+                      AND audit.action='resolveUnknownStep' AND audit.outcome='succeeded'
+                      AND audit.resource=jsonb_build_object('kind','task','match','ids','ids',jsonb_build_array(s.task_id))
+                  )
              )",
             &[],
         )

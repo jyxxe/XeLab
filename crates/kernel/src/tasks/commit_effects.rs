@@ -54,7 +54,7 @@ pub(super) async fn apply(
     )
     .await?;
     if can_wake {
-        wake_dependents(tx, task_id, key).await?;
+        wake_dependents(tx, task_id, Some(key)).await?;
     }
     read_step(tx, step_id).await
 }
@@ -171,7 +171,7 @@ async fn validate_output(
     validate_business(&capability["output_schema"], output)
 }
 
-fn check_output_bytes(output: &Value, maximum: u64) -> Result<()> {
+pub(super) fn check_output_bytes(output: &Value, maximum: u64) -> Result<()> {
     // Count compact UTF-8 JSON, including escaping, without allocating a
     // second copy of an oversized result. Stop as soon as its budget runs out.
     struct Remaining(u64);
@@ -240,22 +240,7 @@ async fn aggregate(
     let replace_error =
         !prior_unknown && (state == "unknown" || (state == "failed" && !prior_failed));
     if task_state == "succeeded" {
-        // WorkflowSpec has no explicit output mapping. Select DAG sinks by
-        // dependency key so parallel completion order cannot affect the result.
-        tx.execute(
-            "WITH nodes AS (
-                 SELECT node FROM tasks t JOIN workflows w ON w.id=t.workflow_id,
-                      jsonb_array_elements(w.spec->'steps') node WHERE t.id=$1
-             ), sinks AS (
-                 SELECT s.id FROM task_steps s WHERE s.task_id=$1 AND
-                 NOT EXISTS (SELECT FROM nodes WHERE (node->'depends_on') ? s.step_key) LIMIT 2
-             )
-             UPDATE tasks SET state='succeeded',error=NULL,output=(
-                 SELECT s.output FROM sinks JOIN task_steps s USING (id) WHERE (SELECT count(*) FROM sinks)=1
-             ),revision=revision+1,updated_at=clock_timestamp() WHERE id=$1 AND state='running'",
-            &[&task_id],
-        )
-        .await?;
+        complete_task(tx, task_id).await?;
     } else if replace_error || task_state != "running" {
         tx.execute(
             "UPDATE tasks SET state=$2, error=CASE WHEN $3 THEN NULLIF($4::jsonb,'null'::jsonb) ELSE error END,
@@ -268,19 +253,43 @@ async fn aggregate(
     Ok(state == "succeeded" && task_state == "running" && !unknown && !failed)
 }
 
-async fn wake_dependents(tx: &Transaction<'_>, task_id: Uuid, key: &str) -> Result<()> {
+pub(super) async fn complete_task(tx: &Transaction<'_>, task_id: Uuid) -> Result<()> {
+    // WorkflowSpec has no explicit output mapping. Select DAG sinks by
+    // dependency key so parallel completion order cannot affect the result.
+    tx.execute(
+        "WITH nodes AS (
+             SELECT node FROM tasks t JOIN workflows w ON w.id=t.workflow_id,
+                  jsonb_array_elements(w.spec->'steps') node WHERE t.id=$1
+         ), sinks AS (
+             SELECT s.id FROM task_steps s WHERE s.task_id=$1 AND
+             NOT EXISTS (SELECT FROM nodes WHERE (node->'depends_on') ? s.step_key) LIMIT 2
+         )
+         UPDATE tasks SET state='succeeded',error=NULL,output=(
+             SELECT s.output FROM sinks JOIN task_steps s USING (id) WHERE (SELECT count(*) FROM sinks)=1
+         ),revision=revision+1,updated_at=clock_timestamp() WHERE id=$1 AND state IN ('running','unknown')",
+        &[&task_id],
+    )
+    .await?;
+    Ok(())
+}
+
+pub(super) async fn wake_dependents(
+    tx: &Transaction<'_>,
+    task_id: Uuid,
+    upstream: Option<&str>,
+) -> Result<()> {
     let ready = tx.query(
         "UPDATE task_steps s SET state='ready',revision=s.revision+1,updated_at=clock_timestamp()
          FROM tasks t JOIN workflows w ON w.id=t.workflow_id,
               jsonb_array_elements(w.spec->'steps') node
          WHERE t.id=$1 AND t.state='running' AND s.task_id=t.id AND s.step_key=node->>'id'
-           AND s.state='pending' AND s.attempt_count=0 AND (node->'depends_on') ? $2
+           AND s.state='pending' AND s.attempt_count=0 AND ($2::text IS NULL OR (node->'depends_on') ? $2)
            AND NOT EXISTS (SELECT FROM attempts a WHERE a.step_id=s.id)
            AND NOT EXISTS (SELECT FROM jsonb_array_elements_text(node->'depends_on') dep(key)
                             WHERE NOT EXISTS (SELECT FROM task_steps p WHERE p.task_id=t.id
                                                AND p.step_key=dep.key AND p.state='succeeded'))
          RETURNING s.id",
-        &[&task_id, &key],
+        &[&task_id, &upstream],
     ).await?;
     for row in ready {
         let step_id: Uuid = row.try_get(0)?;

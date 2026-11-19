@@ -166,7 +166,9 @@ async fn installed_candidate(
     candidate_binding(c, installation, &manifest, definition).await
 }
 
-async fn candidate_binding(
+/// Verify immutable manifest provenance for both active and historical Skill
+/// bindings. Callers admitting new execution also enforce current enablement.
+pub(crate) async fn candidate_binding(
     c: &(impl GenericClient + Sync),
     installation: Uuid,
     manifest: &Value,
