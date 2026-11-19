@@ -26,7 +26,11 @@ cargo build -p xelab-kernel --bin xelab-echo --locked
 
 ## TaskWorker 绑定
 
-`<xelab/sdk.h>` 导出生成的 `xelab::v1::TaskWorker`，含服务基类、客户端 stub 和检查点消息。独立 CMake 消费者测试检查服务链接和进度消息序列化。端到端执行仍需内核调度接入、检查点持久化和跨重启去重。[Execute 契约](../rpc/TaskWorker.Execute.md)
+`<xelab/sdk.h>` 导出生成的 `xelab::v1::TaskWorker`，含服务基类、客户端 stub 和检查点消息。独立 CMake 消费者测试通过实际 gRPC 回环连接核对进度流及其失败语义。端到端执行仍需内核调度接入、检查点持久化和跨重启去重。[Execute 契约](../rpc/TaskWorker.Execute.md)
+
+`xelab::sdk::TaskProgressReader` 接受调用方已认证的工作负载通道、原 Execute 请求和绝对截止时间，只发起一次调用，期限还受请求上下文及 Execute 方法上限约束。调用方配置 `kMaxMessageBytes` 收发上限，并将通道的 `GRPC_ARG_ENABLE_RETRIES` 设为 `0`。`Next()` 校验执行 ID、fence 和从 1 开始的连续序号，分别返回心跳、检查点和终态。读取器先解析 protobuf 消息，读完流并取得 C++ gRPC `Finish()` 返回的 OK 状态之后才交付终态。
+
+提前断流、额外消息、非 OK 状态和超时均保留结果不确定性。底层 HTTP/2 与 gRPC 记录的处理以 C++ gRPC 暴露的消息和状态为准。在 gRPC 1.51 的回环实验中，终态后的残缺记录在 OK 尾部状态下被框架折叠成流结束。`TaskUnknown` 表示实际结果仍待核实。成功终态的输出受 16 MiB 和 UTF-8 限制，调用方仍需验证业务 JSON、输出 Schema 和错误码，并按检查点归属、版本及持久化约束处理恢复。
 
 ## 离线一致性测试
 

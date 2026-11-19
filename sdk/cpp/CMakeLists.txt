@@ -38,7 +38,7 @@ add_custom_command(
   DEPENDS ${proto_files} protobuf::protoc gRPC::grpc_cpp_plugin
   VERBATIM)
 
-add_library(xelab_plugin_sdk STATIC src/sdk.cc ${proto_outputs} ${grpc_outputs})
+add_library(xelab_plugin_sdk STATIC src/sdk.cc src/task_worker.cc ${proto_outputs} ${grpc_outputs})
 target_compile_features(xelab_plugin_sdk PUBLIC cxx_std_17)
 target_include_directories(xelab_plugin_sdk PUBLIC include "${generated}")
 target_link_libraries(xelab_plugin_sdk PUBLIC gRPC::grpc++ protobuf::libprotobuf PRIVATE OpenSSL::Crypto)

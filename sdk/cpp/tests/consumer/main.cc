@@ -4,6 +4,8 @@
 #include <iostream>
 #include <string_view>
 
+bool CheckTaskWorkerProgress();
+
 namespace {
 
 bool CheckTaskWorkerBindings() {
@@ -64,5 +66,5 @@ int main() {
     std::cerr << "TaskWorker SDK consumer check failed\n";
     return 1;
   }
-  return 0;
+  return CheckTaskWorkerProgress() ? 0 : 1;
 }

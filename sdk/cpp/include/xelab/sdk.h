@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 
 #include <grpcpp/grpcpp.h>
 
@@ -42,6 +43,74 @@ std::unique_ptr<grpc::ClientContext> HostCallContext(const grpc::ServerContext& 
                                                     const v1::RpcContext& context,
                                                     std::chrono::milliseconds method_limit);
 std::optional<v1::ErrorDetail> ReadErrorDetail(const grpc::ClientContext& call);
+
+struct TaskSucceeded {
+  std::string output_json;
+};
+struct TaskFailed {
+  v1::ErrorDetail error;
+};
+struct TaskCanceled {};
+// The worker reports that the execution outcome is still unknown.
+struct TaskUnknown {};
+using TaskOutcome = std::variant<TaskSucceeded, TaskFailed, TaskCanceled, TaskUnknown>;
+
+enum class ProgressError {
+  InvalidCall,
+  MalformedFrame,
+  WrongIdentity,
+  WrongSequence,
+  MissingBody,
+  InvalidHeartbeat,
+  InvalidCheckpoint,
+  InvalidTerminal,
+  MissingTerminal,
+  TrailingFrame,
+  DeadlineExceeded,
+  Transport,
+};
+
+// A failure leaves execution unconfirmed. It does not establish that the
+// worker did not execute or that resubmitting is safe.
+struct ProgressFailure {
+  ProgressError reason;
+  grpc::StatusCode transport_code = grpc::StatusCode::OK;
+};
+
+struct EndOfProgress {};
+using ProgressRead = std::variant<v1::Heartbeat, v1::Checkpoint, TaskOutcome,
+                                  EndOfProgress, ProgressFailure>;
+
+// A blocking, single-call reader for TaskWorker.Execute. Use a trusted channel
+// with kMaxMessageBytes transport limits and gRPC retries disabled. The caller
+// supplies the absolute deadline of the execution. A shorter request deadline
+// or the Execute method limit also bounds the call.
+class TaskProgressReader {
+ public:
+  TaskProgressReader(std::shared_ptr<grpc::ChannelInterface> channel,
+                     const v1::ExecuteTaskRequest& request, Deadline deadline);
+  ~TaskProgressReader();
+  TaskProgressReader(const TaskProgressReader&) = delete;
+  TaskProgressReader& operator=(const TaskProgressReader&) = delete;
+
+  // Only a confirmed terminal outcome is followed by EndOfProgress. Failures
+  // are sticky. Validate the reported JSON, errors and checkpoint against the
+  // execution contract before using them. Call from a single thread at a time.
+  ProgressRead Next();
+
+ private:
+  class Stream;
+  ProgressFailure Fail(ProgressError reason,
+                       grpc::StatusCode code = grpc::StatusCode::OK);
+  bool Matches(std::string_view execution_id, uint64_t fence) const;
+
+  std::unique_ptr<Stream> stream_;
+  Deadline deadline_;
+  std::string execution_id_;
+  uint64_t fence_;
+  uint64_t next_sequence_ = 1;
+  std::optional<ProgressFailure> failure_;
+};
 
 bool IsUuid(std::string_view value);
 std::string ReadManifest();
