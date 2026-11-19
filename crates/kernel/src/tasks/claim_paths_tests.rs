@@ -98,7 +98,7 @@ async fn claim_91_independent_grants_then_the_next_healthy_task() {
         ),
         ("Guest", json!({"kind":"capability","match":"all"})),
     ] {
-        let body = json!({"role_id":role,"scope":scope});
+        let body = json!({"source":"role","role_id":role,"scope":scope});
         identity::authorize(&c, &owner, "createGrant", &params, &body)
             .await
             .unwrap();
