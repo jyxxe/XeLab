@@ -408,6 +408,9 @@ fn dispatch<'a>(
         let name = op["operationId"].as_str().unwrap();
         crate::workflows::validate_query(name, uri.query().unwrap_or(""))?;
         crate::tasks::validate_query(name, uri.query().unwrap_or(""))?;
+        if name == "getSchedule" && uri.query().is_some_and(|query| !query.is_empty()) {
+            return Err(Error::invalid("Unexpected schedule query parameter"));
+        }
         if name == "getLiveness" {
             return Ok((
                 json!({"status":"ok","spec_version":crate::SPEC_VERSION}),
@@ -703,6 +706,12 @@ fn dispatch<'a>(
             tx.execute("UPDATE execution_delegations SET status='revoked' WHERE id IN(SELECT delegation_id FROM calls WHERE id=$1 AND state='unknown')", &[&call]).await?;
             (Value::Null, 204)
         }
+        "getSchedule" => (
+            crate::plugin_catalog::read_schedule(&tx, path_id(&params, "schedule_id")?, None)
+                .await?
+                .ok_or_else(Error::not_found)?,
+            200,
+        ),
         "getNode" => (admission::status(&tx).await?, 200),
         "getOperation" => (
             db::operation_value(&tx, path_id(&params, "operation_id")?).await?,
@@ -1108,6 +1117,20 @@ async fn authorize_operation(
                     "capability.call.read"
                 },
                 Resource::new("call", id, Some(r.get(0))),
+            )
+        }
+        "getSchedule" => {
+            let id = path_id(params, "schedule_id")?;
+            let row = c
+                .query_opt(
+                    "SELECT owner_id FROM schedules WHERE id=$1 FOR SHARE",
+                    &[&id],
+                )
+                .await?
+                .ok_or_else(Error::not_found)?;
+            (
+                "schedule.read",
+                Resource::new("schedule", id, Some(row.get(0))),
             )
         }
         "getNode" => ("platform.read", Resource::new("platform", "node", None)),

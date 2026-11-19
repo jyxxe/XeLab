@@ -104,6 +104,7 @@ pub fn audit_resource(
         ("skill_id", "skill"),
         ("workflow_id", "workflow"),
         ("task_id", "task"),
+        ("schedule_id", "schedule"),
         ("client_id", "client"),
         ("call_id", "call"),
         ("credential_id", "credential"),
