@@ -42,3 +42,19 @@ python3 -m unittest discover -s tools/dev -p 'test_*.py' -v
 
 离线夹具覆盖：缺失命令/socket、受限 cgroup、cgroup v1、祖先限额截断、部分资源不可见、
 路径穿越拒绝、非 root/非 Linux、脱敏与确定性输出。
+
+## 迁移快照核对
+
+`verify_snapshot.py` 只读取本地 Git 对象和已知 SHA-256 的打包源码 ZIP；不解压、不写引用、不访问远端。
+它逐项比对文件路径、大小、Git blob ID 和模式（文件、可执行文件、符号链接）。ZIP 应有单一顶层目录，
+注释为源提交的完整 ID；工具不支持子模块或没有该来源信息的任意 ZIP。
+
+```bash
+python3 tools/dev/verify_snapshot.py --repo "$RESTORED_REPO" --archive "$SOURCE_ZIP" \
+  --commit 0a119768ca72e97de447e8b52aca8802188f52ef \
+  --sha256 82326cd0d7455be040e4997a12b01e7a83227f1981c3e9bc8ca9c651d11b7d7c
+```
+
+`verified_tree` 表示内容一致；`same_commit_id: false` 表示核对的是恢复提交，不是 ZIP 注释中的原提交。
+若必须核实两个 ID 相同，增加 `--require-original`，不一致时退出 1。ZIP 注释不认证原作者或完整历史；
+如需验证父链，还要取得可信 Git 对象并在独立库运行 `git fsck --full`。Git bundle 不包含平台工单或数据库。
