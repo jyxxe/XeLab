@@ -203,6 +203,123 @@ pub(super) async fn revalidate_proof(
     })
 }
 
+pub(super) async fn revalidate_schedule(
+    tx: &Transaction<'_>,
+    auth: &Auth,
+    schedule: &Row,
+    workflow: Resource,
+    workflow_spec: &Value,
+    request_id: Uuid,
+) -> Result<(Context, DateTime<Utc>, Vec<Option<Uuid>>)> {
+    let proof: Value = schedule.try_get("admission")?;
+    let admission = &proof["task_admission"];
+    if proof["version"] != 1 || proof["workflow_id"] != workflow.id {
+        return Err(Error::denied());
+    }
+    let ctx = resume_original(tx, auth, schedule, request_id, admission).await?;
+    let mut targets = vec![
+        original_target("workflow.read", workflow, &admission["workflow_paths"])?,
+        original_target(
+            "task.create",
+            Resource::new("task", "new", Some(ctx.subject)),
+            &proof["task_create_paths"],
+        )?,
+    ];
+    let maximum: Value = schedule.try_get("maximum_rules")?;
+    let mut ceiling = ceiling(&maximum)?;
+    // Task creation was frozen separately and is never carried into the child
+    // Task's per-step execution ceiling.
+    ceiling.extend(targets[1].paths.iter().map(|path| Path {
+        rule: path.rule.clone(),
+        sources: BTreeSet::new(),
+    }));
+
+    let steps = workflow_spec["steps"]
+        .as_array()
+        .ok_or_else(Error::denied)?;
+    let records = admission["steps"].as_array().ok_or_else(Error::denied)?;
+    if steps.len() != records.len() {
+        return Err(Error::denied());
+    }
+    let mut deployments = Vec::with_capacity(steps.len());
+    for (step, record) in steps.iter().zip(records) {
+        if record["step_key"] != string(step, "id")? {
+            return Err(Error::denied());
+        }
+        let deployment = stored_uuid(record, "deployment_id")?;
+        check_deployment(step, record, deployment)?;
+        deployments.push(deployment);
+        targets.extend(step_targets(tx, step, record, deployment).await?);
+    }
+    let until = revalidate_schedule_targets(tx, &ctx, targets, &ceiling).await?;
+    Ok((ctx, until, deployments))
+}
+
+fn ceiling(maximum: &Value) -> Result<Vec<Path>> {
+    Ok(maximum
+        .as_array()
+        .ok_or_else(Error::denied)?
+        .iter()
+        .map(|rule| Path {
+            rule: rule.clone(),
+            sources: BTreeSet::new(),
+        })
+        .collect())
+}
+
+async fn revalidate_schedule_targets(
+    tx: &Transaction<'_>,
+    ctx: &Context,
+    targets: Vec<Target>,
+    ceiling: &[Path],
+) -> Result<DateTime<Utc>> {
+    let mut checked = Vec::with_capacity(targets.len());
+    for target in targets {
+        let current = if target.action == "task.create" {
+            authority::freeze_task_creation(tx, ctx).await?
+        } else {
+            authority::freeze(tx, ctx, &target.action, &target.resource).await?
+        };
+        let policy = Policy::for_context(tx, ctx).with_resource_owner(&target.resource);
+        crate::policy::bounded(&target.paths)?;
+        let mut combined = Vec::new();
+        // Current expansion has already walked the complete live issuer
+        // graph and narrowed every path to this exact resource. Match its
+        // source set before intersecting conditions: an independent current
+        // grant must not lend authority to a detached original source.
+        for original in &target.paths {
+            let matching: Vec<_> = current
+                .iter()
+                .filter(|path| path.sources == original.sources)
+                .cloned()
+                .collect();
+            combined.extend(
+                policy
+                    .intersection(std::slice::from_ref(original), &matching)
+                    .await?,
+            );
+            crate::policy::bounded(&combined)?;
+        }
+        let paths = policy.intersection(&combined, ceiling).await?;
+        let expires = policy
+            .live_grant_issuer_expiries(&source_ids(&paths))
+            .await?;
+        checked.push((paths, expires));
+    }
+    let mut until = authority::issuer_expiry(tx, ctx).await?;
+    let now = tx
+        .query_one("SELECT clock_timestamp()", &[])
+        .await?
+        .try_get(0)?;
+    if until <= now {
+        return Err(Error::credential());
+    }
+    for (paths, expires) in checked {
+        until = until.min(target_expiry(&paths, ctx.peer, &expires, now)?);
+    }
+    Ok(until)
+}
+
 /// Bound the issued Call by any surviving alternative that quota charging may choose.
 pub(super) async fn dispatch_paths_until(
     tx: &Transaction<'_>,

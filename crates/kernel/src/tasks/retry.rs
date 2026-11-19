@@ -61,6 +61,8 @@ pub(crate) async fn request(
     task: Uuid,
     headers: &HeaderMap,
 ) -> Result<(Value, DateTime<Utc>)> {
+    authorize(tx, ctx, task).await?;
+    let schedule = crate::schedules::trigger::lock_retry_origin(tx, task).await?;
     // As in settlement and cancellation, the parent fences all child changes.
     let parent = tx
         .query_opt(
@@ -76,6 +78,9 @@ pub(crate) async fn request(
         return Err(Error::conflict(
             "Only a failed, uncanceled task can be retried",
         ));
+    }
+    if let Some(schedule) = schedule {
+        crate::schedules::trigger::ensure_retry_exclusive(tx, schedule, task).await?;
     }
 
     let sql = format!("SELECT s.id AS step_id,s.provider_deployment_id,s.attempt_count,s.fence,

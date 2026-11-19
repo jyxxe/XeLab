@@ -2,13 +2,14 @@
 //! must revalidate the original grants and provider binding before each step.
 use crate::{
     auth::{self, Auth, Context, Resource},
-    contracts::{id, string, unsigned},
+    contracts::{id, string, unsigned, validate, validate_business},
     error::{Error, Result},
 };
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
+use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
 use std::collections::HashMap;
-use tokio_postgres::{GenericClient, Transaction};
+use tokio_postgres::{GenericClient, Row, Transaction};
 use uuid::Uuid;
 
 pub(crate) mod admission;
@@ -160,33 +161,142 @@ async fn create(c: &(impl GenericClient + Sync), ctx: &Context, body: &Value) ->
         admission::Purpose::Task(timeout),
     )
     .await?;
-    let task = Uuid::new_v4();
-    let delegation = Uuid::new_v4();
-    c.execute(
-        "INSERT INTO execution_delegations(id,subject_id,issuer_credential_id,maximum_rules,run_as,expires_at,status,created_at)
-         VALUES($1,$2,$3,$4,'user',$5,'active',$6)",
-        &[&delegation, &ctx.subject, &ctx.credential, &admission.maximum_rules, &admission.expires_at, &admission.submitted],
-    ).await?;
-    c.execute(
-        "INSERT INTO tasks(id,owner_id,workflow_id,delegation_id,input,deadline_at,state,created_at,updated_at,admission)
-         VALUES($1,$2,$3,$4,$5,$6,'queued',$7,$7,$8)",
-        &[&task, &ctx.subject, &workflow, &delegation, &body["input"], &admission.deadline, &admission.submitted, &admission.record],
-    ).await?;
-    for (step, binding) in admission.steps.iter().zip(&admission.bindings) {
-        let state = if step["depends_on"].as_array().unwrap().is_empty() {
-            "ready"
-        } else {
-            "pending"
-        };
-        c.execute(
-            "INSERT INTO task_steps(id,task_id,step_key,provider_deployment_id,state,created_at,updated_at)
-             VALUES($1,$2,$3,$4,$5,$6,$6)",
-            &[&Uuid::new_v4(), &task, &string(step, "id")?, &binding.deployment_id(), &state, &admission.submitted],
-        ).await?;
+    let task = TaskSubmission {
+        owner: ctx.subject,
+        issuer: ctx.credential,
+        workflow,
+        input: &body["input"],
+        proof: &admission.record,
+        maximum: &admission.maximum_rules,
+        submitted: admission.submitted,
+        deadline: admission.deadline,
+        expires: admission.expires_at,
     }
+    .persist(
+        c,
+        admission
+            .steps
+            .iter()
+            .zip(admission.bindings.iter().map(|bound| bound.deployment_id())),
+    )
+    .await?;
     crate::plugin_catalog::read_task(c, task, None)
         .await?
         .ok_or_else(Error::not_found)
+}
+
+struct TaskSubmission<'a> {
+    owner: Uuid,
+    issuer: Uuid,
+    workflow: Uuid,
+    input: &'a Value,
+    proof: &'a Value,
+    maximum: &'a Value,
+    submitted: DateTime<Utc>,
+    deadline: DateTime<Utc>,
+    expires: DateTime<Utc>,
+}
+
+impl<'a> TaskSubmission<'a> {
+    async fn persist(
+        &self,
+        c: &(impl GenericClient + Sync),
+        steps: impl Iterator<Item = (&'a Value, Option<Uuid>)> + Send,
+    ) -> Result<Uuid> {
+        let task = Uuid::new_v4();
+        let delegation = Uuid::new_v4();
+        c.execute(
+            "INSERT INTO execution_delegations(id,subject_id,issuer_credential_id,maximum_rules,run_as,expires_at,status,created_at)
+             VALUES($1,$2,$3,$4,'user',$5,'active',$6)",
+            &[&delegation, &self.owner, &self.issuer, self.maximum, &self.expires, &self.submitted],
+        ).await?;
+        c.execute(
+            "INSERT INTO tasks(id,owner_id,workflow_id,delegation_id,input,deadline_at,state,created_at,updated_at,admission)
+             VALUES($1,$2,$3,$4,$5,$6,'queued',$7,$7,$8)",
+            &[&task, &self.owner, &self.workflow, &delegation, self.input, &self.deadline, &self.submitted, self.proof],
+        ).await?;
+        for (step, deployment) in steps {
+            let root = step["depends_on"]
+                .as_array()
+                .ok_or_else(Error::denied)?
+                .is_empty();
+            let state = if root { "ready" } else { "pending" };
+            c.execute(
+                "INSERT INTO task_steps(id,task_id,step_key,provider_deployment_id,state,created_at,updated_at)
+                 VALUES($1,$2,$3,$4,$5,$6,$6)",
+                &[&Uuid::new_v4(), &task, &string(step, "id")?, &deployment, &state, &self.submitted],
+            ).await?;
+        }
+        Ok(task)
+    }
+}
+
+pub(crate) async fn create_scheduled(
+    tx: &Transaction<'_>,
+    auth: &Auth,
+    schedule: &Row,
+    spec: &Value,
+) -> Result<(Uuid, DateTime<Utc>, Context)> {
+    if !schedule.try_get::<_, bool>("delegation_live")? {
+        return Err(Error::denied());
+    }
+    let workflow = id(spec, "workflow_id")?;
+    let row = tx
+        .query_opt(
+            "SELECT owner_id,spec,status FROM workflows WHERE id=$1 FOR SHARE",
+            &[&workflow],
+        )
+        .await?
+        .ok_or_else(Error::denied)?;
+    if row.try_get::<_, &str>("status")? != "active" {
+        return Err(Error::new(
+            "SCHEDULE_WORKFLOW_ARCHIVED",
+            "The scheduled workflow version is archived",
+            StatusCode::CONFLICT,
+        ));
+    }
+    let workflow_resource = Resource::new("workflow", workflow, Some(row.try_get("owner_id")?));
+    let workflow_spec: Value = row.try_get("spec")?;
+    validate("WorkflowSpec", &workflow_spec)?;
+    validate_business(&workflow_spec["input_schema"], &spec["input"])?;
+    let (ctx, cutoff, deployments) = claim_authority::revalidate_schedule(
+        tx,
+        auth,
+        schedule,
+        workflow_resource,
+        &workflow_spec,
+        Uuid::new_v4(),
+    )
+    .await?;
+    let submitted: DateTime<Utc> = tx.query_one("SELECT clock_timestamp()", &[]).await?.get(0);
+    let deadline = submitted + Duration::milliseconds(admission::DEFAULT_TASK_TIMEOUT_MS as i64);
+    let expires = cutoff.min(schedule.try_get("expires_at")?).min(deadline);
+    if expires <= submitted {
+        return Err(Error::denied());
+    }
+    let proof: Value = schedule.try_get("admission")?;
+    let maximum: Value = schedule.try_get("maximum_rules")?;
+    let task = TaskSubmission {
+        owner: ctx.subject,
+        issuer: ctx.credential,
+        workflow,
+        input: &spec["input"],
+        proof: &proof["task_admission"],
+        maximum: &maximum,
+        submitted,
+        deadline,
+        expires,
+    }
+    .persist(
+        tx,
+        workflow_spec["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(deployments),
+    )
+    .await?;
+    Ok((task, expires, ctx))
 }
 
 /// Controller restart revokes transient authority. Submitted tasks and schedules

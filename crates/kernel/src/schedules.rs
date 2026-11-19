@@ -13,6 +13,8 @@ use serde_json::{json, Value};
 use tokio_postgres::{GenericClient, Transaction};
 use uuid::Uuid;
 
+pub(crate) mod trigger;
+
 pub(crate) async fn authorize_create(
     c: &(impl GenericClient + Sync),
     ctx: &Context,

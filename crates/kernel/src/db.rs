@@ -33,7 +33,8 @@ const ATTEMPT_COMMIT: &str = include_str!("../migrations/0021_attempt_commit.sql
 const TASK_STEP_RESOLUTIONS: &str = include_str!("../migrations/0022_task_step_resolutions.sql");
 const TASK_ATTEMPT_CALLS: &str = include_str!("../migrations/0023_task_attempt_calls.sql");
 const SCHEDULE_ADMISSION: &str = include_str!("../migrations/0024_schedule_admission.sql");
-const MIGRATIONS: [&str; 24] = [
+const SCHEDULE_FIRES: &str = include_str!("../migrations/0025_schedule_fires.sql");
+const MIGRATIONS: [&str; 25] = [
     BASELINE,
     CALL_CHARGES,
     SECRET_AUTHORITY,
@@ -58,6 +59,7 @@ const MIGRATIONS: [&str; 24] = [
     TASK_STEP_RESOLUTIONS,
     TASK_ATTEMPT_CALLS,
     SCHEDULE_ADMISSION,
+    SCHEDULE_FIRES,
 ];
 pub const SCHEMA_VERSION: u64 = MIGRATIONS.len() as u64;
 pub const LEADER_LOCK: i64 = 0x58454c41424d3101;
