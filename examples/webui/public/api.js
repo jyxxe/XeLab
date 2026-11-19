@@ -30,8 +30,8 @@ const page = Object.freeze({ limit: 'limit', cursor: 'cursor' });
 const operation = (method, path, query = {}, body = false, revision = false) =>
   Object.freeze({ method, path: BASE + path, query: Object.freeze(query), body, revision });
 
-// Names and paths match docs/contracts/openapi.json. Future Batch/Workflow/MPR
-// operations are deliberately absent so a desktop cannot imply they succeeded.
+// Names and paths match docs/contracts/openapi.json. Unsupported operations
+// stay outside this desktop's closed operation map.
 export const OPERATIONS = Object.freeze({
   getNode: operation('GET', '/node'),
   listSessions: operation('GET', '/sessions', page),
@@ -64,6 +64,10 @@ export const OPERATIONS = Object.freeze({
   listInstances: operation('GET', '/instances', { ...page, deployment_id: 'uuid' }),
   getInstance: operation('GET', '/instances/{instance_id}'),
   getOperation: operation('GET', '/operations/{operation_id}'),
+  listTasks: operation('GET', '/tasks', page),
+  getTask: operation('GET', '/tasks/{task_id}'),
+  listTaskSteps: operation('GET', '/tasks/{task_id}/steps', page),
+  listAttempts: operation('GET', '/task-steps/{step_id}/attempts', page),
   listSkills: operation('GET', '/skills', page),
   registerSkill: operation('POST', '/skills', {}, true),
   getSkill: operation('GET', '/skills/{skill_id}'),
