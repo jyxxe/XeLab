@@ -408,7 +408,9 @@ fn dispatch<'a>(
         let name = op["operationId"].as_str().unwrap();
         crate::workflows::validate_query(name, uri.query().unwrap_or(""))?;
         crate::tasks::validate_query(name, uri.query().unwrap_or(""))?;
-        if name == "getSchedule" && uri.query().is_some_and(|query| !query.is_empty()) {
+        if matches!(name, "getSchedule" | "deleteSchedule")
+            && uri.query().is_some_and(|query| !query.is_empty())
+        {
             return Err(Error::invalid("Unexpected schedule query parameter"));
         }
         if name == "getLiveness" {
@@ -717,6 +719,10 @@ fn dispatch<'a>(
                 .ok_or_else(Error::not_found)?,
             200,
         ),
+        "deleteSchedule" => {
+            crate::schedules::stop(&tx, &ctx, path_id(&params, "schedule_id")?, &headers).await?;
+            (Value::Null, 204)
+        }
         "getNode" => (admission::status(&tx).await?, 200),
         "getOperation" => (
             db::operation_value(&tx, path_id(&params, "operation_id")?).await?,
@@ -1014,13 +1020,19 @@ fn dispatch<'a>(
         {
             validate(model, &result.0)?;
         }
-        if let Some(cutoff) = retry_cutoff {
+        let commit_authorization = if let Some(cutoff) = retry_cutoff {
             let task = id(&result.0, "id")?;
-            if let Err(e) = crate::tasks::retry::validate_commit(&tx, &ctx, task, cutoff).await {
-                audit_failed_mutation(&tx, &ctx, name, &params, &e).await?;
-                tx.commit().await?;
-                return Err(e);
-            }
+            crate::tasks::retry::validate_commit(&tx, &ctx, task, cutoff).await
+        } else if name == "deleteSchedule" {
+            // Audit and idempotency writes can wait after the stop has run.
+            crate::schedules::authorize_delete(&tx, &ctx, path_id(&params, "schedule_id")?).await
+        } else {
+            Ok(())
+        };
+        if let Err(e) = commit_authorization {
+            audit_failed_mutation(&tx, &ctx, name, &params, &e).await?;
+            tx.commit().await?;
+            return Err(e);
         }
         if app.leader.is_closed() {
             return Err(Error::unavailable("Controller leadership is lost"));
@@ -1090,6 +1102,9 @@ async fn authorize_operation(
     }
     if crate::tasks::handles(name) {
         return crate::tasks::authorize(c, ctx, name, params, body).await;
+    }
+    if name == "deleteSchedule" {
+        return crate::schedules::authorize_delete(c, ctx, path_id(params, "schedule_id")?).await;
     }
     if secrets::handles(name) {
         return secrets::authorize(c, ctx, name, params, body).await;
