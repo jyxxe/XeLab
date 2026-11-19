@@ -106,8 +106,9 @@ async fn maps_inputs_in_dependency_order_and_preserves_the_admitted_targets_and_
             ).await.unwrap();
             db.execute(
                 "INSERT INTO calls(id,owner_id,credential_id,contract,input_digest,idempotency_key,state,deadline_at,
-                     created_at,provider_instance_id,delegation_id)
-                 SELECT $2,t.owner_id,e.issuer_credential_id,$3,$4,a.idempotency_key,'unknown',a.lease_expires_at,now(),$5,$6
+                     created_at,provider_instance_id,delegation_id,result,completed_at)
+                 SELECT $2,t.owner_id,e.issuer_credential_id,$3,$4,a.idempotency_key,'succeeded',a.lease_expires_at,
+                     now(),$5,$6,'{\"output\":{\"message\":\"output of middle\"}}',now()
                    FROM attempts a JOIN task_steps s ON s.id=a.step_id JOIN tasks t ON t.id=s.task_id
                    JOIN execution_delegations e ON e.id=t.delegation_id WHERE a.id=$1",
                 &[&lease.attempt_id,&call,&f.contract,&xelab_kernel::contracts::digest(b"mapped input"),&instance,&call_delegation],
@@ -119,6 +120,16 @@ async fn maps_inputs_in_dependency_order_and_preserves_the_admitted_targets_and_
             )
             .await
             .unwrap();
+            db.execute(
+                "INSERT INTO host_rpc_contexts(call_id,peer,source_paths,read_blob_ids)
+                 SELECT $2,(t.admission->>'peer')::inet,target->'paths','[]'
+                   FROM task_steps s JOIN tasks t ON t.id=s.task_id
+                   JOIN attempts a ON a.step_id=s.id,
+                   jsonb_array_elements(t.admission->'steps') node,
+                   jsonb_array_elements(node->'targets') target
+                  WHERE a.id=$1 AND node->>'step_key'=s.step_key AND target->>'action'='capability.invoke'",
+                &[&lease.attempt_id,&call],
+            ).await.unwrap();
             let linked = prepare_dispatch(&f.db, &f.auth, &lease).await.unwrap();
             assert_eq!(linked.existing_call_id, Some(call));
             assert_eq!(linked.request, prepared.request);
