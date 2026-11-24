@@ -1,0 +1,93 @@
+{
+  "base": {
+    "ref": "main",
+    "sha": "2222222222222222222222222222222222222222"
+  },
+  "checks": {
+    "check_runs": [
+      {
+        "conclusion": "success",
+        "name": "CI",
+        "status": "completed",
+        "url": "https://github.com/example/project/runs/1"
+      },
+      {
+        "conclusion": "failure",
+        "name": "Lint",
+        "status": "completed",
+        "url": "https://github.com/example/project/runs/1"
+      }
+    ],
+    "combined_status": "failure",
+    "commit_statuses": [
+      {
+        "context": "legacy-ci",
+        "state": "success",
+        "url": "https://github.com/example/project/status/1"
+      }
+    ],
+    "state": "failed",
+    "workflow_runs": [
+      {
+        "conclusion": "failure",
+        "event": "pull_request",
+        "name": "CI",
+        "status": "completed",
+        "url": "https://github.com/example/project/actions/runs/1"
+      }
+    ],
+    "workflow_runs_state": "known"
+  },
+  "draft": false,
+  "head": {
+    "ref": "feature",
+    "sha": "1111111111111111111111111111111111111111"
+  },
+  "merge_authorization": "not-assessed",
+  "mergeable": true,
+  "mergeable_state": "clean",
+  "note": "Completed checks are not merge approval; maintainers decide against the real gates.",
+  "pull_request": 1,
+  "repository": "example/project",
+  "required_checks": {
+    "checks": [
+      {
+        "name": "CI",
+        "state": "passed"
+      },
+      {
+        "name": "Docs",
+        "state": "missing"
+      }
+    ],
+    "state": "readable"
+  },
+  "review_threads": {
+    "state": "known",
+    "total": 2,
+    "unresolved": 1,
+    "unresolved_current": 1
+  },
+  "reviews": {
+    "approvals_on_head": 1,
+    "approvals_on_older_commits": 1,
+    "entries": [
+      {
+        "commit_id": "9999999999999999999999999999999999999999",
+        "state": "APPROVED",
+        "submitted_at": "2026-11-09T00:00:00Z",
+        "user": "old-reviewer"
+      },
+      {
+        "commit_id": "1111111111111111111111111111111111111111",
+        "state": "APPROVED",
+        "submitted_at": "2026-11-10T00:00:00Z",
+        "user": "reviewer"
+      }
+    ],
+    "total": 2
+  },
+  "schema": 2,
+  "state": "open",
+  "url": "https://github.com/example/project/pull/1"
+}
